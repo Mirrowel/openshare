@@ -1,0 +1,26 @@
+# node
+node_modules/
+package-lock.json.bak
+
+# builds
+share-plugin/dist/
+share-viewer/dist/
+share-viewer/node_modules/.vite/
+
+# wrangler
+.wrangler/
+.dev.vars
+
+# test/suite spillover
+*.queue.jsonl
+spool/
+
+# secrets / local overrides
+openshare.local.json
+.dev.*
+
+# editor/OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

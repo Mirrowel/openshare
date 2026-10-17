@@ -1,0 +1,88 @@
+{
+  "name": "@mirrowel/opencode-openshare",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Open(code)Share — re:share: self-hosted session sharing for opencode. Server plugin (single file or package), optional TUI for interactive opt-in sharing.",
+  "license": "MIT",
+  "author": "Mirrowel",
+  "homepage": "https://github.com/Mirrowel/OpenShare#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mirrowel/OpenShare.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Mirrowel/OpenShare/issues"
+  },
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "ci",
+    "openshare.config.json",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "share",
+    "session",
+    "sharing",
+    "collaboration"
+  ],
+  "oc-plugin": [
+    "server",
+    "tui"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc --outDir dist --declaration && npm run build:standalone",
+    "build:standalone": "bun scripts/build-standalone.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:regression": "node scripts/regression-tests.mjs",
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "test:manual": "node scripts/manual-tests.mjs",
+    "test:tui-flow": "node scripts/tui-flow-tests.mjs",
+    "test:v2": "node scripts/v2-mock-tests.mjs",
+    "test": "npm run test:regression && npm run test:manual && npm run test:tui-flow && npm run test:v2",
+    "test:cli": "node scripts/cli-test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": ">=1.14.0",
+    "@opentui/solid": "^0.4.1"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.14.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

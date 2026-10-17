@@ -1,0 +1,269 @@
+// OpenShare TUI flow tests — headless end-to-end for the share/unshare
+// logic (the real share-flow.ts code paths) against a real `opencode serve`
+// instance with the real server plugin, the mock LLM, and a local worker.
+//
+// The terminal surface (palette commands, dialog rendering, sidebar slot)
+// is exercised live by the user; this suite drives the SAME flows with a
+// scripted mock host (auto-consent dialogs, captured toasts/clipboard).
+//
+//   F1 share (first run): consent gate -> confirmShare -> binding URL +
+//      clipboard capture -> backfilled share data on the worker
+//   F2 share again: copies the existing link (no new share)
+//   F3 unshare: flag cleared + worker page deleted (404)
+//   F4 config round-trip: saveConfig writes the sandbox config file with
+//      $comment preserved; currentConfig reads it back
+
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import {
+  sleep,
+  waitFor,
+  httpGet,
+  killPortOwners,
+  killWranglerSuites,
+  startMockLLM,
+  startWorker,
+  startServe,
+  stopServe,
+  WORKER_URL,
+  WORKER_PORT,
+  SERVE_PORT,
+  LLM_PORT,
+  PROVIDER,
+} from "./suite-lib.mjs"
+
+const here = (rel) => fileURLToPath(new URL(rel, import.meta.url))
+const ROOT = here("../")
+const distUrl = (name) => new URL(`../dist/${name}`, import.meta.url).href
+
+const WATCHDOG_MS = 10 * 60 * 1000
+const watchdog = setTimeout(() => {
+  console.error("WATCHDOG: suite exceeded hard time limit — aborting")
+  process.exit(124)
+}, WATCHDOG_MS)
+
+const failures = []
+const check = (label, ok, detail) => {
+  if (ok) console.log(`PASS ${label}`)
+  else {
+    console.log(`FAIL ${label}${detail ? `: ${detail}` : ""}`)
+    failures.push(label)
+  }
+}
+
+// a scripted ShareHostApi: dialogs auto-answer from a queue, toasts and
+// clipboard writes are captured for assertions
+function mockHost(client, { consent = true } = {}) {
+  const state = {
+    toasts: [],
+    clipboard: [],
+    kv: new Map(),
+    dialogAnswers: [],
+  }
+  const confirmAnswer = () => state.dialogAnswers.shift() ?? consent
+  return {
+    state,
+    host: {
+      client,
+      kv: {
+        get(key, fallback) {
+          return state.kv.has(key) ? state.kv.get(key) : fallback
+        },
+        set(key, value) {
+          state.kv.set(key, value)
+        },
+      },
+      lifecycle: { onDispose() {} },
+      theme: { current: {} },
+      ui: {
+        toast(input) {
+          state.toasts.push(input)
+        },
+        dialog: {
+          // scripted flows drive the Dialog* components directly; the
+          // stack itself is a no-op in the mock
+          replace() {},
+          clear() {},
+          setSize() {},
+        },
+        DialogSelect(props) {
+          props.onSelect(props.options[0])
+        },
+        DialogPrompt(props) {
+          props.onConfirm("")
+        },
+        DialogConfirm(props) {
+          if (confirmAnswer()) props.onConfirm()
+          else props.onCancel?.()
+        },
+        DialogAlert(props) {
+          props.onConfirm?.()
+        },
+      },
+      keymap: {
+        registerLayer() {
+          return () => {}
+        },
+      },
+      sessionInfo: () => undefined,
+      currentSessionID: () => undefined,
+      clipboard: {
+        async write(text) {
+          state.clipboard.push(text)
+          return true
+        },
+      },
+    },
+  }
+}
+
+// v1-shaped client over the serve HTTP API
+function httpClient(base) {
+  const call = async (method, path, body) => {
+    const res = await httpGet(`${base}${path}`, {
+      method,
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}`)
+    return { data: await res.json() }
+  }
+  return {
+    session: {
+      get: ({ path }) => call("GET", `/session/${path.id}`),
+      update: ({ path, body }) => call("PATCH", `/session/${path.id}`, body),
+    },
+  }
+}
+
+const suiteDir = mkdtempSync(join(tmpdir(), "openshare-tuiflow-"))
+console.log(`suite dir: ${suiteDir}`)
+
+// the flows read config through the same precedence as production; env
+// wins over the (unconfigured) real config file
+process.env.OPENSHARE_WORKER_URL = WORKER_URL
+process.env.OPENSHARE_CREATE_TOKEN = "suite-create-token"
+
+let worker
+let llm
+try {
+  llm = await startMockLLM()
+  worker = await startWorker(suiteDir)
+  console.log("worker ready")
+
+  const sandbox = join(suiteDir, "tui")
+  const projectDir = join(sandbox, "project")
+  mkdirSync(projectDir, { recursive: true })
+  // TUI presence -> manual mode on the server
+  writeFileSync(join(projectDir, "tui.json"), JSON.stringify({ plugin: [join(ROOT, "dist", "tui.js").replace(/\\/g, "/")] }))
+
+  const flowEnv = {
+    OPENSHARE_WORKER_URL: WORKER_URL,
+    OPENSHARE_CREATE_TOKEN: "suite-create-token",
+    OPENSHARE_DEBOUNCE_MS: "300",
+  }
+  const serve = await startServe({ name: "tuiflow", path: join(ROOT, "dist", "server.js") }, sandbox, projectDir, flowEnv)
+
+  const flows = await import(distUrl("share-flow.js"))
+  const settings = await import(distUrl("settings.js"))
+  const client = httpClient(serve.base)
+
+  try {
+    // session + real prompt (idle by the time we share)
+    const created = await httpGet(`${serve.base}/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "tui flow" }),
+    })
+    const session = await created.json()
+    const sid = session.id
+    await httpGet(`${serve.base}/session/${sid}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: { providerID: PROVIDER.id, modelID: PROVIDER.model },
+        parts: [{ type: "text", text: "tui flow prompt" }],
+      }),
+      timeoutMs: 60000,
+    })
+
+    const { host, state } = mockHost(client)
+
+    // F1: first share run hits the consent gate
+    const gated = await flows.runShareFlow(host, sid)
+    check("F1: consent gate before first share", gated.message === "consent required", gated.message)
+
+    const shared = await flows.confirmShare(host, await flows.resolveRoot(client, sid))
+    check("F1: confirmShare succeeds", shared.ok === true, shared.message)
+    check("F1: URL copied to clipboard", state.clipboard.at(-1) === shared.url, `${state.clipboard.at(-1)} vs ${shared.url}`)
+
+    const shareId = shared.url.split("/").pop()
+    const body = await waitFor(async () => {
+      const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+      if (!r.ok) throw new Error(`${r.status}`)
+      const parsed = await r.json()
+      const types = (parsed.data ?? []).map((i) => i.type)
+      return parsed.status === "completed" && types.includes("part") && types.includes("model") ? parsed : undefined
+    }, "F1: share data backfilled")
+    check("F1: worker carries the backfilled share", !!body)
+
+    // F2: share again copies the link, no new share
+    const again = await flows.runShareFlow(host, sid)
+    check("F2: second share copies existing link", again.ok === true && again.url === shared.url, again.message)
+    const after = await httpGet(`${serve.base}/session/${sid}`)
+    const bindingNow = (await after.json())?.metadata?.openshare
+    check("F2: no duplicate share created", bindingNow?.url?.split("/").pop() === shareId)
+
+    // F3: unshare deletes the page and clears the flag
+    const unshared = await flows.runUnshareFlow(host, sid)
+    check("F3: unshare flow reports deletion", unshared.ok === true, unshared.message)
+    await waitFor(async () => {
+      const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+      return r.status === 404 || r.status === 410
+    }, "F3: worker page gone")
+    check("F3: worker page deleted", true)
+    const cleared = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata
+    check("F3: flag cleared from metadata", !cleared?.openshare)
+
+    // F4: config round-trip in a sandbox base dir ($comment preserved).
+    // env is set for the flows, so assert on a non-env key (ttlDays).
+    const cfgDir = join(sandbox, "cfg")
+    mkdirSync(cfgDir, { recursive: true })
+    writeFileSync(join(cfgDir, "openshare.config.json"), JSON.stringify({ $comment: "keep me", ttlDays: 42 }, null, 2))
+    const cfg = flows.currentConfig(cfgDir)
+    check("F4: currentConfig reads sandbox file", cfg.ttlDays === 42, `ttlDays=${cfg.ttlDays}`)
+    const saved = flows.saveConfig({ ...cfg, workerUrl: "https://new.example", createToken: "tok" }, cfgDir)
+    check("F4: saveConfig writes", !!saved?.path && existsSync(saved.path))
+    const raw = JSON.parse(readFileSync(saved.path, "utf8"))
+    check("F4: $comment preserved", raw.$comment === "keep me")
+    check("F4: values written", raw.workerUrl === "https://new.example" && raw.createToken === "tok")
+  } finally {
+    await stopServe(serve);
+  }
+} catch (error) {
+  console.error("SUITE ERROR:", error.message)
+  failures.push(`suite-error: ${error.message}`)
+} finally {
+  try {
+    worker?.kill()
+  } catch {}
+  try {
+    llm?.close()
+  } catch {}
+  killWranglerSuites()
+  killPortOwners(SERVE_PORT)
+  killPortOwners(LLM_PORT)
+}
+
+if (failures.length) {
+  console.error(`\n${failures.length} failure(s) — suite FAILED`)
+  console.error(`suite dir kept for inspection: ${suiteDir}`)
+  clearTimeout(watchdog)
+  process.exit(1)
+}
+console.log("\nall checks passed")
+rmSync(suiteDir, { recursive: true, force: true })
+clearTimeout(watchdog)
+process.exit(0)

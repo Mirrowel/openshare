@@ -1,0 +1,5 @@
+{
+  "$comment": "Open(code)Share CI bundle config. This file sits NEXT TO openshare.js and is read at load; OPENSHARE_* env vars always win (the CI way). The single-file bundle ALWAYS shares all sessions.",
+  "workerUrl": "",
+  "createToken": ""
+}

@@ -1,0 +1,10 @@
+{
+  "$comment": "Open(code)Share worker branding — DEFAULT, UNBRANDED skin (neutral upstream look). Priority: BRAND_* env vars > this file > code defaults. Edit this file and redeploy to skin your deployment: name (deployment label), logoUrl (left-header chip image, served from public/branding/ or any URL), wordmarkUrl (footer image; empty = 'name · Open(code)Share' text), linkUrl (where the left chip points), accent (hex), faviconUrl, backgroundUrl (page background with readability overlay). All optional; empty string = hide/fall back.",
+  "name": "",
+  "logoUrl": "",
+  "wordmarkUrl": "",
+  "linkUrl": "",
+  "accent": "",
+  "faviconUrl": "",
+  "backgroundUrl": ""
+}
