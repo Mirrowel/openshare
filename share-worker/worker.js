@@ -62,6 +62,30 @@ export default {
     try {
       if (path === "/health") return json(200, { ok: true, service: "openshare" })
 
+      // ---- admin purge: Bearer CREATE_TOKEN, wipes EVERY share ----
+      // Maintenance endpoint (owner-only): iterates the share index and
+      // removes every ShareDO + index key. Existing viewers get a final
+      // "gone" frame via each DO's /remove-all broadcast.
+      if (path === "/api/admin/purge" && req.method === "POST") {
+        const token = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "")
+        if (!env.CREATE_TOKEN || token !== env.CREATE_TOKEN) return json(403, { error: "forbidden" })
+        const removed = []
+        let cursor
+        do {
+          const page = await env.SHARE_INDEX.list({ cursor })
+          for (const k of page.keys) {
+            const id = k.name.replace(/^share:/, "")
+            if (!id) continue
+            try {
+              await env.SHARE_DO.get(env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
+              removed.push(id)
+            } catch {}
+          }
+          cursor = page.list_complete ? undefined : page.cursor
+        } while (cursor)
+        return json(200, { ok: true, removed: removed.length })
+      }
+
       if (path === "/branding") {
         const b = (field) => {
           const envKey = "BRAND_" + field.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()

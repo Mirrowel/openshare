@@ -62,12 +62,22 @@ function makeProject(root) {
 function runOpencode(args, cwd, extraEnv = {}) {
   return new Promise((resolve) => {
     // opencode resolves to a real .exe here — NO shell, so the prompt
-    // text passes as one literal argv entry (cmd quoting was mangling it)
+    // text passes as one literal argv entry (cmd quoting was mangling it).
+    // Full XDG isolation: the real model + real worker stay real, but the
+    // sessions land in the disposable sandbox — never in the user's
+    // session browser (data root = machine-wide session DB on v1.18).
+    const root = mkdtempSync(join(tmpdir(), "openshare-live-run-"))
     const child = spawn("opencode", args, {
       cwd,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...extraEnv },
+      env: {
+        ...process.env,
+        XDG_CONFIG_HOME: join(root, "xdg"),
+        XDG_DATA_HOME: join(root, "xdg-data"),
+        XDG_STATE_HOME: join(root, "xdg-state"),
+        ...extraEnv,
+      },
     })
     let out = ""
     child.stdout.on("data", (d) => (out += d))

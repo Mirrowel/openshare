@@ -345,6 +345,9 @@ function createEngine(deps) {
   } catch {}
   const sessions = new Map;
   const childToParent = new Map;
+  const bootTime = Date.now();
+  const preExistingRetired = new Set;
+  const verifying = new Set;
   let chain = Promise.resolve();
   let lastUrlFile = null;
   let urlFileAnnounced = false;
@@ -382,7 +385,7 @@ function createEngine(deps) {
       spoolRoot = spoolDirFor(cfg);
     }
   };
-  const activate = (sid, opts, info) => {
+  const activate = (sid, opts, info, opts2) => {
     refreshConfig();
     let st = sessions.get(sid);
     if (!st) {
@@ -395,7 +398,8 @@ function createEngine(deps) {
     }
     st.activated = true;
     st.opts = opts;
-    if (mode === "manual") {
+    const gated = mode === "manual" || opts2?.gated === true;
+    if (gated) {
       chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => connect(st)).catch((e) => log("activation error", e?.message || e));
     } else {
       chain = chain.then(() => connect(st)).catch((e) => log("connect error", e?.message || e));
@@ -987,13 +991,31 @@ function createEngine(deps) {
       adoptStrayChild(sid, main);
     }
     let st = sessions.get(main);
-    if (!st) {
-      const created = newSt(main);
-      created.activated = true;
-      sessions.set(main, created);
-      st = created;
-      chain = chain.then(() => connect(created)).catch((e) => log("connect error", e?.message || e));
+    if (!st && !parent) {
+      const flag = shareFlag(info);
+      const hasBinding = !!info?.metadata?.[METADATA_KEY];
+      const createdMs = info?.time?.created;
+      const isPreExisting = typeof createdMs === "number" && createdMs < bootTime;
+      if (isPreExisting && !flag.enabled && !hasBinding) {
+        if (!preExistingRetired.has(main)) {
+          preExistingRetired.add(main);
+          log(`session ${main} predates plugin start - not shared (set the share flag to share it)`);
+        }
+        return;
+      }
+      if (flag.enabled) {
+        activate(main, flag.opts, info, { gated: true });
+        st = sessions.get(main);
+      } else {
+        const created = newSt(main);
+        created.activated = true;
+        sessions.set(main, created);
+        st = created;
+        chain = chain.then(() => connect(created)).catch((e) => log("connect error", e?.message || e));
+      }
     }
+    if (!st)
+      return;
     if (!st.prefsSent) {
       st.prefsSent = true;
       enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid));
@@ -1038,12 +1060,39 @@ function createEngine(deps) {
         } else if (t === "message.updated") {
           const main = childToParent.get(sid) ?? sid;
           let st = sessions.get(main);
-          if (!st && mode === "all") {
+          if (!st && mode === "all" && !preExistingRetired.has(main)) {
             const created = newSt(main);
             created.activated = true;
             sessions.set(main, created);
             st = created;
-            chain = chain.then(() => connect(created)).catch((e) => log("connect error", e?.message || e));
+            if (!verifying.has(main)) {
+              verifying.add(main);
+              chain = chain.then(async () => {
+                if (created.closed)
+                  return;
+                const info2 = await sessionInfo(created.client, main);
+                verifying.delete(main);
+                if (created.closed)
+                  return;
+                const flag = shareFlag(info2);
+                const hasBinding = !!info2?.metadata?.[METADATA_KEY];
+                const createdMs = info2?.time?.created;
+                const isPreExisting = typeof createdMs === "number" && createdMs < bootTime;
+                if (debugEvents) {
+                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info2}`);
+                }
+                if (isPreExisting && !flag.enabled && !hasBinding) {
+                  preExistingRetired.add(main);
+                  log(`session ${main} predates plugin start - not shared (set the share flag to share it)`);
+                  remove(created);
+                  return;
+                }
+                await connect(created);
+              }).catch((e) => {
+                verifying.delete(main);
+                log("verify error", e?.message || e);
+              });
+            }
           }
           if (!st || !st.activated || st.closed)
             return;

@@ -215,6 +215,30 @@ async function waitForPortFree(port, timeoutMs = 30000) {
   return false
 }
 
+/** Resolves when the port can actually be BOUND again. Listener-based
+ * checks miss TIME_WAIT sockets: Windows keeps them after a kill, and a
+ * spawned `opencode serve --port N` then silently bumps to N+1 instead of
+ * failing — which orphans every subsequent probe on N. A real bind probe
+ * is the only reliable signal. */
+import net from "node:net"
+let startServeSeq = 0
+function portBindable(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer()
+    srv.once("error", () => resolve(false))
+    srv.once("listening", () => srv.close(() => resolve(true)))
+    srv.listen(port, "127.0.0.1")
+  })
+}
+async function waitForPortBindable(port, timeoutMs = 30000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (await portBindable(port)) return true
+    await sleep(500)
+  }
+  return false
+}
+
 // --- opencode serve --------------------------------------------------------------
 
 function opencodeConfig(variant, sandbox, extra = {}) {
@@ -222,7 +246,7 @@ function opencodeConfig(variant, sandbox, extra = {}) {
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
-      plugin: [pluginEntry],
+      ...(variant.pluginless ? {} : { plugin: [pluginEntry] }),
       provider: {
         mock: {
           npm: "@ai-sdk/openai-compatible",
@@ -254,16 +278,36 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   killPortOwners(SERVE_PORT)
   const configPath = join(sandbox, "opencode.json")
   writeFileSync(configPath, opencodeConfig(variant, sandbox))
-  // hermetic: opencode MERGES the global config's plugins with
-  // OPENCODE_CONFIG (empirically proven) — redirect XDG_CONFIG_HOME so the
-  // machine's global registrations (including this very package) stay out
+  // hermetic, in three dimensions (all three are required — learned the
+  // hard way: XDG_CONFIG_HOME alone still lands test sessions in the
+  // machine-wide session DB at the data root, flooding the user's TUI
+  // browser with sessions whose dead project configs load zombie plugins):
+  //  - XDG_CONFIG_HOME: opencode MERGES the global config's plugins with
+  //    OPENCODE_CONFIG — keeps the machine's registrations out
+  //  - XDG_DATA_HOME: v1.18 keeps ALL sessions in one SQLite at the data
+  //    root — keeps test sessions in the disposable sandbox
+  //  - XDG_STATE_HOME: per-serve unique dir. The state home carries the
+  //    instance lock (locks/<hash>.lock with heartbeat): a sequentially
+  //    restarted serve sees the KILLED predecessor's stale lock as live
+  //    and silently binds port+1 — every probe on the pinned port then
+  //    times out. Unique state dirs sidestep the stale-lock bump; the
+  //    port is additionally bind-probed before each spawn.
+  const serveSeq = ++startServeSeq
   mkdirSync(join(sandbox, "xdg"), { recursive: true })
+  mkdirSync(join(sandbox, "xdg-data"), { recursive: true })
+  const stateDir = join(sandbox, `xdg-state-${serveSeq}`)
+  mkdirSync(stateDir, { recursive: true })
+  if (!(await waitForPortBindable(SERVE_PORT, 30000))) {
+    throw new Error(`[${variant.name}] port ${SERVE_PORT} not bindable before spawn`)
+  }
 
   const { child, kill } = spawnTree("opencode", ["serve", "--port", String(SERVE_PORT), "--hostname", "127.0.0.1"], {
     cwd: projectDir,
     env: {
       ...process.env,
       XDG_CONFIG_HOME: join(sandbox, "xdg"),
+      XDG_DATA_HOME: join(sandbox, "xdg-data"),
+      XDG_STATE_HOME: stateDir,
       OPENCODE_CONFIG: configPath,
       ...openShareEnv(sandbox),
       ...extraEnv,
@@ -292,7 +336,7 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
  * half-dead predecessor races its successor's session events). */
 async function stopServe(serve) {
   serve.kill()
-  await waitForPortFree(SERVE_PORT, 30000)
+  await waitForPortBindable(SERVE_PORT, 30000)
   await sleep(500)
 }
 

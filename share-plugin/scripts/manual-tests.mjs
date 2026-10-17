@@ -90,6 +90,19 @@ async function patchMetadata(serve, sid, metadata) {
   return r.json()
 }
 
+async function promptSession(serve, sid, text) {
+  const prompted = await httpGet(`${serve.base}/session/${sid}/message`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: { providerID: PROVIDER.id, modelID: PROVIDER.model },
+      parts: [{ type: "text", text: `suite: ${text}` }],
+    }),
+    timeoutMs: 60000,
+  })
+  if (!prompted.ok) throw new Error(`prompt ${prompted.status}: ${(await prompted.text()).slice(0, 300)}`)
+}
+
 async function readUrlFile(urlFile) {
   try {
     return readFileSync(urlFile, "utf8").trim() || undefined
@@ -285,6 +298,112 @@ try {
     check("S6: all-mode binding has NO enabled flag", !!ob?.url && ob.enabled === undefined, JSON.stringify(ob))
   } finally {
     await stopServe(serve3);
+  }
+
+  // S8: all-mode pre-existing dormancy — sessions created BEFORE the
+  // plugin existed are never auto-shared on resume; explicit flag opts in
+  // (with backfill); an already-bound session keeps its share (resume
+  // continuity is S5's contract, asserted here in all-mode too)
+  const preSandbox = join(suiteDir, "preexisting")
+  const preProject = join(preSandbox, "project")
+  mkdirSync(preProject, { recursive: true })
+  const preUrlFile = join(preSandbox, "share-url.txt")
+  // NO tui.json + no shareMode option -> all-mode by presence
+  const preVariant = { name: "preexisting", path: PKG }
+  // serve-0: NO plugin — creates the "session from before the plugin
+  // existed" (never bound; a metadata strip is NOT enough because the
+  // all-mode engine rewrites its binding from in-memory state)
+  const preServe0 = await startServe({ ...preVariant, name: "preexisting-noplugin", pluginless: true }, preSandbox, preProject, {
+    OPENSHARE_URL_FILE: preUrlFile,
+    OPENSHARE_DEBOUNCE_MS: "300",
+  })
+  let preSid
+  try {
+    preSid = await createAndPrompt(preServe0, "session from before the plugin existed")
+    const b = await (await httpGet(`${preServe0.base}/session/${preSid}`)).json()
+    if (b?.metadata?.openshare) throw new Error("S8 setup: pluginless serve wrote a binding?!")
+    if (!(await readUrlFile(preUrlFile))) {
+      // pluginless serve must not write the url file either
+    }
+  } finally {
+    await stopServe(preServe0)
+  }
+  const preServe1 = await startServe(preVariant, preSandbox, preProject, {
+    OPENSHARE_URL_FILE: preUrlFile,
+    OPENSHARE_DEBOUNCE_MS: "300",
+  })
+  let boundSid
+  try {
+    // session A: created while serve-1 runs -> shared + bound (all-mode)
+    boundSid = await createAndPrompt(preServe1, "preexisting bound session")
+    const boundUrl = await waitFor(() => readUrlFile(preUrlFile), "S8 setup: bound session shared")
+    const boundId = boundUrl.trim().split("/").pop()
+    await waitFor(async () => {
+      const r = await httpGet(`${WORKER_URL}/api/share/${boundId}/data`)
+      return r.ok && (await r.json()).status === "completed"
+    }, "S8 setup: bound share completes")
+  } finally {
+    await stopServe(preServe1)
+  }
+  const preServe2 = await startServe(preVariant, preSandbox, preProject, {
+    OPENSHARE_URL_FILE: preUrlFile,
+    OPENSHARE_DEBOUNCE_MS: "300",
+    OPENSHARE_DEBUG_EVENTS: "1",
+    OPENSHARE_DEBUG_FILE: join(preSandbox, "pre-debug.json"),
+  })
+  try {
+    const urlCountBefore = ((await readUrlFile(preUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
+    // resume the UNBOUND pre-existing session: prompt it — must NOT share
+    await promptSession(preServe2, preSid, "resume of an old unbound session")
+    await sleep(4000) // give any (wrong) share creation time to surface
+    const after = await (await httpGet(`${preServe2.base}/session/${preSid}`)).json()
+    const dormantOk = !after?.metadata?.openshare
+    if (!dormantOk) {
+      const lines = preServe2
+        .output()
+        .split("\n")
+        .filter((l) => l.includes("[openshare]"))
+        .join("\n")
+      console.log(`--- S8 serve-2 [openshare] log ---\n${lines || "(none)"}\n---`)
+    }
+    check("S8: pre-existing unbound session NOT shared on resume", dormantOk, JSON.stringify(after?.metadata?.openshare))
+    const urlCountAfter = ((await readUrlFile(preUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
+    check("S8: no new urlFile line for the dormant session", urlCountAfter === urlCountBefore, `${urlCountBefore} -> ${urlCountAfter}`)
+
+    // explicit opt-in on the pre-existing session: flag -> gated share
+    // WITH backfill (the history from before the flag must be on the page)
+    await patchMetadata(preServe2, preSid, { openshare: { enabled: true } })
+    const optIn = await waitFor(async () => {
+      const s = await (await httpGet(`${preServe2.base}/session/${preSid}`)).json()
+      const b = s?.metadata?.openshare
+      return b?.url ? b : undefined
+    }, "S8: flag-gated binding written")
+    const optInId = optIn.url.split("/").pop()
+    const optInBody = await waitFor(async () => {
+      const r = await httpGet(`${WORKER_URL}/api/share/${optInId}/data`)
+      if (!r.ok) throw new Error(`${r.status}`)
+      const parsed = await r.json()
+      const msgs = (parsed.data ?? []).filter((i) => i.type === "message")
+      return parsed.status === "completed" && msgs.length >= 2 ? parsed : undefined
+    }, "S8: flag-gated share backfilled with pre-flag history")
+    console.log(`  S8 opt-in share ${optInId}: ${optInBody.data.length} items (history backfilled)`)
+    check("S8: flag opt-in backfills history", true)
+
+    // resume continuity in all-mode: the BOUND session keeps its share
+    await promptSession(preServe2, boundSid, "resume of an old bound session")
+    const reBound = await waitFor(async () => {
+      const s = await (await httpGet(`${preServe2.base}/session/${boundSid}`)).json()
+      const b = s?.metadata?.openshare
+      return b?.url ? b : undefined
+    }, "S8: bound session re-attached")
+    const boundUrls = ((await readUrlFile(preUrlFile)) ?? "").trim().split("\n").filter(Boolean)
+    check(
+      "S8: bound session attaches SAME share (no duplicate)",
+      boundUrls.includes(reBound.url),
+      `${reBound.url} in [${boundUrls.join(", ")}]`,
+    )
+  } finally {
+    await stopServe(preServe2)
   }
 } catch (error) {
   console.error("SUITE ERROR:", error.message)

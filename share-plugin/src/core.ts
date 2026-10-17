@@ -250,6 +250,11 @@ export function createEngine(deps: EngineDeps): Engine {
   // ---- per-main-session state -------------------------------------------
   const sessions = new Map<string, SessionState>() // mainSid -> st
   const childToParent = new Map<string, string>() // childSid -> mainSid
+  // all-mode opt-in ledger: sessions that predate plugin start and are
+  // neither flagged nor already bound stay unshared (log once each)
+  const bootTime = Date.now()
+  const preExistingRetired = new Set<string>()
+  const verifying = new Set<string>()
   let chain: Promise<unknown> = Promise.resolve()
   let lastUrlFile: string | null = null
   let urlFileAnnounced = false
@@ -292,8 +297,11 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
-  /** Activate a main session: create state, connect, (manual) backfill. */
-  const activate = (sid: string, opts: SessionOpts | undefined, info: SessionInfo | undefined) => {
+  /** Activate a main session: create state, connect, backfill when gated
+   * (manual mode always; all-mode flag activations need the history too —
+   * an opted-in old session deserves a complete page, not just the events
+   * after the flag). */
+  const activate = (sid: string, opts: SessionOpts | undefined, info: SessionInfo | undefined, opts2?: { gated?: boolean }) => {
     refreshConfig()
     let st = sessions.get(sid)
     if (!st) {
@@ -305,7 +313,8 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     st.activated = true
     st.opts = opts
-    if (mode === "manual") {
+    const gated = mode === "manual" || opts2?.gated === true
+    if (gated) {
       // seed the share status from the session's CURRENT state before
       // anything flushes: activating an idle session must not ship a
       // phantom "live" badge. backfill follows, then the connection.
@@ -960,7 +969,11 @@ export function createEngine(deps: EngineDeps): Engine {
       return
     }
 
-    // all-mode (legacy behavior): every session shares on sight
+    // all-mode: NEW sessions share automatically; sessions that predate
+    // plugin start share only when explicitly opted in (metadata flag) or
+    // already carrying a binding (resume keeps the same share). This is
+    // critical: attaching the plugin to a long-lived server must never
+    // retro-share the user's entire session history on first prompt.
     const main = parent ?? sid
     if (parent && parent !== sid && sessions.has(sid)) {
       // stray child discovered: its events created a bogus main share
@@ -976,15 +989,34 @@ export function createEngine(deps: EngineDeps): Engine {
       adoptStrayChild(sid, main)
     }
     let st = sessions.get(main)
-    if (!st) {
-      const created = newSt(main)
-      created.activated = true
-      sessions.set(main, created)
-      st = created
-      chain = chain
-        .then(() => connect(created))
-        .catch((e) => log("connect error", (e as Error)?.message || e))
+    if (!st && !parent) {
+      const flag = shareFlag(info)
+      const hasBinding = !!(info as SessionInfo | undefined)?.metadata?.[METADATA_KEY]
+      const createdMs = (info as SessionInfo | undefined)?.time?.created
+      const isPreExisting = typeof createdMs === "number" && createdMs < bootTime
+      if (isPreExisting && !flag.enabled && !hasBinding) {
+        if (!preExistingRetired.has(main)) {
+          preExistingRetired.add(main)
+          log(`session ${main} predates plugin start - not shared (set the share flag to share it)`)
+        }
+        return
+      }
+      if (flag.enabled) {
+        // explicit opt-in on a pre-existing session: full gated activation
+        // (status seed + backfill + connect) so the page carries history
+        activate(main, flag.opts, info, { gated: true })
+        st = sessions.get(main)
+      } else {
+        const created = newSt(main)
+        created.activated = true
+        sessions.set(main, created)
+        st = created
+        chain = chain
+          .then(() => connect(created))
+          .catch((e) => log("connect error", (e as Error)?.message || e))
+      }
     }
+    if (!st) return
     if (!st.prefsSent) {
       st.prefsSent = true
       enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
@@ -1029,20 +1061,53 @@ export function createEngine(deps: EngineDeps): Engine {
           }
         } else if (t === "message.updated") {
           // resumed sessions may emit the user message BEFORE any session.*
-          // event — in all-mode an unknown sid is always safe to treat as
-          // main (children announce via session.created+parentID first);
-          // in manual-mode unknown sids are dropped (the flag-bearing
-          // session.updated activates, and backfill fills the past)
+          // event — in all-mode an unknown sid is optimistically treated as
+          // main and VERIFIED against the session record (children announce
+          // via session.created+parentID first); in manual-mode unknown
+          // sids are dropped (the flag-bearing session.updated activates,
+          // and backfill fills the past)
           const main = childToParent.get(sid) ?? sid
           let st = sessions.get(main)
-          if (!st && mode === "all") {
+          if (!st && mode === "all" && !preExistingRetired.has(main)) {
             const created = newSt(main)
             created.activated = true
             sessions.set(main, created)
             st = created
-            chain = chain
-              .then(() => connect(created))
-              .catch((e) => log("connect error", (e as Error)?.message || e))
+            // pre-existing-session gate for the no-info path: verify
+            // against the session record BEFORE connecting (a retired
+            // session never reaches the worker, never announces, never
+            // writes the url file); a pass connects, and queued events
+            // ride the normal pending replay
+            if (!verifying.has(main)) {
+              verifying.add(main)
+              chain = chain
+                .then(async () => {
+                  if (created.closed) return
+                  const info = await sessionInfo(created.client, main)
+                  verifying.delete(main)
+                  if (created.closed) return
+                  const flag = shareFlag(info)
+                  const hasBinding = !!(info as SessionInfo | undefined)?.metadata?.[METADATA_KEY]
+                  const createdMs = (info as SessionInfo | undefined)?.time?.created
+                  const isPreExisting = typeof createdMs === "number" && createdMs < bootTime
+                  if (debugEvents) {
+                    log(
+                      `verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info}`,
+                    )
+                  }
+                  if (isPreExisting && !flag.enabled && !hasBinding) {
+                    preExistingRetired.add(main)
+                    log(`session ${main} predates plugin start - not shared (set the share flag to share it)`)
+                    remove(created)
+                    return
+                  }
+                  await connect(created)
+                })
+                .catch((e) => {
+                  verifying.delete(main)
+                  log("verify error", (e as Error)?.message || e)
+                })
+            }
           }
           if (!st || !st.activated || st.closed) return
           enqueue(st, itemFor("message", p.info, sid))

@@ -1,13 +1,15 @@
-// OpenShare CLI install test — runs the REAL opencode CLI against the
-// owner's real global config (which registers the package directory
-// `file:///…/share-plugin`, server only, no TUI → expect share-ALL mode).
+// OpenShare CLI install test — runs the REAL opencode CLI against a
+// SANDBOXED config-home that registers the package directory globally
+// (`file:///…/share-plugin`, server only, no TUI → expect share-ALL mode).
+// The real machine config and the machine-wide session DB stay untouched
+// (full XDG_CONFIG/DATA/STATE isolation — see suite-lib).
 //
 // A scratch project provides a mock OpenAI-compatible provider so the run
 // costs no tokens; OPENSHARE_* env points the plugin at a local wrangler
 // worker. Verifies: mode=all (debug file), stderr announce line, urlFile,
 // worker /data contents + completed status.
 //
-// NOT part of `npm run test` (depends on the machine's global config).
+// NOT part of `npm run test` (drives real `opencode run` binaries).
 
 import { spawn } from "node:child_process"
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync } from "node:fs"
@@ -15,6 +17,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { sleep, waitFor, httpGet, killWranglerSuites, startMockLLM, startWorker, WORKER_URL, WORKER_PORT, LLM_PORT } from "./suite-lib.mjs"
+
+const PKG_DIR = fileURLToPath(new URL("..", import.meta.url)).replace(/\\/g, "/")
 
 const WATCHDOG_MS = 8 * 60 * 1000
 const watchdog = setTimeout(() => {
@@ -64,6 +68,15 @@ try {
 
   const urlFile = join(suiteDir, "share-url.txt")
   const debugFile = join(suiteDir, "openshare-debug.json")
+  // phase-1 "global install" sandbox: a config-home that registers the
+  // package GLOBALLY (the real machine config stays untouched, and the
+  // session DB never leaves the sandbox — full XDG isolation)
+  const globalHome = join(suiteDir, "global-home")
+  for (const sub of ["opencode", "data", "state"]) mkdirSync(join(globalHome, sub), { recursive: true })
+  writeFileSync(
+    join(globalHome, "opencode", "opencode.json"),
+    JSON.stringify({ $schema: "https://opencode.ai/config.json", plugin: [`file:///${PKG_DIR}`] }, null, 2),
+  )
   const run = (args, extraEnv = {}) =>
     new Promise((resolve) => {
       const child = spawn("opencode", args, {
@@ -72,6 +85,9 @@ try {
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
+          XDG_CONFIG_HOME: globalHome,
+          XDG_DATA_HOME: join(globalHome, "data"),
+          XDG_STATE_HOME: join(globalHome, "state"),
           OPENSHARE_WORKER_URL: WORKER_URL,
           OPENSHARE_CREATE_TOKEN: "suite-create-token",
           OPENSHARE_URL_FILE: urlFile,
@@ -151,6 +167,7 @@ try {
   const ciSandbox = join(suiteDir, "ci")
   const ciProject = join(ciSandbox, "project")
   mkdirSync(ciProject, { recursive: true })
+  for (const sub of ["xdg", "xdg-data", "xdg-state"]) mkdirSync(join(ciSandbox, sub), { recursive: true })
   const ciConfig = join(ciSandbox, "opencode.json")
   writeFileSync(
     ciConfig,
@@ -180,10 +197,14 @@ try {
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
-          // hermetic: OPENCODE_CONFIG alone MERGES with the machine's
-          // global plugins (proven) — redirect XDG so ONLY the single
-          // file under test loads, which is the CI reality
+          // hermetic, all three XDG roots (config alone is NOT isolation on
+          // v1.18: data root holds the machine-wide session DB — without
+          // the redirect, test sessions flood the user's TUI browser and
+          // carry zombie plugin configs in with them; state home carries
+          // the global flock)
           XDG_CONFIG_HOME: join(ciSandbox, "xdg"),
+          XDG_DATA_HOME: join(ciSandbox, "xdg-data"),
+          XDG_STATE_HOME: join(ciSandbox, "xdg-state"),
           OPENCODE_CONFIG: ciConfig,
           OPENSHARE_WORKER_URL: WORKER_URL,
           OPENSHARE_CREATE_TOKEN: "suite-create-token",

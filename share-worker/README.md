@@ -138,7 +138,11 @@ title/version/model.
 - `GET /branding` — the deployment's `BRAND_*` skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl; all optional — absent =
   neutral default)
-- ShareDO per share; ControlDO per plugin socket; SweeperDO daily alarm
+- `POST /api/admin/purge` (Bearer CREATE_TOKEN) — owner maintenance:
+  iterates the share index and removes EVERY share (DO storage + index;
+  connected viewers get a final `gone` frame). Returns `{removed}`.
+- ShareDO per share; ControlDO per plugin socket (attach state persisted
+  to DO storage — survives hibernation eviction); SweeperDO daily alarm
   deletes shares idle beyond their own ttlDays (create-time override,
   capped at MAX_TTL_DAYS).
 
