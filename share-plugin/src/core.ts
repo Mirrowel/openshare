@@ -99,6 +99,10 @@ type SessionState = {
   timer: ReturnType<typeof setTimeout> | null
   metaTimer: ReturnType<typeof setTimeout> | null
   completedTimer: ReturnType<typeof setTimeout> | null
+  settleTimer: ReturnType<typeof setTimeout> | null
+  idleDropTimer: ReturnType<typeof setTimeout> | null
+  lastFlushAt: number
+  statusEpoch: number
   shareId: string | null
   secret: string | null
   ackedRev: number
@@ -115,6 +119,8 @@ type SessionState = {
   binding: Binding | null // mirrors what was written into session metadata
   bindingQueried: boolean
   reconnectTimer: ReturnType<typeof setTimeout> | null
+  intentionalClose: boolean
+  connectQueued: boolean
   // manual-mode bookkeeping
   opts: SessionOpts | undefined
   activated: boolean
@@ -243,6 +249,73 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
   const wsUrl = () => cfg.workerUrl.replace(/^http/, "ws")
+
+  // ---- server policy (worker-owned) --------------------------------------
+  // The worker defines the socket policy and the allowed sync-cadence
+  // window; the plugin clamps its own preferences into it. Received in
+  // the WS init ack (authoritative) and from /health (covers the pure
+  // HTTP fallback). Defaults apply until the server answers.
+  type ServerPolicy = {
+    mode: "persistent" | "turn"
+    turnGraceMs: number
+    idleDropMs: number
+    finalizeAfterMs: number
+    debounceMinMs: number
+    debounceMaxMs: number
+    completedDelayMaxMs: number
+  }
+  let policy: ServerPolicy = {
+    mode: "persistent",
+    turnGraceMs: 120000,
+    idleDropMs: 600000,
+    finalizeAfterMs: 300000,
+    debounceMinMs: 0,
+    debounceMaxMs: Infinity,
+    completedDelayMaxMs: Infinity,
+  }
+  let policyAsked = false
+
+  const clampToPolicy = () => {
+    cfg.debounceMs = Math.min(Math.max(cfg.debounceMs, policy.debounceMinMs), policy.debounceMaxMs)
+    cfg.completedDelayMs = Math.min(Math.max(cfg.completedDelayMs, 0), policy.completedDelayMaxMs)
+  }
+
+  const applyPolicy = (raw: unknown) => {
+    if (!raw || typeof raw !== "object") return
+    const p = raw as Record<string, unknown>
+    const num = (v: unknown, d: number): number => {
+      const n = Number(v)
+      return Number.isFinite(n) && n >= 0 ? n : d
+    }
+    policy = {
+      mode: p.mode === "turn" ? "turn" : "persistent",
+      turnGraceMs: num(p.turnGraceMs, policy.turnGraceMs),
+      idleDropMs: num(p.idleDropMs, policy.idleDropMs),
+      finalizeAfterMs: num(p.finalizeAfterMs, policy.finalizeAfterMs),
+      debounceMinMs: num(p.debounceMinMs, 0),
+      debounceMaxMs: Math.max(num(p.debounceMaxMs, Infinity), num(p.debounceMinMs, 0)),
+      completedDelayMaxMs: num(p.completedDelayMaxMs, Infinity),
+    }
+    clampToPolicy()
+    if (debugEvents) log(`server policy: ${JSON.stringify({ ...policy, debounceMaxMs: policy.debounceMaxMs === Infinity ? "none" : policy.debounceMaxMs, completedDelayMaxMs: policy.completedDelayMaxMs === Infinity ? "none" : policy.completedDelayMaxMs })}`)
+  }
+
+  const askPolicy = () => {
+    if (policyAsked) return
+    policyAsked = true
+    void fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => {
+        if (b && typeof b === "object" && (b as { policy?: unknown }).policy) {
+          applyPolicy((b as { policy: unknown }).policy)
+        }
+      })
+      .catch(() => {
+        // unreachable worker: defaults stay; the init ack will correct us
+        policyAsked = false
+      })
+  }
+
   let spoolRoot = spoolDirFor(cfg)
   try {
     mkdirSync(spoolRoot, { recursive: true })
@@ -268,6 +341,10 @@ export function createEngine(deps: EngineDeps): Engine {
     timer: null,
     metaTimer: null,
     completedTimer: null,
+    settleTimer: null,
+    idleDropTimer: null,
+    lastFlushAt: 0,
+    statusEpoch: 0,
     shareId: null,
     secret: null,
     ackedRev: 0,
@@ -283,6 +360,8 @@ export function createEngine(deps: EngineDeps): Engine {
     binding: null,
     bindingQueried: false,
     reconnectTimer: null,
+    intentionalClose: false,
+    connectQueued: false,
     opts: undefined,
     activated: false,
     announced: false,
@@ -296,6 +375,7 @@ export function createEngine(deps: EngineDeps): Engine {
     if (next.workerUrl) {
       cfg = next
       spoolRoot = spoolDirFor(cfg)
+      clampToPolicy()
     }
   }
 
@@ -323,12 +403,13 @@ export function createEngine(deps: EngineDeps): Engine {
       chain = chain
         .then(() => seedManualStatus(st))
         .then(() => backfill(st, info))
-        .then(() => connect(st))
+        .then(() => {
+          st.connectQueued = false
+          return connect(st)
+        })
         .catch((e) => log("activation error", (e as Error)?.message || e))
     } else {
-      chain = chain
-        .then(() => connect(st))
-        .catch((e) => log("connect error", (e as Error)?.message || e))
+      queueConnect(st)
     }
     return st
   }
@@ -546,6 +627,22 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const ttlFor = (st: SessionState) => st.opts?.ttlDays ?? cfg.ttlDays
 
+  /** Single-flight connect queuing: multiple paths (activation, event
+   * reconnect, backfill chain) may want a socket before any connect has
+   * STARTED — the connecting flag alone guards execution, not the queue,
+   * and double connects used to create duplicate shares + init storms
+   * (live-caught in the S11 repro: ws#1 create AND ws#2 create). */
+  const queueConnect = (st: SessionState) => {
+    if (st.closed || st.connectQueued || st.connecting) return
+    st.connectQueued = true
+    chain = chain
+      .then(() => {
+        st.connectQueued = false
+        return connect(st)
+      })
+      .catch((e) => log("connect error", (e as Error)?.message || e))
+  }
+
   const connect = async (st: SessionState) => {
     if (st.closed || st.connecting) return
     st.connecting = true
@@ -554,6 +651,7 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       await readBinding(st)
       spoolLoad(st)
+      askPolicy()
       if (debugEvents) log(`ws#${seq} opening (${st.shareId ? `attach ${st.shareId}` : "create"})`)
       const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(cfg.createToken ?? "")}`)
       st.ws = ws
@@ -579,6 +677,12 @@ export function createEngine(deps: EngineDeps): Engine {
       })
       ws.addEventListener("close", () => {
         st.wsReady = false
+        // a deliberate turn-mode drop must not trigger the reconnect
+        // backoff loop — the next event reconnects on demand
+        if (st.intentionalClose) {
+          st.intentionalClose = false
+          return
+        }
         if (!st.closed) scheduleReconnect(st)
       })
 
@@ -604,10 +708,62 @@ export function createEngine(deps: EngineDeps): Engine {
     st.backoff = Math.min(st.backoff * 2, 60000)
     st.reconnectTimer = setTimeout(() => {
       st.reconnectTimer = null
-      chain = chain
-        .then(() => connect(st))
-        .catch((e) => log("reconnect error", (e as Error)?.message || e))
+      queueConnect(st)
     }, wait)
+  }
+
+  // ---- turn-scoped socket lifecycle (server policy "turn") ---------------
+  const dropSocket = (st: SessionState, why: string) => {
+    if (debugEvents) log(`turn: drop socket (${why}) sid=${st.sid.slice(0, 18)}`)
+    st.wsReady = false
+    st.intentionalClose = true
+    try {
+      st.ws?.close(1000, why)
+    } catch {}
+    st.ws = null
+  }
+
+  const cancelSettleDrop = (st: SessionState) => {
+    if (st.settleTimer) {
+      clearTimeout(st.settleTimer)
+      st.settleTimer = null
+    }
+  }
+
+  const armSettleDrop = (st: SessionState) => {
+    if (policy.mode !== "turn" || policy.turnGraceMs <= 0) return
+    cancelSettleDrop(st)
+    st.settleTimer = setTimeout(() => {
+      st.settleTimer = null
+      if (st.closed || !st.ws) return
+      dropSocket(st, "turn end")
+    }, policy.turnGraceMs)
+  }
+
+  const armIdleDrop = (st: SessionState) => {
+    if (policy.mode !== "turn" || policy.idleDropMs <= 0) return
+    if (st.idleDropTimer) clearTimeout(st.idleDropTimer)
+    st.idleDropTimer = setTimeout(() => {
+      st.idleDropTimer = null
+      if (st.closed || !st.ws) return
+      // no signal for idleDropMs (incl. hosts that never emit idle):
+      // drop; the next event reconnects and the spool replays the gap
+      dropSocket(st, "idle timeout")
+    }, policy.idleDropMs)
+  }
+
+  /** Any activity: the turn is alive — cancel the settle drop, reset the
+   * no-signal fallback timer. */
+  const touch = (st: SessionState) => {
+    cancelSettleDrop(st)
+    armIdleDrop(st)
+  }
+
+  /** An event arrived with no live socket (post-drop or post-fallback):
+   * reconnect now — the queue rides the normal flush path afterwards. */
+  const ensureConnected = (st: SessionState) => {
+    if (st.closed || st.connecting || st.reconnectTimer || st.wsReady) return
+    queueConnect(st)
   }
 
   const handleFrame = async (st: SessionState, frame: Record<string, unknown>) => {
@@ -638,6 +794,9 @@ export function createEngine(deps: EngineDeps): Engine {
       st.ackedRev = (frame.rev as number) ?? 0
       st.wsReady = true
       st.backoff = 1000
+      if (frame.policy) applyPolicy(frame.policy)
+      st.intentionalClose = false
+      touch(st)
       announceUrl(st)
       // first binding write is immediate (the TUI waits on the URL in
       // session metadata); ack-driven rev updates stay debounced
@@ -696,8 +855,18 @@ export function createEngine(deps: EngineDeps): Engine {
     if (st.closed) return
     const f = frameFrom(st)
     if (!f) return
+    // never send syncs before the init ack: the worker's per-socket
+    // ControlDO has no attach until OUR init completes, and a racing sync
+    // dies as "unknown op" (live-caught: post-drop reconnects lost whole
+    // turns). The init-ok handler flushes pending itself.
+    if (st.ws && !st.wsReady) {
+      st.pending.push(f)
+      spoolSave(st)
+      return
+    }
     st.pending.push(f)
     spoolSave(st)
+    st.lastFlushAt = Date.now()
     if (st.wsReady) {
       wsSend(st, { op: "sync", ...f })
       return
@@ -723,18 +892,26 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const scheduleFlush = (st: SessionState) => {
     if (st.timer) return
-    const jitter = 0.8 + Math.random() * 0.4
+    // sync interval is a rate limit anchored at the PREVIOUS flush: an
+    // event arriving after the interval already elapsed flushes
+    // immediately; one arriving right after a flush waits the remainder.
+    // The very first batch flushes as soon as it exists (a viewer that
+    // just opened the link sees the opening prompt fast).
+    const elapsed = Date.now() - st.lastFlushAt
+    const wait = Math.max(0, cfg.debounceMs - elapsed)
     st.timer = setTimeout(() => {
       st.timer = null
       if (debugEvents) log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} pending=${st.pending.length} ready=${st.wsReady}`)
       chain = chain.then(() => flush(st)).catch((e) => log("flush error", (e as Error)?.message || e))
-    }, cfg.debounceMs * jitter)
+    }, wait)
   }
 
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
     st.queue.set(entry.key, entry.item)
     if (debugEvents) log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`)
+    touch(st)
+    ensureConnected(st)
     scheduleFlush(st)
   }
 
@@ -747,7 +924,22 @@ export function createEngine(deps: EngineDeps): Engine {
       clearTimeout(st.completedTimer)
       st.completedTimer = null
     }
+    cancelSettleDrop(st)
+    if (st.idleDropTimer) {
+      clearTimeout(st.idleDropTimer)
+      st.idleDropTimer = null
+    }
     if (st.wsReady) wsSend(st, { op: "delete" })
+    else if (st.shareId && st.secret) {
+      // turn mode may have dropped the socket after the last settle; the
+      // goodbye still must land — say it over HTTP
+      void fetch(`${cfg.workerUrl}/api/share/${st.shareId}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: st.secret }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {})
+    }
     setTimeout(() => {
       try {
         st.ws?.close()
@@ -988,9 +1180,7 @@ export function createEngine(deps: EngineDeps): Engine {
         const created = newSt(main)
         created.activated = true
         sessions.set(main, created)
-        chain = chain
-          .then(() => connect(created))
-          .catch((e) => log("connect error", (e as Error)?.message || e))
+        queueConnect(created)
       }
       adoptStrayChild(sid, main)
     }
@@ -1017,9 +1207,7 @@ export function createEngine(deps: EngineDeps): Engine {
         created.activated = true
         sessions.set(main, created)
         st = created
-        chain = chain
-          .then(() => connect(created))
-          .catch((e) => log("connect error", (e as Error)?.message || e))
+        queueConnect(created)
       }
     }
     if (!st) return
@@ -1050,43 +1238,72 @@ export function createEngine(deps: EngineDeps): Engine {
           const st = stFor(sid)
           if (!st) return
           const type = (p.status as { type?: string } | undefined)?.type
+          touch(st)
           if (type === "busy") {
-            // any work cancels a pending completed (automation workflows
-            // idle between sequential prompts — that is NOT "done")
+            // work resumed: a pending completed flip is cancelled (opencode
+            // idles between sequential automation prompts — that is NOT
+            // "done"), a recovered retry is forgiven, share is live again.
+            // The busy epoch is the completed-flip guard: only WORK
+            // invalidates a pending settle (v1.18 republishes the
+            // status/idle pair on failure paths — a repeated idle must
+            // NOT void it, live-caught as a share stuck on live forever)
+            st.statusEpoch++
             if (st.completedTimer) {
               clearTimeout(st.completedTimer)
               st.completedTimer = null
             }
+            st.badSignal = false
             st.status = "live"
+            ensureConnected(st)
             scheduleFlush(st)
           } else if (type === "idle") {
-            // opencode goes genuinely idle between sequential prompts of an
-            // automation workflow; only call the share completed once idle
-            // PERSISTS (completedDelayMs; 0 = legacy immediate). Dispose
-            // flushes a pending completed, so `opencode run` shares still
-            // land their final status despite the delay.
-            if (cfg.completedDelayMs <= 0) {
+            // opencode's idle is authoritative turn end (v1 holds busy
+            // through steps, tool runs and permission waits). CONTENT
+            // flushes now — turn-end batches must not ride the sync
+            // interval (live-caught: subagent finals lagged one interval).
+            // Only the completed flip waits out completedDelayMs, guarded
+            // by the busy epoch: work resuming voids it, repeated idle
+            // publications do not. Dispose flushes a pending flip, so CI
+            // runs still land their final status.
+            if (st.timer) clearTimeout(st.timer)
+            st.timer = null
+            chain = chain
+              .then(() => flush(st))
+              .catch((e) => log("idle flush error", (e as Error)?.message || e))
+            const epoch = st.statusEpoch
+            const settle = () => {
               st.status = st.badSignal ? "error" : "completed"
               st.badSignal = false
-              // terminal state: flush NOW, not on the debounce - the process
-              // can exit before a 3s timer fires and the final status (the
-              // whole "completed" signal) would be lost with it
               if (st.timer) clearTimeout(st.timer)
               st.timer = null
-              flush(st)
+              chain = chain
+                .then(() => flush(st))
+                .then(() => {
+                  armSettleDrop(st)
+                })
+                .catch((e) => log("settle flush error", (e as Error)?.message || e))
+            }
+            if (cfg.completedDelayMs <= 0) {
+              settle()
             } else if (!st.completedTimer && !st.closed) {
               st.completedTimer = setTimeout(() => {
                 st.completedTimer = null
-                if (st.closed) return
-                st.status = st.badSignal ? "error" : "completed"
-                st.badSignal = false
-                if (st.timer) clearTimeout(st.timer)
-                st.timer = null
-                chain = chain.then(() => flush(st)).catch((e) => log("flush error", (e as Error)?.message || e))
+                if (st.closed || st.statusEpoch !== epoch) return
+                settle()
               }, cfg.completedDelayMs)
             }
           } else if (type === "retry") {
+            // scheduled backoff retry (attempt/next): NOT terminal — busy
+            // forgiveness above clears it when work resumes and completes
             st.badSignal = true
+          }
+        } else if (t === "session.error") {
+          // terminal turn error (aborted run, context overflow): the share
+          // says error at the following idle; recovered retries never set it
+          const st = stFor(sid)
+          if (st) {
+            st.badSignal = true
+            touch(st)
           }
         } else if (t === "message.removed" || t === "message.part.removed") {
           // opencode undo: revert() only marks the session (the viewer
@@ -1163,6 +1380,13 @@ export function createEngine(deps: EngineDeps): Engine {
             const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, info.model)
             enqueue(st, itemFor("model", [{ id: info.model.modelID, providerID: info.model.providerID, name: label }], sid))
           }
+          // an assistant message that DIED (finish:"error") — e.g. all
+          // retries exhausted — surfaces as a 200 response with an errored
+          // message, NOT as session.error (live-caught in the suite); the
+          // share must still say error
+          if (info?.role === "assistant" && (info as { finish?: string }).finish === "error") {
+            st.badSignal = true
+          }
         } else if (t === "message.part.updated") {
           const st = stFor(sid)
           if (!st || !st.activated || st.closed) return
@@ -1193,7 +1417,8 @@ export function createEngine(deps: EngineDeps): Engine {
           if (st.completedTimer) {
             // a pending idle never got its delay: resolve now so the
             // final status lands even though the process is exiting
-            // (the timer existing implies idle was the last signal)
+            // (the timer existing implies idle was the last signal; the
+            // epoch guard is satisfied by definition — nothing newer ran)
             clearTimeout(st.completedTimer)
             st.completedTimer = null
             st.status = st.badSignal ? "error" : "completed"
@@ -1201,6 +1426,11 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           if (st.timer) clearTimeout(st.timer)
           st.timer = null
+          cancelSettleDrop(st)
+          if (st.idleDropTimer) {
+            clearTimeout(st.idleDropTimer)
+            st.idleDropTimer = null
+          }
           const flushed = flush(st)
           if (flushed && typeof (flushed as Promise<unknown>).then === "function") await flushed.catch(() => {})
           if (st.metaTimer) clearTimeout(st.metaTimer)

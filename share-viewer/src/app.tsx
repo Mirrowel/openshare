@@ -169,6 +169,7 @@ const STATUS_DOT: Record<string, string> = {
   live: "#22c55e",
   completed: "#3b82f6",
   error: "#ef4444",
+  interrupted: "#eab308",
   gone: "#6b7280",
   cached: "#8b5cf6",
   waiting: "#eab308",

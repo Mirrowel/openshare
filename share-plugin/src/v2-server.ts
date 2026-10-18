@@ -271,7 +271,7 @@ const CONTENT_EVENTS_PREFIXES = [
 
 const BUSY_EVENTS = new Set(["session.step.started", "session.execution.started"])
 const IDLE_EVENTS = new Set(["session.step.ended", "session.execution.succeeded", "session.execution.interrupted"])
-const ERROR_EVENTS = new Set(["session.step.failed", "session.execution.failed", "session.tool.failed", "session.retry.scheduled"])
+const ERROR_EVENTS = new Set(["session.step.failed", "session.tool.failed", "session.retry.scheduled"])
 
 function eventSessionID(event: V2Event): string | undefined {
   const data = event.data
@@ -401,6 +401,12 @@ export function createV2ServerSetup() {
             if (IDLE_EVENTS.has(type)) {
               await engine.hooks.event({ event: { type: "session.status", properties: { sessionID: sid, status: { type: "idle" } } } })
               refresh(sid)
+              continue
+            }
+            if (type === "session.error" || type === "session.execution.failed") {
+              // terminal failure: the share says error at the next idle
+              // (recovered retries never set it)
+              await engine.hooks.event({ event: { type: "session.error", properties: { sessionID: sid } } })
               continue
             }
             if (ERROR_EVENTS.has(type)) {

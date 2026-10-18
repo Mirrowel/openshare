@@ -29,7 +29,7 @@ var DEFAULTS = {
   workerUrl: "",
   createToken: "",
   debounceMs: 1e4,
-  completedDelayMs: 20000,
+  completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
   ttlDays: 90,
   openTasksInNewTab: true,
@@ -342,6 +342,53 @@ function createEngine(deps) {
   }
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
   const wsUrl = () => cfg.workerUrl.replace(/^http/, "ws");
+  let policy = {
+    mode: "persistent",
+    turnGraceMs: 120000,
+    idleDropMs: 600000,
+    finalizeAfterMs: 300000,
+    debounceMinMs: 0,
+    debounceMaxMs: Infinity,
+    completedDelayMaxMs: Infinity
+  };
+  let policyAsked = false;
+  const clampToPolicy = () => {
+    cfg.debounceMs = Math.min(Math.max(cfg.debounceMs, policy.debounceMinMs), policy.debounceMaxMs);
+    cfg.completedDelayMs = Math.min(Math.max(cfg.completedDelayMs, 0), policy.completedDelayMaxMs);
+  };
+  const applyPolicy = (raw) => {
+    if (!raw || typeof raw !== "object")
+      return;
+    const p = raw;
+    const num2 = (v, d) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? n : d;
+    };
+    policy = {
+      mode: p.mode === "turn" ? "turn" : "persistent",
+      turnGraceMs: num2(p.turnGraceMs, policy.turnGraceMs),
+      idleDropMs: num2(p.idleDropMs, policy.idleDropMs),
+      finalizeAfterMs: num2(p.finalizeAfterMs, policy.finalizeAfterMs),
+      debounceMinMs: num2(p.debounceMinMs, 0),
+      debounceMaxMs: Math.max(num2(p.debounceMaxMs, Infinity), num2(p.debounceMinMs, 0)),
+      completedDelayMaxMs: num2(p.completedDelayMaxMs, Infinity)
+    };
+    clampToPolicy();
+    if (debugEvents)
+      log(`server policy: ${JSON.stringify({ ...policy, debounceMaxMs: policy.debounceMaxMs === Infinity ? "none" : policy.debounceMaxMs, completedDelayMaxMs: policy.completedDelayMaxMs === Infinity ? "none" : policy.completedDelayMaxMs })}`);
+  };
+  const askPolicy = () => {
+    if (policyAsked)
+      return;
+    policyAsked = true;
+    fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) }).then((r) => r.ok ? r.json() : null).then((b) => {
+      if (b && typeof b === "object" && b.policy) {
+        applyPolicy(b.policy);
+      }
+    }).catch(() => {
+      policyAsked = false;
+    });
+  };
   let spoolRoot = spoolDirFor(cfg);
   try {
     mkdirSync(spoolRoot, { recursive: true });
@@ -362,6 +409,10 @@ function createEngine(deps) {
     timer: null,
     metaTimer: null,
     completedTimer: null,
+    settleTimer: null,
+    idleDropTimer: null,
+    lastFlushAt: 0,
+    statusEpoch: 0,
     shareId: null,
     secret: null,
     ackedRev: 0,
@@ -377,6 +428,8 @@ function createEngine(deps) {
     binding: null,
     bindingQueried: false,
     reconnectTimer: null,
+    intentionalClose: false,
+    connectQueued: false,
     opts: undefined,
     activated: false,
     announced: false,
@@ -387,6 +440,7 @@ function createEngine(deps) {
     if (next.workerUrl) {
       cfg = next;
       spoolRoot = spoolDirFor(cfg);
+      clampToPolicy();
     }
   };
   const activate = (sid, opts, info, opts2) => {
@@ -404,9 +458,12 @@ function createEngine(deps) {
     st.opts = opts;
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
-      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => connect(st)).catch((e) => log("activation error", e?.message || e));
+      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => {
+        st.connectQueued = false;
+        return connect(st);
+      }).catch((e) => log("activation error", e?.message || e));
     } else {
-      chain = chain.then(() => connect(st)).catch((e) => log("connect error", e?.message || e));
+      queueConnect(st);
     }
     return st;
   };
@@ -592,6 +649,15 @@ function createEngine(deps) {
     return { authLogin: login, authPassword: password };
   };
   const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
+  const queueConnect = (st) => {
+    if (st.closed || st.connectQueued || st.connecting)
+      return;
+    st.connectQueued = true;
+    chain = chain.then(() => {
+      st.connectQueued = false;
+      return connect(st);
+    }).catch((e) => log("connect error", e?.message || e));
+  };
   const connect = async (st) => {
     if (st.closed || st.connecting)
       return;
@@ -601,6 +667,7 @@ function createEngine(deps) {
     try {
       await readBinding(st);
       spoolLoad(st);
+      askPolicy();
       if (debugEvents)
         log(`ws#${seq} opening (${st.shareId ? `attach ${st.shareId}` : "create"})`);
       const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(cfg.createToken ?? "")}`);
@@ -627,6 +694,10 @@ function createEngine(deps) {
       });
       ws.addEventListener("close", () => {
         st.wsReady = false;
+        if (st.intentionalClose) {
+          st.intentionalClose = false;
+          return;
+        }
         if (!st.closed)
           scheduleReconnect(st);
       });
@@ -652,8 +723,56 @@ function createEngine(deps) {
     st.backoff = Math.min(st.backoff * 2, 60000);
     st.reconnectTimer = setTimeout(() => {
       st.reconnectTimer = null;
-      chain = chain.then(() => connect(st)).catch((e) => log("reconnect error", e?.message || e));
+      queueConnect(st);
     }, wait);
+  };
+  const dropSocket = (st, why) => {
+    if (debugEvents)
+      log(`turn: drop socket (${why}) sid=${st.sid.slice(0, 18)}`);
+    st.wsReady = false;
+    st.intentionalClose = true;
+    try {
+      st.ws?.close(1000, why);
+    } catch {}
+    st.ws = null;
+  };
+  const cancelSettleDrop = (st) => {
+    if (st.settleTimer) {
+      clearTimeout(st.settleTimer);
+      st.settleTimer = null;
+    }
+  };
+  const armSettleDrop = (st) => {
+    if (policy.mode !== "turn" || policy.turnGraceMs <= 0)
+      return;
+    cancelSettleDrop(st);
+    st.settleTimer = setTimeout(() => {
+      st.settleTimer = null;
+      if (st.closed || !st.ws)
+        return;
+      dropSocket(st, "turn end");
+    }, policy.turnGraceMs);
+  };
+  const armIdleDrop = (st) => {
+    if (policy.mode !== "turn" || policy.idleDropMs <= 0)
+      return;
+    if (st.idleDropTimer)
+      clearTimeout(st.idleDropTimer);
+    st.idleDropTimer = setTimeout(() => {
+      st.idleDropTimer = null;
+      if (st.closed || !st.ws)
+        return;
+      dropSocket(st, "idle timeout");
+    }, policy.idleDropMs);
+  };
+  const touch = (st) => {
+    cancelSettleDrop(st);
+    armIdleDrop(st);
+  };
+  const ensureConnected = (st) => {
+    if (st.closed || st.connecting || st.reconnectTimer || st.wsReady)
+      return;
+    queueConnect(st);
   };
   const handleFrame = async (st, frame) => {
     if (frame.op === "init") {
@@ -680,6 +799,10 @@ function createEngine(deps) {
       st.ackedRev = frame.rev ?? 0;
       st.wsReady = true;
       st.backoff = 1000;
+      if (frame.policy)
+        applyPolicy(frame.policy);
+      st.intentionalClose = false;
+      touch(st);
       announceUrl(st);
       if (!st.wroteBinding) {
         chain = chain.then(() => writeBinding(st)).catch(() => {});
@@ -733,8 +856,14 @@ function createEngine(deps) {
     const f = frameFrom(st);
     if (!f)
       return;
+    if (st.ws && !st.wsReady) {
+      st.pending.push(f);
+      spoolSave(st);
+      return;
+    }
     st.pending.push(f);
     spoolSave(st);
+    st.lastFlushAt = Date.now();
     if (st.wsReady) {
       wsSend(st, { op: "sync", ...f });
       return;
@@ -760,13 +889,14 @@ function createEngine(deps) {
   const scheduleFlush = (st) => {
     if (st.timer)
       return;
-    const jitter = 0.8 + Math.random() * 0.4;
+    const elapsed = Date.now() - st.lastFlushAt;
+    const wait = Math.max(0, cfg.debounceMs - elapsed);
     st.timer = setTimeout(() => {
       st.timer = null;
       if (debugEvents)
         log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} pending=${st.pending.length} ready=${st.wsReady}`);
       chain = chain.then(() => flush(st)).catch((e) => log("flush error", e?.message || e));
-    }, cfg.debounceMs * jitter);
+    }, wait);
   };
   const enqueue = (st, entry) => {
     if (!st || !entry)
@@ -774,6 +904,8 @@ function createEngine(deps) {
     st.queue.set(entry.key, entry.item);
     if (debugEvents)
       log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`);
+    touch(st);
+    ensureConnected(st);
     scheduleFlush(st);
   };
   const remove = (st) => {
@@ -787,8 +919,21 @@ function createEngine(deps) {
       clearTimeout(st.completedTimer);
       st.completedTimer = null;
     }
+    cancelSettleDrop(st);
+    if (st.idleDropTimer) {
+      clearTimeout(st.idleDropTimer);
+      st.idleDropTimer = null;
+    }
     if (st.wsReady)
       wsSend(st, { op: "delete" });
+    else if (st.shareId && st.secret) {
+      fetch(`${cfg.workerUrl}/api/share/${st.shareId}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: st.secret }),
+        signal: AbortSignal.timeout(8000)
+      }).catch(() => {});
+    }
     setTimeout(() => {
       try {
         st.ws?.close();
@@ -994,7 +1139,7 @@ function createEngine(deps) {
         const created = newSt(main);
         created.activated = true;
         sessions.set(main, created);
-        chain = chain.then(() => connect(created)).catch((e) => log("connect error", e?.message || e));
+        queueConnect(created);
       }
       adoptStrayChild(sid, main);
     }
@@ -1019,7 +1164,7 @@ function createEngine(deps) {
         created.activated = true;
         sessions.set(main, created);
         st = created;
-        chain = chain.then(() => connect(created)).catch((e) => log("connect error", e?.message || e));
+        queueConnect(created);
       }
     }
     if (!st)
@@ -1052,36 +1197,51 @@ function createEngine(deps) {
           if (!st)
             return;
           const type = p.status?.type;
+          touch(st);
           if (type === "busy") {
+            st.statusEpoch++;
             if (st.completedTimer) {
               clearTimeout(st.completedTimer);
               st.completedTimer = null;
             }
+            st.badSignal = false;
             st.status = "live";
+            ensureConnected(st);
             scheduleFlush(st);
           } else if (type === "idle") {
-            if (cfg.completedDelayMs <= 0) {
+            if (st.timer)
+              clearTimeout(st.timer);
+            st.timer = null;
+            chain = chain.then(() => flush(st)).catch((e) => log("idle flush error", e?.message || e));
+            const epoch = st.statusEpoch;
+            const settle = () => {
               st.status = st.badSignal ? "error" : "completed";
               st.badSignal = false;
               if (st.timer)
                 clearTimeout(st.timer);
               st.timer = null;
-              flush(st);
+              chain = chain.then(() => flush(st)).then(() => {
+                armSettleDrop(st);
+              }).catch((e) => log("settle flush error", e?.message || e));
+            };
+            if (cfg.completedDelayMs <= 0) {
+              settle();
             } else if (!st.completedTimer && !st.closed) {
               st.completedTimer = setTimeout(() => {
                 st.completedTimer = null;
-                if (st.closed)
+                if (st.closed || st.statusEpoch !== epoch)
                   return;
-                st.status = st.badSignal ? "error" : "completed";
-                st.badSignal = false;
-                if (st.timer)
-                  clearTimeout(st.timer);
-                st.timer = null;
-                chain = chain.then(() => flush(st)).catch((e) => log("flush error", e?.message || e));
+                settle();
               }, cfg.completedDelayMs);
             }
           } else if (type === "retry") {
             st.badSignal = true;
+          }
+        } else if (t === "session.error") {
+          const st = stFor(sid);
+          if (st) {
+            st.badSignal = true;
+            touch(st);
           }
         } else if (t === "message.removed" || t === "message.part.removed") {
           const st = stFor(sid);
@@ -1143,6 +1303,9 @@ function createEngine(deps) {
             const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, info.model);
             enqueue(st, itemFor("model", [{ id: info.model.modelID, providerID: info.model.providerID, name: label }], sid));
           }
+          if (info?.role === "assistant" && info.finish === "error") {
+            st.badSignal = true;
+          }
         } else if (t === "message.part.updated") {
           const st = stFor(sid);
           if (!st || !st.activated || st.closed)
@@ -1180,6 +1343,11 @@ function createEngine(deps) {
           if (st.timer)
             clearTimeout(st.timer);
           st.timer = null;
+          cancelSettleDrop(st);
+          if (st.idleDropTimer) {
+            clearTimeout(st.idleDropTimer);
+            st.idleDropTimer = null;
+          }
           const flushed = flush(st);
           if (flushed && typeof flushed.then === "function")
             await flushed.catch(() => {});
@@ -1396,7 +1564,7 @@ var CONTENT_EVENTS_PREFIXES = [
 ];
 var BUSY_EVENTS = new Set(["session.step.started", "session.execution.started"]);
 var IDLE_EVENTS = new Set(["session.step.ended", "session.execution.succeeded", "session.execution.interrupted"]);
-var ERROR_EVENTS = new Set(["session.step.failed", "session.execution.failed", "session.tool.failed", "session.retry.scheduled"]);
+var ERROR_EVENTS = new Set(["session.step.failed", "session.tool.failed", "session.retry.scheduled"]);
 function eventSessionID(event) {
   const data = event.data;
   if (data && typeof data === "object" && typeof data.sessionID === "string") {
@@ -1509,6 +1677,10 @@ function createV2ServerSetup() {
             if (IDLE_EVENTS.has(type)) {
               await engine.hooks.event({ event: { type: "session.status", properties: { sessionID: sid, status: { type: "idle" } } } });
               refresh(sid);
+              continue;
+            }
+            if (type === "session.error" || type === "session.execution.failed") {
+              await engine.hooks.event({ event: { type: "session.error", properties: { sessionID: sid } } });
               continue;
             }
             if (ERROR_EVENTS.has(type)) {

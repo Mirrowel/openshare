@@ -140,8 +140,8 @@ type EditKind = "text" | "number" | "password"
 const LABELS: Record<string, { label: string; help: string; kind: EditKind; section: string }> = {
   workerUrl: { label: "Worker URL", help: "Your openshare-worker deployment (https://…). Empty disables the plugin.", kind: "text", section: "Connection" },
   createToken: { label: "Create token", help: "The worker's CREATE_TOKEN. Required to create shares.", kind: "password", section: "Connection" },
-  debounceMs: { label: "Debounce (ms)", help: "Event batch window before syncing to the worker (default 10000).", kind: "number", section: "Sharing" },
-  completedDelayMs: { label: "Completed delay (ms)", help: "How long a session must stay idle before the share says completed — smooths the gap between sequential prompts (default 20000; 0 = immediate).", kind: "number", section: "Sharing" },
+  debounceMs: { label: "Sync interval (ms)", help: "Max time between syncs while streaming; anything batched rides the next one. Turn-end batches flush immediately. Default 10000; clamped into the server policy window.", kind: "number", section: "Sharing" },
+  completedDelayMs: { label: "Completed delay (ms)", help: "Idle this long before the share says completed (default 5000, 0 = immediate). Busy cancels; opencode exit flushes. Clamped by the server.", kind: "number", section: "Sharing" },
   modelLabel: { label: "Model label template", help: "$Provider/$Model placeholders; literal text as-is; empty hides the model.", kind: "text", section: "Sharing" },
   ttlDays: { label: "TTL (days)", help: "Share lifetime; the worker caps it at its MAX_TTL_DAYS.", kind: "number", section: "Sharing" },
   openTasksInNewTab: { label: "Open tasks in new tab", help: "Viewer: task rows open subagent pages in a new tab.", kind: "text", section: "Sharing" },

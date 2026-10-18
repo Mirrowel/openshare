@@ -141,7 +141,9 @@ try {
   const urlFile = join(sandbox, "share-url.txt")
 
   const variant = { name: "manual", path: PKG }
+  console.log("probe: pre-startServe")
   const serve = await startServe(variant, sandbox, projectDir, { OPENSHARE_DEBUG_FILE: join(sandbox, "debug.json") })
+  console.log("probe: post-startServe")
 
   let sid
   let shareId
@@ -590,12 +592,156 @@ try {
       const runId = runUrl.split("/").pop()
       const flushed = await waitForShareData(runId, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: dispose flushed pending completed (graceful run exit)")
       check("S10: graceful run exit still lands final completed despite the delay", flushed.status === "completed")
+
+      // idle-flush latency + real retry + terminal error run AFTER the
+      // stServe probes below (a second serve rebinds the port and would
+      // kill stServe); ordering documented here, blocks follow.
+
+      // real retry path: mock LLM answers 429 once (retry-after 1s);
+      // opencode recovers -> the share must end completed, NOT error
+      // (recovered retries are forgiven by the next busy)
+      const linesBeforeRetry = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
+      await createAndPrompt(stServe, "transient probe RETRY_ONCE").catch(() => {})
+      const retryUrl = (
+        await waitFor(async () => {
+          const lines = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean)
+          return lines.length > linesBeforeRetry ? lines.at(-1) : undefined
+        }, "S10: retry share url")
+      )
+      const retryId = retryUrl.split("/").pop()
+      const retried = await waitForShareData(retryId, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: recovered retry ends completed")
+      check("S10: recovered 429 retry -> completed (not error)", retried.status === "completed", `status=${retried.status}`)
+
+      // terminal error path: mock LLM hard-fails every request; opencode
+      // retries with backoff (~68s for 5 attempts) and the turn dies as
+      // an assistant message with finish:"error" (a 200, not session.error
+      // — live-caught); the share must still say error
+      const linesBeforeFail = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
+      {
+        const created = await httpGet(`${stServe.base}/session`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: "doomed" }),
+        })
+        const doomed = await created.json()
+        await httpGet(`${stServe.base}/session/${doomed.id}/message`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: { providerID: PROVIDER.id, modelID: PROVIDER.model },
+            parts: [{ type: "text", text: "suite: doomed probe FAIL_HARD" }],
+          }),
+          timeoutMs: 150000,
+        }).catch(() => {})
+      }
+      const failUrl = (
+        await waitFor(async () => {
+          const lines = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean)
+          return lines.length > linesBeforeFail ? lines.at(-1) : undefined
+        }, "S10: fail share url")
+      )
+      const failId = failUrl.split("/").pop()
+      const failed = await waitForShareData(failId, (parsed) => (parsed.status === "error" ? parsed : undefined), "S10: hard failure ends error")
+      check("S10: terminal failure -> error status", failed.status === "error", `status=${failed.status}`)
     } finally {
       await stopServe(stServe)
     }
+
+    // idle-flush latency: with a LONG sync interval (8s) the turn-end
+    // batch must still land within ~3s of the prompt returning — the
+    // idle flush, not the interval, delivers turn ends (own serve: the
+    // port rebind kills the previous one, so this runs last)
+    {
+      const latSandbox = join(suiteDir, "latency")
+      const latProject = join(latSandbox, "project")
+      mkdirSync(latProject, { recursive: true })
+      const latUrlFile = join(latSandbox, "share-url.txt")
+      const latServe = await startServe({ name: "latency", path: PKG }, latSandbox, latProject, {
+        OPENSHARE_URL_FILE: latUrlFile,
+        OPENSHARE_DEBOUNCE_MS: "8000",
+        OPENSHARE_COMPLETED_DELAY_MS: "300",
+      })
+      try {
+        await createAndPrompt(latServe, "latency probe")
+        const latUrl = (await waitFor(() => readUrlFile(latUrlFile), "S10: latency share url")).trim().split("\n").at(-1)
+        const latId = latUrl.split("/").pop()
+        const t0 = Date.now()
+        await waitForShareData(latId, (parsed) => {
+          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.role === "user")
+          return msgs.length ? parsed : undefined
+        }, "S10: turn-end content visible")
+        const latency = Date.now() - t0
+        check("S10: turn-end content flushed immediately (<3s despite 8s interval)", latency < 3000, `${latency}ms`)
+      } finally {
+        await stopServe(latServe)
+      }
+    }
+  }
+
+  // S11: turn-scoped sockets (suite worker: 127.0.0.1 -> auto -> turn,
+  // TURN_GRACE_MS=2000): settle -> grace -> clean drop; the next prompt
+  // reconnects on demand and nothing is lost
+  {
+    const s11Sandbox = join(suiteDir, "turn")
+    const s11Project = join(s11Sandbox, "project")
+    mkdirSync(s11Project, { recursive: true })
+    const s11UrlFile = join(s11Sandbox, "share-url.txt")
+    const s11Env = { OPENSHARE_URL_FILE: s11UrlFile, OPENSHARE_DEBUG_EVENTS: "1" }
+    const s11Serve = await startServe({ name: "turn", path: PKG }, s11Sandbox, s11Project, s11Env)
+    try {
+      const sid = await createAndPrompt(s11Serve, "turn lifecycle probe")
+      const url = (await waitFor(() => readUrlFile(s11UrlFile), "S11: share created")).trim().split("\n").at(-1)
+      const id = url.split("/").pop()
+      await waitForShareData(id, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S11: turn settled (completed)")
+      // grace is 2s; wait past it for the deliberate drop
+      await waitFor(() => (s11Serve.output().includes("turn: drop socket (turn end)") ? true : undefined), "S11: socket dropped after grace")
+      check("S11: socket dropped after settle+grace", true)
+      // next turn: reconnect on demand, content + live status must return
+      await promptSession(s11Serve, sid, "turn two after drop")
+      const revived = await waitForShareData(id, (parsed) => {
+        // v1.18 message info carries no .text (it lives in parts); count
+        // user messages: turn two means a SECOND user message
+        const users = parsed.data.filter((i) => i.type === "message" && i.data?.role === "user")
+        return users.length >= 2 ? parsed : undefined
+      }, "S11: post-drop turn content landed (reconnect)")
+      check("S11: post-drop turn content landed", !!revived)
+      const done2 = await waitForShareData(id, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S11: second turn settles too")
+      check("S11: second turn settles completed", done2.status === "completed")
+    } finally {
+      await stopServe(s11Serve)
+    }
+  }
+
+  // S12: worker finalize — plugin socket dies WITHOUT goodbye (kill, crash):
+  // after FINALIZE_AFTER_MS (4s in the suite) the share settles "interrupted";
+  // a completed share is never touched
+  {
+    const ws = new WebSocket(`ws://127.0.0.1:8789/api/ws?token=suite-create-token`)
+    const opened = await new Promise((resolve, reject) => {
+      ws.addEventListener("open", () => resolve(), { once: true })
+      ws.addEventListener("error", () => reject(new Error("S12 ws open failed")), { once: true })
+    })
+    const init = await new Promise((resolve, reject) => {
+      ws.addEventListener("message", (ev) => resolve(JSON.parse(String(ev.data))), { once: true })
+      ws.send(JSON.stringify({ op: "init", create: { sessionID: "ses_s12_finalize", ttlDays: 1 } }))
+      setTimeout(() => reject(new Error("S12 init timeout")), 10000)
+    })
+    check("S12: raw ws share created", init.ok === true)
+    const syncAck = await new Promise((resolve, reject) => {
+      ws.addEventListener("message", (ev) => resolve(JSON.parse(String(ev.data))), { once: true })
+      ws.send(JSON.stringify({ op: "sync", items: [{ type: "session", data: { id: "ses_s12_finalize" } }], status: "live" }))
+      setTimeout(() => reject(new Error("S12 sync timeout")), 10000)
+    })
+    check("S12: live sync acked", syncAck.op === "ack")
+    ws.close() // NO delete: vanish like a killed process
+    const fin = await waitForShareData(init.id, (parsed) => (parsed.status === "interrupted" ? parsed : undefined), "S12: share finalized to interrupted")
+    check("S12: no-goodbye death -> interrupted", fin.status === "interrupted")
+    // cleanup
+    await httpGet(`${WORKER_URL}/api/share/${init.id}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: init.secret }) })
   }
 } catch (error) {
   console.error("SUITE ERROR:", error.message)
+  console.error(error.stack?.split("\n").slice(0, 6).join("\n"))
   failures.push(`suite-error: ${error.message}`)
 } finally {
   try {

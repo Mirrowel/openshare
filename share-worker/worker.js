@@ -60,7 +60,7 @@ export default {
     })
 
     try {
-      if (path === "/health") return json(200, { ok: true, service: "openshare" })
+      if (path === "/health") return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env) })
 
       // ---- admin purge: Bearer CREATE_TOKEN, wipes EVERY share ----
       // Maintenance endpoint (owner-only): iterates the share index and
@@ -215,6 +215,45 @@ function clampTtl(days, env) {
   return Math.max(1, Math.min(Math.floor(Number(days)), max))
 }
 
+// ---------------------------------------------------------------------------
+// Server policy — the worker owns the socket rules and the allowed sync
+// cadence window; plugins clamp themselves into it (init ack + /health).
+//_vars:
+//   SOCKET_POLICY          auto | persistent | turn   (auto: Cloudflare
+//                          runtime detected -> persistent — hibernation
+//                          makes idle sockets free; anything else -> turn)
+//   TURN_GRACE_MS          turn mode: socket stays warm this long after a
+//                          turn settles (default 120000)
+//   IDLE_DROP_MS           turn mode: no-signal fallback drop (default 600000)
+//   FINALIZE_AFTER_MS      plugin gone without goodbye this long -> the
+//                          share settles to "interrupted" (default 300000)
+//   DEBOUNCE_MIN_MS / DEBOUNCE_MAX_MS    allowed client sync interval
+//                          (default 1000 / 60000)
+//   COMPLETED_DELAY_MAX_MS allowed client completed-delay (default 60000)
+// ---------------------------------------------------------------------------
+function resolvePolicy(env) {
+  let mode = String(env.SOCKET_POLICY ?? "auto").toLowerCase()
+  if (mode !== "persistent" && mode !== "turn") mode = "auto"
+  if (mode === "auto") {
+    const ua = globalThis.navigator?.userAgent ?? ""
+    mode = ua.includes("Cloudflare-Workers") ? "persistent" : "turn"
+  }
+  const num = (v, d) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : d
+  }
+  const min = num(env.DEBOUNCE_MIN_MS, 1000)
+  return {
+    mode,
+    turnGraceMs: num(env.TURN_GRACE_MS, 120000),
+    idleDropMs: num(env.IDLE_DROP_MS, 600000),
+    finalizeAfterMs: num(env.FINALIZE_AFTER_MS, 300000),
+    debounceMinMs: min,
+    debounceMaxMs: Math.max(num(env.DEBOUNCE_MAX_MS, 60000), min),
+    completedDelayMaxMs: num(env.COMPLETED_DELAY_MAX_MS, 60000),
+  }
+}
+
 function shareStub(env, id) {
   return env.SHARE_DO.get(env.SHARE_DO.idFromName(id))
 }
@@ -242,6 +281,7 @@ export class ControlDO {
     this.attachId = undefined
     this.attachSecret = undefined
     this.token = ""
+    this.earlySyncs = [] // syncs that raced init (each webSocketMessage runs concurrently)
   }
 
   async fetch(req) {
@@ -282,9 +322,31 @@ export class ControlDO {
   async clearAttach() {
     this.attachId = undefined
     this.attachSecret = undefined
+    this.earlySyncs = []
     try {
       await this.state.storage.delete("attach")
     } catch {}
+  }
+
+  /** Replay syncs that arrived while init was still talking to the
+   * ShareDO (concurrent webSocketMessage invocations). */
+  async flushEarlySyncs(send) {
+    const queued = this.earlySyncs
+    this.earlySyncs = []
+    for (const frame of queued) {
+      if (this.attachId === undefined) {
+        this.earlySyncs = queued
+        return
+      }
+      try {
+        const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(this.attachId)).fetch("https://do/sync", {
+          method: "POST",
+          body: JSON.stringify({ secret: this.attachSecret, data: frame.items ?? [], status: frame.status }),
+        })
+        const body = await r.json()
+        send({ op: body.ok ? "ack" : "nack", ...body })
+      } catch {}
+    }
   }
 
   async webSocketMessage(ws, message) {
@@ -314,7 +376,8 @@ export class ControlDO {
           const body = await r.json()
           if (!body.ok) return send({ op: "init", ok: false, error: body.error })
           await this.saveAttach(id, body.secret)
-          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live" })
+          await this.flushEarlySyncs(send)
+          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", policy: resolvePolicy(this.env) })
         }
         if (frame.attach) {
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(frame.attach.id)).fetch("https://do/attach", {
@@ -328,6 +391,7 @@ export class ControlDO {
         const body = await r.json()
         if (!body.ok) return send({ op: "init", ok: false, error: body.error })
         await this.saveAttach(frame.attach.id, frame.attach.secret)
+        await this.flushEarlySyncs(send)
         return send({
             op: "init",
             ok: true,
@@ -336,12 +400,20 @@ export class ControlDO {
             rev: body.rev,
             status: body.status,
             data: body.data,
+            policy: resolvePolicy(this.env),
           })
         }
         return send({ op: "init", ok: false, error: "init needs create|attach" })
       }
 
-      if (frame.op === "sync" && this.attachId) {
+      if (frame.op === "sync") {
+        if (!this.attachId) {
+          // a sync raced our init (webSocketMessage invocations run
+          // concurrently; the init's ShareDO round-trip is in flight).
+          // Buffer it — the init completion flushes in order.
+          if (this.earlySyncs.length < 32) this.earlySyncs.push(frame)
+          return
+        }
         const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(this.attachId)).fetch("https://do/sync", {
           method: "POST",
           body: JSON.stringify({ secret: this.attachSecret, data: frame.items ?? [], status: frame.status }),
@@ -365,7 +437,18 @@ export class ControlDO {
     }
   }
 
-  async webSocketClose() {}
+  async webSocketClose() {
+    // plugin vanished without a delete: arm the finalize clock on the
+    // share (no-op when the socket already settled to completed/error —
+    // graceful exits flush BEFORE closing). Reconnect within the window
+    // cancels it; the sweeper backstops silent deaths.
+    try {
+      await this.restoreAttach()
+      if (this.attachId !== undefined) {
+        await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(this.attachId)).fetch("https://do/plugin-gone", { method: "POST" })
+      }
+    } catch {}
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +497,7 @@ export class ShareDO {
         ttlDays: body.ttlDays ?? 90,
         createdAt: now,
         lastActive: now,
+        pluginSeen: now,
         rev: 0,
         status: "live",
         auth,
@@ -435,6 +519,15 @@ export class ShareDO {
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { ok: false, error: "share not found" })
       if (body.secret !== meta.secret) return json(403, { ok: false, error: "bad secret" })
+
+      // plugin is alive: cancel any pending finalize and note the contact
+      meta.pluginSeen = Date.now()
+      const pendingFinalize = await this.state.storage.get("finalizeAt")
+      if (pendingFinalize) {
+        await this.state.storage.delete("finalizeAt")
+        await this.state.storage.setAlarm(null)
+      }
+      await this.state.storage.put("meta", meta)
 
       // resume retroactively applies/updates/clears the read gate
       if (body.authLogin !== undefined && body.authPassword !== undefined) {
@@ -531,8 +624,44 @@ export class ShareDO {
     if (path === "/meta" && req.method === "GET") {
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { error: "not found" })
-      const { secret, auth, tokens, ...rest } = meta
-      return json(200, { ...rest, auth: auth ? { set: true } : null, tokens: tokens?.length ?? 0 })
+      const { secret, auth, tokens, pluginSeen, ...rest } = meta
+      return json(200, { ...rest, auth: auth ? { set: true } : null, tokens: tokens?.length ?? 0, pluginSeen: pluginSeen ?? 0 })
+    }
+
+    if (path === "/plugin-gone" && req.method === "POST") {
+      // ControlDO socket close: the plugin vanished without a goodbye.
+      // Arm a DO alarm (survives eviction, unlike timers); the plugin
+      // reconnecting cancels it via /attach. No-op for already-settled
+      // shares — graceful exits flush completed/error BEFORE closing.
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: true })
+      if (meta.status !== "live") return json(200, { ok: true, note: "settled" })
+      const after = resolvePolicy(this.env).finalizeAfterMs
+      if (after <= 0) return json(200, { ok: true, note: "finalize disabled" })
+      const at = Date.now() + after
+      await this.state.storage.put("finalizeAt", at)
+      const cur = await this.state.storage.getAlarm()
+      if (cur === null || cur > at) await this.state.storage.setAlarm(at)
+      return json(200, { ok: true, finalizeAt: at })
+    }
+
+    if (path === "/finalize" && req.method === "POST") {
+      // settle-as-interrupted if the plugin is still gone and still live;
+      // called by the alarm and by the sweeper's backstop pass
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: true })
+      await this.state.storage.delete("finalizeAt")
+      if (meta.status !== "live") return json(200, { ok: true, note: "settled" })
+      const after = resolvePolicy(this.env).finalizeAfterMs
+      if ((meta.pluginSeen ?? meta.createdAt ?? 0) + after > Date.now()) {
+        return json(200, { ok: true, note: "plugin alive recently" })
+      }
+      meta.status = "interrupted"
+      meta.rev = (meta.rev ?? 0) + 1
+      await this.state.storage.put("meta", meta)
+      await this.broadcast({ op: "frame", status: "interrupted", rev: meta.rev, items: [] })
+      console.log("[finalize] share interrupted:", this.state.id.name)
+      return json(200, { ok: true, status: "interrupted" })
     }
 
     if (path === "/remove" && req.method === "POST") {
@@ -606,6 +735,7 @@ export class ShareDO {
     const rev = (meta.rev ?? 0) + 1
     meta.rev = rev
     meta.lastActive = Date.now()
+    meta.pluginSeen = Date.now()
     if (body.status && STATUSES.has(body.status)) meta.status = body.status
     await this.state.storage.put("items", items)
     await this.state.storage.put("meta", meta)
@@ -619,11 +749,16 @@ export class ShareDO {
     }
   }
 
+  // finalize alarm: plugin gone without goodbye past the window
+  async alarm() {
+    await this.fetch(new Request("https://do/finalize", { method: "POST" }))
+  }
+
   async webSocketMessage() {}
   async webSocketClose() {}
 }
 
-const STATUSES = new Set(["live", "completed", "error"])
+const STATUSES = new Set(["live", "completed", "error", "interrupted"])
 
 // Server-side key derivation — the client never decides its own key.
 function itemKey(item) {
@@ -698,6 +833,14 @@ export class SweeperDO {
           if ((meta.lastActive ?? 0) + ttlMs < Date.now()) {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
             swept++
+            continue
+          }
+          // backstop: "live" shares whose plugin has been silent past the
+          // finalize window (silent socket deaths where even the close
+          // never surfaced) settle to interrupted; /finalize no-ops when
+          // the plugin is around or the share already settled
+          if (meta.status === "live") {
+            await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/finalize", { method: "POST" })
           }
         } catch (e) {
           console.log("[sweep] share error", id, e?.message || e)

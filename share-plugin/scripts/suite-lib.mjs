@@ -7,7 +7,7 @@
 
 import { spawn, execSync } from "node:child_process"
 import { createServer } from "node:http"
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs"
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -29,7 +29,9 @@ function dirname(p) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const httpGet = async (url, init = {}) => {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 8000) })
+  // 30s default: a fresh sandbox's first request spins the instance,
+  // including provider-npm resolution — 8s aborted mid-init (live-caught)
+  return fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 30000) })
 }
 
 function killPortOwners(port) {
@@ -111,6 +113,14 @@ function spawnTree(cmd, args, opts = {}) {
 
 // --- mock OpenAI-compatible LLM ----------------------------------------------
 
+// Behavior markers embedded in the prompt text:
+//   "RETRY_ONCE" -> the FIRST completion request containing the marker
+//                   answers 429 (with retry-after) once, then streams
+//                   normally — exercises opencode's real retry path
+//   "FAIL_HARD"  -> every request containing the marker answers 500 —
+//                   the run dies, exercising session.error -> share error
+const retryOnce = new Set()
+
 function startMockLLM() {
   const server = createServer((req, res) => {
     if (req.url === "/v1/models") {
@@ -119,20 +129,42 @@ function startMockLLM() {
       return
     }
     if (req.url === "/v1/chat/completions") {
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
-      const chunk = (delta, finish = null) =>
-        `data: ${JSON.stringify({
-          id: "chatcmpl-suite",
-          object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
-          model: PROVIDER.model,
-          choices: [{ index: 0, delta, finish_reason: finish }],
-        })}\n\n`
-      res.write(chunk({ role: "assistant", content: "" }))
-      res.write(chunk({ content: "suite reply: parity check complete" }))
-      res.write(chunk({}, "stop"))
-      res.write("data: [DONE]\n\n")
-      res.end()
+      let body = ""
+      req.on("data", (d) => (body += d))
+      req.on("end", () => {
+        let marker = ""
+        try {
+          const text = JSON.stringify(JSON.parse(body))
+          if (text.includes("RETRY_ONCE")) marker = "RETRY_ONCE"
+          if (text.includes("FAIL_HARD")) marker = "FAIL_HARD"
+        } catch {}
+        if (marker === "FAIL_HARD") {
+          res.writeHead(500, { "content-type": "application/json" })
+          res.end(JSON.stringify({ error: { message: "suite: hard failure injected" } }))
+          return
+        }
+        if (marker === "RETRY_ONCE" && retryOnce.size === 0) {
+          // exactly one injected 429 ever: the first marked request
+          retryOnce.add(marker)
+          res.writeHead(429, { "content-type": "application/json", "retry-after": "1" })
+          res.end(JSON.stringify({ error: { message: "suite: rate limited (injected)" } }))
+          return
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+        const chunk = (delta, finish = null) =>
+          `data: ${JSON.stringify({
+            id: "chatcmpl-suite",
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: PROVIDER.model,
+            choices: [{ index: 0, delta, finish_reason: finish }],
+          })}\n\n`
+        res.write(chunk({ role: "assistant", content: "" }))
+        res.write(chunk({ content: "suite reply: parity check complete" }))
+        res.write(chunk({}, "stop"))
+        res.write("data: [DONE]\n\n")
+        res.end()
+      })
       return
     }
     res.writeHead(404)
@@ -160,7 +192,16 @@ async function startWorker(suiteDir) {
 
     const { child, kill } = spawnTree(
       "npx",
-      ["wrangler", "dev", "--config", configPath, "--port", String(WORKER_PORT), "--ip", "127.0.0.1", "--var", `CREATE_TOKEN:${CREATE_TOKEN}`],
+      ["wrangler", "dev", "--config", configPath, "--port", String(WORKER_PORT), "--ip", "127.0.0.1", "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
+        // suite-tuned server policy: TURN mode forced (wrangler dev runs
+        // on workerd, so auto would resolve persistent — the suites
+        // simulate the VPS deployment shape), fast turn lifecycle +
+        // finalize for S11/S12, low debounce floor so the suites' 300ms
+        // cadence survives the server clamp
+        "--var", "SOCKET_POLICY:turn",
+        "--var", "TURN_GRACE_MS:2000",
+        "--var", "FINALIZE_AFTER_MS:4000",
+        "--var", "DEBOUNCE_MIN_MS:100"],
       { cwd: join(dirname(ROOT), "share-worker") },
     )
     let output = ""
@@ -221,7 +262,14 @@ async function waitForPortFree(port, timeoutMs = 30000) {
  * failing — which orphans every subsequent probe on N. A real bind probe
  * is the only reliable signal. */
 import net from "node:net"
+import { cpSync } from "node:fs"
 let startServeSeq = 0
+// opencode installs the config's provider npm packages into
+// XDG_CONFIG_HOME/opencode/node_modules on first instance init — a fresh
+// sandbox pays a full npm install (~70s live-measured after the 1.18.31
+// update). The first serve warms it once; every later serve copies the
+// warmed tree in.
+let warmedConfigOpencode = null
 function portBindable(port) {
   return new Promise((resolve) => {
     const srv = net.createServer()
@@ -298,6 +346,11 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   const serveSeq = ++startServeSeq
   mkdirSync(join(sandbox, "xdg"), { recursive: true })
   mkdirSync(join(sandbox, "xdg-data"), { recursive: true })
+  if (warmedConfigOpencode) {
+    try {
+      cpSync(warmedConfigOpencode, join(sandbox, "xdg", "opencode"), { recursive: true })
+    } catch {}
+  }
   const stateDir = join(sandbox, `xdg-state-${serveSeq}`)
   mkdirSync(stateDir, { recursive: true })
   if (!(await waitForPortBindable(SERVE_PORT, 30000))) {
@@ -322,7 +375,11 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   const base = `http://127.0.0.1:${SERVE_PORT}`
   await waitFor(async () => {
     try {
-      return (await httpGet(`${base}/config`)).ok
+      // /health (NOT /config): 1.18.31 requires the workspace routing
+      // query on /config — bare /config stopped answering ok after an
+      // opencode auto-update (live-caught: every serve spawn "timed out"
+      // while the server was up and fine)
+      return (await httpGet(`${base}/health`)).ok
     } catch {
       return false
     }
@@ -332,6 +389,15 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
     await waitForPortFree(SERVE_PORT)
     throw new Error(`[${variant.name}] serve failed: ${error.message}\n--- serve output ---\n${output.slice(-4000)}`)
   })
+  // warm-up: the FIRST request spins the instance (provider npm install
+  // into the fresh config home, ~70s on 1.18.31) — pay it here with a
+  // long budget so the tests' normal timeouts stay tight. GET (list):
+  // triggers init WITHOUT creating a session the plugin would share
+  await httpGet(`${base}/session`, { timeoutMs: 150000 }).catch(() => {})
+  if (!warmedConfigOpencode) {
+    const warmed = join(sandbox, "xdg", "opencode")
+    if (existsSync(join(warmed, "node_modules"))) warmedConfigOpencode = warmed
+  }
   return { base, kill, output: () => output, configPath }
 }
 

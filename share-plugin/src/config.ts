@@ -45,14 +45,12 @@ export const DEFAULTS: ShareConfig = {
   workerUrl: "", // empty = plugin disabled until configured
   createToken: "",
   debounceMs: 10000,
-  // opencode goes genuinely idle between sequential prompts (automation
-  // workflows); flipping the share to "completed" on the first idle is
-  // misleading mid-workflow. Idle must PERSIST this long before the
-  // share says completed; a busy signal cancels it. 0 = immediate
-  // (legacy behavior). Process exit (dispose) flushes the pending
-  // completed status immediately, so `opencode run` CI shares still land
-  // their final status.
-  completedDelayMs: 20000,
+  // opencode's idle IS authoritative turn end (busy is held through steps,
+  // tool runs and permission waits), so the flip needs only enough grace
+  // to cover an automation's gap before the next prompt. Uniform across
+  // profiles; server-capped (COMPLETED_DELAY_MAX_MS). Dispose flushes a
+  // pending flip, so CI runs still land their final status.
+  completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
   ttlDays: 90,
   openTasksInNewTab: true,

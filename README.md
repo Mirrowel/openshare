@@ -101,8 +101,8 @@ Priority: `OPENSHARE_*` env > plugin options > `openshare.config.json` > default
 | `workerUrl` | — | Your worker deployment (required). |
 | `createToken` | — | Worker `CREATE_TOKEN` (required). |
 | `shareMode` | presence | `"all"` / `"manual"`; omit for presence-based. |
-| `debounceMs` | `10000` | Event batch window before syncing. |
-| `completedDelayMs` | `20000` | How long a session must stay idle before the share says **completed** — opencode idles between sequential prompts of an automation workflow, and flipping the page to completed mid-workflow is misleading. Busy cancels the timer; a graceful process exit flushes the pending completed immediately (CI runs still land their final status). `0` = immediate. |
+| `debounceMs` | `10000` | **Sync interval** — the max time between syncs while streaming, anchored at the previous flush (an event arriving after the interval flushes immediately). Turn-end batches flush instantly on idle, never on this timer. First batch flushes as soon as it exists. |
+| `completedDelayMs` | `5000` | How long a session must stay idle before the share says **completed**. opencode's idle is authoritative turn end (busy is held through steps, tool runs and permission waits), so this only smooths an automation's gap before its next prompt; busy cancels (busy-epoch guarded); a graceful opencode exit flushes the pending flip (CI runs land their final status). `0` = immediate. |
 | `modelLabel` | `"$Provider/$Model"` | Label template; `""` hides the model. |
 | `ttlDays` | worker cap | Share lifetime (capped at `MAX_TTL_DAYS`). |
 | `openTasksInNewTab` | `true` | Viewer: task rows open sub-pages in a new tab. |
@@ -111,6 +111,16 @@ Priority: `OPENSHARE_*` env > plugin options > `openshare.config.json` > default
 | `urlFile` | `openshare.urls.txt` in the session directory | Share-URL log (all-mode; appends every URL; manual mode never writes it). Default lands where the session lives — never a fixed global path. |
 
 The file is read on every activation — settings-dialog changes apply to the next share without a restart.
+
+**Cadence profiles** (client preferences — always clamped into the worker's allowed window):
+
+| Profile | `debounceMs` | Notes |
+|---|---|---|
+| CI | `5000` | near-real-time streaming for watched runs |
+| Default | `10000` | current shipped values |
+| Relaxed | `30000` | casual "here's a link" sessions |
+
+**Socket policy is server-owned.** The worker defines how connections behave and the allowed cadence window (`SOCKET_POLICY` — auto: Cloudflare runtime → persistent since WebSocket hibernation makes idle sockets free; anything else (VPS etc.) → turn — turn-scoped sockets: settle + `TURN_GRACE_MS` (2 min) grace, then a clean drop, reconnect-on-next-event with spool replay; `IDLE_DROP_MS` (10 min) no-signal fallback; `FINALIZE_AFTER_MS` (5 min) — plugin gone without a goodbye → the share settles to **`interrupted`**; `DEBOUNCE_MIN_MS`/`DEBOUNCE_MAX_MS`/`COMPLETED_DELAY_MAX_MS` — the clamp window). The plugin fetches the policy from the init ack / `/health` and clamps itself into it. See the worker README for the full list.
 
 ## Read auth & security
 

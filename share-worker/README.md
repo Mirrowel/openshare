@@ -7,6 +7,25 @@ model (session / message / part / session_diff / model / prefs items,
 keyed-merge last-write-wins, keys derived server-side) — live and
 archived sessions are the same bytes and render with the same viewer.
 
+## Server policy (the worker owns the rules)
+
+The plugin clamps itself into these on connect (WS init ack + `/health`
+both carry the resolved policy). All are `[vars]` in `wrangler.toml`
+with code defaults:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `SOCKET_POLICY` | `auto` | `auto` -> Cloudflare runtime detected -> `persistent` (WebSocket hibernation makes idle sockets free; dropping would just re-wake DOs); anything else (VPS/self-host) -> `turn`. |
+| `TURN_GRACE_MS` | `120000` | Turn mode: after a turn settles the socket stays warm this long (typing time for the next prompt), then drops cleanly. Any activity cancels; the next event reconnects on demand and the spool replays the gap. |
+| `IDLE_DROP_MS` | `600000` | Turn mode: no-signal fallback (hosts that never emit idle). |
+| `FINALIZE_AFTER_MS` | `300000` | Plugin socket died WITHOUT a goodbye (kill -9, crash, power cut): after this long the share settles to `interrupted` (never `completed` - the run's truth is unknown). DO alarm on socket close; the daily sweeper backstops silent deaths where even the close never surfaced. Reconnects cancel it. |
+| `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` | `1000` / `60000` | Allowed client sync interval (the clamp window). |
+| `COMPLETED_DELAY_MAX_MS` | `60000` | Allowed client completed-delay. |
+
+Share statuses: `live`, `completed`, `error` (terminal turn failure -
+recovered retries are forgiven), `interrupted` (server-side only: plugin
+vanished mid-live), `gone`.
+
 - Title: **Open(code)Share** · tagline: *re:share — session sharing, back
   for opencode*
 - Package/plugin: `openshare` (`openshare.js` + `openshare.config.json`,
