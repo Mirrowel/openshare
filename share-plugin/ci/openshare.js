@@ -418,6 +418,8 @@ function createEngine(deps) {
     ackedRev: 0,
     ws: null,
     wsReady: false,
+    initTimer: null,
+    initWasAttach: false,
     backoff: 1000,
     status: "live",
     badSignal: false,
@@ -458,10 +460,7 @@ function createEngine(deps) {
     st.opts = opts;
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
-      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => {
-        st.connectQueued = false;
-        return connect(st);
-      }).catch((e) => log("activation error", e?.message || e));
+      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnect(st)).catch((e) => log("activation error", e?.message || e));
     } else {
       queueConnect(st);
     }
@@ -649,6 +648,18 @@ function createEngine(deps) {
     return { authLogin: login, authPassword: password };
   };
   const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
+  const deleteAbandoned = (st) => {
+    const id = st.shareId;
+    const secret = st.secret;
+    if (!id || !secret)
+      return;
+    fetch(`${cfg.workerUrl}/api/share/${id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret }),
+      signal: AbortSignal.timeout(8000)
+    }).catch(() => {});
+  };
   const queueConnect = (st) => {
     if (st.closed || st.connectQueued || st.connecting)
       return;
@@ -664,12 +675,19 @@ function createEngine(deps) {
     st.connecting = true;
     st.socketSeq = (st.socketSeq ?? 0) + 1;
     const seq = st.socketSeq;
+    if (st.ws) {
+      const old = st.ws;
+      try {
+        old.close(4000, "superseded");
+      } catch {}
+    }
     try {
       await readBinding(st);
       spoolLoad(st);
       askPolicy();
+      st.initWasAttach = !!(st.shareId && st.secret);
       if (debugEvents)
-        log(`ws#${seq} opening (${st.shareId ? `attach ${st.shareId}` : "create"})`);
+        log(`ws#${seq} opening (${st.initWasAttach ? `attach ${st.shareId}` : "create"})`);
       const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(cfg.createToken ?? "")}`);
       st.ws = ws;
       await new Promise((resolve, reject) => {
@@ -684,6 +702,8 @@ function createEngine(deps) {
         }, { once: true });
       });
       ws.addEventListener("message", (ev) => {
+        if (seq !== st.socketSeq)
+          return;
         let frame;
         try {
           frame = JSON.parse(ev.data);
@@ -693,7 +713,10 @@ function createEngine(deps) {
         handleFrame(st, frame).catch((e) => log("frame error", e?.message || e));
       });
       ws.addEventListener("close", () => {
+        if (seq !== st.socketSeq)
+          return;
         st.wsReady = false;
+        st.connecting = false;
         if (st.intentionalClose) {
           st.intentionalClose = false;
           return;
@@ -701,11 +724,22 @@ function createEngine(deps) {
         if (!st.closed)
           scheduleReconnect(st);
       });
-      if (st.shareId && st.secret) {
+      if (st.initWasAttach) {
         wsSend(st, { op: "init", attach: { id: st.shareId, secret: st.secret, ...authFrame(st) } });
       } else {
         wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
       }
+      st.initTimer = setTimeout(() => {
+        if (seq !== st.socketSeq)
+          return;
+        log(`ws#${seq} init ack timeout`);
+        st.connecting = false;
+        try {
+          ws.close(4000, "init timeout");
+        } catch {}
+        if (!st.closed)
+          scheduleReconnect(st);
+      }, 20000);
     } catch (e) {
       st.connecting = false;
       log("socket failed:", e?.message || e, "- falling back to HTTP, will retry");
@@ -714,7 +748,6 @@ function createEngine(deps) {
       scheduleReconnect(st);
       return;
     }
-    st.connecting = false;
   };
   const scheduleReconnect = (st) => {
     if (st.closed || st.reconnectTimer)
@@ -778,26 +811,35 @@ function createEngine(deps) {
     if (frame.op === "init") {
       if (!frame.ok) {
         log("init refused:", frame.error, "- creating fresh share");
+        deleteAbandoned(st);
         st.shareId = null;
         st.secret = null;
         st.ackedRev = 0;
-        st.pending = [];
         wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
         return;
       }
-      if (typeof frame.rev === "number" && frame.rev < st.ackedRev) {
+      if (st.initWasAttach && typeof frame.rev === "number" && frame.rev < st.ackedRev) {
         log(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`);
+        deleteAbandoned(st);
         st.shareId = null;
         st.secret = null;
         st.ackedRev = 0;
-        st.pending = [];
         wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
         return;
       }
+      const shareChanged = !!frame.id && frame.id !== st.shareId;
+      if (shareChanged)
+        st.announced = false;
       st.shareId = frame.id ?? st.shareId;
       st.secret = frame.secret ?? st.secret;
       st.ackedRev = frame.rev ?? 0;
       st.wsReady = true;
+      st.connecting = false;
+      st.initWasAttach = false;
+      if (st.initTimer) {
+        clearTimeout(st.initTimer);
+        st.initTimer = null;
+      }
       st.backoff = 1000;
       if (frame.policy)
         applyPolicy(frame.policy);
@@ -873,11 +915,19 @@ function createEngine(deps) {
   const flushViaHttp = async (st) => {
     if (!st.shareId || !st.pending.length)
       return;
-    const f = st.pending[st.pending.length - 1];
+    const items = [];
+    let status;
+    for (const f of st.pending) {
+      for (const it of f.items)
+        items.push(it);
+      if (f.status)
+        status = f.status;
+    }
     const r = await fetch(`${cfg.workerUrl}/api/share/${st.shareId}/sync`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret: st.secret, data: f.items, status: f.status })
+      body: JSON.stringify({ secret: st.secret, data: items, status }),
+      signal: AbortSignal.timeout(15000)
     }).catch(() => null);
     if (r && r.ok) {
       const body = await r.json().catch(() => ({}));
@@ -911,10 +961,16 @@ function createEngine(deps) {
   const remove = (st) => {
     st.closed = true;
     st.activated = false;
+    st.connecting = false;
+    st.connectQueued = false;
     if (st.timer)
       clearTimeout(st.timer);
     if (st.metaTimer)
       clearTimeout(st.metaTimer);
+    if (st.initTimer) {
+      clearTimeout(st.initTimer);
+      st.initTimer = null;
+    }
     if (st.completedTimer) {
       clearTimeout(st.completedTimer);
       st.completedTimer = null;
@@ -1343,6 +1399,10 @@ function createEngine(deps) {
           if (st.timer)
             clearTimeout(st.timer);
           st.timer = null;
+          if (st.initTimer) {
+            clearTimeout(st.initTimer);
+            st.initTimer = null;
+          }
           cancelSettleDrop(st);
           if (st.idleDropTimer) {
             clearTimeout(st.idleDropTimer);
@@ -1351,6 +1411,9 @@ function createEngine(deps) {
           const flushed = flush(st);
           if (flushed && typeof flushed.then === "function")
             await flushed.catch(() => {});
+          if (!st.wsReady && st.shareId && st.pending.length) {
+            await flushViaHttp(st).catch(() => {});
+          }
           if (st.metaTimer)
             clearTimeout(st.metaTimer);
           st.metaTimer = null;

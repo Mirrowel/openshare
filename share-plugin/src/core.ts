@@ -109,6 +109,8 @@ type SessionState = {
   ws: WebSocket | null
   wsReady: boolean
   socketSeq?: number
+  initTimer: ReturnType<typeof setTimeout> | null
+  initWasAttach: boolean
   backoff: number
   status: string
   badSignal: boolean
@@ -350,6 +352,8 @@ export function createEngine(deps: EngineDeps): Engine {
     ackedRev: 0,
     ws: null,
     wsReady: false,
+    initTimer: null,
+    initWasAttach: false,
     backoff: 1000,
     status: "live",
     badSignal: false,
@@ -399,14 +403,12 @@ export function createEngine(deps: EngineDeps): Engine {
     if (gated) {
       // seed the share status from the session's CURRENT state before
       // anything flushes: activating an idle session must not ship a
-      // phantom "live" badge. backfill follows, then the connection.
+      // phantom "live" badge. backfill follows, then the connection —
+      // through the same single-flight queue as everyone else.
       chain = chain
         .then(() => seedManualStatus(st))
         .then(() => backfill(st, info))
-        .then(() => {
-          st.connectQueued = false
-          return connect(st)
-        })
+        .then(() => queueConnect(st))
         .catch((e) => log("activation error", (e as Error)?.message || e))
     } else {
       queueConnect(st)
@@ -627,6 +629,21 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const ttlFor = (st: SessionState) => st.opts?.ttlDays ?? cfg.ttlDays
 
+  /** Best-effort cleanup of a share we are about to abandon (refused
+   * attach, mismatch recreate). Prevents husk litter; failures are fine —
+   * the TTL sweeper collects strays eventually. */
+  const deleteAbandoned = (st: SessionState) => {
+    const id = st.shareId
+    const secret = st.secret
+    if (!id || !secret) return
+    void fetch(`${cfg.workerUrl}/api/share/${id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret }),
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => {})
+  }
+
   /** Single-flight connect queuing: multiple paths (activation, event
    * reconnect, backfill chain) may want a socket before any connect has
    * STARTED — the connecting flag alone guards execution, not the queue,
@@ -645,14 +662,32 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const connect = async (st: SessionState) => {
     if (st.closed || st.connecting) return
+    // "connecting" spans the WHOLE handshake: socket open + init ack. It
+    // is only cleared on init-ok, socket death or the init timeout — an
+    // event arriving mid-handshake must NEVER spawn a second socket (the
+    // old connect() returned after merely SENDING init; a second socket
+    // raced it, and the loser's late init-ok poisoned the winner's state
+    // — live-caught: duplicate shares, mismatch storms, empty pages).
     st.connecting = true
     st.socketSeq = (st.socketSeq ?? 0) + 1
     const seq = st.socketSeq
+    // supersede any previous socket: its frames are dead to us now
+    if (st.ws) {
+      const old = st.ws
+      try {
+        old.close(4000, "superseded")
+      } catch {}
+    }
     try {
       await readBinding(st)
       spoolLoad(st)
       askPolicy()
-      if (debugEvents) log(`ws#${seq} opening (${st.shareId ? `attach ${st.shareId}` : "create"})`)
+      // was this socket's init an ATTACH (resume) or a CREATE? A create
+      // ack legitimately starts at rev 0 — the mismatch guard is for
+      // attaches only (live-caught: create-ack rev 0 tripped it and
+      // spawned a fresh husk share with the content dropped).
+      st.initWasAttach = !!(st.shareId && st.secret)
+      if (debugEvents) log(`ws#${seq} opening (${st.initWasAttach ? `attach ${st.shareId}` : "create"})`)
       const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(cfg.createToken ?? "")}`)
       st.ws = ws
       await new Promise((resolve, reject) => {
@@ -667,6 +702,9 @@ export function createEngine(deps: EngineDeps): Engine {
         }, { once: true })
       })
       ws.addEventListener("message", (ev) => {
+        // stale sockets never touch live state (defense in depth: even a
+        // superseded socket that still delivers frames is dropped here)
+        if (seq !== st.socketSeq) return
         let frame
         try {
           frame = JSON.parse((ev as MessageEvent).data as string)
@@ -676,7 +714,9 @@ export function createEngine(deps: EngineDeps): Engine {
         handleFrame(st, frame).catch((e) => log("frame error", (e as Error)?.message || e))
       })
       ws.addEventListener("close", () => {
+        if (seq !== st.socketSeq) return
         st.wsReady = false
+        st.connecting = false
         // a deliberate turn-mode drop must not trigger the reconnect
         // backoff loop — the next event reconnects on demand
         if (st.intentionalClose) {
@@ -686,11 +726,23 @@ export function createEngine(deps: EngineDeps): Engine {
         if (!st.closed) scheduleReconnect(st)
       })
 
-      if (st.shareId && st.secret) {
+      if (st.initWasAttach) {
         wsSend(st, { op: "init", attach: { id: st.shareId, secret: st.secret, ...authFrame(st) } })
       } else {
         wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
       }
+
+      // handshake deadline: init sent but no ack (silent worker death)
+      // — close, let the close listener reconnect us
+      st.initTimer = setTimeout(() => {
+        if (seq !== st.socketSeq) return
+        log(`ws#${seq} init ack timeout`)
+        st.connecting = false
+        try {
+          ws.close(4000, "init timeout")
+        } catch {}
+        if (!st.closed) scheduleReconnect(st)
+      }, 20000)
     } catch (e) {
       st.connecting = false
       log("socket failed:", (e as Error)?.message || e, "- falling back to HTTP, will retry")
@@ -699,7 +751,6 @@ export function createEngine(deps: EngineDeps): Engine {
       scheduleReconnect(st)
       return
     }
-    st.connecting = false
   }
 
   const scheduleReconnect = (st: SessionState) => {
@@ -770,29 +821,41 @@ export function createEngine(deps: EngineDeps): Engine {
     if (frame.op === "init") {
       if (!frame.ok) {
         // share swept / removed / revoked: start fresh, never merge into a
-        // bad base (mismatch protocol)
+        // bad base (mismatch protocol). Content REPLAYS to the new share —
+        // pending is never dropped on a reset (live-caught: the recreate
+        // husk had the title but zero messages).
         log("init refused:", frame.error, "- creating fresh share")
+        deleteAbandoned(st)
         st.shareId = null
         st.secret = null
         st.ackedRev = 0
-        st.pending = []
         wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
         return
       }
-      if (typeof frame.rev === "number" && frame.rev < st.ackedRev) {
-        // worker lost data behind our back: treat as gone
+      if (st.initWasAttach && typeof frame.rev === "number" && frame.rev < st.ackedRev) {
+        // worker lost data behind our back (ATTACH only — a create ack
+        // legitimately starts at rev 0; the old guard misread that as
+        // data loss and spawned a fresh husk, live-caught)
         log(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`)
+        deleteAbandoned(st)
         st.shareId = null
         st.secret = null
         st.ackedRev = 0
-        st.pending = []
         wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
         return
       }
+      const shareChanged = !!frame.id && frame.id !== st.shareId
+      if (shareChanged) st.announced = false
       st.shareId = (frame.id as string) ?? st.shareId
       st.secret = (frame.secret as string) ?? st.secret
       st.ackedRev = (frame.rev as number) ?? 0
       st.wsReady = true
+      st.connecting = false
+      st.initWasAttach = false
+      if (st.initTimer) {
+        clearTimeout(st.initTimer)
+        st.initTimer = null
+      }
       st.backoff = 1000
       if (frame.policy) applyPolicy(frame.policy)
       st.intentionalClose = false
@@ -876,11 +939,21 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const flushViaHttp = async (st: SessionState) => {
     if (!st.shareId || !st.pending.length) return
-    const f = st.pending[st.pending.length - 1]
+    // ALL pending frames, merged (keyed upserts — later wins). Sending
+    // only the last frame dropped every earlier batch's items whenever
+    // the HTTP fallback carried more than one (live-caught class:
+    // content loss on reconnect paths).
+    const items: unknown[] = []
+    let status: string | undefined
+    for (const f of st.pending) {
+      for (const it of f.items as unknown[]) items.push(it)
+      if (f.status) status = f.status
+    }
     const r = await fetch(`${cfg.workerUrl}/api/share/${st.shareId}/sync`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret: st.secret, data: f.items, status: f.status }),
+      body: JSON.stringify({ secret: st.secret, data: items, status }),
+      signal: AbortSignal.timeout(15000),
     }).catch(() => null)
     if (r && r.ok) {
       const body = (await r.json().catch(() => ({}))) as { rev?: number }
@@ -918,8 +991,14 @@ export function createEngine(deps: EngineDeps): Engine {
   const remove = (st: SessionState) => {
     st.closed = true
     st.activated = false
+    st.connecting = false
+    st.connectQueued = false
     if (st.timer) clearTimeout(st.timer)
     if (st.metaTimer) clearTimeout(st.metaTimer)
+    if (st.initTimer) {
+      clearTimeout(st.initTimer)
+      st.initTimer = null
+    }
     if (st.completedTimer) {
       clearTimeout(st.completedTimer)
       st.completedTimer = null
@@ -1426,6 +1505,10 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           if (st.timer) clearTimeout(st.timer)
           st.timer = null
+          if (st.initTimer) {
+            clearTimeout(st.initTimer)
+            st.initTimer = null
+          }
           cancelSettleDrop(st)
           if (st.idleDropTimer) {
             clearTimeout(st.idleDropTimer)
@@ -1433,6 +1516,11 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           const flushed = flush(st)
           if (flushed && typeof (flushed as Promise<unknown>).then === "function") await flushed.catch(() => {})
+          // dispose with a mid-handshake socket: the deferred pending
+          // would die with the process — land it over HTTP instead
+          if (!st.wsReady && st.shareId && st.pending.length) {
+            await flushViaHttp(st).catch(() => {})
+          }
           if (st.metaTimer) clearTimeout(st.metaTimer)
           st.metaTimer = null
           await writeBinding(st).catch(() => {})
