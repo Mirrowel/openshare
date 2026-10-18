@@ -25,6 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 var METADATA_KEY = "openshare";
+var URL_FILE_NONE = "none";
 var DEFAULTS = {
   workerUrl: "",
   createToken: "",
@@ -36,7 +37,8 @@ var DEFAULTS = {
   authLogin: "",
   authPassword: "",
   spoolDir: "",
-  urlFile: ""
+  urlFile: "",
+  announceStderr: true
 };
 var CONFIG_NAME = "openshare.config.json";
 var LOCAL_NAME = "openshare.local.json";
@@ -128,12 +130,16 @@ function loadConfig(pluginDir, options) {
     cfg.authLogin = env.OPENSHARE_AUTH_LOGIN;
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined)
     cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD;
-  if (env.OPENSHARE_URL_FILE)
+  if (env.OPENSHARE_URL_FILE !== undefined)
     cfg.urlFile = env.OPENSHARE_URL_FILE;
   if (env.OPENSHARE_SPOOL_DIR)
     cfg.spoolDir = env.OPENSHARE_SPOOL_DIR;
+  if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined)
+    cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim());
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual")
     cfg.shareMode = env.OPENSHARE_SHARE_MODE;
+  if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE)
+    cfg.urlFile = URL_FILE_NONE;
   return cfg;
 }
 function spoolDirFor(cfg) {
@@ -628,13 +634,14 @@ function createEngine(deps) {
       return;
     st.announced = true;
     const url = `${cfg.workerUrl}/s/${st.shareId}`;
-    log(`live: ${url}`);
-    if (mode === "all") {
+    if (cfg.announceStderr)
+      log(`live: ${url}`);
+    if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       const file = cfg.urlFile || join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
       try {
         appendFileSync(file, url + `
 `);
-        if (file !== lastUrlFile || !urlFileAnnounced) {
+        if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true;
           lastUrlFile = file;
           log(`url file: ${file}`);

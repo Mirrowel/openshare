@@ -108,7 +108,8 @@ Priority: `OPENSHARE_*` env > plugin options > `openshare.config.json` > default
 | `openTasksInNewTab` | `true` | Viewer: task rows open sub-pages in a new tab. |
 | `authLogin` / `authPassword` | `""` | Default read gate for share pages. |
 | `spoolDir` | XDG data | Unacked-frame buffer. |
-| `urlFile` | `openshare.urls.txt` in the session directory | Share-URL log (all-mode; appends every URL; manual mode never writes it). Default lands where the session lives — never a fixed global path. |
+| `urlFile` | `openshare.urls.txt` in the session directory | Share-URL log (all-mode; appends every URL; manual mode never writes it). Default lands where the session lives — never a fixed global path. **`"none"` disables the file entirely.** |
+| `announceStderr` | `true` | `false` silences the `[openshare] live:` / `url file:` stderr lines (the share itself is unaffected). |
 
 The file is read on every activation — settings-dialog changes apply to the next share without a restart.
 

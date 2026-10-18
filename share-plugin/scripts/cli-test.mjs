@@ -12,11 +12,11 @@
 // NOT part of `npm run test` (drives real `opencode run` binaries).
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { sleep, waitFor, httpGet, killWranglerSuites, startMockLLM, startWorker, WORKER_URL, WORKER_PORT, LLM_PORT } from "./suite-lib.mjs"
+import { sleep, waitFor, httpGet, killWranglerSuites, startMockLLM, startWorker, startServe, stopServe, WORKER_URL, WORKER_PORT, LLM_PORT } from "./suite-lib.mjs"
 
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url)).replace(/\\/g, "/")
 
@@ -276,6 +276,87 @@ try {
       if (entry.isFile()) console.log(`    project/${entry.name} (${statSync(join(ciProject, entry.name)).size}b)`)
     }
   } catch {}
+
+  // ---------------------------------------------------------------- outputs-off phase:
+  // announceStderr=false + urlFile=none -> NO stderr lines, NO url file,
+  // but the share still exists and completes. The share URL is recovered
+  // from the session's metadata binding (the only remaining surface).
+  {
+    const offSandbox = join(suiteDir, "off")
+    const offProject = join(offSandbox, "project")
+    mkdirSync(offProject, { recursive: true })
+    const offConfig = join(offSandbox, "opencode.json")
+    writeFileSync(offConfig, JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      plugin: [CI_BUNDLE],
+      provider: {
+        mock: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: `http://127.0.0.1:${LLM_PORT}/v1`, apiKey: "mock" },
+          models: { "mock-1": { name: "Mock 1" } },
+        },
+      },
+      model: "mock/mock-1",
+    }))
+    const offRun = (args) =>
+      new Promise((resolve) => {
+        const child = spawn("opencode", args, {
+          cwd: offProject,
+          shell: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            XDG_CONFIG_HOME: join(offSandbox, "xdg"),
+            XDG_DATA_HOME: join(offSandbox, "xdg-data"),
+            XDG_STATE_HOME: join(offSandbox, "xdg-state"),
+            OPENCODE_CONFIG: offConfig,
+            OPENSHARE_WORKER_URL: WORKER_URL,
+            OPENSHARE_CREATE_TOKEN: "suite-create-token",
+            OPENSHARE_SPOOL_DIR: join(offSandbox, "spool"),
+            OPENSHARE_DEBOUNCE_MS: "300",
+            OPENSHARE_URL_FILE: "none",
+            OPENSHARE_ANNOUNCE_STDERR: "0",
+          },
+        })
+        let out = ""
+        child.stdout.on("data", (d) => (out += d))
+        child.stderr.on("data", (d) => (out += d))
+        child.on("close", (code) => resolve({ code, out }))
+      })
+    const offRes = await offRun(["run", "-m", "mock/mock-1", "--message", "outputs-off probe"])
+    check("outputs-off: exit 0", offRes.code === 0, offRes.out.slice(-300))
+    // URL outputs silenced; the one-line boot diagnostic (share mode) may
+    // remain — it is not a URL output
+    check("outputs-off: no live:/url file: announce lines", !/\[openshare\] (live:|url file:)/.test(offRes.out), offRes.out.split("\n").filter((l) => l.includes("openshare")).slice(0, 3).join(" | "))
+    const offDefaultUrl = join(offProject, "openshare.urls.txt")
+    await sleep(1500)
+    check("outputs-off: no url file anywhere", !existsSync(offDefaultUrl), offDefaultUrl)
+
+    // recover the share via the binding in the session record: start a
+    // serve on the same sandbox XDG roots (session DB lives there) and
+    // read the session's metadata
+    const offServe = await startServe({ name: "off", path: CI_BUNDLE }, offSandbox, offProject, {
+      OPENSHARE_URL_FILE: "none",
+      OPENSHARE_ANNOUNCE_STDERR: "0",
+    })
+    try {
+      const sessions = await (await httpGet(`${offServe.base}/session`)).json()
+      const bound = (Array.isArray(sessions) ? sessions : []).find((s) => s?.metadata?.openshare?.url)
+      check("outputs-off: binding still written to session metadata", Boolean(bound), JSON.stringify(sessions).slice(0, 200))
+      const offId = bound.metadata.openshare.url.split("/").pop()
+      const offBody = await waitFor(async () => {
+        const r = await httpGet(`${WORKER_URL}/api/share/${offId}/data`)
+        if (!r.ok) throw new Error(`${r.status}`)
+        const parsed = await r.json()
+        const types = (parsed.data ?? []).map((i) => i.type)
+        return parsed.status === "completed" && types.includes("session") && types.includes("message") ? parsed : undefined
+      }, "outputs-off: share complete on the worker")
+      check("outputs-off: share complete despite silenced outputs", Boolean(offBody))
+      console.log(`  share (via binding): ${offId}  items: ${(offBody.data ?? []).map((i) => i.type).join(",")}`)
+    } finally {
+      await stopServe(offServe)
+    }
+  }
 } catch (error) {
   console.error("SUITE ERROR:", error.message)
   failures.push(`suite-error: ${error.message}`)

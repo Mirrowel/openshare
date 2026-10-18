@@ -36,10 +36,17 @@ export type ShareConfig = {
   authPassword: string
   spoolDir: string
   urlFile: string
+  /** false silences the `[openshare] live:` (and `url file:`) stderr
+   * lines. The share itself is unaffected. */
+  announceStderr: boolean
   shareMode?: ShareMode
 }
 
 export const METADATA_KEY = "openshare"
+
+/** Sentinel urlFile value that disables the URL file entirely
+ * (`""` stays "unset = default path"; "none" is an explicit opt-out). */
+export const URL_FILE_NONE = "none"
 
 export const DEFAULTS: ShareConfig = {
   workerUrl: "", // empty = plugin disabled until configured
@@ -58,6 +65,7 @@ export const DEFAULTS: ShareConfig = {
   authPassword: "",
   spoolDir: "",
   urlFile: "",
+  announceStderr: true,
 }
 
 const CONFIG_NAME = "openshare.config.json"
@@ -170,9 +178,13 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   if (env.OPENSHARE_TTL_DAYS) cfg.ttlDays = num(env.OPENSHARE_TTL_DAYS, cfg.ttlDays)
   if (env.OPENSHARE_AUTH_LOGIN !== undefined) cfg.authLogin = env.OPENSHARE_AUTH_LOGIN
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined) cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD
-  if (env.OPENSHARE_URL_FILE) cfg.urlFile = env.OPENSHARE_URL_FILE
+  if (env.OPENSHARE_URL_FILE !== undefined) cfg.urlFile = env.OPENSHARE_URL_FILE
   if (env.OPENSHARE_SPOOL_DIR) cfg.spoolDir = env.OPENSHARE_SPOOL_DIR
+  if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim())
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual") cfg.shareMode = env.OPENSHARE_SHARE_MODE
+
+  // normalize the disable sentinel (case-insensitive from any source)
+  if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE) cfg.urlFile = URL_FILE_NONE
 
   return cfg
 }

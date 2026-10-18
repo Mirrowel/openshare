@@ -44,7 +44,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, type ShareConfig, type ShareMode } from "./config.js"
+import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, type ShareConfig, type ShareMode } from "./config.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -599,17 +599,18 @@ export function createEngine(deps: EngineDeps): Engine {
     if (st.announced) return
     st.announced = true
     const url = `${cfg.workerUrl}/s/${st.shareId}`
-    log(`live: ${url}`)
-    if (mode === "all") {
+    if (cfg.announceStderr) log(`live: ${url}`)
+    if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       // default: the file lives where the session lives (its directory,
       // falling back to the process cwd) — never a fixed global path.
-      // Explicit urlFile config/env wins. Append: CI reads the file after
-      // each run; keeping every share URL lets one file serve a whole
-      // workflow (the legacy original overwrote with the latest only).
+      // Explicit urlFile config/env wins ("none" disables the file).
+      // Append: CI reads the file after each run; keeping every share
+      // URL lets one file serve a whole workflow (the legacy original
+      // overwrote with the latest only).
       const file = cfg.urlFile || join(deps.directory ?? process.cwd(), "openshare.urls.txt")
       try {
         appendFileSync(file, url + "\n")
-        if (file !== lastUrlFile || !urlFileAnnounced) {
+        if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true
           lastUrlFile = file
           log(`url file: ${file}`)

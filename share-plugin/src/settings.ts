@@ -148,13 +148,15 @@ const LABELS: Record<string, { label: string; help: string; kind: EditKind; sect
   authLogin: { label: "Read auth: login", help: "Optional read gate for share pages. Empty removes protection on the next attach.", kind: "text", section: "Read auth" },
   authPassword: { label: "Read auth: password", help: "Optional read gate for share pages.", kind: "password", section: "Read auth" },
   spoolDir: { label: "Spool directory", help: "Temporary unacked-frame buffer (default: XDG data home).", kind: "text", section: "Advanced" },
-  urlFile: { label: "URL file", help: "Extra file each share URL is written to (all-mode only).", kind: "text", section: "Advanced" },
+  urlFile: { label: "URL file", help: 'File each share URL is appended to (all-mode). Empty = default openshare.urls.txt in the session directory; "none" = no URL file.', kind: "text", section: "Advanced" },
+  announceStderr: { label: "Announce on stderr", help: '"true"/"false": the [openshare] live: and url file: log lines. false silences them; the share itself is unaffected.', kind: "text", section: "Advanced" },
   shareMode: { label: "Share mode", help: '"all" shares every session; "manual" needs /share. Default: TUI presence.', kind: "text", section: "Sharing" },
 }
 
 function displayValue(key: string, cfg: ShareConfig): string {
   if (key === "createToken" || key === "authPassword") return mask(String(cfg[key] ?? ""))
   if (key === "openTasksInNewTab") return String(cfg.openTasksInNewTab !== false)
+  if (key === "announceStderr") return String(cfg.announceStderr !== false)
   const value = (cfg as unknown as Record<string, unknown>)[key]
   return value === undefined || value === "" ? "(not set)" : String(value)
 }
@@ -176,8 +178,11 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
       return undefined
     }
     next[key] = Math.floor(parsed)
-  } else if (key === "openTasksInNewTab") {
+  } else if (key === "openTasksInNewTab" || key === "announceStderr") {
     next[key] = raw === "true" || raw === "yes" || raw === "1"
+  } else if (key === "urlFile") {
+    // "" = default path, "none" = disabled, anything else = explicit path
+    next[key] = raw.trim().toLowerCase() === "none" ? "none" : raw
   } else if (key === "shareMode") {
     if (raw !== "all" && raw !== "manual" && raw !== "") {
       host.ui.toast({ variant: "error", title: "OpenShare", message: 'Share mode must be "all", "manual", or empty (auto).' })
