@@ -263,7 +263,15 @@ function resolveShareMode(cfg, input) {
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
 import { join as join2 } from "node:path";
+var stderrInfoAllowed = true;
 var log = (...a) => {
+  if (!stderrInfoAllowed)
+    return;
+  try {
+    console.error(`[${METADATA_KEY}]`, ...a);
+  } catch {}
+};
+var logError = (...a) => {
   try {
     console.error(`[${METADATA_KEY}]`, ...a);
   } catch {}
@@ -324,6 +332,8 @@ function shareFlag(info) {
 function createEngine(deps) {
   let cfg = loadConfig(deps.pluginDir, deps.options);
   const mode = resolveShareMode(cfg, deps);
+  if (mode === "manual")
+    stderrInfoAllowed = false;
   if (process.env.OPENSHARE_DEBUG_FILE) {
     try {
       writeFileSync(process.env.OPENSHARE_DEBUG_FILE, JSON.stringify({
@@ -466,7 +476,7 @@ function createEngine(deps) {
     st.opts = opts;
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
-      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnect(st)).catch((e) => log("activation error", e?.message || e));
+      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnect(st)).catch((e) => logError("activation error", e?.message || e));
     } else {
       queueConnect(st);
     }
@@ -594,7 +604,7 @@ function createEngine(deps) {
 `) + (st.pending.length ? `
 ` : ""));
     } catch (e) {
-      log("spool save failed", e?.message || e);
+      logError("spool save failed", e?.message || e);
     }
   };
   const spoolLoad = (st) => {
@@ -674,7 +684,7 @@ function createEngine(deps) {
     chain = chain.then(() => {
       st.connectQueued = false;
       return connect(st);
-    }).catch((e) => log("connect error", e?.message || e));
+    }).catch((e) => logError("connect error", e?.message || e));
   };
   const connect = async (st) => {
     if (st.closed || st.connecting)
@@ -717,7 +727,7 @@ function createEngine(deps) {
         } catch {
           return;
         }
-        handleFrame(st, frame).catch((e) => log("frame error", e?.message || e));
+        handleFrame(st, frame).catch((e) => logError("frame error", e?.message || e));
       });
       ws.addEventListener("close", () => {
         if (seq !== st.socketSeq)
@@ -739,7 +749,7 @@ function createEngine(deps) {
       st.initTimer = setTimeout(() => {
         if (seq !== st.socketSeq)
           return;
-        log(`ws#${seq} init ack timeout`);
+        logError(`ws#${seq} init ack timeout`);
         st.connecting = false;
         try {
           ws.close(4000, "init timeout");
@@ -749,7 +759,7 @@ function createEngine(deps) {
       }, 20000);
     } catch (e) {
       st.connecting = false;
-      log("socket failed:", e?.message || e, "- falling back to HTTP, will retry");
+      logError("socket failed:", e?.message || e, "- falling back to HTTP, will retry");
       st.wsReady = false;
       flushViaHttp(st).catch(() => {});
       scheduleReconnect(st);
@@ -817,7 +827,7 @@ function createEngine(deps) {
   const handleFrame = async (st, frame) => {
     if (frame.op === "init") {
       if (!frame.ok) {
-        log("init refused:", frame.error, "- creating fresh share");
+        logError("init refused:", frame.error, "- creating fresh share");
         deleteAbandoned(st);
         st.shareId = null;
         st.secret = null;
@@ -826,7 +836,7 @@ function createEngine(deps) {
         return;
       }
       if (st.initWasAttach && typeof frame.rev === "number" && frame.rev < st.ackedRev) {
-        log(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`);
+        logError(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`);
         deleteAbandoned(st);
         st.shareId = null;
         st.secret = null;
@@ -875,7 +885,7 @@ function createEngine(deps) {
       return;
     }
     if (frame.op === "nack" || frame.op === "error") {
-      log("worker refused frame:", JSON.stringify(frame).slice(0, 200));
+      logError("worker refused frame:", JSON.stringify(frame).slice(0, 200));
       if (frame.op === "error" && st.wsReady && !st.closed) {
         st.wsReady = false;
         try {
@@ -952,7 +962,7 @@ function createEngine(deps) {
       st.timer = null;
       if (debugEvents)
         log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} pending=${st.pending.length} ready=${st.wsReady}`);
-      chain = chain.then(() => flush(st)).catch((e) => log("flush error", e?.message || e));
+      chain = chain.then(() => flush(st)).catch((e) => logError("flush error", e?.message || e));
     }, wait);
   };
   const enqueue = (st, entry) => {
@@ -1191,7 +1201,7 @@ function createEngine(deps) {
       }
       if (st2?.activated && !st2.closed && t === "session.updated") {
         log(`share disabled for ${sid} - removing`);
-        chain = chain.then(() => remove(st2)).catch((e) => log("remove error", e?.message || e));
+        chain = chain.then(() => remove(st2)).catch((e) => logError("remove error", e?.message || e));
         return;
       }
       return;
@@ -1275,7 +1285,7 @@ function createEngine(deps) {
             if (st.timer)
               clearTimeout(st.timer);
             st.timer = null;
-            chain = chain.then(() => flush(st)).catch((e) => log("idle flush error", e?.message || e));
+            chain = chain.then(() => flush(st)).catch((e) => logError("idle flush error", e?.message || e));
             const epoch = st.statusEpoch;
             const settle = () => {
               st.status = st.badSignal ? "error" : "completed";
@@ -1285,7 +1295,7 @@ function createEngine(deps) {
               st.timer = null;
               chain = chain.then(() => flush(st)).then(() => {
                 armSettleDrop(st);
-              }).catch((e) => log("settle flush error", e?.message || e));
+              }).catch((e) => logError("settle flush error", e?.message || e));
             };
             if (cfg.completedDelayMs <= 0) {
               settle();
@@ -1354,7 +1364,7 @@ function createEngine(deps) {
                 await connect(created);
               }).catch((e) => {
                 verifying.delete(main);
-                log("verify error", e?.message || e);
+                logError("verify error", e?.message || e);
               });
             }
           }
@@ -1392,7 +1402,7 @@ function createEngine(deps) {
           const st = sessions.get(sid);
           if (!st)
             return;
-          chain = chain.then(() => remove(st)).catch((e) => log("remove error", e?.message || e));
+          chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
         }
       },
       dispose: async () => {

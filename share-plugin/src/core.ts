@@ -160,7 +160,24 @@ export type Engine = {
   config: () => ShareConfig
 }
 
+// Stderr policy (owner directive): in manual mode (TUI present) stderr is
+// for ACTUAL ERRORS only — informational lines (live:/url file:/mode
+// banner, lifecycle traces) are suppressed; the TUI surfaces the URL.
+// All-mode (CI/server-only) keeps its stderr contract (announce lines,
+// silenceable via announceStderr). Error-class lines always reach stderr.
+let stderrInfoAllowed = true
+
 const log = (...a: unknown[]) => {
+  if (!stderrInfoAllowed) return
+  try {
+    console.error(`[${METADATA_KEY}]`, ...a)
+  } catch {}
+}
+
+/** Error-class log: reaches stderr in BOTH modes (worker down, refused
+ * init, mismatch recreate, timeouts — things an owner must see even with
+ * the TUI installed). */
+const logError = (...a: unknown[]) => {
   try {
     console.error(`[${METADATA_KEY}]`, ...a)
   } catch {}
@@ -219,6 +236,8 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
 export function createEngine(deps: EngineDeps): Engine {
   let cfg = loadConfig(deps.pluginDir, deps.options)
   const mode: ShareMode = resolveShareMode(cfg, deps)
+  // stderr = errors only when the TUI part exists (the TUI surfaces URLs)
+  if (mode === "manual") stderrInfoAllowed = false
   if (process.env.OPENSHARE_DEBUG_FILE) {
     // diagnostic ground truth for the suites (never set in production)
     try {
@@ -409,7 +428,7 @@ export function createEngine(deps: EngineDeps): Engine {
         .then(() => seedManualStatus(st))
         .then(() => backfill(st, info))
         .then(() => queueConnect(st))
-        .catch((e) => log("activation error", (e as Error)?.message || e))
+        .catch((e) => logError("activation error", (e as Error)?.message || e))
     } else {
       queueConnect(st)
     }
@@ -555,7 +574,7 @@ export function createEngine(deps: EngineDeps): Engine {
       writeFileSync(metaPath(st), JSON.stringify({ shareId: st.shareId, secret: st.secret, ackedRev: st.ackedRev, sid: st.sid }))
       writeFileSync(queuePath(st), st.pending.map((f) => JSON.stringify(f)).join("\n") + (st.pending.length ? "\n" : ""))
     } catch (e) {
-      log("spool save failed", (e as Error)?.message || e)
+      logError("spool save failed", (e as Error)?.message || e)
     }
   }
   const spoolLoad = (st: SessionState) => {
@@ -658,7 +677,7 @@ export function createEngine(deps: EngineDeps): Engine {
         st.connectQueued = false
         return connect(st)
       })
-      .catch((e) => log("connect error", (e as Error)?.message || e))
+      .catch((e) => logError("connect error", (e as Error)?.message || e))
   }
 
   const connect = async (st: SessionState) => {
@@ -712,7 +731,7 @@ export function createEngine(deps: EngineDeps): Engine {
         } catch {
           return
         }
-        handleFrame(st, frame).catch((e) => log("frame error", (e as Error)?.message || e))
+        handleFrame(st, frame).catch((e) => logError("frame error", (e as Error)?.message || e))
       })
       ws.addEventListener("close", () => {
         if (seq !== st.socketSeq) return
@@ -737,7 +756,7 @@ export function createEngine(deps: EngineDeps): Engine {
       // — close, let the close listener reconnect us
       st.initTimer = setTimeout(() => {
         if (seq !== st.socketSeq) return
-        log(`ws#${seq} init ack timeout`)
+        logError(`ws#${seq} init ack timeout`)
         st.connecting = false
         try {
           ws.close(4000, "init timeout")
@@ -746,7 +765,7 @@ export function createEngine(deps: EngineDeps): Engine {
       }, 20000)
     } catch (e) {
       st.connecting = false
-      log("socket failed:", (e as Error)?.message || e, "- falling back to HTTP, will retry")
+      logError("socket failed:", (e as Error)?.message || e, "- falling back to HTTP, will retry")
       st.wsReady = false
       void flushViaHttp(st).catch(() => {})
       scheduleReconnect(st)
@@ -825,7 +844,7 @@ export function createEngine(deps: EngineDeps): Engine {
         // bad base (mismatch protocol). Content REPLAYS to the new share —
         // pending is never dropped on a reset (live-caught: the recreate
         // husk had the title but zero messages).
-        log("init refused:", frame.error, "- creating fresh share")
+        logError("init refused:", frame.error, "- creating fresh share")
         deleteAbandoned(st)
         st.shareId = null
         st.secret = null
@@ -837,7 +856,7 @@ export function createEngine(deps: EngineDeps): Engine {
         // worker lost data behind our back (ATTACH only — a create ack
         // legitimately starts at rev 0; the old guard misread that as
         // data loss and spawned a fresh husk, live-caught)
-        log(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`)
+        logError(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`)
         deleteAbandoned(st)
         st.shareId = null
         st.secret = null
@@ -885,7 +904,7 @@ export function createEngine(deps: EngineDeps): Engine {
       return
     }
     if (frame.op === "nack" || frame.op === "error") {
-      log("worker refused frame:", JSON.stringify(frame).slice(0, 200))
+      logError("worker refused frame:", JSON.stringify(frame).slice(0, 200))
       // the control socket lost its attach state (worker-side eviction of
       // the control DO): force a reconnect — init attach replays pending
       if (frame.op === "error" && st.wsReady && !st.closed) {
@@ -976,7 +995,7 @@ export function createEngine(deps: EngineDeps): Engine {
     st.timer = setTimeout(() => {
       st.timer = null
       if (debugEvents) log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} pending=${st.pending.length} ready=${st.wsReady}`)
-      chain = chain.then(() => flush(st)).catch((e) => log("flush error", (e as Error)?.message || e))
+      chain = chain.then(() => flush(st)).catch((e) => logError("flush error", (e as Error)?.message || e))
     }, wait)
   }
 
@@ -1241,7 +1260,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (st?.activated && !st.closed && t === "session.updated") {
         // flag removed -> unshare (same path as session.deleted)
         log(`share disabled for ${sid} - removing`)
-        chain = chain.then(() => remove(st)).catch((e) => log("remove error", (e as Error)?.message || e))
+        chain = chain.then(() => remove(st)).catch((e) => logError("remove error", (e as Error)?.message || e))
         return
       }
       return
@@ -1349,7 +1368,7 @@ export function createEngine(deps: EngineDeps): Engine {
             st.timer = null
             chain = chain
               .then(() => flush(st))
-              .catch((e) => log("idle flush error", (e as Error)?.message || e))
+              .catch((e) => logError("idle flush error", (e as Error)?.message || e))
             const epoch = st.statusEpoch
             const settle = () => {
               st.status = st.badSignal ? "error" : "completed"
@@ -1361,7 +1380,7 @@ export function createEngine(deps: EngineDeps): Engine {
                 .then(() => {
                   armSettleDrop(st)
                 })
-                .catch((e) => log("settle flush error", (e as Error)?.message || e))
+                .catch((e) => logError("settle flush error", (e as Error)?.message || e))
             }
             if (cfg.completedDelayMs <= 0) {
               settle()
@@ -1449,7 +1468,7 @@ export function createEngine(deps: EngineDeps): Engine {
                 })
                 .catch((e) => {
                   verifying.delete(main)
-                  log("verify error", (e as Error)?.message || e)
+                  logError("verify error", (e as Error)?.message || e)
                 })
             }
           }
@@ -1488,7 +1507,7 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           const st = sessions.get(sid)
           if (!st) return
-          chain = chain.then(() => remove(st)).catch((e) => log("remove error", (e as Error)?.message || e))
+          chain = chain.then(() => remove(st)).catch((e) => logError("remove error", (e as Error)?.message || e))
         }
       },
 

@@ -163,6 +163,9 @@ try {
     const withBinding = live?.metadata?.openshare
     check("S1: no binding written (dormant)", !withBinding, JSON.stringify(withBinding))
     check("S1: no urlFile written in manual mode", !(await readUrlFile(urlFile)))
+    // stderr policy: manual mode (TUI present) -> errors only; the
+    // informational announce lines must never appear
+    check("S1: no info announce lines on stderr (manual mode)", !/\[openshare\] (live:|url file:|share mode:)/.test(serve.output()), serve.output().split("\n").filter((l) => l.includes("[openshare]")).slice(0, 3).join(" | "))
 
     // S2: activation — set the flag mid-session
     await patchMetadata(serve, sid, { openshare: { enabled: true } })

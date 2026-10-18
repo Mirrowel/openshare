@@ -113,6 +113,8 @@ Priority: `OPENSHARE_*` env > plugin options > `openshare.config.json` > default
 
 The file is read on every activation — settings-dialog changes apply to the next share without a restart.
 
+**Stderr policy:** in manual mode (TUI installed) stderr carries **errors only** — the informational `live:` / `url file:` / mode lines are suppressed because the TUI surfaces the URL (toast, clipboard, sidebar chip, settings). All-mode (CI / server-only) keeps the full stderr contract; `announceStderr: false` silences the informational lines there too. Error-class output (worker down, refused init, mismatch recreate, timeouts) always reaches stderr.
+
 **Cadence profiles** (client preferences — always clamped into the worker's allowed window):
 
 | Profile | `debounceMs` | Notes |
