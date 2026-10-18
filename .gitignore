@@ -27,3 +27,6 @@ HANDOFF.md
 .idea/
 Thumbs.db
 .DS_Store
+
+# agent tooling scratch
+.cortexkit/
