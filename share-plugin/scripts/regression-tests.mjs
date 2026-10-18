@@ -172,10 +172,26 @@ try {
     check(`${result.name}: spool queue cleared`, result.spoolCleared)
   }
 
-  const [legacy, standalone, pkg] = results.map((r) => JSON.stringify(r.normalized))
+  // Parity is VALUE parity: JSON key order is viewer-irrelevant (the
+  // fold reads fields), and opencode's own event payloads carry no
+  // stable key order between message.updated generations (a late update
+  // recomputes e.g. `summary`; which generation an engine last stored
+  // depends on flush timing). Compare canonically (keys sorted), and on
+  // mismatch ALSO show the raw-order diff for diagnosis.
+  const stable = (value) => {
+    const sort = (v) => {
+      if (Array.isArray(v)) return v.map(sort)
+      if (v && typeof v === "object") {
+        return Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])]))
+      }
+      return v
+    }
+    return JSON.stringify(sort(value))
+  }
+  const [legacy, standalone, pkg] = results.map((r) => stable(r.normalized))
   check("parity: standalone == legacy", standalone === legacy, diffSummary(legacy, standalone))
   check("parity: package == legacy", pkg === legacy, diffSummary(legacy, pkg))
-  const dirResult = results[3] ? JSON.stringify(results[3].normalized) : ""
+  const dirResult = results[3] ? stable(results[3].normalized) : ""
   check("parity: package-dir (file:// URL) == legacy", dirResult === legacy, diffSummary(legacy, dirResult))
 } catch (error) {
   console.error("SUITE ERROR:", error.message)

@@ -132,6 +132,11 @@ title/version/model.
 - `GET /api/share/:id/ws` — viewer socket (hibernating; auth cookie)
 - `GET /api/ws?token=CREATE_TOKEN` — plugin socket: `init`
   (create/attach), `sync` → ack, `delete`
+- Tombstones: a sync item may carry `del: true` (`{type:"message",
+  del:true, data:{id}}` / part variant) — the worker deletes the keyed
+  item and broadcasts the tombstone so live viewers drop it. Message
+  tombstones cascade-delete that message's parts (opencode's undo
+  cleanup removes messages without per-part events).
 - HTTP fallback: `POST /api/share/<hex-suffix>` (Bearer CREATE_TOKEN; the URL suffix is required by routing but ignored, the share id is generated server-side),
   `POST /api/share/:id/sync`, `GET /api/share/:id/data`,
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`

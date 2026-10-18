@@ -146,6 +146,7 @@ console.log(`suite dir: ${suiteDir}`)
 process.env.OPENSHARE_WORKER_URL = WORKER_URL
 process.env.OPENSHARE_CREATE_TOKEN = "suite-create-token"
 process.env.OPENSHARE_DEBOUNCE_MS = "200"
+process.env.OPENSHARE_COMPLETED_DELAY_MS = "300"
 
 let worker
 try {

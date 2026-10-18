@@ -28,6 +28,7 @@ export type ShareConfig = {
   workerUrl: string
   createToken: string
   debounceMs: number
+  completedDelayMs: number
   modelLabel: string
   ttlDays: number
   openTasksInNewTab: boolean
@@ -44,6 +45,14 @@ export const DEFAULTS: ShareConfig = {
   workerUrl: "", // empty = plugin disabled until configured
   createToken: "",
   debounceMs: 10000,
+  // opencode goes genuinely idle between sequential prompts (automation
+  // workflows); flipping the share to "completed" on the first idle is
+  // misleading mid-workflow. Idle must PERSIST this long before the
+  // share says completed; a busy signal cancels it. 0 = immediate
+  // (legacy behavior). Process exit (dispose) flushes the pending
+  // completed status immediately, so `opencode run` CI shares still land
+  // their final status.
+  completedDelayMs: 20000,
   modelLabel: "$Provider/$Model",
   ttlDays: 90,
   openTasksInNewTab: true,
@@ -158,6 +167,7 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   if (env.OPENSHARE_WORKER_URL) cfg.workerUrl = env.OPENSHARE_WORKER_URL
   if (env.OPENSHARE_CREATE_TOKEN) cfg.createToken = env.OPENSHARE_CREATE_TOKEN
   if (env.OPENSHARE_DEBOUNCE_MS) cfg.debounceMs = num(env.OPENSHARE_DEBOUNCE_MS, cfg.debounceMs)
+  if (env.OPENSHARE_COMPLETED_DELAY_MS !== undefined) cfg.completedDelayMs = num(env.OPENSHARE_COMPLETED_DELAY_MS, cfg.completedDelayMs)
   if (env.OPENSHARE_MODEL_LABEL !== undefined) cfg.modelLabel = env.OPENSHARE_MODEL_LABEL
   if (env.OPENSHARE_TTL_DAYS) cfg.ttlDays = num(env.OPENSHARE_TTL_DAYS, cfg.ttlDays)
   if (env.OPENSHARE_AUTH_LOGIN !== undefined) cfg.authLogin = env.OPENSHARE_AUTH_LOGIN

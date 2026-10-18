@@ -11,8 +11,11 @@
 // win over their base copy. Appends everything to the built CSS.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
-const dist = new URL("../dist", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")
+// fileURLToPath decodes %20 etc. — the repo path contains a space, and a
+// raw .pathname keeps the encoding (live-caught: build died on scandir)
+const dist = fileURLToPath(new URL("../dist", import.meta.url))
 const assets = join(dist, "assets")
 const cssFile = readdirSync(assets).find((f) => f.endsWith(".css"))
 if (!cssFile) {

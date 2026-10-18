@@ -19,6 +19,9 @@ spool/
 openshare.local.json
 .dev.*
 
+# agent-internal (agent handoff notes — not product docs)
+HANDOFF.md
+
 # editor/OS
 .vscode/
 .idea/

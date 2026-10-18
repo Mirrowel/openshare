@@ -84,7 +84,9 @@ export function useShareSource(): Source {
           : it.type === "prefs" ? "prefs"
           : it.type === "session_diff" ? `session_diff/${it.sessionID ?? ""}`
           : null
-        if (key) next.set(key, it)
+        // tombstones (opencode undo → removed message/part): same key
+        // derivation as the upsert, opposite effect
+        if (key) it.del ? next.delete(key) : next.set(key, it)
       }
       return next
     })

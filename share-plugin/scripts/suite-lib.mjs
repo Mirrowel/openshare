@@ -270,6 +270,9 @@ function openShareEnv(sandbox, extra = {}) {
     OPENSHARE_URL_FILE: join(sandbox, "share-url.txt"),
     OPENSHARE_SPOOL_DIR: join(sandbox, "spool"),
     OPENSHARE_DEBOUNCE_MS: "300",
+    // fast completed debounce for the suites (S10 overrides this to test
+    // the debounce semantics at a realistic delay)
+    OPENSHARE_COMPLETED_DELAY_MS: "300",
     ...extra,
   }
 }

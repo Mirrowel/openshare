@@ -380,6 +380,15 @@ export function createV2ServerSetup() {
               await engine.hooks.event({ event: { type, properties: { sessionID: sid } } })
               continue
             }
+            if (type === "message.removed" || type === "message.part.removed") {
+              // undo cleanup: forwarded verbatim — the engine emits the
+              // tombstones that purge the reverted items from the share
+              const data = (event.data ?? {}) as { messageID?: string; partID?: string }
+              await engine.hooks.event({
+                event: { type, properties: { sessionID: sid, messageID: data.messageID, partID: data.partID } },
+              })
+              continue
+            }
             if (SESSION_ITEM_EVENTS.has(type)) {
               refresh(sid)
               continue

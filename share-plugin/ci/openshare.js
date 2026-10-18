@@ -29,6 +29,7 @@ var DEFAULTS = {
   workerUrl: "",
   createToken: "",
   debounceMs: 1e4,
+  completedDelayMs: 20000,
   modelLabel: "$Provider/$Model",
   ttlDays: 90,
   openTasksInNewTab: true,
@@ -117,6 +118,8 @@ function loadConfig(pluginDir, options) {
     cfg.createToken = env.OPENSHARE_CREATE_TOKEN;
   if (env.OPENSHARE_DEBOUNCE_MS)
     cfg.debounceMs = num(env.OPENSHARE_DEBOUNCE_MS, cfg.debounceMs);
+  if (env.OPENSHARE_COMPLETED_DELAY_MS !== undefined)
+    cfg.completedDelayMs = num(env.OPENSHARE_COMPLETED_DELAY_MS, cfg.completedDelayMs);
   if (env.OPENSHARE_MODEL_LABEL !== undefined)
     cfg.modelLabel = env.OPENSHARE_MODEL_LABEL;
   if (env.OPENSHARE_TTL_DAYS)
@@ -358,6 +361,7 @@ function createEngine(deps) {
     pending: [],
     timer: null,
     metaTimer: null,
+    completedTimer: null,
     shareId: null,
     secret: null,
     ackedRev: 0,
@@ -779,6 +783,10 @@ function createEngine(deps) {
       clearTimeout(st.timer);
     if (st.metaTimer)
       clearTimeout(st.metaTimer);
+    if (st.completedTimer) {
+      clearTimeout(st.completedTimer);
+      st.completedTimer = null;
+    }
     if (st.wsReady)
       wsSend(st, { op: "delete" });
     setTimeout(() => {
@@ -1045,17 +1053,50 @@ function createEngine(deps) {
             return;
           const type = p.status?.type;
           if (type === "busy") {
+            if (st.completedTimer) {
+              clearTimeout(st.completedTimer);
+              st.completedTimer = null;
+            }
             st.status = "live";
             scheduleFlush(st);
           } else if (type === "idle") {
-            st.status = st.badSignal ? "error" : "completed";
-            st.badSignal = false;
-            if (st.timer)
-              clearTimeout(st.timer);
-            st.timer = null;
-            flush(st);
+            if (cfg.completedDelayMs <= 0) {
+              st.status = st.badSignal ? "error" : "completed";
+              st.badSignal = false;
+              if (st.timer)
+                clearTimeout(st.timer);
+              st.timer = null;
+              flush(st);
+            } else if (!st.completedTimer && !st.closed) {
+              st.completedTimer = setTimeout(() => {
+                st.completedTimer = null;
+                if (st.closed)
+                  return;
+                st.status = st.badSignal ? "error" : "completed";
+                st.badSignal = false;
+                if (st.timer)
+                  clearTimeout(st.timer);
+                st.timer = null;
+                chain = chain.then(() => flush(st)).catch((e) => log("flush error", e?.message || e));
+              }, cfg.completedDelayMs);
+            }
           } else if (type === "retry") {
             st.badSignal = true;
+          }
+        } else if (t === "message.removed" || t === "message.part.removed") {
+          const st = stFor(sid);
+          if (!st || !st.activated || st.closed)
+            return;
+          const messageID = p.messageID;
+          if (!messageID)
+            return;
+          if (t === "message.removed") {
+            enqueue(st, { key: `message/${messageID}`, item: { type: "message", del: true, data: { id: messageID } } });
+          } else {
+            const partID = p.partID;
+            if (!partID)
+              return;
+            enqueue(st, { key: `part/${messageID}/${partID}`, item: { type: "part", del: true, data: { id: partID, messageID } } });
           }
         } else if (t === "message.updated") {
           const main = childToParent.get(sid) ?? sid;
@@ -1130,6 +1171,12 @@ function createEngine(deps) {
       },
       dispose: async () => {
         for (const st of sessions.values()) {
+          if (st.completedTimer) {
+            clearTimeout(st.completedTimer);
+            st.completedTimer = null;
+            st.status = st.badSignal ? "error" : "completed";
+            st.badSignal = false;
+          }
           if (st.timer)
             clearTimeout(st.timer);
           st.timer = null;
@@ -1441,6 +1488,13 @@ function createV2ServerSetup() {
             const type = event.type;
             if (type === "session.deleted") {
               await engine.hooks.event({ event: { type, properties: { sessionID: sid } } });
+              continue;
+            }
+            if (type === "message.removed" || type === "message.part.removed") {
+              const data = event.data ?? {};
+              await engine.hooks.event({
+                event: { type, properties: { sessionID: sid, messageID: data.messageID, partID: data.partID } }
+              });
               continue;
             }
             if (SESSION_ITEM_EVENTS.has(type)) {

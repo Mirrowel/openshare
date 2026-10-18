@@ -98,6 +98,7 @@ type SessionState = {
   pending: Array<{ items: unknown[]; status: string }> // spool frames awaiting ack
   timer: ReturnType<typeof setTimeout> | null
   metaTimer: ReturnType<typeof setTimeout> | null
+  completedTimer: ReturnType<typeof setTimeout> | null
   shareId: string | null
   secret: string | null
   ackedRev: number
@@ -266,6 +267,7 @@ export function createEngine(deps: EngineDeps): Engine {
     pending: [],
     timer: null,
     metaTimer: null,
+    completedTimer: null,
     shareId: null,
     secret: null,
     ackedRev: 0,
@@ -741,6 +743,10 @@ export function createEngine(deps: EngineDeps): Engine {
     st.activated = false
     if (st.timer) clearTimeout(st.timer)
     if (st.metaTimer) clearTimeout(st.metaTimer)
+    if (st.completedTimer) {
+      clearTimeout(st.completedTimer)
+      st.completedTimer = null
+    }
     if (st.wsReady) wsSend(st, { op: "delete" })
     setTimeout(() => {
       try {
@@ -1045,19 +1051,60 @@ export function createEngine(deps: EngineDeps): Engine {
           if (!st) return
           const type = (p.status as { type?: string } | undefined)?.type
           if (type === "busy") {
+            // any work cancels a pending completed (automation workflows
+            // idle between sequential prompts — that is NOT "done")
+            if (st.completedTimer) {
+              clearTimeout(st.completedTimer)
+              st.completedTimer = null
+            }
             st.status = "live"
             scheduleFlush(st)
           } else if (type === "idle") {
-            st.status = st.badSignal ? "error" : "completed"
-            st.badSignal = false
-            // terminal state: flush NOW, not on the debounce - the process
-            // can exit before a 3s timer fires and the final status (the
-            // whole "completed" signal) would be lost with it
-            if (st.timer) clearTimeout(st.timer)
-            st.timer = null
-            flush(st)
+            // opencode goes genuinely idle between sequential prompts of an
+            // automation workflow; only call the share completed once idle
+            // PERSISTS (completedDelayMs; 0 = legacy immediate). Dispose
+            // flushes a pending completed, so `opencode run` shares still
+            // land their final status despite the delay.
+            if (cfg.completedDelayMs <= 0) {
+              st.status = st.badSignal ? "error" : "completed"
+              st.badSignal = false
+              // terminal state: flush NOW, not on the debounce - the process
+              // can exit before a 3s timer fires and the final status (the
+              // whole "completed" signal) would be lost with it
+              if (st.timer) clearTimeout(st.timer)
+              st.timer = null
+              flush(st)
+            } else if (!st.completedTimer && !st.closed) {
+              st.completedTimer = setTimeout(() => {
+                st.completedTimer = null
+                if (st.closed) return
+                st.status = st.badSignal ? "error" : "completed"
+                st.badSignal = false
+                if (st.timer) clearTimeout(st.timer)
+                st.timer = null
+                chain = chain.then(() => flush(st)).catch((e) => log("flush error", (e as Error)?.message || e))
+              }, cfg.completedDelayMs)
+            }
           } else if (type === "retry") {
             st.badSignal = true
+          }
+        } else if (t === "message.removed" || t === "message.part.removed") {
+          // opencode undo: revert() only marks the session (the viewer
+          // hides the range); the NEXT prompt hard-deletes the reverted
+          // messages/parts via cleanup() and publishes these events.
+          // The worker's store is upsert-only, so without an explicit
+          // tombstone the deleted items live forever and reappear the
+          // moment the revert marker clears (live-caught in production).
+          const st = stFor(sid)
+          if (!st || !st.activated || st.closed) return
+          const messageID = p.messageID as string | undefined
+          if (!messageID) return
+          if (t === "message.removed") {
+            enqueue(st, { key: `message/${messageID}`, item: { type: "message", del: true, data: { id: messageID } } })
+          } else {
+            const partID = p.partID as string | undefined
+            if (!partID) return
+            enqueue(st, { key: `part/${messageID}/${partID}`, item: { type: "part", del: true, data: { id: partID, messageID } } })
           }
         } else if (t === "message.updated") {
           // resumed sessions may emit the user message BEFORE any session.*
@@ -1143,6 +1190,15 @@ export function createEngine(deps: EngineDeps): Engine {
 
       dispose: async () => {
         for (const st of sessions.values()) {
+          if (st.completedTimer) {
+            // a pending idle never got its delay: resolve now so the
+            // final status lands even though the process is exiting
+            // (the timer existing implies idle was the last signal)
+            clearTimeout(st.completedTimer)
+            st.completedTimer = null
+            st.status = st.badSignal ? "error" : "completed"
+            st.badSignal = false
+          }
           if (st.timer) clearTimeout(st.timer)
           st.timer = null
           const flushed = flush(st)

@@ -62,6 +62,7 @@ export function saveConfig(cfg: ShareConfig, baseDir: string = moduleDir()): { p
       "workerUrl",
       "createToken",
       "debounceMs",
+      "completedDelayMs",
       "modelLabel",
       "ttlDays",
       "openTasksInNewTab",

@@ -21,6 +21,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { spawn } from "node:child_process"
 import {
   sleep,
   waitFor,
@@ -109,6 +110,16 @@ async function readUrlFile(urlFile) {
   } catch {
     return undefined
   }
+}
+
+/** Poll the worker /data until the predicate passes on the parsed body. */
+async function waitForShareData(shareId, predicate, label) {
+  return waitFor(async () => {
+    const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+    if (!r.ok) return undefined
+    const parsed = await r.json()
+    return predicate(parsed) ?? undefined
+  }, label, 45000)
 }
 
 const suiteDir = mkdtempSync(join(tmpdir(), "openshare-manual-"))
@@ -404,6 +415,184 @@ try {
     )
   } finally {
     await stopServe(preServe2)
+  }
+
+  // S9: undo tombstones — revert marks (viewer hides), the NEXT prompt
+  // hard-deletes the reverted range (message.removed / part.removed).
+  // The share must PHYSICALLY drop those items: without tombstones the
+  // upsert-only worker keeps them and they reappear when the marker
+  // clears (live-caught in production 2026-10-18).
+  {
+    const s9Sandbox = join(suiteDir, "undo")
+    const s9Project = join(s9Sandbox, "project")
+    mkdirSync(s9Project, { recursive: true })
+    const s9UrlFile = join(s9Sandbox, "share-url.txt")
+    const s9Env = { OPENSHARE_URL_FILE: s9UrlFile }
+    if (process.env.S9_DEBUG) s9Env.OPENSHARE_DEBUG_EVENTS = "1"
+    const s9Serve = await startServe({ name: "undo", path: PKG }, s9Sandbox, s9Project, s9Env)
+    async function s9Body() {
+      const s9sid = await createAndPrompt(s9Serve, "undo turn one")
+      await promptSession(s9Serve, s9sid, "undo turn two")
+      const s9url = (await waitFor(() => readUrlFile(s9UrlFile), "S9: share created")).trim().split("\n").at(-1)
+      const s9id = s9url.split("/").pop()
+      await waitForShareData(s9id, (parsed) => {
+        const msgs = parsed.data.filter((i) => i.type === "message")
+        return parsed.status === "completed" && msgs.length >= 4 ? parsed : undefined
+      }, "S9: both turns shared")
+
+      // undo the second turn: revert to its user message
+      const messages = await (await httpGet(`${s9Serve.base}/session/${s9sid}/message`)).json()
+      const flat = messages.map((m) => m.info ?? m)
+      const users = flat.filter((m) => m.role === "user").map((m) => m.id)
+      const beforeIds = flat.map((m) => m.id)
+      const turn2User = users.at(-1)
+      const revRes = await httpGet(`${s9Serve.base}/session/${s9sid}/revert`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageID: turn2User }),
+        timeoutMs: 30000,
+      })
+      if (!revRes.ok) throw new Error(`S9 revert ${revRes.status}: ${(await revRes.text()).slice(0, 200)}`)
+      const marked = await waitForShareData(s9id, (parsed) => {
+        const session = parsed.data.find((i) => i.type === "session")
+        return session?.data?.revert?.messageID ? session : undefined
+      }, "S9: revert marker visible on the share (viewer hides)")
+      check("S9: revert marker on the share", !!marked)
+
+      // re-prompt: cleanup hard-deletes the range; tombstones must purge.
+      // (the purge lands with or before the new USER message: cleanup runs
+      // before the new prompt persists, so waiting for the new user id
+      // guarantees the tombstones have been applied too)
+      await promptSession(s9Serve, s9sid, "after undo")
+      const purged = await waitForShareData(s9id, (parsed) => {
+        const msgs = parsed.data.filter((i) => i.type === "message")
+        const newUsers = msgs.filter((i) => i.data.role === "user" && !beforeIds.includes(i.data.id))
+        return newUsers.length ? parsed : undefined
+      }, "S9: new turn visible (tombstones settled)")
+      const afterIds = purged.data.filter((i) => i.type === "message").map((i) => i.data.id)
+      const afterParts = purged.data.filter((i) => i.type === "part").map((i) => i.data.messageID)
+      // the removed range: everything from the revert point onward
+      const removedIds = flat.slice(flat.findIndex((m) => m.id === turn2User)).map((m) => m.id)
+      check(
+        "S9: reverted user message purged from the share",
+        !afterIds.includes(turn2User),
+        `messages still present: ${JSON.stringify(afterIds)}`,
+      )
+      check(
+        "S9: reverted turn's parts purged",
+        !afterParts.some((mid) => removedIds.includes(mid)),
+        `parts of removed messages still present`,
+      )
+      const sessionAfter = purged.data.find((i) => i.type === "session")
+      check("S9: revert marker cleared after re-prompt", !sessionAfter?.data?.revert)
+      // first turn survived the purge
+      check("S9: kept turn's message still present", afterIds.includes(users[0]))
+
+      // multi-undo: two fresh turns, revert to the FIRST of them, re-prompt
+      await promptSession(s9Serve, s9sid, "multi undo A")
+      await promptSession(s9Serve, s9sid, "multi undo B")
+      const messages2 = await (await httpGet(`${s9Serve.base}/session/${s9sid}/message`)).json()
+      const flat2 = messages2.map((m) => m.info ?? m)
+      const users2 = flat2.filter((m) => m.role === "user").map((m) => m.id)
+      const multiTarget = users2.at(-2) // "multi undo A"
+      // everything from the revert point onward gets hard-deleted
+      const rangeIds = flat2.slice(flat2.findIndex((m) => m.id === multiTarget)).map((m) => m.id)
+      const rev2 = await httpGet(`${s9Serve.base}/session/${s9sid}/revert`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageID: multiTarget }),
+        timeoutMs: 30000,
+      })
+      if (!rev2.ok) throw new Error(`S9 multi revert ${rev2.status}: ${(await rev2.text()).slice(0, 200)}`)
+      await promptSession(s9Serve, s9sid, "after multi undo")
+      const purged2 = await waitForShareData(s9id, (parsed) => {
+        const msgs = parsed.data.filter((i) => i.type === "message").map((i) => i.data.id)
+        const newUsers = parsed.data.filter((i) => i.type === "message" && i.data.role === "user" && !rangeIds.includes(i.data.id) && !beforeIds.includes(i.data.id))
+        return newUsers.length && !msgs.some((id) => rangeIds.includes(id)) ? parsed : undefined
+      }, "S9: multi-undo range purged (both turns)")
+      const finalIds = purged2.data.filter((i) => i.type === "message").map((i) => i.data.id)
+      check("S9: multi-undo: entire reverted range gone", !finalIds.some((id) => rangeIds.includes(id)))
+      check("S9: multi-undo: kept history intact", finalIds.includes(users[0]))
+    }
+    try {
+      await s9Body()
+    } catch (error) {
+      const lines = s9Serve
+        .output()
+        .split("\n")
+        .filter((l) => l.includes("[openshare]") || l.includes("removed"))
+        .join("\n")
+      console.log(`--- S9 serve [openshare] log ---\n${lines || "(none)"}\n---`)
+      throw error
+    } finally {
+      await stopServe(s9Serve)
+    }
+  }
+  // S10: completed debounce — idle between sequential prompts must NOT
+  // flip the share to completed instantly (8s delay here); a genuinely
+  // finished session settles to completed after the window; a killed
+  // process (dispose) flushes the pending completed immediately.
+  {
+    const stSandbox = join(suiteDir, "status")
+    const stProject = join(stSandbox, "project")
+    mkdirSync(stProject, { recursive: true })
+    const stUrlFile = join(stSandbox, "share-url.txt")
+    const stServe = await startServe({ name: "status", path: PKG }, stSandbox, stProject, {
+      OPENSHARE_URL_FILE: stUrlFile,
+      OPENSHARE_COMPLETED_DELAY_MS: "8000",
+    })
+    try {
+      const stsid = await createAndPrompt(stServe, "status debounce")
+      const sturl = (await waitFor(() => readUrlFile(stUrlFile), "S10: share created")).trim().split("\n").at(-1)
+      const stid = sturl.split("/").pop()
+      // wait for the assistant response to land, then check the status is
+      // still live well inside the 8s window
+      await waitForShareData(stid, (parsed) => {
+        const parts = parsed.data.filter((i) => i.type === "part")
+        return parts.length >= 2 ? parsed : undefined
+      }, "S10: response parts synced")
+      await sleep(1500)
+      const mid = await (await httpGet(`${WORKER_URL}/api/share/${stid}/data`)).json()
+      check("S10: status still live inside the debounce window", mid.status === "live", `status=${mid.status}`)
+      const done = await waitForShareData(stid, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: completed after the window (8s)")
+      check("S10: settles to completed after the delay", done.status === "completed")
+
+      // dispose-flush: a GRACEFUL process exit while the 8s pending timer
+      // is armed must still land the final completed (the `opencode run`
+      // CI contract — a hard kill never runs dispose, so this drives a
+      // real run to natural exit)
+      const runSid = await new Promise((resolve, reject) => {
+        const child = spawn("opencode", ["run", "-m", "mock/mock-1", "--message", "dispose flush probe"], {
+          cwd: stProject,
+          shell: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            XDG_CONFIG_HOME: join(stSandbox, "xdg"),
+            XDG_DATA_HOME: join(stSandbox, "xdg-data"),
+            XDG_STATE_HOME: join(stSandbox, "xdg-state-run"),
+            OPENCODE_CONFIG: join(stSandbox, "opencode.json"),
+            OPENSHARE_WORKER_URL: WORKER_URL,
+            OPENSHARE_CREATE_TOKEN: "suite-create-token",
+            OPENSHARE_URL_FILE: stUrlFile,
+            OPENSHARE_SPOOL_DIR: join(stSandbox, "spool"),
+            OPENSHARE_DEBOUNCE_MS: "300",
+            OPENSHARE_COMPLETED_DELAY_MS: "8000",
+          },
+        })
+        let err = ""
+        child.stdout.on("data", (d) => (err += d))
+        child.stderr.on("data", (d) => (err += d))
+        child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`run exit ${code}: ${err.slice(-300)}`))))
+        child.on("error", reject)
+      })
+      const runUrl = (await waitFor(() => readUrlFile(stUrlFile), "S10: run share url written")).trim().split("\n").at(-1)
+      const runId = runUrl.split("/").pop()
+      const flushed = await waitForShareData(runId, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: dispose flushed pending completed (graceful run exit)")
+      check("S10: graceful run exit still lands final completed despite the delay", flushed.status === "completed")
+    } finally {
+      await stopServe(stServe)
+    }
   }
 } catch (error) {
   console.error("SUITE ERROR:", error.message)

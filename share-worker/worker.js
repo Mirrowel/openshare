@@ -586,8 +586,22 @@ export class ShareDO {
     for (const it of body.data ?? []) {
       const key = itemKey(it)
       if (!key) continue
-      items[key] = it
-      batch.push(it)
+      if (it.del) {
+        // tombstone (opencode undo → message/part removed): the key is
+        // derived exactly like an upsert's, so this deletes the item it
+        // names. Flows to viewers in the frame so live pages drop it too.
+        delete items[key]
+        batch.push(it)
+        if (it.type === "message" && it.data?.id) {
+          // cascade: opencode's full-message cleanup removes the message
+          // without per-part events; its parts must not linger as junk
+          const prefix = `part/${it.data.id}/`
+          for (const k of Object.keys(items)) if (k.startsWith(prefix)) delete items[k]
+        }
+      } else {
+        items[key] = it
+        batch.push(it)
+      }
     }
     const rev = (meta.rev ?? 0) + 1
     meta.rev = rev

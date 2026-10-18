@@ -102,6 +102,7 @@ Priority: `OPENSHARE_*` env > plugin options > `openshare.config.json` > default
 | `createToken` | — | Worker `CREATE_TOKEN` (required). |
 | `shareMode` | presence | `"all"` / `"manual"`; omit for presence-based. |
 | `debounceMs` | `10000` | Event batch window before syncing. |
+| `completedDelayMs` | `20000` | How long a session must stay idle before the share says **completed** — opencode idles between sequential prompts of an automation workflow, and flipping the page to completed mid-workflow is misleading. Busy cancels the timer; a graceful process exit flushes the pending completed immediately (CI runs still land their final status). `0` = immediate. |
 | `modelLabel` | `"$Provider/$Model"` | Label template; `""` hides the model. |
 | `ttlDays` | worker cap | Share lifetime (capped at `MAX_TTL_DAYS`). |
 | `openTasksInNewTab` | `true` | Viewer: task rows open sub-pages in a new tab. |
