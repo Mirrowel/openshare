@@ -86,11 +86,17 @@ stays all-mode.
 ## TUI
 
 - `/share` — share the session (one-time consent; copies the URL). On a
-  child session, shares the whole family. Already shared → copies the link.
-- `/unshare` — stop sharing, delete the page.
-- `/openshare` — settings dialog: worker connection + test, sharing
-  defaults, read auth, advanced (spoolDir, urlFile), this-session actions.
-- Sidebar chip — share status dot next to the session title.
+  child session, shares the whole family. Already shared → the share
+  manager: copy links (per server), per-server stop / leave-as-snapshot,
+  share to another server, stop all. A credential conflict opens the
+  collision dialog (copy debug info / share on a new share / don't share).
+- `/openshare` — settings dialog: Servers (connect, enroll, rotate,
+  disconnect, set active, remove), **Admin console** (manage any server
+  with its root token: users, freeze/delete, mint tokens, invite codes,
+  shares, reassign, purge), sharing defaults, read auth, advanced
+  (spoolDir, urlFile), this-session actions.
+- Sidebar chip — share status next to the session title (`·N` when the
+  session streams to several servers); click copies the link.
 
 ## Development
 
