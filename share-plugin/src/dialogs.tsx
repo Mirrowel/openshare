@@ -115,6 +115,30 @@ function DialogFrame(props: { api: TuiPluginApi; title: string; children: JSX.El
   )
 }
 
+/** Stylized key legend row: key glyphs in accent (boxed feel via inverse
+ * panel background), verbs muted, separated by dim dots. The esc token is
+ * clickable. */
+function KeyLegend(props: { api: TuiPluginApi; keys: Array<[string, string]>; onBack?: () => void }): JSX.Element {
+  const theme = () => props.api.theme.current
+  return (
+    <box flexDirection="row" gap={1} paddingTop={1} paddingLeft={1} alignItems="center">
+      <For each={props.keys}>
+        {(pair, index) => (
+          <>
+            <box backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} onMouseUp={() => { if (pair[0] === "esc") props.onBack?.() }}>
+              <text fg={theme().accent}><b>{pair[0]}</b></text>
+            </box>
+            <text fg={theme().textMuted}>{pair[1]}</text>
+            <Show when={index() < props.keys.length - 1}>
+              <text fg={theme().textMuted}>·</text>
+            </Show>
+          </>
+        )}
+      </For>
+    </box>
+  )
+}
+
 // --- the menu (ported from agent-variants' MenuDialog) -----------------------
 
 export type MenuOption<Value = string> = {
@@ -216,11 +240,7 @@ export function MenuDialog<Value>(props: {
           </For>
         </box>
       </scrollbox>
-      <box flexDirection="row" gap={3} paddingTop={1} paddingLeft={1}>
-        <text fg={theme().textMuted}>enter select</text>
-        <text fg={theme().textMuted}>up/down move</text>
-        <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc back</text>
-      </box>
+      <KeyLegend api={props.api} keys={[["↑↓", "move"], ["⏎", "select"], ["esc", "back"]]} onBack={() => props.onDone(undefined)} />
     </DialogFrame>
   )
 }
@@ -312,10 +332,7 @@ export function PromptDialog(props: {
         <text fg={text() ? theme().text : theme().textMuted}>{text() || props.placeholder || ""}</text>
         <text fg={theme().accent}>{"▌"}</text>
       </box>
-      <box flexDirection="row" gap={3}>
-        <text fg={theme().textMuted}>enter confirm</text>
-        <text fg={theme().textMuted}>esc cancel</text>
-      </box>
+      <KeyLegend api={props.api} keys={[["a-z0-9", "type"], ["⌫", "delete"], ["⏎", "confirm"], ["esc", "cancel"]]} onBack={() => props.onDone(undefined)} />
     </DialogFrame>
   )
 }
