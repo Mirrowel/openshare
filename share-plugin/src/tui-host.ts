@@ -12,6 +12,8 @@ export type ShareDialogSelectOption<Value = string> = {
   description?: string
   category?: string
   disabled?: boolean
+  /** long-form detail shown in the [i] pane (v1 menus; other hosts ignore) */
+  help?: string
 }
 
 export type ShareHostKeyContext = {
@@ -79,6 +81,8 @@ export type ShareHostApi = {
     showConfirm(props: { title: string; message: string; confirmLabel?: string }): Promise<boolean>
     showAlert(props: { title: string; message: string }): Promise<void>
     showPrompt(props: { title: string; placeholder?: string; value?: string }): Promise<string | undefined>
+    /** Height-slider dialog (v1 facade only; feature-detected by settings). */
+    showHeightSlider?(current: number): Promise<number | undefined>
     // Callback dialogs (v2 adapter bridge only — host ui.DialogX under
     // plugin dialog.replace receives no keys on opencode 1.19.x).
     DialogSelect<Value = string>(props: {

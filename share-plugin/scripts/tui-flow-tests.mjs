@@ -65,6 +65,7 @@ function mockHost(client, { consent = true } = {}) {
     dialogAnswers: [],
     promptAnswers: [],
     menuAnswers: [],
+    menus: [],
   }
   const confirmAnswer = () => state.dialogAnswers.shift() ?? consent
   return {
@@ -93,6 +94,7 @@ function mockHost(client, { consent = true } = {}) {
           setSize() {},
         },
         async showMenu(props) {
+          state.menus.push(props)
           return state.menuAnswers.shift() ?? props.options[0]?.value
         },
         async showConfirm(props) {
@@ -298,6 +300,10 @@ try {
     check("F6: serverEntries lists it active", entries.some((s) => s.url === WORKER_URL && s.active))
     const rotated = await flows.rotateAtServer(WORKER_URL, savedTok)
     check("F6: rotate issues a new token", rotated.ok === true && rotated.token?.startsWith("osk_") && rotated.token !== savedTok, JSON.stringify(rotated))
+    // persist the rotated token like the real serverMenu rotate handler —
+    // otherwise the engine's credential stays the now-REVOKED token and
+    // every later create is refused (live-caught by F8)
+    flows.saveServerEntry(WORKER_URL, { token: rotated.token })
     const oldMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${savedTok}` } })
     const newMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${rotated.token}` } })
     check("F6: old token revoked, new valid", oldMe.status === 401 && newMe.status === 200, `${oldMe.status}/${newMe.status}`)
@@ -338,6 +344,45 @@ try {
     const purged = await admin.purge()
     const sharesAfterPurge = (await admin.shares()).data?.shares ?? []
     check("F7: purge leaves the server empty", purged.ok === true && sharesAfterPurge.length === 0, JSON.stringify(purged))
+
+    // F8: gone detection — a binding whose page died server-side (purge /
+    // TTL / delete) is auto-cleared when the share manager opens, with a
+    // "Share is gone" modal; the probe is credential-free (/data 404 before
+    // the read-auth gate).
+    state.kv.set("openshare_consent", true)
+    const reshard = await flows.runShareFlow(host, sid)
+    check("F8: re-share after purge creates a fresh page", reshard.ok === true && !!reshard.url, reshard.message)
+    const shareId2 = reshard.url.split("/").pop()
+    await waitFor(async () => {
+      const r = await httpGet(`${WORKER_URL}/api/share/${shareId2}/data`)
+      if (!r.ok) throw new Error(`${r.status}`)
+      return (await r.json()).status === "completed" ? true : undefined
+    }, "F8: fresh share completed")
+    check("F8: verifyShare says live before the purge", (await flows.verifyShare(WORKER_URL, shareId2)) === "live")
+    await admin.purge()
+    check("F8: verifyShare says gone after the purge", (await flows.verifyShare(WORKER_URL, shareId2)) === "gone")
+    const commands = await import(distUrl("commands.js"))
+    const shareCommand = commands.buildShareCommand(host, () => sid)
+    state.menuAnswers.push("close")
+    await shareCommand.run({})
+    const goneMenu = state.menus.at(-1)
+    check("F8: gone modal shown", goneMenu?.title === "Share is gone", goneMenu?.title ?? "(no menu)")
+    const metaAfter = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+    check("F8: gone binding entry auto-cleared", !(metaAfter?.servers ?? {})[WORKER_URL], JSON.stringify(metaAfter?.servers ?? null))
+
+    // F9: interface prefs — dialog size rows edit the host kv (width cycle,
+    // height via the prompt fallback on the mock host); settings rows carry
+    // [i] help (long-form detail incl. current value + source).
+    state.menuAnswers.push("ui:width", "ui:height", "action:exit")
+    state.promptAnswers.push("66")
+    await settings.settingsDialog(host)
+    check("F9: width cycled large -> xlarge in kv", state.kv.get("openshare.ui-width") === "xlarge", JSON.stringify(state.kv.get("openshare.ui-width")))
+    check("F9: height persisted (clamped) in kv", state.kv.get("openshare.ui-height-percent") === 66, JSON.stringify(state.kv.get("openshare.ui-height-percent")))
+    const rootMenu = state.menus.findLast((m) => m.title === "OpenShare settings")
+    const withHelp = rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40) ?? []
+    check("F9: settings rows carry [i] help", withHelp.length >= 10, `${withHelp.length} rows with help`)
+    const uiWidthRow = rootMenu?.options.find((o) => o.value === "ui:width")
+    check("F9: interface rows present", !!uiWidthRow, JSON.stringify(rootMenu?.options.map((o) => o.value)))
   } finally {
     await stopServe(serve);
   }

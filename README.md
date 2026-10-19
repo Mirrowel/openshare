@@ -151,7 +151,10 @@ Full semantics: [share-worker/README — Identity & enrollment](share-worker/REA
   - **Servers** — memberships with status; per-server: set active, enroll now, rotate token, disconnect (server-side revoke), test, remove; **Connect to a server** (URL + code → enrolled + active).
   - **Admin console** — manage any server with its root token: users (freeze/unfreeze/mint/delete), tokens (revoke), access codes (create/disable — value copied, shown once), shares (reassign/delete), purge all, server info.
   - Sharing defaults, read auth, advanced (spoolDir, urlFile), write-target picker, per-session actions (TTL override, session read auth).
-- **Sidebar chip** — `◉ re:share` next to the session title; click copies the link. `·N` when the session streams to several servers; click always copies the primary.
+  - **Interface** — menu width (medium/large/xlarge → 60/88/116 columns) and menu height (25–100% of the terminal, slider with presets). Stored in the host's own preference store — per machine, not the config file.
+- **`[i]` info pane** — every meaningful menu row (settings, servers, share manager, admin console) carries a long-form detail pane: what the option does, current value + which file/env it comes from, defaults, effects and caveats, and the full data the row truncates (complete URLs, share ids, token kinds). Press `i` on a row, `esc` returns to the menu with the selection intact.
+- **Gone detection** — a binding can outlive its page (purge, TTL, host-side delete). Opening the share manager probes every bound server (credential-free); dead entries are cleared from the session automatically with a **"Share is gone"** modal offering *Share again* / *Close*. The sidebar chip verifies lazily (per session+server, 1/min) and renders a dim `⊘` state — clicking it opens the manager instead of copying a dead link. Network errors never count as gone.
+- **Sidebar chip** — `◉ re:share` next to the session title; click copies the link. `·N` when the session streams to several servers; `⊘` when the page is gone (click to fix).
 
 ## Configuration
 

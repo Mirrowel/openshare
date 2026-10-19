@@ -15,6 +15,7 @@
 
 import {
   CONSENT_KV_KEY,
+  clearGoneBindingEntries,
   confirmShare,
   currentConfig,
   isConfigured,
@@ -26,6 +27,7 @@ import {
   runShareFlow,
   runUnshareFlow,
   serverEntries,
+  verifyShare,
   workerDeleteShare,
 } from "./share-flow.js"
 import { onboardingDialog, settingsDialog } from "./settings.js"
@@ -45,16 +47,46 @@ function finish(host: ShareHostApi, result: { ok: boolean; message: string; url?
 
 /** The already-shared state: per-server management for the fan-out era.
  * Single binding keeps the compact classic menu; multiple bindings get a
- * per-server submenu (copy / stop here / leave as-is) plus all-stop. */
+ * per-server submenu (copy / stop here / leave as-is) plus all-stop.
+ * Opens with a liveness sweep: bindings whose page died server-side
+ * (purge/TTL/delete) are auto-cleared and surfaced in a gone modal. */
 async function showShareManager(host: ShareHostApi, sessionID: () => string | undefined) {
   const sid = sessionID()
   if (!sid) return
   const root = await resolveRoot(host.client, sid)
-  const all = await readBindings(host.client, root)
+  let all = await readBindings(host.client, root)
 
   // collision first: the engine marked a server's credentials as rejected
   const collided = all.find((b) => b.collided)
   if (collided) return showCollisionDialog(host, root, collided.server, collided.id, collided.collided ?? "")
+
+  // liveness sweep: probe every live-bound server (credential-free /data
+  // check). GONE entries are removed from the binding automatically; the
+  // modal says what happened and offers to re-share. Network errors are
+  // "unknown" and never treated as gone.
+  const live = all.filter((b) => b.url && b.enabled !== false && b.id)
+  if (live.length) {
+    const verdicts = await Promise.all(live.map((b) => verifyShare(b.server, b.id)))
+    const gone = live.filter((b, i) => verdicts[i] === "gone")
+    if (gone.length) {
+      await clearGoneBindingEntries(host, root, gone.map((b) => b.server))
+      all = all.filter((b) => !gone.some((g) => g.server === b.server))
+      const list = gone.map((b) => `• ${hostOf(b.url || b.server)} — ${b.url}`).join("\n")
+      const choice = await host.ui.showMenu<string>({
+        title: "Share is gone",
+        hint: "The page was removed, expired, or purged on the server — sharing disabled for it.",
+        options: [
+          { title: "Share again", value: "again", description: "create a fresh page with the full history", help: `The stale binding was already cleared. Sharing again creates a brand-new page on the ACTIVE server with this session's full history backfilled.\n\nGone:\n${list}` },
+          { title: "Close", value: "close", description: "leave the session unshared", help: `The stale binding entries were cleared automatically; the session is not shared anymore. Run /share any time to share it fresh.\n\nGone:\n${list}` },
+        ],
+      })
+      if (choice === "again") {
+        finish(host, await runShareFlow(host, sid))
+        return
+      }
+      if (all.length === 0) return
+    }
+  }
 
   if (all.length === 0) return
 
@@ -68,8 +100,18 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
         title: "Session is shared",
         hint: b.url,
         options: [
-          { title: "Copy share link", value: "copy", description: "copy the share URL to the clipboard" },
-          { title: "Stop sharing", value: "stop", description: "Delete the share page — the link stops working for everyone" },
+          {
+            title: "Copy share link",
+            value: "copy",
+            description: "copy the share URL to the clipboard",
+            help: `Copies the share URL to the clipboard (navigator + OSC52 fallback).\n\nURL: ${b.url}\nServer: ${b.server}\nShare id: ${b.id}\n\nAnyone with the link can read the page (plus the login, if read auth is set).`,
+          },
+          {
+            title: "Stop sharing",
+            value: "stop",
+            description: "Delete the share page — the link stops working for everyone",
+            help: `Deletes the page on ${hostOf(b.url || b.server)} server-side and clears this session's share flag. Viewers with the link see a final "gone" state. This cannot be undone — sharing again creates a NEW page with a new URL.`,
+          },
           { title: "Cancel", value: "cancel" },
         ],
       })
@@ -93,16 +135,32 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
   }
 
   // fan-out menu
-  const options: Array<{ title: string; value: string; description?: string }> = all.map((b) => ({
+  const options: Array<{ title: string; value: string; description?: string; help?: string }> = all.map((b) => ({
     title: `Copy link — ${hostOf(b.url || b.server)}`,
     value: `copy:${b.server}`,
     description: b.url,
+    help: `Copies this server's share URL to the clipboard.\n\nURL: ${b.url}\nServer: ${b.server}\nShare id: ${b.id}\n\nEach server carries an independent page of the same session.`,
   }))
-  options.push({ title: "Manage per server…", value: "manage", description: `${all.length} servers — stop one, leave a snapshot` })
+  options.push({
+    title: "Manage per server…",
+    value: "manage",
+    description: `${all.length} servers — stop one, leave a snapshot`,
+    help: `Per-server actions: copy the link, stop sharing there (page deleted), or leave it as a read-only snapshot (updates stop, the page lives out its TTL). Other servers are unaffected.\n\nBound servers:\n${all.map((b) => `• ${b.server} — ${b.url}`).join("\n")}`,
+  })
   if (otherServers.length) {
-    options.push({ title: "Share to another server…", value: "more", description: otherServers.map((s) => hostOf(s.url)).join(", ") })
+    options.push({
+      title: "Share to another server…",
+      value: "more",
+      description: otherServers.map((s) => hostOf(s.url)).join(", "),
+      help: `Adds one of your other configured servers as a destination for THIS session: it becomes the active server and the full history is mirrored there within seconds.\n\nAvailable:\n${otherServers.map((s) => `• ${s.url}`).join("\n")}`,
+    })
   }
-  options.push({ title: "Stop sharing (all)", value: "stop-all", description: "delete every server's page" })
+  options.push({
+    title: "Stop sharing (all)",
+    value: "stop-all",
+    description: "delete every server's page",
+    help: `Deletes the page on all ${all.length} servers and clears the share flag. Every link stops working; sharing again creates fresh pages.`,
+  })
   options.push({ title: "Cancel", value: "cancel" })
   const choice = await host.ui.showMenu<string>({ title: `Session is shared · ${all.length} servers`, options })
   if (!choice || choice === "cancel") return
@@ -148,9 +206,24 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
       title: `${hostOf(b.url || b.server)}`,
       hint: b.url,
       options: [
-        { title: "Copy link", value: "copy", description: "copy the share URL" },
-        { title: "Stop sharing here", value: "stop", description: "delete THIS server's page; other servers unaffected" },
-        { title: "Leave as-is (snapshot)", value: "leave", description: "stop updating it; the page stays until its TTL" },
+        {
+          title: "Copy link",
+          value: "copy",
+          description: "copy the share URL",
+          help: `Copies this server's share URL to the clipboard.\n\nURL: ${b.url}\nShare id: ${b.id}`,
+        },
+        {
+          title: "Stop sharing here",
+          value: "stop",
+          description: "delete THIS server's page; other servers unaffected",
+          help: `Deletes the page on ${hostOf(b.url || b.server)} and retires this server for the session (the engine stops mirroring here). Other servers keep streaming. Sharing here again later creates a new page.`,
+        },
+        {
+          title: "Leave as-is (snapshot)",
+          value: "leave",
+          description: "stop updating it; the page stays until its TTL",
+          help: `Stops mirroring to ${hostOf(b.url || b.server)} WITHOUT deleting anything — viewers keep reading the snapshot until the share's TTL expires. Useful for handing someone a frozen copy while you keep working.`,
+        },
         { title: "Cancel", value: "cancel" },
       ],
     })
@@ -189,9 +262,24 @@ async function showCollisionDialog(host: ShareHostApi, root: string, server: str
     title: `Share conflict — ${hostOf(server)}`,
     hint: `saved credentials for ${shareId.slice(0, 12)}… were rejected (${error})`,
     options: [
-      { title: "Copy debug info", value: "debug", description: "server, share id, error — for the hoster or an issue report" },
-      { title: "Share on a new share", value: "new", description: "abandon the old binding; create a fresh share with full history" },
-      { title: "Don't share here", value: "no", description: "leave the old page; this server stops receiving this session" },
+      {
+        title: "Copy debug info",
+        value: "debug",
+        description: "server, share id, error — for the hoster or an issue report",
+        help: `Copies a JSON blob with the server, share id, exact error, and session id — attach it when reporting to the hoster or filing an issue.\n\n${debugInfo}`,
+      },
+      {
+        title: "Share on a new share",
+        value: "new",
+        description: "abandon the old binding; create a fresh share with full history",
+        help: `Drops the rejected binding and lets the engine create a brand-new share on ${hostOf(server)} with the session's full history. The old page (whoever owns it now) is left untouched.`,
+      },
+      {
+        title: "Don't share here",
+        value: "no",
+        description: "leave the old page; this server stops receiving this session",
+        help: `Opts this session out on ${hostOf(server)}: the engine stops trying to attach. The rejected page stays as-is. Re-share here anytime via "Share to another server".`,
+      },
       { title: "Cancel", value: "cancel" },
     ],
   })

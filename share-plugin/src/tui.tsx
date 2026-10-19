@@ -9,13 +9,35 @@
 
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClientApi } from "./core.js"
-import { registerCommands } from "./commands.js"
+import { registerCommands, buildShareCommand } from "./commands.js"
 import { createSidebarSlot, dbgLog, dbg } from "./sidebar.js"
-import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, toMenuOptions } from "./dialogs.js"
+import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, showHeightSliderOnce, toMenuOptions } from "./dialogs.js"
+import { clampHeightPercent } from "./ui-prefs.js"
 import type { ShareHostApi } from "./tui-host.js"
 import { createV2TuiSetup } from "./v2-tui.js"
 
 /** Builds the host facade over the v1 TuiPluginApi. */
+
+/** Height slider flow (agent-variants' showHeightSlider shape): slider →
+ * optional custom-percent prompt → save. Undefined = cancelled. */
+async function showHeightSliderFlow(api: TuiPluginApi, current: number): Promise<number | undefined> {
+  let value = clampHeightPercent(current)
+  while (true) {
+    const choice = await showHeightSliderOnce(api, value)
+    if (!choice) return undefined
+    value = clampHeightPercent(choice.value)
+    if (choice.action === "save") return value
+    const input = await showPromptOnce(api, { title: "Menu height percent", placeholder: "25-100", value: String(value) })
+    if (input === undefined) continue
+    const parsed = Number(input)
+    if (!Number.isFinite(parsed)) {
+      await showAlertMenu(api, { title: "Invalid height", message: "Enter a number from 25 to 100." })
+      continue
+    }
+    value = clampHeightPercent(parsed)
+  }
+}
+
 export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
   return {
     hostVersion: 1,
@@ -147,6 +169,7 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       showConfirm: (props) => showConfirmMenu(api, props),
       showAlert: (props) => showAlertMenu(api, props),
       showPrompt: (props) => showPromptOnce(api, props),
+      showHeightSlider: (current: number) => showHeightSliderFlow(api, current),
       // CUSTOM interactive dialogs (family MenuDialog pattern: own
       // priority-10000 key layer + mode push + input shield). The host's
       // ui.DialogX components under plugin dialog.replace render but
@@ -252,11 +275,13 @@ const tui: TuiPlugin = async (api) => {
 
   // sidebar chip (v1 slots; the v2 context has no slot registry). The
   // slots registry has no unregister API — registration lives for the
-  // process lifetime. (crash-hunt: registration errors are logged, not
-  // swallowed — see sidebar.tsx for the temporary debug logger)
+  // process lifetime. The chip gets the live /share command instance so a
+  // click on a gone/dead share opens the share manager (verify + modal)
+  // instead of copying a dead link.
   try {
-    const slot = createSidebarSlot(api)
-    dbgLog(`registering sidebar slot: ${Object.keys(slot?.slots ?? {}).join(",") || "NO SLOTS"}`)
+    const shareCommand = buildShareCommand(host, sessionID)
+    const slot = createSidebarSlot(api, { onShareCommand: () => void shareCommand.run({}) })
+    dbgLog(`registering sidebar slot: ${Object.keys(slot?.slots ?? {}).join(", ") || "NO SLOTS"}`)
     const reg = api.slots.register(slot as never)
     dbgLog(`sidebar slot registered -> ${dbg(reg)}`)
   } catch (error) {

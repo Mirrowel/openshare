@@ -161,8 +161,11 @@ try {
   await waitFor(() => urlFileLines(urlFile).length >= 3, "P3 third share", 60000)
   const users3 = (await admin("GET", "/api/admin/users")).json?.users ?? []
   check("P3 re-enrolled as new user", users3.length === 2, JSON.stringify(users3.map((u) => u.label)))
+  const U2 = users3.find((u) => u.id !== U1)?.id
   const shares3 = (await admin("GET", "/api/admin/shares")).json?.shares ?? []
-  check("P3 new share owned by new identity", shares3.length === 3 && shares3[2].ownerId !== U1, JSON.stringify(shares3.map((s) => s.ownerId)))
+  // the KV-index listing is lexicographic by share id (random hex), so
+  // NEVER assert positionally — match by owner instead
+  check("P3 new share owned by new identity", shares3.length === 3 && U2 !== undefined && shares3.filter((s) => s.ownerId === U2).length === 1 && shares3.filter((s) => s.ownerId === U1).length === 2, JSON.stringify(shares3.map((s) => s.ownerId)))
 
   // ---- P4: code disabled + token revoked → blocked, no loop ------------
   const codes = (await admin("GET", "/api/admin/codes")).json?.codes ?? []

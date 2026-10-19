@@ -29,6 +29,7 @@ import {
   type AdminShare,
   type AdminUser,
 } from "./share-flow.js"
+import { DIALOG_WIDTH_COLUMNS, kvHeightPercentOf, kvWidthOf, nextDialogWidth, UI_HEIGHT_PERCENT_KV, UI_WIDTH_KV, clampHeightPercent } from "./ui-prefs.js"
 import type { SessionOpts } from "./core.js"
 import type { ShareDialogSelectOption, ShareHostApi } from "./tui-host.js"
 
@@ -82,20 +83,128 @@ function mask(value: string | undefined): string {
 
 type EditKind = "text" | "number" | "password"
 
-const LABELS: Record<string, { label: string; help: string; kind: EditKind; section: string }> = {
-  workerUrl: { label: "Worker URL", help: "Your openshare-worker deployment (https://…). Empty disables the plugin.", kind: "text", section: "Connection" },
-  createToken: { label: "Create token", help: "The worker's CREATE_TOKEN. Required to create shares.", kind: "password", section: "Connection" },
-  debounceMs: { label: "Sync interval (ms)", help: "Max time between syncs while streaming; anything batched rides the next one. Turn-end batches flush immediately. Default 10000; clamped into the server policy window.", kind: "number", section: "Sharing" },
-  completedDelayMs: { label: "Completed delay (ms)", help: "Idle this long before the share says completed (default 5000, 0 = immediate). Busy cancels; opencode exit flushes. Clamped by the server.", kind: "number", section: "Sharing" },
-  modelLabel: { label: "Model label template", help: "$Provider/$Model placeholders; literal text as-is; empty hides the model.", kind: "text", section: "Sharing" },
-  ttlDays: { label: "TTL (days)", help: "Share lifetime; the worker caps it at its MAX_TTL_DAYS.", kind: "number", section: "Sharing" },
-  openTasksInNewTab: { label: "Open tasks in new tab", help: "Viewer: task rows open subagent pages in a new tab.", kind: "text", section: "Sharing" },
-  authLogin: { label: "Read auth: login", help: "Optional read gate for share pages. Empty removes protection on the next attach.", kind: "text", section: "Read auth" },
-  authPassword: { label: "Read auth: password", help: "Optional read gate for share pages.", kind: "password", section: "Read auth" },
-  spoolDir: { label: "Spool directory", help: "Temporary unacked-frame buffer (default: XDG data home).", kind: "text", section: "Advanced" },
-  urlFile: { label: "URL file", help: 'File each share URL is appended to (all-mode). Empty = default openshare.urls.txt in the session directory; "none" = no URL file.', kind: "text", section: "Advanced" },
-  announceStderr: { label: "Announce on stderr", help: '"true"/"false": the [openshare] live: and url file: log lines. false silences them; the share itself is unaffected.', kind: "text", section: "Advanced" },
-  shareMode: { label: "Share mode", help: '"all" shares every session; "manual" needs /share. Default: TUI presence.', kind: "text", section: "Sharing" },
+/** Row metadata: label (column 1), help (the one-line description), kind
+ * (editor), section — plus `info` (the long-form [i] pane text: what it
+ * does, effects, caveats) and `def` (the default shown in the pane). */
+type LabelMeta = { label: string; help: string; kind: EditKind; section: string; info?: string; def?: string }
+
+const LABELS: Record<string, LabelMeta> = {
+  workerUrl: {
+    label: "Worker URL",
+    help: "Your openshare-worker deployment (https://…). Empty disables the plugin.",
+    kind: "text",
+    section: "Connection",
+    info: "The base URL of your share server — the Cloudflare Worker or the portable Bun server. Every share page is created, synced and deleted through it.\n\nLegacy single-server key: the servers group below is the canonical multi-server form; this pair still works and synthesizes into it.",
+    def: "(empty — plugin disabled)",
+  },
+  createToken: {
+    label: "Create token",
+    help: "The worker's CREATE_TOKEN. Required to create shares.",
+    kind: "password",
+    section: "Connection",
+    info: "The server's root CREATE_TOKEN — full admin rights (create, edit, delete ANY share, manage users). Kept for legacy setups and hoster machines.\n\nRegular users should NOT hold the root token: connect via an access code instead (Connect to a server) and the plugin enrolls its own limited user token. The value is masked here but stored as-is in the config file.",
+    def: "(empty)",
+  },
+  shareMode: {
+    label: "Share mode",
+    help: '"all" shares every session; "manual" needs /share. Default: TUI presence.',
+    kind: "text",
+    section: "Sharing",
+    info: 'all: every NEW session shares automatically (CI posture). Sessions that existed before the plugin started are never auto-shared — share those explicitly. manual: sessions stay private until you run /share.\n\nDefault (empty): TUI presence decides — installing the TUI part means manual, server-only means all.',
+    def: "auto (TUI presence)",
+  },
+  debounceMs: {
+    label: "Sync interval (ms)",
+    help: "Max time between syncs while streaming; anything batched rides the next one. Turn-end batches flush immediately. Default 10000; clamped into the server policy window.",
+    kind: "number",
+    section: "Sharing",
+    info: "A rate limit anchored at the previous flush, not a restart-on-every-event debounce: an update arriving AFTER the interval flushes instantly; anything earlier rides the next tick. Turn-end batches (idle) always flush immediately regardless of this value.\n\nThe server clamps it into its allowed window (DEBOUNCE_MIN_MS..DEBOUNCE_MAX_MS, default 1000..60000).",
+    def: "10000",
+  },
+  completedDelayMs: {
+    label: "Completed delay (ms)",
+    help: "Idle this long before the share says completed (default 5000, 0 = immediate). Busy cancels; opencode exit flushes. Clamped by the server.",
+    kind: "number",
+    section: "Sharing",
+    info: "opencode's idle signal is authoritative turn end (busy is held through tool runs and permission waits). This delay only smooths the gap before an automation's NEXT prompt — if a new turn starts inside the window the timer cancels and the share stays live.\n\nA graceful opencode exit flushes the pending flip, so CI runs land their final status.",
+    def: "5000",
+  },
+  modelLabel: {
+    label: "Model label template",
+    help: "$Provider/$Model placeholders; literal text as-is; empty hides the model.",
+    kind: "text",
+    section: "Sharing",
+    info: 'How the model name appears on the share page. "$Provider/$Model" renders e.g. "closedrouter/zai/glm-5.3". Any literal text is used as-is; empty string hides the model line entirely.',
+    def: '"$Provider/$Model"',
+  },
+  ttlDays: {
+    label: "TTL (days)",
+    help: "Share lifetime; the worker caps it at its MAX_TTL_DAYS.",
+    kind: "number",
+    section: "Sharing",
+    info: "How long pages live before the server's sweeper deletes them. Capped server-side: the deployment's MAX_TTL_DAYS and the token's maxTtlDays limit both apply.\n\nA per-session override lives in the This-session section; it is sent at create/attach time.",
+    def: "worker cap (90 on the reference deployment)",
+  },
+  openTasksInNewTab: {
+    label: "Open tasks in new tab",
+    help: "Viewer: task rows open subagent pages in a new tab.",
+    kind: "text",
+    section: "Sharing",
+    info: "Viewer behavior only: clicking a task (subagent) row opens its sub-page in a new browser tab instead of navigating. true/false.",
+    def: "true",
+  },
+  authLogin: {
+    label: "Read auth: login",
+    help: "Optional read gate for share pages. Empty removes protection on the next attach.",
+    kind: "text",
+    section: "Read auth",
+    info: "Optional username for a login gate on NEW shares. Viewers must enter login+password (PBKDF2-hashed server-side, 7-day cookie, lockout after failures).\n\nWrite access is a separate lock — a login never lets anyone edit. Removing both values removes the gate on the next attach.",
+    def: "(empty — no gate)",
+  },
+  authPassword: {
+    label: "Read auth: password",
+    help: "Optional read gate for share pages.",
+    kind: "password",
+    section: "Read auth",
+    info: "The password half of the optional read gate. Stored in plain text in the config file — prefer per-session auth for anything sensitive. Only the hash ever reaches the server.",
+    def: "(empty)",
+  },
+  spoolDir: {
+    label: "Spool directory",
+    help: "Temporary unacked-frame buffer (default: XDG data home).",
+    kind: "text",
+    section: "Advanced",
+    info: "Where un-acked sync frames buffer on disk (one file per session per server). They replay automatically on reconnect. The binding in session metadata is the source of truth — the spool is an optimization, safe to clear while idle.",
+    def: "XDG data home",
+  },
+  urlFile: {
+    label: "URL file",
+    help: 'File each share URL is appended to (all-mode). Empty = default openshare.urls.txt in the session directory; "none" = no URL file.',
+    kind: "text",
+    section: "Advanced",
+    info: 'All-mode CI surface: every created share URL is APPENDED to this file and announced on stderr. Empty uses openshare.urls.txt in the session\'s working directory; "none" disables the file; a path writes there.\n\nManual mode (TUI) never writes it — the link lives in the TUI.',
+    def: "openshare.urls.txt (session dir)",
+  },
+  announceStderr: {
+    label: "Announce on stderr",
+    help: '"true"/"false": the [openshare] live: and url file: log lines. false silences them; the share itself is unaffected.',
+    kind: "text",
+    section: "Advanced",
+    info: "Whether the informational [openshare] lines reach stderr in all-mode (CI logs). Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
+    def: "true",
+  },
+}
+
+/** [i] pane text for a config key row: long info + live value + source + default. */
+function helpForKey(key: string, cfg: ShareConfig, sources: Record<string, string>): string | undefined {
+  const meta = LABELS[key]
+  if (!meta) return undefined
+  const lines = [meta.info ?? meta.help]
+  lines.push("")
+  lines.push(`Current: ${displayValue(key, cfg)}`)
+  if (sources[key]) lines.push(`Source: ${sources[key]} (overrides anything written below it)`)
+  if (meta.def) lines.push(`Default: ${meta.def}`)
+  return lines.join("\n")
 }
 
 function displayValue(key: string, cfg: ShareConfig): string {
@@ -550,35 +659,112 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     const shared = binding?.url ? (binding.enabled === false ? "attached (dormant)" : "live") : "not shared"
 
     const options: ShareDialogSelectOption<string>[] = []
-    options.push({ title: "Write target", value: "action:target", description: writeTarget.label, disabled: candidates.length <= 1 })
-    options.push({ title: "Where values come from", value: "action:sources", description: summarizeSources(sources) })
+    options.push({
+      title: "Write target",
+      value: "action:target",
+      description: writeTarget.label,
+      disabled: candidates.length <= 1,
+      help: `Which file "Save & exit" writes. The global settings home is always available; other files in the read chain only when they already exist (the TUI never creates deploy-time override files).\n\nWriting: ${writeTarget.path}`,
+    })
+    options.push({
+      title: "Where values come from",
+      value: "action:sources",
+      description: summarizeSources(sources),
+      help: `Config merges per key, highest priority wins: OPENSHARE_* env > plugin options > adjacent openshare.config.json > openshare.local.json (repo walk-up) > settings home > defaults. An empty string means unset for url/token keys.\n\n${sourcesMessage(sources)}`,
+    })
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Connection") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
+      if (meta.section === "Connection") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
     }
     const servers = serverEntries(cfg)
     options.push({ title: "— Servers —", value: "servers:none", description: servers.length ? `${servers.length} saved · active receives new sessions` : "no membership yet", disabled: true })
     for (const s of servers) {
       const cred = s.entry.token ? "token saved" : s.entry.code ? "code saved" : "enrolls on demand"
-      options.push({ title: s.url, value: `server:${s.url}`, description: `${s.entry.label ? s.entry.label + " · " : ""}${cred}${s.active ? " · ACTIVE" : ""}` })
+      options.push({
+        title: s.url,
+        value: `server:${s.url}`,
+        description: `${s.entry.label ? s.entry.label + " · " : ""}${cred}${s.active ? " · ACTIVE" : ""}`,
+        help: [
+          `Server: ${s.url}`,
+          `Label: ${s.entry.label ?? "(none)"}`,
+          `Credential: ${s.entry.token ? `user token ${mask(s.entry.token)}` : s.entry.code ? "access code saved — enrolls on demand" : "none — public server, enrolls on demand"}`,
+          `Receives new sessions: ${s.active ? "YES (active)" : "no"}`,
+          "",
+          "Every ACTIVE server receives new sessions (fan-out); one active server is the normal setup. Tokens persist in the settings home; enroll once, then it just works. Admin token: " + (s.entry.adminToken ? "saved" : "not saved") + ".",
+        ].join("\n"),
+      })
     }
-    options.push({ title: "Connect to a server", value: "server:add", description: "URL (+ access code) — enrolls and saves the token" })
-    options.push({ title: "Admin console", value: "action:admin", description: "manage a server with its root token (users, codes, tokens, shares)" })
-    options.push({ title: "Test connection", value: "action:test", description: "Probe the active server's /health" })
+    options.push({
+      title: "Connect to a server",
+      value: "server:add",
+      description: "URL (+ access code) — enrolls and saves the token",
+      help: "Onboarding flow: paste the server URL; public servers enroll immediately, private ones ask for an access code (osc_… from the hoster). The server issues a user token that persists in the settings home — the root CREATE_TOKEN is never needed for sharing.",
+    })
+    options.push({
+      title: "Admin console",
+      value: "action:admin",
+      description: "manage a server with its root token (users, codes, tokens, shares)",
+      help: "Hoster tooling: manage users (freeze/unfreeze/mint/delete), revoke tokens, create access codes, list/reassign/delete shares, purge. Requires the server's root CREATE_TOKEN — user tokens cannot administer. The token can be saved per server (adminToken) so you enter it once.",
+    })
+    options.push({
+      title: "Test connection",
+      value: "action:test",
+      description: "Probe the active server's /health",
+      help: "Fetches /health on the active server and reports the service, auth mode, and socket policy. A quick way to verify URL and reachability before sharing.",
+    })
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
+      if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
+    }
+    // Interface: dialog size preferences (host kv — per-host, not config)
+    const uiWidth = kvWidthOf(host.kv)
+    const uiHeight = kvHeightPercentOf(host.kv)
+    options.push({
+      title: "Menu width",
+      value: "ui:width",
+      description: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)`,
+      help: `How wide OpenShare menus render. OpenCode exposes fixed widths only: medium = 60, large = 88, xlarge = 116 columns. Selecting cycles to the next size.\n\nCurrent: ${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)\nStored per host (opencode's own preference store), not in the config file.`,
+    })
+    options.push({
+      title: "Menu height",
+      value: "ui:height",
+      description: `${uiHeight}% of terminal`,
+      help: `Maximum height of OpenShare menus, as a percent of terminal rows (25-100). Short menus stay compact; long ones scroll inside this cap. Presets: compact 35, normal 50, tall 70, max 100.\n\nCurrent: ${uiHeight}%\nStored per host, not in the config file.`,
+    })
+    for (const [key, meta] of Object.entries(LABELS)) {
+      if (meta.section === "Read auth") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
     }
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Read auth") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
-    }
-    for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Advanced") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
+      if (meta.section === "Advanced") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
     }
     if (startAtSession) {
       options.push({ title: `— This session (${shared}) —`, value: "session:none", description: "Per-session actions and overrides", disabled: true })
-      options.push({ title: binding?.url ? "Copy share link" : "Share this session", value: "session:share", description: binding?.url ? "copy the share URL to the clipboard" : "Set the share flag; the server plugin creates the page" })
-      if (binding?.url) options.push({ title: "Stop sharing", value: "session:unshare", description: "Delete the share page and clear the flag" })
-      options.push({ title: "Session TTL override (days)", value: "session:ttl", description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)" })
-      options.push({ title: "Session read auth", value: "session:auth", description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)" })
+      options.push({
+        title: binding?.url ? "Copy share link" : "Share this session",
+        value: "session:share",
+        description: binding?.url ? "copy the share URL to the clipboard" : "Set the share flag; the server plugin creates the page",
+        help: binding?.url
+          ? `Copies the share URL to the clipboard.\n\nURL: ${binding.url}\nShare id: ${binding.id ?? "?"}`
+          : "Publishes this session (and its subagent sessions) to the active server. The full history lands in the page — sharing mid-session is first-class, nothing is missed.",
+      })
+      if (binding?.url) {
+        options.push({
+          title: "Stop sharing",
+          value: "session:unshare",
+          description: "Delete the share page and clear the flag",
+          help: `Deletes the page(s) server-side and clears the share flag from this session's metadata. Every link stops working (viewers see a final "gone" state). Sharing again later creates fresh page(s) with new URLs.`,
+        })
+      }
+      options.push({
+        title: "Session TTL override (days)",
+        value: "session:ttl",
+        description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)",
+        help: `Per-session share lifetime. Overrides the config ttlDays for THIS session's pages; still capped by the server's MAX_TTL_DAYS and the token's maxTtlDays. Applied at the next create/attach.\n\nCurrent: ${binding?.opts?.ttlDays !== undefined ? `${binding.opts.ttlDays} days` : "(none — config default)"}`,
+      })
+      options.push({
+        title: "Session read auth",
+        value: "session:auth",
+        description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)",
+        help: `Login gate for THIS session's page only — viewers must log in (7-day cookie, lockout). Overrides the config read auth. Applied at the next create/attach; removing the login removes the gate.\n\nCurrent: ${binding?.opts?.authLogin ? `${binding.opts.authLogin} / (password set)` : "(none — config default applies)"}`,
+      })
     }
     options.push({ title: dirty ? "Save & exit" : "Exit", value: "action:exit", description: dirty ? `Write ${writeTarget.path}` : "No changes" })
 
@@ -609,6 +795,34 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
 
     if (choice === "action:sources") {
       await showInfo(host.ui, { title: "Where values come from", message: sourcesMessage(sources) })
+      continue
+    }
+
+    if (choice === "ui:width") {
+      host.kv.set(UI_WIDTH_KV, nextDialogWidth(kvWidthOf(host.kv)))
+      host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu width: ${kvWidthOf(host.kv)} (${DIALOG_WIDTH_COLUMNS[kvWidthOf(host.kv)]} columns) — applies to the next menu.` })
+      continue
+    }
+
+    if (choice === "ui:height") {
+      let height: number | undefined
+      if (host.ui.showHeightSlider) {
+        height = await host.ui.showHeightSlider(kvHeightPercentOf(host.kv))
+      } else {
+        const raw = await showPrompt(host.ui, { title: "Menu height percent", placeholder: "25-100", value: String(kvHeightPercentOf(host.kv)) })
+        if (raw !== undefined) {
+          const parsed = Number(raw)
+          if (!Number.isFinite(parsed)) {
+            host.ui.toast({ variant: "error", title: "OpenShare", message: "Height must be a number from 25 to 100." })
+            continue
+          }
+          height = clampHeightPercent(parsed)
+        }
+      }
+      if (height !== undefined) {
+        host.kv.set(UI_HEIGHT_PERCENT_KV, height)
+        host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu height: ${height}% of terminal — applies to the next menu.` })
+      }
       continue
     }
 

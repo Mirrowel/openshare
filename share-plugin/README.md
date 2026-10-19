@@ -98,7 +98,13 @@ stays all-mode.
   shares, reassign, purge), sharing defaults, read auth, advanced
   (spoolDir, urlFile), this-session actions.
 - Sidebar chip — share status next to the session title (`·N` when the
-  session streams to several servers); click copies the link.
+  session streams to several servers); click copies the link. A share
+  whose page died server-side renders `⊘ gone` — clicking opens the share
+  manager, which verifies every bound server, auto-clears dead entries
+  and offers Share again (see Gone detection in the root README).
+- Every menu row carries an `[i]` detail pane (what it does, current
+  value + source, full URLs/ids); Interface rows set menu width/height
+  (host preference store).
 
 ## Development
 

@@ -25,7 +25,7 @@
 // Remove once the live crash is cornered.
 
 import type { JSX } from "@opentui/solid"
-import { bindingsOf, bindingOf } from "./share-flow.js"
+import { bindingsOf, bindingOf, verifyShare } from "./share-flow.js"
 import type { TuiPluginApi, TuiSlotContext } from "@opencode-ai/plugin/tui"
 import type { Session } from "@opencode-ai/sdk/v2"
 import { appendFileSync } from "node:fs"
@@ -77,13 +77,31 @@ export function dbgLog(line: string): void {
 
 let renderSeq = 0
 
+/** Share liveness cache for the chip: a binding can claim "shared" long
+ * after the page died server-side (purge/TTL/delete with no event ever
+ * reaching this host). One credential-free probe per (session, server)
+ * per minute; the chip picks the verdict up on the next render. */
+type GoneVerdict = { status: "live" | "gone" | "unknown"; at: number }
+const GONE_TTL_MS = 60_000
+const goneCache = new Map<string, GoneVerdict>()
+
+function goneVerdict(sid: string, server: string, shareId: string): GoneVerdict | undefined {
+  const key = `${sid}|${server}`
+  const cached = goneCache.get(key)
+  if (cached && Date.now() - cached.at < GONE_TTL_MS) return cached
+  void verifyShare(server, shareId).then((status) => {
+    goneCache.set(key, { status, at: Date.now() })
+  })
+  return cached
+}
+
 type SidebarTitleProps = {
   session_id: string
   title: string
   share_url?: string
 }
 
-export function createSidebarSlot(api: TuiPluginApi) {
+export function createSidebarSlot(api: TuiPluginApi, opts?: { onShareCommand?: () => void }) {
   dbgLog(`createSidebarSlot called; api.state=${!!api.state} api.theme=${!!api.theme} api.version=${dbg(api.app?.version)}`)
   return {
     slots: {
@@ -95,8 +113,13 @@ export function createSidebarSlot(api: TuiPluginApi) {
           const title = String(props?.title ?? "") || "Session"
           const session = sid ? api.state.session.get(sid) : undefined
           const binding = bindingOf(session as never)
-          const liveCount = bindingsOf(session as never).filter((b) => b.url && b.enabled !== false).length
+          const allBindings = bindingsOf(session as never)
+          const liveCount = allBindings.filter((b) => b.url && b.enabled !== false).length
           const status = session?.time?.archived ? undefined : binding?.url ? (binding.enabled === false ? "attached" : "live") : undefined
+          // gone detection: any live-bound server whose page died server-side
+          const checked = allBindings.filter((b) => b.url && b.enabled !== false && b.id && b.server)
+          const verdicts = checked.map((b) => goneVerdict(sid, b.server, b.id))
+          const anyGone = verdicts.some((v) => v?.status === "gone")
           const multi = liveCount > 1 ? `·${liveCount} ` : ""
           const theme = ctx?.theme?.current ?? api.theme.current
           dbgLog(
@@ -104,8 +127,14 @@ export function createSidebarSlot(api: TuiPluginApi) {
           )
           // chip on its own line under the title (takes the blank line that
           // separated the title block from the context blocks); clicking it
-          // copies the share link — proven pattern: onMouseDown on a box
+          // copies the share link — proven pattern: onMouseDown on a box.
+          // A verified-gone share renders dim (⊘) and clicking opens the
+          // share manager (verify + gone modal) instead of a dead copy.
           const copyLink = () => {
+            if (anyGone) {
+              opts?.onShareCommand?.()
+              return
+            }
             const url = binding?.url
             if (!url) return
             // navigator first (no-op-resolves in the TUI runtime are
@@ -135,8 +164,12 @@ export function createSidebarSlot(api: TuiPluginApi) {
               <text fg={theme.text}>{title}</text>
               {status ? (
                 <box onMouseDown={copyLink}>
-                  <text fg={binding?.enabled === false ? theme.warning : theme.success}>
-                    {status === "live" ? `◉ re:share ${multi}— click to copy link` : "◉ re:share (dormant)"}
+                  <text fg={anyGone ? theme.error : binding?.enabled === false ? theme.warning : theme.success}>
+                    {anyGone
+                      ? `⊘ re:share — gone (removed/expired) — click to fix`
+                      : status === "live"
+                        ? `◉ re:share ${multi}— click to copy link`
+                        : "◉ re:share (dormant)"}
                   </text>
                 </box>
               ) : null}

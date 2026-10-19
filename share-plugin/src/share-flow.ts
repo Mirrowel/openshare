@@ -303,6 +303,38 @@ export async function probeWorker(workerUrl: string): Promise<{ ok: boolean; det
   }
 }
 
+/** Share liveness probe — the "session says shared but the link is dead"
+ * case (purged, TTL-expired, or deleted while the binding stayed in
+ * session metadata). GET /data answers 404 {status:"gone"} BEFORE the
+ * read-auth gate, so this is a credential-free existence check that
+ * works identically on the CF worker and the Bun server. Network errors
+ * return "unknown" — never auto-disable on unknown. */
+export async function verifyShare(workerUrl: string, shareId: string): Promise<"live" | "gone" | "unknown"> {
+  const base = normServerUrl(workerUrl)
+  if (!base || !shareId) return "unknown"
+  try {
+    const res = await fetch(`${base}/api/share/${shareId}/data`, { signal: AbortSignal.timeout(4000) })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { status?: string }
+      return body.status === "gone" || Object.keys(body).length === 0 ? "gone" : "unknown"
+    }
+    // 200 = readable; 401 = read-gated but EXISTS. Both mean the page is there.
+    return "live"
+  } catch {
+    return "unknown"
+  }
+}
+
+/** Remove the binding entries for shares that no longer exist server-side
+ * (the auto-disable half of gone detection). Entries are deleted outright —
+ * not optedOut — so a later prompt in the session can create a fresh share. */
+export async function clearGoneBindingEntries(host: ShareHostApi, root: string, servers: string[]): Promise<boolean> {
+  if (!servers.length) return false
+  return patchSessionBinding(host.client, root, (map) => {
+    for (const server of servers) delete map[server]
+  })
+}
+
 // --- server identity ops (TUI) -----------------------------------------------
 
 export function normServerUrl(url: string): string {
