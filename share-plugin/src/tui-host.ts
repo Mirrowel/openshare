@@ -36,6 +36,9 @@ export type ShareHostLayerCommand = {
 }
 
 export type ShareHostKeymapLayer = {
+  /** v2 adapter only (v2 keymap layers are natively mode-scoped "global").
+   * The v1 registration deliberately ignores this: a v1 plugin layer with
+   * a declared mode is gated on the mode stack and never reachable. */
   mode?: string
   priority?: number
   commands: readonly ShareHostLayerCommand[]

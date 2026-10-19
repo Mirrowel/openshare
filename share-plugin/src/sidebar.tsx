@@ -100,13 +100,43 @@ export function createSidebarSlot(api: TuiPluginApi) {
           dbgLog(
             `render#${seq} sid=${dbg(sid)} title=${dbg(title)} session=${session ? "found" : "MISSING"} binding=${binding ? `id=${dbg(binding.id)} enabled=${dbg(binding.enabled)}` : "none"} status=${dbg(status)} theme=${dbg(theme)}`,
           )
+          // chip on its own line under the title (takes the blank line that
+          // separated the title block from the context blocks); clicking it
+          // copies the share link — proven pattern: onMouseDown on a box
+          const copyLink = () => {
+            const url = binding?.url
+            if (!url) return
+            let copied = false
+            try {
+              const clip = (navigator as unknown as { clipboard?: { writeText?: (t: string) => Promise<void> } }).clipboard
+              if (typeof clip?.writeText === "function") {
+                void clip.writeText(url).then(
+                  () => {},
+                  () => {},
+                )
+                copied = true
+              }
+            } catch {}
+            if (!copied) {
+              // OSC52 escape (most modern terminals, incl. Windows Terminal)
+              try {
+                process.stdout.write(`\x1b]52;c;${Buffer.from(url, "utf8").toString("base64")}\x07`)
+                copied = true
+              } catch {}
+            }
+            try {
+              api.ui.toast({ variant: copied ? "success" : "info", title: "OpenShare", message: copied ? `Share link copied: ${url}` : `Share link: ${url}`, duration: 6000 })
+            } catch {}
+          }
           const el = (
-            <box paddingRight={1}>
+            <box flexDirection="column" paddingRight={1}>
               <text fg={theme.text}>{title}</text>
               {status ? (
-                <text fg={binding?.enabled === false ? theme.warning : theme.success}>
-                  {status === "live" ? "  ◉ re:share" : "  ◉ re:share (dormant)"}
-                </text>
+                <box onMouseDown={copyLink}>
+                  <text fg={binding?.enabled === false ? theme.warning : theme.success}>
+                    {status === "live" ? "◉ re:share — click to copy link" : "◉ re:share (dormant)"}
+                  </text>
+                </box>
               ) : null}
             </box>
           )

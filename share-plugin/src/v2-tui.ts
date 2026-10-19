@@ -14,7 +14,6 @@
  */
 
 import { createSignal } from "solid-js"
-import { declarePaletteCategory, schedulePaletteReconcile } from "./palette-category.js"
 import { registerCommands } from "./commands.js"
 import type { ClientApi } from "./core.js"
 import type { ShareHostApi, ShareHostKeymapLayer } from "./tui-host.js"

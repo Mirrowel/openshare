@@ -33,24 +33,28 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
     },
     keymap: {
       registerLayer(layer) {
-        return api.keymap.registerLayer({
-          mode: layer.mode,
-          priority: layer.priority,
-          commands: layer.commands.map((command) => ({
+        // Host layer shape = exactly what the proven family plugins pass:
+        // {commands, bindings}. NO mode (a declared mode gates the layer on
+        // the mode stack; resting mode is "base" — the layer would never be
+        // reachable), no priority, and command objects carry ONLY defined
+        // fields (undefined-valued keys are not part of the working shape).
+        const commands = layer.commands.map((command) => {
+          const host: Record<string, unknown> = {
             namespace: "palette",
             name: command.name,
             title: command.title,
-            desc: command.desc,
-            category: command.category,
-            slashName: command.slashName,
-            slashAliases: command.slashAliases,
-            suggested: command.suggested,
-            hidden: command.hidden,
-            enabled: command.enabled,
             run: (ctx: unknown) => command.run((ctx ?? {}) as never),
-          })),
-          bindings: layer.bindings as never[],
+          }
+          if (command.desc !== undefined) host.desc = command.desc
+          if (command.category !== undefined) host.category = command.category
+          if (command.slashName !== undefined) host.slashName = command.slashName
+          if (command.slashAliases?.length) host.slashAliases = command.slashAliases
+          if (command.suggested !== undefined) host.suggested = command.suggested
+          if (command.hidden !== undefined) host.hidden = command.hidden
+          if (command.enabled !== undefined) host.enabled = command.enabled
+          return host
         })
+        return api.keymap.registerLayer({ commands, bindings: layer.bindings as never[] })
       },
     },
     sessionInfo: (sid) => api.state.session.get(sid) as never,
