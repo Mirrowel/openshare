@@ -264,12 +264,12 @@ export function resolveServer(cfg: ShareConfig): { url: string; token: string; e
   return { url, token: servers[url].token ?? "", entry: servers[url] }
 }
 
-/** Persist an enrolled/rotated token for a server into the settings-home
+/** Persist a field patch for a server entry into the settings-home
  * config's `servers` group — surgical merge (never rewrites other keys,
  * never touches deploy-time files). */
-export function saveServerToken(url: string, token: string, target?: string): string | undefined {
+export function saveServerEntry(url: string, patch: Partial<ServerEntry>, target?: string): string | undefined {
   const path = target ?? configHomePath()
-  if (!path || !token) return undefined
+  if (!path || !url.startsWith("http")) return undefined
   try {
     let previous: Record<string, unknown> = {}
     try {
@@ -277,7 +277,34 @@ export function saveServerToken(url: string, token: string, target?: string): st
       if (!previous || typeof previous !== "object") previous = {}
     } catch {}
     const servers = normalizeServers(previous.servers) ?? {}
-    servers[url] = { ...servers[url], token }
+    servers[url] = { ...servers[url], ...patch }
+    previous.servers = servers
+    writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+/** Token persistence (engine enrollment) — entry-patch special case. */
+export function saveServerToken(url: string, token: string, target?: string): string | undefined {
+  return saveServerEntry(url, { token }, target)
+}
+
+/** Remove a server membership from the settings home (per-field merge
+ * means entries born in plugin options/env survive — that's the override
+ * owner's business, shown by the sources view). */
+export function deleteServerEntry(url: string, target?: string): string | undefined {
+  const path = target ?? configHomePath()
+  if (!path) return undefined
+  try {
+    let previous: Record<string, unknown> = {}
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"))
+      if (!previous || typeof previous !== "object") previous = {}
+    } catch {}
+    const servers = normalizeServers(previous.servers) ?? {}
+    delete servers[url]
     previous.servers = servers
     writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
     return path

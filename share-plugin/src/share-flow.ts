@@ -15,7 +15,7 @@
 //             the server-side flag-removal path cleans up on its own.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { loadConfig, moduleDir, configPaths, configHomePath, METADATA_KEY, type ShareConfig } from "./config.js"
+import { loadConfig, moduleDir, configPaths, configHomePath, resolveServer, saveServerEntry, deleteServerEntry, METADATA_KEY, type ShareConfig, type ServerEntry } from "./config.js"
 import { dbg, dbgLog } from "./sidebar.js"
 import type { ClientApi, SessionInfo, SessionOpts } from "./core.js"
 import type { ShareHostApi } from "./tui-host.js"
@@ -85,8 +85,27 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
 }
 
 export function isConfigured(cfg: ShareConfig): boolean {
-  return Boolean(cfg.workerUrl && cfg.createToken)
+  // token optional: with none, the engine (or the TUI connect flow)
+  // enrolls on first contact — public servers take anyone, private ones
+  // need servers.{url}.code
+  return Boolean(resolveServer(cfg)?.url)
 }
+
+/** The resolved active server (url + entry), for the TUI server rows. */
+export function activeServer(cfg: ShareConfig = currentConfig()): { url: string; token: string; entry: ServerEntry } | undefined {
+  return resolveServer(cfg)
+}
+
+export function serverEntries(cfg: ShareConfig = currentConfig()): Array<{ url: string; entry: ServerEntry; active: boolean }> {
+  const merged: Record<string, ServerEntry> = {}
+  if (cfg.workerUrl) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
+  if (cfg.servers) for (const [url, entry] of Object.entries(cfg.servers)) merged[url] = { ...merged[url], ...entry }
+  const urls = Object.keys(merged)
+  const activeUrl = urls.find((u) => merged[u].active) ?? urls[0]
+  return urls.map((url) => ({ url, entry: merged[url], active: url === activeUrl }))
+}
+
+export { saveServerEntry, deleteServerEntry }
 
 // --- session metadata helpers -------------------------------------------------
 
@@ -211,6 +230,77 @@ export async function probeWorker(workerUrl: string): Promise<{ ok: boolean; det
   }
 }
 
+// --- server identity ops (TUI) -----------------------------------------------
+
+export function normServerUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "")
+}
+
+/** /health probe including the auth mode (public enrolls anyone). */
+export async function probeAuthMode(workerUrl: string): Promise<{ ok: boolean; mode?: "public" | "private"; detail: string }> {
+  const base = normServerUrl(workerUrl)
+  if (!base) return { ok: false, detail: "no URL" }
+  try {
+    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(6000) })
+    if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` }
+    const body = (await res.json().catch(() => ({}))) as { auth?: { mode?: string } }
+    const mode = body.auth?.mode === "public" ? "public" : body.auth?.mode === "private" ? "private" : undefined
+    return { ok: true, mode, detail: mode ? `auth: ${mode}` : "reachable (pre-auth server?)" }
+  } catch (error) {
+    return { ok: false, detail: (error as Error).message }
+  }
+}
+
+export async function enrollAtServer(workerUrl: string, code: string): Promise<{ ok: boolean; token?: string; userId?: string; label?: string; error?: string }> {
+  const base = normServerUrl(workerUrl)
+  try {
+    const res = await fetch(`${base}/api/enroll`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: code || undefined }),
+      signal: AbortSignal.timeout(10000),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string }
+    if (res.ok && body.ok && typeof body.token === "string") {
+      return { ok: true, token: body.token, userId: body.userId, label: body.label }
+    }
+    return { ok: false, error: body.error ?? `HTTP ${res.status}` }
+  } catch (error) {
+    return { ok: false, error: (error as Error).message }
+  }
+}
+
+export async function rotateAtServer(workerUrl: string, token: string): Promise<{ ok: boolean; token?: string; error?: string }> {
+  const base = normServerUrl(workerUrl)
+  try {
+    const res = await fetch(`${base}/api/token/rotate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; token?: string; error?: string }
+    if (res.ok && body.ok && typeof body.token === "string") return { ok: true, token: body.token }
+    return { ok: false, error: body.error ?? `HTTP ${res.status}` }
+  } catch (error) {
+    return { ok: false, error: (error as Error).message }
+  }
+}
+
+export async function disconnectAtServer(workerUrl: string, token: string): Promise<{ ok: boolean; error?: string }> {
+  const base = normServerUrl(workerUrl)
+  try {
+    const res = await fetch(`${base}/api/token`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    return { ok: res.ok && body.ok !== false, error: body.error }
+  } catch (error) {
+    return { ok: false, error: (error as Error).message }
+  }
+}
+
 // --- the flows --------------------------------------------------------------------
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -237,7 +327,7 @@ export async function runShareFlow(host: ShareHostApi, sessionID: string | undef
   if (!sessionID) return { ok: false, message: "No active session to share." }
   const cfg = currentConfig()
   if (!isConfigured(cfg)) {
-    return { ok: false, message: "OpenShare is not configured — run /openshare to set workerUrl and createToken.", unconfigured: true }
+    return { ok: false, message: "No share server connected — run /openshare to connect one.", unconfigured: true }
   }
   const root = await resolveRoot(host.client, sessionID)
   const existing = await readBinding(host.client, root)
@@ -282,8 +372,12 @@ export async function runUnshareFlow(host: ShareHostApi, sessionID: string | und
   // the direct delete also covers server plugins that never saw the event
   await clearShareFlag(host.client, root)
   let deleted = false
-  if (cfg.workerUrl && binding.id && binding.secret) {
-    deleted = await workerDeleteShare(cfg.workerUrl, binding.id, binding.secret)
+  // the binding URL carries the origin the share actually lives on (with
+  // multi-server that can differ from today's active entry)
+  const bindingOrigin = binding.url ? binding.url.slice(0, binding.url.indexOf("/s/")) : ""
+  const deleteBase = bindingOrigin || resolveServer(cfg)?.url || ""
+  if (deleteBase && binding.id && binding.secret) {
+    deleted = await workerDeleteShare(deleteBase, binding.id, binding.secret)
   }
   return {
     ok: true,

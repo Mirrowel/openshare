@@ -27,6 +27,7 @@ import {
   startWorker,
   startServe,
   stopServe,
+  CREATE_TOKEN,
   WORKER_URL,
   WORKER_PORT,
   SERVE_PORT,
@@ -61,6 +62,7 @@ function mockHost(client, { consent = true } = {}) {
     clipboard: [],
     kv: new Map(),
     dialogAnswers: [],
+    promptAnswers: [],
   }
   const confirmAnswer = () => state.dialogAnswers.shift() ?? consent
   return {
@@ -96,7 +98,7 @@ function mockHost(client, { consent = true } = {}) {
         },
         async showAlert() {},
         async showPrompt() {
-          return ""
+          return state.promptAnswers.shift() ?? ""
         },
         DialogSelect(props) {
           props.onSelect(props.options[0])
@@ -272,6 +274,31 @@ try {
     check("F5: explicit target honored", byExplicit?.path === explicitPath && JSON.parse(readFileSync(explicitPath, "utf8")).ttlDays === 9)
     const candidates = (await import(distUrl("config.js"))).writeCandidates(cfgDir)
     check("F5: writeCandidates lists global + existing adjacent only", candidates[0].path === expectedHome && candidates.some((c) => c.path === join(cfgDir, "openshare.config.json")) && !candidates.some((c) => c.path === explicitPath), candidates.map((c) => c.path).join(" | "))
+
+    // F6: connect flow — the /share first-run path against the real
+    // worker: prompt URL, probe (private), prompt code, enroll, persist
+    // token as the active server; rotate afterwards revokes the old token
+    const codeRes = await httpGet(`${WORKER_URL}/api/admin/codes`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${CREATE_TOKEN}` },
+      body: JSON.stringify({ label: "tuiflow", activations: 1 }),
+    })
+    const CODE = (await codeRes.json()).code
+    state.promptAnswers.push(WORKER_URL, CODE)
+    const connected = await settings.connectServerFlow(host)
+    check("F6: connect flow enrolls", connected.ok === true && !!connected.url, connected.message)
+    const homeCfg = JSON.parse(readFileSync(expectedHome, "utf8"))
+    const savedTok = homeCfg.servers?.[WORKER_URL]?.token
+    check("F6: token persisted as active server", typeof savedTok === "string" && savedTok.startsWith("osk_") && homeCfg.servers?.[WORKER_URL]?.active === true, JSON.stringify(homeCfg.servers ?? null))
+    const usersNow = await (await httpGet(`${WORKER_URL}/api/admin/users`, { headers: { authorization: `Bearer ${CREATE_TOKEN}` } })).json()
+    check("F6: enrollment visible on the worker", (usersNow.users ?? []).some((u) => u.label === "tuiflow-1"), JSON.stringify(usersNow.users?.map((u) => u.label)))
+    const entries = flows.serverEntries()
+    check("F6: serverEntries lists it active", entries.some((s) => s.url === WORKER_URL && s.active))
+    const rotated = await flows.rotateAtServer(WORKER_URL, savedTok)
+    check("F6: rotate issues a new token", rotated.ok === true && rotated.token?.startsWith("osk_") && rotated.token !== savedTok, JSON.stringify(rotated))
+    const oldMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${savedTok}` } })
+    const newMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${rotated.token}` } })
+    check("F6: old token revoked, new valid", oldMe.status === 401 && newMe.status === 200, `${oldMe.status}/${newMe.status}`)
   } finally {
     await stopServe(serve);
   }

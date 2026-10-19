@@ -10,11 +10,19 @@ import {
   clearShareFlag,
   confirmShare,
   currentConfig,
+  deleteServerEntry,
+  disconnectAtServer,
+  enrollAtServer,
   isConfigured,
+  normServerUrl,
+  probeAuthMode,
   probeWorker,
   readBinding,
   resolveRoot,
+  rotateAtServer,
   saveConfig,
+  saveServerEntry,
+  serverEntries,
   setShareFlag,
 } from "./share-flow.js"
 import type { SessionOpts } from "./core.js"
@@ -128,6 +136,123 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
   return next as ShareConfig
 }
 
+/** Connect (add + enroll) a server — the /share first-run flow and the
+ * settings "Connect to a server" row share it. Prompts the URL, probes
+ * the auth mode, prompts a code for private servers, enrolls, persists
+ * the token and makes it the active server. */
+export async function connectServerFlow(host: ShareHostApi): Promise<{ ok: boolean; message: string; url?: string }> {
+  const raw = await showPrompt(host.ui, { title: "Share server URL", placeholder: "https://your-openshare-host" })
+  if (raw === undefined || raw === "") return { ok: false, message: "Cancelled." }
+  const url = normServerUrl(raw)
+  if (!/^https?:\/\//.test(url)) return { ok: false, message: "URL must start with http:// or https://" }
+  host.ui.toast({ variant: "info", title: "OpenShare", message: `Probing ${url}…` })
+  const probe = await probeAuthMode(url)
+  if (!probe.ok) return { ok: false, message: `${url}: ${probe.detail}` }
+  let code = ""
+  if (probe.mode === "private") {
+    const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_… (from the hoster)" })
+    if (typed === undefined) return { ok: false, message: "Cancelled — private servers need a code." }
+    code = typed.trim()
+  }
+  const res = await enrollAtServer(url, code)
+  if (!res.ok) return { ok: false, message: `Enrollment refused: ${res.error}` }
+  // single active server: deactivate the others in the settings home,
+  // then persist the new membership as active
+  for (const other of serverEntries()) {
+    if (other.url !== url) saveServerEntry(other.url, { active: undefined })
+  }
+  saveServerEntry(url, { token: res.token, label: res.label, code: code || undefined, active: true })
+  return { ok: true, message: `Connected to ${url} as "${res.label}" — sharing goes there now.`, url }
+}
+
+/** Per-server submenu: identity status + membership actions. */
+async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
+  while (true) {
+    const entries = serverEntries()
+    const mine = entries.find((s) => s.url === url)
+    if (!mine) return
+    const cred = mine.entry.token
+      ? `token ${mask(mine.entry.token)}`
+      : mine.entry.code
+        ? "no token (code saved, enrolls on demand)"
+        : "no token (public server, enrolls on demand)"
+    const options: ShareDialogSelectOption<string>[] = [
+      { title: url, value: "info", description: `${mine.entry.label ?? "(no label)"} · ${cred}${mine.active ? " · ACTIVE" : ""}`, disabled: true },
+    ]
+    if (!mine.active) options.push({ title: "Set active", value: "active", description: "new sessions share here" })
+    if (!mine.entry.token) options.push({ title: "Enroll now", value: "enroll", description: "get a user token immediately" })
+    if (mine.entry.token) options.push({ title: "Rotate token", value: "rotate", description: "new token, old one revoked" })
+    if (mine.entry.token) options.push({ title: "Disconnect", value: "disconnect", description: "revoke the token server-side and forget it" })
+    options.push({ title: "Test this server", value: "test", description: "probe /health" })
+    options.push({ title: "Remove from config", value: "remove", description: "drop the saved membership (server-side state untouched)" })
+    options.push({ title: "Back", value: "back" })
+
+    const choice = await showSelect(host.ui, { title: "Share server", options })
+    if (choice === undefined || choice === "back") return
+
+    if (choice === "active") {
+      for (const other of entries) {
+        if (other.url !== url) saveServerEntry(other.url, { active: undefined })
+      }
+      saveServerEntry(url, { active: true })
+      host.ui.toast({ variant: "success", title: "OpenShare", message: `${url} is now the active server.` })
+      return
+    }
+    if (choice === "enroll") {
+      const probe = await probeAuthMode(url)
+      if (!probe.ok) {
+        await showInfo(host.ui, { title: "Unreachable", message: `${url}: ${probe.detail}` })
+        continue
+      }
+      let code = mine.entry.code ?? ""
+      if (probe.mode === "private" && !code) {
+        const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_… (from the hoster)" })
+        if (typed === undefined) continue
+        code = typed.trim()
+        if (code) saveServerEntry(url, { code })
+      }
+      const res = await enrollAtServer(url, code)
+      if (res.ok) {
+        saveServerEntry(url, { token: res.token, label: res.label })
+        host.ui.toast({ variant: "success", title: "OpenShare", message: `Enrolled as "${res.label}".` })
+      } else {
+        await showInfo(host.ui, { title: "Enrollment refused", message: res.error ?? "unknown error" })
+      }
+      continue
+    }
+    if (choice === "rotate") {
+      const res = await rotateAtServer(url, mine.entry.token ?? "")
+      if (res.ok && res.token) {
+        saveServerEntry(url, { token: res.token })
+        host.ui.toast({ variant: "success", title: "OpenShare", message: "Token rotated; the old one is revoked." })
+      } else {
+        await showInfo(host.ui, { title: "Rotation failed", message: `${res.error ?? "unknown"} — if the token was revoked server-side, use Enroll now instead.` })
+      }
+      continue
+    }
+    if (choice === "disconnect") {
+      const sure = await showConfirm(host.ui, { title: "Disconnect", message: `Revoke the token at ${url} and forget it?\nYour shares stay (read-only for you until TTL).`, confirmLabel: "Disconnect" })
+      if (!sure) continue
+      const res = await disconnectAtServer(url, mine.entry.token ?? "")
+      saveServerEntry(url, { token: undefined })
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Disconnected." : `Server-side revoke failed (${res.error ?? "error"}) — token forgotten locally.` })
+      continue
+    }
+    if (choice === "test") {
+      const result = await probeWorker(url)
+      await showInfo(host.ui, { title: result.ok ? "Server reachable" : "Server unreachable", message: `${url} — ${result.detail}` })
+      continue
+    }
+    if (choice === "remove") {
+      const sure = await showConfirm(host.ui, { title: "Remove server", message: `Remove the saved membership for\n${url}?`, confirmLabel: "Remove" })
+      if (!sure) continue
+      deleteServerEntry(url)
+      host.ui.toast({ variant: "success", title: "OpenShare", message: "Membership removed." })
+      return
+    }
+  }
+}
+
 /** The settings dialog. Returns when the user exits. */
 export async function settingsDialog(host: ShareHostApi, startAtSession?: string): Promise<void> {
   let cfg = currentConfig()
@@ -149,7 +274,14 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     for (const [key, meta] of Object.entries(LABELS)) {
       if (meta.section === "Connection") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
     }
-    options.push({ title: "Test connection", value: "action:test", description: "Probe the worker's /health endpoint" })
+    const servers = serverEntries(cfg)
+    options.push({ title: "— Servers —", value: "servers:none", description: servers.length ? `${servers.length} saved · active receives new sessions` : "no membership yet", disabled: true })
+    for (const s of servers) {
+      const cred = s.entry.token ? "token saved" : s.entry.code ? "code saved" : "enrolls on demand"
+      options.push({ title: s.url, value: `server:${s.url}`, description: `${s.entry.label ? s.entry.label + " · " : ""}${cred}${s.active ? " · ACTIVE" : ""}` })
+    }
+    options.push({ title: "Connect to a server", value: "server:add", description: "URL (+ access code) — enrolls and saves the token" })
+    options.push({ title: "Test connection", value: "action:test", description: "Probe the active server's /health" })
     for (const [key, meta] of Object.entries(LABELS)) {
       if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
     }
@@ -199,12 +331,26 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     }
 
     if (choice === "action:test") {
-      host.ui.toast({ variant: "info", title: "OpenShare", message: "Testing worker connection..." })
-      const result = await probeWorker(cfg.workerUrl)
+      const serverUrl = serverEntries(cfg).find((s) => s.active)?.url ?? cfg.workerUrl
+      host.ui.toast({ variant: "info", title: "OpenShare", message: "Testing server connection..." })
+      const result = await probeWorker(serverUrl)
       await showInfo(host.ui, {
-        title: result.ok ? "Worker reachable" : "Worker unreachable",
-        message: `${cfg.workerUrl || "(no workerUrl set)"} — ${result.detail}${result.ok && !cfg.createToken ? "\nNote: createToken is still required for sharing." : ""}`,
+        title: result.ok ? "Server reachable" : "Server unreachable",
+        message: `${serverUrl || "(no server set)"} — ${result.detail}${result.ok && !serverEntries(cfg).some((s) => s.entry.token) ? "\nNote: no token held — the plugin enrolls on first contact (public) or needs a code (private)." : ""}`,
       })
+      continue
+    }
+
+    if (choice === "server:add") {
+      const res = await connectServerFlow(host)
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.message, duration: 10000 })
+      if (res.ok) cfg = currentConfig()
+      continue
+    }
+
+    if (choice.startsWith("server:")) {
+      await serverMenu(host, choice.slice(7))
+      cfg = currentConfig()
       continue
     }
 
@@ -274,13 +420,21 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
   }
 }
 
-/** Onboarding shown by /share when the plugin is unconfigured. */
+/** Onboarding shown by /share when no server is connected: connect flow
+ * first (URL + optional code = enrolled + active), full settings as the
+ * fallback for manual configuration. */
 export async function onboardingDialog(host: ShareHostApi): Promise<void> {
   const ok = await showConfirm(host.ui, {
     title: "Welcome to Open(code)Share",
-    message: "Sharing needs your openshare-worker URL and its create token.\nOpen the settings dialog now?",
-    confirmLabel: "Open settings",
+    message: "Sharing needs a share server.\nConnect now (URL + access code if the hoster gave you one), or open the full settings?",
+    confirmLabel: "Connect to a server",
   })
-  if (ok) await settingsDialog(host)
-  else host.ui.dialog.clear()
+  if (ok) {
+    const res = await connectServerFlow(host)
+    host.ui.dialog.clear()
+    host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.message, duration: 10000 })
+    if (!res.ok) await settingsDialog(host)
+  } else {
+    await settingsDialog(host)
+  }
 }

@@ -123,9 +123,9 @@ function resolveServer(cfg) {
   const url = urls.find((u) => servers[u].active) ?? urls[0];
   return { url, token: servers[url].token ?? "", entry: servers[url] };
 }
-function saveServerToken(url, token, target) {
+function saveServerEntry(url, patch, target) {
   const path = target ?? configHomePath();
-  if (!path || !token)
+  if (!path || !url.startsWith("http"))
     return;
   try {
     let previous = {};
@@ -135,7 +135,7 @@ function saveServerToken(url, token, target) {
         previous = {};
     } catch {}
     const servers = normalizeServers(previous.servers) ?? {};
-    servers[url] = { ...servers[url], token };
+    servers[url] = { ...servers[url], ...patch };
     previous.servers = servers;
     writeFileSync(path, JSON.stringify(previous, null, 2) + `
 `);
@@ -143,6 +143,9 @@ function saveServerToken(url, token, target) {
   } catch {
     return;
   }
+}
+function saveServerToken(url, token, target) {
+  return saveServerEntry(url, { token }, target);
 }
 function loadConfig(pluginDir, options) {
   const cfg = { ...DEFAULTS };
