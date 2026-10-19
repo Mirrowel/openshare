@@ -88,6 +88,16 @@ function mockHost(client, { consent = true } = {}) {
           clear() {},
           setSize() {},
         },
+        async showMenu(props) {
+          return props.options[0]?.value
+        },
+        async showConfirm(props) {
+          return confirmAnswer()
+        },
+        async showAlert() {},
+        async showPrompt() {
+          return ""
+        },
         DialogSelect(props) {
           props.onSelect(props.options[0])
         },

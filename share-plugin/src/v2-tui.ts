@@ -16,7 +16,7 @@
 import { createSignal } from "solid-js"
 import { registerCommands } from "./commands.js"
 import type { ClientApi } from "./core.js"
-import type { ShareHostApi, ShareHostKeymapLayer } from "./tui-host.js"
+import type { ShareDialogSelectOption, ShareHostApi, ShareHostKeymapLayer } from "./tui-host.js"
 import type { V2KeymapCommand, V2KeymapLayer, V2TuiContext, V2TuiSetup } from "./v2-types.js"
 
 function pickThemeToken(source: unknown, ...path: Array<string | number>): unknown {
@@ -159,6 +159,31 @@ export function buildV2HostApi(context: V2TuiContext): ShareHostApi {
             /* size hints are best-effort */
           }
         },
+      },
+      // Promise menus (v2 host dialogs are host-native and fully keyed).
+      async showMenu<Value>(props: { title: string; options: ShareDialogSelectOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined> {
+        const value = await dialog.select({
+          title: props.title,
+          placeholder: props.hint,
+          current: props.current,
+          options: props.options.map((option) => ({
+            title: option.title,
+            value: option.value,
+            description: option.description,
+            category: option.category,
+            disabled: option.disabled,
+          })),
+        })
+        return value as Value | undefined
+      },
+      async showConfirm(props: { title: string; message: string; confirmLabel?: string }) {
+        return (await dialog.confirm({ title: props.title, message: props.message, label: { confirm: props.confirmLabel } })) === true
+      },
+      async showAlert(props: { title: string; message: string }) {
+        await dialog.alert({ title: props.title, message: props.message })
+      },
+      async showPrompt(props: { title: string; placeholder?: string; value?: string }) {
+        return await dialog.prompt({ title: props.title, placeholder: props.placeholder, value: props.value })
       },
       DialogSelect(props) {
         void dialog

@@ -31,102 +31,19 @@ function showSelect<Value>(
     current?: Value
   },
 ): Promise<Value | undefined> {
-  return new Promise((resolve) => {
-    let settled = false
-    const done = (value: Value | undefined) => {
-      if (settled) return
-      settled = true
-      resolve(value)
-    }
-    ui.dialog.replace(
-      () =>
-        ui.DialogSelect<Value>({
-          title: props.title,
-          placeholder: props.placeholder ?? "Type to filter...",
-          options: props.options,
-          current: props.current,
-          flat: props.options.length < 12,
-          onSelect: (option) => {
-            done(option.value)
-            ui.dialog.clear()
-          },
-        }),
-      () => done(undefined),
-    )
-  })
+  return ui.showMenu<Value>({ title: props.title, options: props.options, current: props.current, hint: props.placeholder })
 }
 
 function showPrompt(ui: UI, props: { title: string; placeholder?: string; value?: string }): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    let settled = false
-    const done = (value: string | undefined) => {
-      if (settled) return
-      settled = true
-      resolve(value)
-    }
-    ui.dialog.replace(
-      () =>
-        ui.DialogPrompt({
-          title: props.title,
-          placeholder: props.placeholder,
-          value: props.value,
-          onConfirm: (value) => {
-            done(value)
-            ui.dialog.clear()
-          },
-          onCancel: () => done(undefined),
-        }),
-      () => done(undefined),
-    )
-  })
+  return ui.showPrompt(props)
 }
 
 function showConfirm(ui: UI, props: { title: string; message: string; confirmLabel?: string }): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false
-    const done = (value: boolean) => {
-      if (settled) return
-      settled = true
-      resolve(value)
-    }
-    ui.dialog.replace(
-      () =>
-        ui.DialogConfirm({
-          title: props.title,
-          message: props.message,
-          confirmLabel: props.confirmLabel,
-          onConfirm: () => {
-            done(true)
-            ui.dialog.clear()
-          },
-          onCancel: () => done(false),
-        }),
-      () => done(false),
-    )
-  })
+  return ui.showConfirm(props)
 }
 
 function showInfo(ui: UI, props: { title: string; message: string }): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false
-    const done = () => {
-      if (settled) return
-      settled = true
-      resolve()
-    }
-    ui.dialog.replace(
-      () =>
-        ui.DialogAlert({
-          title: props.title,
-          message: props.message,
-          onConfirm: () => {
-            done()
-            ui.dialog.clear()
-          },
-        }),
-      () => done(),
-    )
-  })
+  return ui.showAlert(props)
 }
 
 function mask(value: string | undefined): string {

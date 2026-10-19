@@ -74,6 +74,13 @@ export type ShareHostApi = {
       clear(): void
       setSize(size: string): void
     }
+    /** Promise menus (the family showMenuOnce pattern). Preferred UI on v1. */
+    showMenu<Value = string>(props: { title: string; options: ShareDialogSelectOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined>
+    showConfirm(props: { title: string; message: string; confirmLabel?: string }): Promise<boolean>
+    showAlert(props: { title: string; message: string }): Promise<void>
+    showPrompt(props: { title: string; placeholder?: string; value?: string }): Promise<string | undefined>
+    // Callback dialogs (v2 adapter bridge only — host ui.DialogX under
+    // plugin dialog.replace receives no keys on opencode 1.19.x).
     DialogSelect<Value = string>(props: {
       title: string
       placeholder?: string

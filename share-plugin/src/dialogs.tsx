@@ -1,34 +1,24 @@
 /** @jsxImportSource @opentui/solid */
 
-// OpenShare interactive dialogs for the v1 TUI — CUSTOM components with
-// their own priority-10000 keymap layers, mode push, and input shielding
-// (the proven family pattern from config-studio's MenuDialog).
+// OpenShare TUI dialogs — PORTED WHOLESALE from agent-variants' wizard
+// MenuDialog (the family pattern, owner-verified working): one menu
+// component driven by a temporary priority-10000 keymap layer + pushed
+// mode + printable-key shield, settled through a single done() that
+// clears the host dialog stack exactly once.
 //
-// WHY (live-caught 2026-10-19, reproduced in a pty on opencode 1.19.3):
-// the host's ui.DialogConfirm/DialogPrompt/DialogSelect components opened
-// by a PLUGIN via dialog.replace() render but no longer receive keys on
-// 1.19.x — Enter/Escape/click do nothing (the owner's consent dialog was
-// uncancellable). Host-internal dialogs still work; plugin-hosted ones do
-// not. Until that is fixed upstream, OpenShare owns its dialog input:
-// every dialog registers a temporary key layer that captures
-// enter/escape/arrows + all printable keys (shield), pushes a mode, and
-// pops everything on cleanup.
-//
-// All dialogs log their lifecycle to the crash-hunt debug log (%TEMP%/
-// openshare-tui-debug.log) while instrumentation is active.
+// Every choice UI (select / confirm / alert) is a MenuDialog instance —
+// no bespoke focus handling, no host ui.DialogX components (their input
+// is dead under plugin dialog.replace on opencode 1.19.x). The only
+// custom component is PromptDialog (single-line text entry; needed for
+// settings fields, no family precedent on 1.19.x) built on the same
+// discipline.
 
-import { createSignal, onCleanup } from "solid-js"
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import type { JSX } from "@opentui/solid"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ShareDialogSelectOption } from "./tui-host.js"
 import { dbgLog } from "./sidebar.js"
-
-/** clear() can throw on an empty dialog stack (1.19.x) — never fatal. */
-function safeClear(api: TuiPluginApi) {
-  try {
-    api.ui.dialog.clear()
-  } catch {}
-}
 
 type KeyContext = { event?: { preventDefault?: () => void; stopPropagation?: () => void } }
 
@@ -37,6 +27,7 @@ const blockKey = (ctx: KeyContext | undefined) => {
   ctx?.event?.stopPropagation?.()
 }
 
+// verbatim from agent-variants (plus their punctuation coverage)
 const SHIELDED_KEYS = [
   ..."abcdefghijklmnopqrstuvwxyz".split(""),
   ..."0123456789".split(""),
@@ -48,259 +39,215 @@ const SHIELDED_KEYS = [
   "end",
   "left",
   "right",
-  "up",
-  "down",
-]
+  "/",
+  "?",
+  ":",
+  ";",
+  "'",
+  '"',
+  ",",
+  ".",
+  "-",
+  "=",
+  "[",
+  "]",
+  "\\",
+  "`",
+] as const
 
-type LayerSpec = {
-  commands: Array<{ name: string; title: string; run: (ctx: KeyContext) => void }>
-  bindings: Array<{ key: string; cmd: string; desc?: string }>
+function shieldBindings(command: string, except: readonly string[] = []) {
+  const allowed = new Set(except)
+  return SHIELDED_KEYS.filter((key) => !allowed.has(key)).map((key) => ({ key, cmd: command, desc: "Keep input inside OpenShare" }))
 }
 
-/** Registers a dialog's key layer (priority 10000) + a pushed mode.
- * Returns dispose() — idempotent, ALSO called manually on settle because
- * dialog.clear() does not reliably dispose the render root on 1.19.x (the
- * shield layer would leak and eat every keystroke afterwards). */
-function useDialogKeys(api: TuiPluginApi, prefix: string, spec: LayerSpec): () => void {
-  const popMode = api.mode.push(`openshare.${prefix}`)
-  const unregister = api.keymap.registerLayer({
-    priority: 10000,
-    commands: spec.commands,
-    bindings: spec.bindings,
-  } as never)
-  let disposed = false
-  const dispose = () => {
-    if (disposed) return
-    disposed = true
-    try {
-      unregister()
-    } catch {}
-    try {
-      popMode()
-    } catch {}
+function collectEditors(root: { getChildren?: () => unknown[] }): Array<{ showCursor: boolean; isDestroyed?: boolean; getChildren?: () => unknown[] }> {
+  const children = root.getChildren?.() ?? []
+  return [
+    ...((root as { showCursor?: boolean }).showCursor !== undefined ? [root as { showCursor: boolean; isDestroyed?: boolean; getChildren?: () => unknown[] }] : []),
+    ...children.flatMap((child) => collectEditors(child as { getChildren?: () => unknown[] })),
+  ]
+}
+
+/** verbatim from agent-variants: hide the prompt editor's cursor while a dialog is up */
+function useHidePromptCursor(api: TuiPluginApi) {
+  const editors = collectEditors(api.renderer.root)
+  const previous = editors.map((editor) => ({ editor, showCursor: editor.showCursor }))
+  for (const editor of editors) {
+    editor.showCursor = false
   }
-  onCleanup(dispose)
-  return dispose
+  onCleanup(() => {
+    for (const item of previous) {
+      if (item.editor.isDestroyed) continue
+      item.editor.showCursor = item.showCursor
+    }
+  })
 }
 
-function DialogFrame(props: { theme: () => Record<string, unknown>; title: string; children: JSX.Element }): JSX.Element {
-  const t = props.theme
-  // Natural sizing: no fixed width — the host dialog backdrop centers the
-  // box and content defines extent (live-caught: width=64 left the border
-  // extending past the menu body on the right).
+function useDialogSize(api: TuiPluginApi) {
+  try {
+    api.ui.dialog.setSize("large")
+  } catch {}
+  onCleanup(() => {
+    try {
+      api.ui.dialog.setSize("medium")
+    } catch {}
+  })
+}
+
+function cappedHeight(count: number, max: number, min = 1) {
+  if (count <= 0) return min
+  return Math.max(min, Math.min(count, max))
+}
+
+// --- the menu (ported from agent-variants' MenuDialog) -----------------------
+
+export type MenuOption<Value = string> = {
+  title: string
+  description?: string
+  value: Value
+  disabled?: boolean
+}
+
+export function MenuDialog<Value>(props: {
+  api: TuiPluginApi
+  title: string
+  options: MenuOption<Value>[]
+  current?: Value
+  hint?: string
+  onDone: (value: Value | undefined) => void
+}): JSX.Element {
+  const theme = () => props.api.theme.current
+  useDialogSize(props.api)
+  useHidePromptCursor(props.api)
+  const listHeight = createMemo(() => cappedHeight(props.options.length, 14, 4))
+  let scroll: ScrollBoxRenderable | undefined
+  const popMode = props.api.mode.push("openshare.dialog")
+  const [selected, setSelected] = createSignal(Math.max(0, props.options.findIndex((option) => option.value === props.current)))
+  const current = createMemo(() => props.options[selected()] ?? props.options[0])
+  const move = (delta: number) =>
+    setSelected((value) => {
+      const next = Math.max(0, Math.min(props.options.length - 1, value + delta))
+      scroll?.scrollTo(Math.max(0, next - 2))
+      return next
+    })
+  const choose = () => {
+    const option = current()
+    if (!option || option.disabled) return
+    props.onDone(option.value)
+  }
+  const commandPrefix = `openshare.menu.${Math.random().toString(36).slice(2)}`
+  const unregister = props.api.keymap.registerLayer({
+    priority: 10000,
+    commands: [
+      { name: `${commandPrefix}.up`, title: "Previous item", run: (ctx: KeyContext) => { blockKey(ctx); move(-1) } },
+      { name: `${commandPrefix}.down`, title: "Next item", run: (ctx: KeyContext) => { blockKey(ctx); move(1) } },
+      { name: `${commandPrefix}.select`, title: "Select item", run: (ctx: KeyContext) => { blockKey(ctx); choose() } },
+      { name: `${commandPrefix}.back`, title: "Back", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(undefined) } },
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
+    ],
+    bindings: [
+      { key: "up", cmd: `${commandPrefix}.up`, desc: "Previous item" },
+      { key: "ctrl+p", cmd: `${commandPrefix}.up`, desc: "Previous item" },
+      { key: "down", cmd: `${commandPrefix}.down`, desc: "Next item" },
+      { key: "ctrl+n", cmd: `${commandPrefix}.down`, desc: "Next item" },
+      { key: "enter", cmd: `${commandPrefix}.select`, desc: "Select item" },
+      { key: "escape", cmd: `${commandPrefix}.back`, desc: "Back" },
+      ...shieldBindings(`${commandPrefix}.shield`),
+    ],
+  })
+  onCleanup(() => {
+    unregister()
+    popMode()
+  })
+
   return (
-    <box
-      borderStyle="rounded"
-      borderColor={t().accent as never}
-      flexDirection="column"
-      paddingTop={0}
-      paddingBottom={1}
-      paddingLeft={1}
-      paddingRight={1}
-    >
-      <text fg={t().accent as never}>
-        <b>{props.title}</b>
-      </text>
-      <box flexDirection="column" paddingTop={1} paddingBottom={0}>
-        {props.children}
+    <box flexDirection="column" width="100%" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+      <box flexDirection="row" justifyContent="space-between" width="100%" marginBottom={1}>
+        <text fg={theme().text}><b>{props.title}</b></text>
+        <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc</text>
       </box>
+      <Show when={props.hint}>
+        <box marginBottom={1}>
+          <text fg={theme().textMuted}>{props.hint}</text>
+        </box>
+      </Show>
+      <box flexDirection="row" gap={3} marginBottom={1}>
+        <text fg={theme().textMuted}>enter select</text>
+        <text fg={theme().textMuted}>up/down move</text>
+      </box>
+      <scrollbox maxHeight={listHeight()} ref={(element: ScrollBoxRenderable) => (scroll = element)}>
+        <box flexDirection="column" gap={0}>
+          <For each={props.options}>
+            {(option, index) => {
+              const active = createMemo(() => selected() === index())
+              const fg = createMemo(() => (active() ? theme().background : option.disabled ? theme().textMuted : theme().text))
+              const descFg = createMemo(() => (active() ? theme().background : theme().textMuted))
+              return (
+                <box
+                  flexDirection="row"
+                  width="100%"
+                  gap={1}
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={active() ? theme().primary : theme().backgroundPanel}
+                  onMouseOver={() => setSelected(index())}
+                  onMouseUp={() => {
+                    if (!option.disabled) props.onDone(option.value)
+                  }}
+                >
+                  <text flexGrow={1} fg={fg()} wrapMode="none" overflow="hidden"><b>{option.title}</b></text>
+                  <text flexGrow={2} fg={descFg()} wrapMode="none" overflow="hidden">{option.description ?? ""}</text>
+                </box>
+              )
+            }}
+          </For>
+        </box>
+      </scrollbox>
     </box>
   )
 }
 
-// --- confirm -----------------------------------------------------------------
-
-export function ConfirmDialog(props: {
-  api: TuiPluginApi
-  title: string
-  message: string
-  confirmLabel?: string
-  onConfirm: () => void
-  onCancel?: () => void
-}): JSX.Element {
-  const theme = () => props.api.theme.current as unknown as Record<string, unknown>
-  const [focus, setFocus] = createSignal(0) // 0 = confirm, 1 = cancel
-  const confirm = props.confirmLabel ?? "Confirm"
-  let settled = false
-  const done = (which: "confirm" | "cancel") => {
-    if (settled) return
-    settled = true
-    dbgLog(`dialog.confirm(${props.title}) -> ${which}`)
-    disposeKeys()
-    safeClear(props.api)
-    if (which === "confirm") props.onConfirm()
-    else props.onCancel?.()
-  }
-  const prefix = `openshare.confirm.${Math.random().toString(36).slice(2)}`
-  const disposeKeys = useDialogKeys(props.api, "confirm", {
-    commands: [
-      { name: `${prefix}.enter`, title: "Activate button", run: (ctx) => { blockKey(ctx); done(focus() === 0 ? "confirm" : "cancel") } },
-      { name: `${prefix}.left`, title: "Previous button", run: (ctx) => { blockKey(ctx); setFocus((v) => (v === 0 ? 1 : 0)) } },
-      { name: `${prefix}.right`, title: "Next button", run: (ctx) => { blockKey(ctx); setFocus((v) => (v === 0 ? 1 : 0)) } },
-      { name: `${prefix}.back`, title: "Cancel", run: (ctx) => { blockKey(ctx); done("cancel") } },
-      { name: `${prefix}.shield`, title: "Block background input", run: blockKey },
-    ],
-    bindings: [
-      { key: "enter", cmd: `${prefix}.enter` },
-      { key: "tab", cmd: `${prefix}.right` },
-      { key: "left", cmd: `${prefix}.left` },
-      { key: "right", cmd: `${prefix}.right` },
-      { key: "escape", cmd: `${prefix}.back` },
-      ...SHIELDED_KEYS.filter((k) => k !== "tab" && k !== "left" && k !== "right").map((key) => ({ key, cmd: `${prefix}.shield` })),
-    ],
+/** showMenuOnce, verbatim discipline from agent-variants. */
+export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; options: MenuOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined> {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (value: Value | undefined, clear = true) => {
+      if (settled) return
+      settled = true
+      dbgLog(`menu(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
+      resolve(value)
+      if (clear) {
+        try {
+          api.ui.dialog.clear()
+        } catch {}
+      }
+    }
+    dbgLog(`menu(${props.title}) OPEN (${props.options.length} options)`)
+    api.ui.dialog.replace(
+      () => <MenuDialog api={api} title={props.title} options={props.options} current={props.current} hint={props.hint} onDone={done} />,
+      () => done(undefined, false),
+    )
   })
-  dbgLog(`dialog.confirm(${props.title}) OPEN`)
-  return (
-    <DialogFrame theme={theme} title={props.title}>
-      <text fg={(() => { const t = theme(); return t.text as never })()}>{props.message}</text>
-      <box flexDirection="row" gap={2} paddingTop={1}>
-        <box backgroundColor={focus() === 0 ? (theme().accent as never) : undefined} paddingLeft={1} paddingRight={1}>
-          <text fg={(() => { const t = theme(); return t.text as never })()}>{confirm}</text>
-        </box>
-        <box backgroundColor={focus() === 1 ? (theme().accent as never) : undefined} paddingLeft={1} paddingRight={1}>
-          <text fg={(() => { const t = theme(); return t.text as never })()}>Cancel</text>
-        </box>
-      </box>
-    </DialogFrame>
-  )
 }
 
-// --- select ------------------------------------------------------------------
+// --- confirm / alert as menus -------------------------------------------------
 
-export function SelectDialog(props: {
-  api: TuiPluginApi
-  title: string
-  placeholder?: string
-  options: ShareDialogSelectOption[]
-  current?: string
-  onSelect: (option: ShareDialogSelectOption) => void
-  onCancel?: () => void
-}): JSX.Element {
-  dbgLog(`SelectDialog: component body START (title=${props.title})`)
-  const theme = () => props.api.theme.current as unknown as Record<string, unknown>
-  const startAt = Math.max(0, props.options.findIndex((o) => o.value === props.current))
-  const [index, setIndex] = createSignal(startAt)
-  // simple windowed scroll: show at most 12 rows around the selection
-  const WINDOW = 12
-  let settled = false
-  const choose = () => {
-    const option = props.options[index()]
-    if (!option || option.disabled) return
-    if (settled) return
-    settled = true
-    dbgLog(`dialog.select(${props.title}) -> ${JSON.stringify(option.value)}`)
-    disposeKeys()
-    safeClear(props.api)
-    props.onSelect(option)
-  }
-  const cancel = () => {
-    if (settled) return
-    settled = true
-    dbgLog(`dialog.select(${props.title}) -> cancel`)
-    disposeKeys()
-    safeClear(props.api)
-    props.onCancel?.()
-  }
-  const move = (delta: number) =>
-    setIndex((v) => {
-      let next = v + delta
-      if (next < 0) next = 0
-      if (next > props.options.length - 1) next = props.options.length - 1
-      return next
-    })
-  const prefix = `openshare.select.${Math.random().toString(36).slice(2)}`
-  const disposeKeys = useDialogKeys(props.api, "select", {
-    commands: [
-      { name: `${prefix}.up`, title: "Previous item", run: (ctx) => { blockKey(ctx); move(-1) } },
-      { name: `${prefix}.down`, title: "Next item", run: (ctx) => { blockKey(ctx); move(1) } },
-      { name: `${prefix}.choose`, title: "Select item", run: (ctx) => { blockKey(ctx); choose() } },
-      { name: `${prefix}.back`, title: "Cancel", run: (ctx) => { blockKey(ctx); cancel() } },
-      { name: `${prefix}.shield`, title: "Block background input", run: blockKey },
+export function showConfirmMenu(api: TuiPluginApi, props: { title: string; message: string; confirmLabel?: string }): Promise<boolean> {
+  return showMenuOnce<string>(api, {
+    title: props.title,
+    hint: props.message,
+    options: [
+      { title: props.confirmLabel ?? "Confirm", value: "yes" },
+      { title: "Cancel", value: "no" },
     ],
-    bindings: [
-      { key: "up", cmd: `${prefix}.up` },
-      { key: "ctrl+p", cmd: `${prefix}.up` },
-      { key: "down", cmd: `${prefix}.down` },
-      { key: "ctrl+n", cmd: `${prefix}.down` },
-      { key: "enter", cmd: `${prefix}.choose` },
-      { key: "escape", cmd: `${prefix}.back` },
-      ...SHIELDED_KEYS.filter((k) => k !== "up" && k !== "down").map((key) => ({ key, cmd: `${prefix}.shield` })),
-    ],
-  })
-  dbgLog(`dialog.select(${props.title}) OPEN (${props.options.length} options)`)
-  const from = () => Math.max(0, Math.min(index() - WINDOW + 1, props.options.length - WINDOW))
-  const visible = () => props.options.slice(from(), from() + WINDOW)
-  return (
-    <DialogFrame theme={theme} title={props.title}>
-      {props.placeholder ? (
-        <text fg={theme().secondary as never}>{props.placeholder}</text>
-      ) : null}
-      <box flexDirection="column">
-        {visible().map((option, i) => {
-          const realIndex = () => from() + i
-          const selected = () => realIndex() === index()
-          return (
-            <box
-              flexDirection="row"
-              backgroundColor={selected() ? (theme().accent as never) : undefined}
-              paddingLeft={1}
-              paddingRight={1}
-            >
-              <text fg={selected() ? (theme().text as never) : option.disabled ? (theme().secondary as never) : (theme().text as never)}>
-                {selected() ? "❯ " : "  "}
-                {option.title}
-                {option.description ? `  — ${option.description}` : ""}
-              </text>
-            </box>
-          )
-        })}
-      </box>
-      <text fg={theme().secondary as never}>↑↓ move · enter select · esc cancel</text>
-    </DialogFrame>
-  )
+  }).then((value) => value === "yes")
 }
 
-// --- alert -------------------------------------------------------------------
-
-export function AlertDialog(props: { api: TuiPluginApi; title: string; message: string; onConfirm?: () => void }): JSX.Element {
-  const theme = () => props.api.theme.current as unknown as Record<string, unknown>
-  let settled = false
-  const done = () => {
-    if (settled) return
-    settled = true
-    dbgLog(`dialog.alert(${props.title}) -> ok`)
-    disposeKeys()
-    safeClear(props.api)
-    props.onConfirm?.()
-  }
-  const prefix = `openshare.alert.${Math.random().toString(36).slice(2)}`
-  const disposeKeys = useDialogKeys(props.api, "alert", {
-    commands: [
-      { name: `${prefix}.ok`, title: "OK", run: (ctx) => { blockKey(ctx); done() } },
-      { name: `${prefix}.shield`, title: "Block background input", run: blockKey },
-    ],
-    bindings: [
-      { key: "enter", cmd: `${prefix}.ok` },
-      { key: "escape", cmd: `${prefix}.ok` },
-      { key: "space", cmd: `${prefix}.ok` },
-      ...SHIELDED_KEYS.map((key) => ({ key, cmd: `${prefix}.shield` })),
-    ],
-  })
-  dbgLog(`dialog.alert(${props.title}) OPEN`)
-  const ta = theme()
-  return (
-    <DialogFrame theme={theme} title={props.title}>
-      <text fg={ta.text as never}>{props.message}</text>
-      <box paddingTop={1}>
-        <box backgroundColor={theme().accent as never} paddingLeft={1} paddingRight={1}>
-          <text fg={ta.text as never}>OK (enter)</text>
-        </box>
-      </box>
-    </DialogFrame>
-  )
+export function showAlertMenu(api: TuiPluginApi, props: { title: string; message: string }): Promise<void> {
+  return showMenuOnce<string>(api, { title: props.title, hint: props.message, options: [{ title: "OK", value: "ok" }] }).then(() => undefined)
 }
 
-// --- prompt (single-line text: type / backspace / enter / esc) ---------------
+// --- prompt (text entry — the one custom piece) -------------------------------
 
 const PROMPT_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789 ://.-_?&=%~+#@"
 
@@ -309,58 +256,79 @@ export function PromptDialog(props: {
   title: string
   placeholder?: string
   value?: string
-  onConfirm: (value: string) => void
-  onCancel?: () => void
+  onDone: (value: string | undefined) => void
 }): JSX.Element {
-  const theme = () => props.api.theme.current as unknown as Record<string, unknown>
+  const theme = () => props.api.theme.current
+  useDialogSize(props.api)
+  useHidePromptCursor(props.api)
   const [text, setText] = createSignal(props.value ?? "")
-  let settled = false
-  const confirm = () => {
-    if (settled) return
-    settled = true
-    dbgLog(`dialog.prompt(${props.title}) -> len=${text().length}`)
-    disposeKeys()
-    safeClear(props.api)
-    props.onConfirm(text())
-  }
-  const cancel = () => {
-    if (settled) return
-    settled = true
-    dbgLog(`dialog.prompt(${props.title}) -> cancel`)
-    disposeKeys()
-    safeClear(props.api)
-    props.onCancel?.()
-  }
-  const prefix = `openshare.prompt.${Math.random().toString(36).slice(2)}`
+  const popMode = props.api.mode.push("openshare.dialog")
+  const commandPrefix = `openshare.prompt.${Math.random().toString(36).slice(2)}`
   const commands: Array<{ name: string; title: string; run: (ctx: KeyContext) => void }> = [
-    { name: `${prefix}.ok`, title: "Confirm", run: (ctx) => { blockKey(ctx); confirm() } },
-    { name: `${prefix}.back`, title: "Cancel", run: (ctx) => { blockKey(ctx); cancel() } },
-    { name: `${prefix}.del`, title: "Backspace", run: (ctx) => { blockKey(ctx); setText((v) => v.slice(0, -1)) } },
-    { name: `${prefix}.space`, title: "Space", run: (ctx) => { blockKey(ctx); setText((v) => v + " ") } },
-    { name: `${prefix}.shield`, title: "Block background input", run: blockKey },
+    { name: `${commandPrefix}.ok`, title: "Confirm", run: (ctx) => { blockKey(ctx); props.onDone(text()) } },
+    { name: `${commandPrefix}.back`, title: "Cancel", run: (ctx) => { blockKey(ctx); props.onDone(undefined) } },
+    { name: `${commandPrefix}.del`, title: "Backspace", run: (ctx) => { blockKey(ctx); setText((v) => v.slice(0, -1)) } },
+    { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
   ]
-  const bindings: Array<{ key: string; cmd: string }> = [
-    { key: "enter", cmd: `${prefix}.ok` },
-    { key: "escape", cmd: `${prefix}.back` },
-    { key: "backspace", cmd: `${prefix}.del` },
-    { key: "space", cmd: `${prefix}.space` },
+  const bindings: Array<{ key: string; cmd: string; desc?: string }> = [
+    { key: "enter", cmd: `${commandPrefix}.ok`, desc: "Confirm" },
+    { key: "escape", cmd: `${commandPrefix}.back`, desc: "Cancel" },
+    { key: "backspace", cmd: `${commandPrefix}.del`, desc: "Backspace" },
+    { key: "space", cmd: `${commandPrefix}.type_space`, desc: "Space" },
   ]
+  commands.push({ name: `${commandPrefix}.type_space`, title: "Type space", run: (ctx) => { blockKey(ctx); setText((v) => v + " ") } })
   for (const ch of PROMPT_CHARS) {
     if (ch === " ") continue
     const name = `type_${ch.codePointAt(0)}`
-    commands.push({ name: `${prefix}.${name}`, title: `Type ${ch}`, run: (ctx) => { blockKey(ctx); setText((v) => v + ch) } })
-    bindings.push({ key: ch, cmd: `${prefix}.${name}` })
+    commands.push({ name: `${commandPrefix}.${name}`, title: `Type ${ch}`, run: (ctx) => { blockKey(ctx); setText((v) => v + ch) } })
+    bindings.push({ key: ch, cmd: `${commandPrefix}.${name}` })
   }
-  const disposeKeys = useDialogKeys(props.api, "prompt", { commands, bindings })
-  dbgLog(`dialog.prompt(${props.title}) OPEN`)
-  const t = theme()
+  const unregister = props.api.keymap.registerLayer({ priority: 10000, commands, bindings })
+  onCleanup(() => {
+    unregister()
+    popMode()
+  })
   return (
-    <DialogFrame theme={theme} title={props.title}>
-      <box backgroundColor={theme().secondary as never} paddingLeft={1} paddingRight={1}>
-        <text fg={t.text as never}>{text() || props.placeholder || ""}</text>
-        <text fg={t.accent as never}>{"▌"}</text>
+    <box flexDirection="column" width="100%" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+      <box flexDirection="row" justifyContent="space-between" width="100%" marginBottom={1}>
+        <text fg={theme().text}><b>{props.title}</b></text>
+        <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc</text>
       </box>
-      <text fg={t.secondary as never}>enter confirm · esc cancel</text>
-    </DialogFrame>
+      <box backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} marginBottom={1}>
+        <text fg={text() ? theme().text : theme().textMuted}>{text() || props.placeholder || ""}</text>
+        <text fg={theme().accent}>{"▌"}</text>
+      </box>
+      <box flexDirection="row" gap={3}>
+        <text fg={theme().textMuted}>enter confirm</text>
+        <text fg={theme().textMuted}>esc cancel</text>
+      </box>
+    </box>
   )
+}
+
+export function showPromptOnce(api: TuiPluginApi, props: { title: string; placeholder?: string; value?: string }): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (value: string | undefined, clear = true) => {
+      if (settled) return
+      settled = true
+      dbgLog(`prompt(${props.title}) -> ${value === undefined ? "cancel" : `len=${value.length}`}`)
+      resolve(value)
+      if (clear) {
+        try {
+          api.ui.dialog.clear()
+        } catch {}
+      }
+    }
+    dbgLog(`prompt(${props.title}) OPEN`)
+    api.ui.dialog.replace(
+      () => <PromptDialog api={api} title={props.title} placeholder={props.placeholder} value={props.value} onDone={done} />,
+      () => done(undefined, false),
+    )
+  })
+}
+
+/** host-facade adapter: ShareDialogSelectOption (flows) -> MenuOption */
+export function toMenuOptions<Value>(options: ShareDialogSelectOption<Value>[]): MenuOption<Value>[] {
+  return options.map((o) => ({ title: o.title, description: o.description, value: o.value, disabled: o.disabled }))
 }

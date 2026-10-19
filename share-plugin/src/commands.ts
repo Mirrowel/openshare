@@ -29,56 +29,36 @@ function finish(host: ShareHostApi, result: { ok: boolean; message: string; url?
   })
 }
 
-/** The already-shared state: manage the existing share. */
+/** The already-shared state: manage the existing share (promise menu,
+ * the family showMenuOnce pattern). */
 function showShareManager(host: ShareHostApi, url: string, sessionID: () => string | undefined) {
   dbgLog(`showShareManager: url=${url}`)
-  try {
-    host.ui.dialog.replace(
-      () => {
-        dbgLog("showShareManager: thunk invoked")
-        return host.ui.DialogSelect({
-        title: "Session is shared",
-        placeholder: "Share link is below — copy it or stop sharing",
-        options: [
-          { title: "Copy share link", value: "copy", description: url },
-          { title: "Stop sharing", value: "stop", description: "Delete the share page — the link stops working for everyone" },
-          { title: "Cancel", value: "cancel" },
-        ],
-        flat: true,
-        onSelect: (option) => {
-          host.ui.dialog.clear()
-          if (option.value === "copy") {
-            void host.clipboard.write(url).then((ok) =>
-              finish(host, ok ? { ok: true, message: `Share URL copied to clipboard: ${url}`, url } : { ok: false, message: `Could not write the clipboard — link: ${url}`, url }),
-            )
-            return
-          }
-          if (option.value === "stop") {
-            host.ui.dialog.replace(
-              () =>
-                host.ui.DialogConfirm({
-                  title: "Stop sharing",
-                  message: "Delete the share page for this session? The link stops working for everyone.",
-                  confirmLabel: "Stop sharing",
-                  onConfirm: () => {
-                    host.ui.dialog.clear()
-                    void runUnshareFlow(host, sessionID()).then((result) => finish(host, result))
-                  },
-                  onCancel: () => host.ui.dialog.clear(),
-                }),
-              () => host.ui.dialog.clear(),
-            )
-          }
-        },
+  void host.ui
+    .showMenu<string>({
+      title: "Session is shared",
+      hint: url,
+      options: [
+        { title: "Copy share link", value: "copy", description: url },
+        { title: "Stop sharing", value: "stop", description: "Delete the share page — the link stops working for everyone" },
+        { title: "Cancel", value: "cancel" },
+      ],
+    })
+    .then(async (choice) => {
+      if (choice === "copy") {
+        const ok = await host.clipboard.write(url)
+        finish(host, ok ? { ok: true, message: `Share URL copied to clipboard: ${url}`, url } : { ok: false, message: `Could not write the clipboard — link: ${url}`, url })
+        return
+      }
+      if (choice === "stop") {
+        const yes = await host.ui.showConfirm({
+          title: "Stop sharing",
+          message: "Delete the share page for this session? The link stops working for everyone.",
+          confirmLabel: "Stop sharing",
         })
-      },
-      () => host.ui.dialog.clear(),
-    )
-    const stack = host.ui.dialog as unknown as { depth?: number; open?: boolean }
-    dbgLog(`showShareManager: replace returned; dialog depth=${stack.depth} open=${stack.open}`)
-  } catch (e) {
-    dbgLog(`showShareManager THREW: ${(e as Error)?.stack ?? e}`)
-  }
+        if (!yes) return
+        finish(host, await runUnshareFlow(host, sessionID()))
+      }
+    })
 }
 
 export function buildShareCommand(host: ShareHostApi, sessionID: () => string | undefined): ShareHostLayerCommand {
@@ -116,32 +96,24 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
       // not shared (or dormant): the normal flow — consent once, then share
       const result = await runShareFlow(host, sid)
       if (result.message === "consent required") {
-        host.ui.dialog.replace(
-          () =>
-            host.ui.DialogConfirm({
-              title: "Share Session",
-              message: "Publish this session (and its subagent sessions) to your openshare worker?\nThe link lets anyone with it read the conversation.",
-              confirmLabel: "Share",
-              onConfirm: () => {
-                host.ui.dialog.clear()
-                try {
-                  host.kv.set(CONSENT_KV_KEY, true)
-                  dbgLog("consent kv.set ok")
-                } catch (e) {
-                  dbgLog(`consent kv.set THREW: ${(e as Error)?.message ?? e}`)
-                }
-                void confirmShare(host, root).then(
-                  (res) => finish(host, res),
-                  (e) => {
-                    dbgLog(`confirmShare rejected: ${(e as Error)?.stack ?? e}`)
-                    finish(host, { ok: false, message: "Share failed (see debug log)." })
-                  },
-                )
-              },
-              onCancel: () => host.ui.dialog.clear(),
-            }),
-          () => host.ui.dialog.clear(),
-        )
+        const yes = await host.ui.showConfirm({
+          title: "Share Session",
+          message: "Publish this session (and its subagent sessions) to your openshare worker?\nThe link lets anyone with it read the conversation.",
+          confirmLabel: "Share",
+        })
+        if (!yes) return
+        try {
+          host.kv.set(CONSENT_KV_KEY, true)
+          dbgLog("consent kv.set ok")
+        } catch (e) {
+          dbgLog(`consent kv.set THREW: ${(e as Error)?.message ?? e}`)
+        }
+        try {
+          finish(host, await confirmShare(host, root))
+        } catch (e) {
+          dbgLog(`confirmShare rejected: ${(e as Error)?.stack ?? e}`)
+          finish(host, { ok: false, message: "Share failed (see debug log)." })
+        }
         return
       }
       finish(host, result)

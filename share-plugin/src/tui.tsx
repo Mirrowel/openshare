@@ -11,7 +11,7 @@ import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClientApi } from "./core.js"
 import { registerCommands } from "./commands.js"
 import { createSidebarSlot, dbgLog, dbg } from "./sidebar.js"
-import { AlertDialog, ConfirmDialog, PromptDialog, SelectDialog } from "./dialogs.js"
+import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, toMenuOptions } from "./dialogs.js"
 import type { ShareHostApi } from "./tui-host.js"
 import { createV2TuiSetup } from "./v2-tui.js"
 
@@ -130,10 +130,23 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
                 api.ui.dialog.clear()
               } catch {}
             }
+          if (key === "replace")
+            return (render: () => unknown, onClose?: () => void) => {
+              try {
+                api.ui.dialog.replace(render as never, onClose)
+              } catch (e) {
+                dbgLog(`dialog.replace THREW: ${(e as Error)?.message ?? e}`)
+              }
+            }
           const value = (api.ui.dialog as unknown as Record<string, unknown>)[key]
           return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(api.ui.dialog) : value
         },
       }),
+      // Promise menus — the family showMenuOnce pattern, ported verbatim.
+      showMenu: (props) => showMenuOnce(api, { ...props, options: toMenuOptions(props.options) }),
+      showConfirm: (props) => showConfirmMenu(api, props),
+      showAlert: (props) => showAlertMenu(api, props),
+      showPrompt: (props) => showPromptOnce(api, props),
       // CUSTOM interactive dialogs (family MenuDialog pattern: own
       // priority-10000 key layer + mode push + input shield). The host's
       // ui.DialogX components under plugin dialog.replace render but
@@ -141,10 +154,34 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       // These are component functions: flows invoke them inside their own
       // dialog.replace(() => ...) render thunk (the host renders the thunk
       // in a proper Solid root, so the hooks inside run with an owner).
-      DialogSelect: (props) => (<SelectDialog {...({ api, ...props } as unknown as Parameters<typeof SelectDialog>[0])} />) as never,
-      DialogPrompt: (props) => (<PromptDialog {...({ api, ...props } as unknown as Parameters<typeof PromptDialog>[0])} />) as never,
-      DialogConfirm: (props) => (<ConfirmDialog {...({ api, ...props } as unknown as Parameters<typeof ConfirmDialog>[0])} />) as never,
-      DialogAlert: (props) => (<AlertDialog {...({ api, ...props } as unknown as Parameters<typeof AlertDialog>[0])} />) as never,
+      // DialogX bridge shims (v2 adapter / legacy call sites): route to the
+      // ported promise menus. Nothing on v1 renders these through
+      // dialog.replace anymore — flows use showMenu/showConfirm directly.
+      DialogSelect: (props) => {
+        void showMenuOnce(api, { title: props.title, options: toMenuOptions(props.options), current: props.current, hint: props.placeholder }).then((value) => {
+          if (value === undefined) (props as { onCancel?: () => void }).onCancel?.()
+          else {
+            const option = props.options.find((o) => o.value === value)
+            if (option) (props as { onSelect: (o: unknown) => void }).onSelect(option)
+          }
+        })
+        return undefined as never
+      },
+      DialogPrompt: (props) => {
+        void showPromptOnce(api, { title: props.title, placeholder: props.placeholder, value: props.value }).then((value) => {
+          if (value === undefined) (props as { onCancel?: () => void }).onCancel?.()
+          else (props as { onConfirm: (v: string) => void }).onConfirm(value)
+        })
+        return undefined as never
+      },
+      DialogConfirm: (props) => {
+        void showConfirmMenu(api, { title: props.title, message: props.message, confirmLabel: props.confirmLabel }).then((yes) => (yes ? props.onConfirm() : (props as { onCancel?: () => void }).onCancel?.()))
+        return undefined as never
+      },
+      DialogAlert: (props) => {
+        void showAlertMenu(api, { title: props.title, message: props.message }).then(() => (props as { onConfirm?: () => void }).onConfirm?.())
+        return undefined as never
+      },
     },
     keymap: {
       registerLayer(layer) {
