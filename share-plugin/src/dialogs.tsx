@@ -146,13 +146,14 @@ function estimatedVisualRows(message: string, width: number) {
 }
 
 /** title column cap (family menuTitleWidth, live-caught need: a server URL
- * as a row title stretched the column to 55+, wasting the middle band).
- * Capped + ellipsized; the [i] pane carries the full text. */
+ * as a row title stretched the column toward half the dialog — the owner
+ * capped it further: full URLs belong in the [i] pane, not the row).
+ * Capped + ellipsized. */
 function menuTitleWidth(width: DialogWidth, options: readonly { title: string }[]) {
   const longest = Math.max(0, ...options.map((option) => option.title.length)) + 2
-  if (width === "xlarge") return Math.min(Math.max(24, longest), 38)
-  if (width === "large") return Math.min(Math.max(22, longest), 34)
-  return Math.min(Math.max(20, longest), 26)
+  if (width === "xlarge") return Math.min(Math.max(20, longest), 28)
+  if (width === "large") return Math.min(Math.max(18, longest), 24)
+  return Math.min(Math.max(16, longest), 20)
 }
 
 function ellipsize(text: string, width: number) {
@@ -163,14 +164,20 @@ function ellipsize(text: string, width: number) {
  * logic inside the menus stays the ported family pattern; this wrapper is
  * purely presentation (owner-preferred styling). Natural width — the host
  * dialog panel provides the container; the border hugs the content. */
+// Frame note (live-caught): the HOST dialog panel renders plugin content
+// with paddingTop=1 (opencode dialog.tsx), so a BORDERED frame always
+// showed a dead panel strip above its top border. Borderless family
+// shape + a solid accent rule under the title: zero dead space, accent
+// identity kept.
 function DialogFrame(props: { api: TuiPluginApi; title: string; children: JSX.Element }): JSX.Element {
   const theme = () => props.api.theme.current
   return (
-    <box borderStyle="rounded" borderColor={theme().accent} flexDirection="column" paddingLeft={1} paddingRight={1}>
-      <text fg={theme().accent}><b>{props.title}</b></text>
-      <box flexDirection="column" paddingTop={1}>
-        {props.children}
+    <box flexDirection="column" width="100%" paddingLeft={2} paddingRight={2}>
+      <box width="100%" marginBottom={1}>
+        <text fg={theme().accent}><b>{props.title}</b></text>
       </box>
+      <box width="100%" height={1} backgroundColor={theme().accent} marginBottom={1} />
+      {props.children}
     </box>
   )
 }

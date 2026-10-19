@@ -370,19 +370,21 @@ try {
     const metaAfter = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
     check("F8: gone binding entry auto-cleared", !(metaAfter?.servers ?? {})[WORKER_URL], JSON.stringify(metaAfter?.servers ?? null))
 
-    // F9: interface prefs — dialog size rows edit the host kv (width cycle,
-    // height via the prompt fallback on the mock host); settings rows carry
-    // [i] help (long-form detail incl. current value + source).
-    state.menuAnswers.push("ui:width", "ui:height", "action:exit")
+    // F9: interface prefs — grouped settings: root lists GROUPS only (no key
+    // rows), Interface opens its own menu (width cycle, height via the
+    // prompt fallback on the mock host), rows carry [i] help.
+    state.menuAnswers.push("group:interface", "ui:width", "ui:height", "__back", "action:exit")
     state.promptAnswers.push("66")
     await settings.settingsDialog(host)
     check("F9: width cycled large -> xlarge in kv", state.kv.get("openshare.ui-width") === "xlarge", JSON.stringify(state.kv.get("openshare.ui-width")))
     check("F9: height persisted (clamped) in kv", state.kv.get("openshare.ui-height-percent") === 66, JSON.stringify(state.kv.get("openshare.ui-height-percent")))
     const rootMenu = state.menus.findLast((m) => m.title === "OpenShare settings")
-    const withHelp = rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40) ?? []
-    check("F9: settings rows carry [i] help", withHelp.length >= 10, `${withHelp.length} rows with help`)
-    const uiWidthRow = rootMenu?.options.find((o) => o.value === "ui:width")
-    check("F9: interface rows present", !!uiWidthRow, JSON.stringify(rootMenu?.options.map((o) => o.value)))
+    check("F9: root is compact groups only", !!rootMenu && rootMenu.options.length <= 10 && !rootMenu.options.some((o) => o.value.startsWith("key:")), JSON.stringify(rootMenu?.options.map((o) => o.value)))
+    check("F9: interface group row present", rootMenu?.options.some((o) => o.value === "group:interface"))
+    const interfaceMenu = state.menus.findLast((m) => m.title === "OpenShare — Interface")
+    check("F9: interface submenu opened with Back", !!interfaceMenu && interfaceMenu.options.some((o) => o.value === "__back"), interfaceMenu?.title ?? "(no menu)")
+    check("F9: interface rows carry [i] help", interfaceMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 2, JSON.stringify(interfaceMenu?.options.map((o) => [o.value, !!o.help])))
+    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 7, JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
   } finally {
     await stopServe(serve);
   }

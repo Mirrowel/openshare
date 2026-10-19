@@ -15,6 +15,7 @@ import {
   deleteServerEntry,
   disconnectAtServer,
   enrollAtServer,
+  hostOf,
   isConfigured,
   normServerUrl,
   probeAuthMode,
@@ -296,6 +297,12 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
     if (!mine.entry.token) options.push({ title: "Enroll now", value: "enroll", description: "get a user token immediately" })
     if (mine.entry.token) options.push({ title: "Rotate token", value: "rotate", description: "new token, old one revoked" })
     if (mine.entry.token) options.push({ title: "Disconnect", value: "disconnect", description: "revoke the token server-side and forget it" })
+    options.push({
+      title: "Admin panel",
+      value: "admin",
+      description: "root-token console: users, codes, tokens, shares",
+      help: `Opens the admin console for THIS server: manage users (freeze/unfreeze/mint/delete), revoke tokens, create access codes, list/reassign/delete shares, purge.\n\nNeeds the server's root CREATE_TOKEN (saved admin token used first; prompted otherwise, and then saved). User tokens cannot administer.`,
+    })
     options.push({ title: "Test this server", value: "test", description: "probe /health" })
     options.push({ title: "Remove from config", value: "remove", description: "drop the saved membership (server-side state untouched)" })
     options.push({ title: "Back", value: "back" })
@@ -356,6 +363,10 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       await showInfo(host.ui, { title: result.ok ? "Server reachable" : "Server unreachable", message: `${url} — ${result.detail}` })
       continue
     }
+    if (choice === "admin") {
+      await adminConsole(host, url)
+      continue
+    }
     if (choice === "remove") {
       const sure = await showConfirm(host.ui, { title: "Remove server", message: `Remove the saved membership for\n${url}?`, confirmLabel: "Remove" })
       if (!sure) continue
@@ -369,23 +380,27 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
 // --- admin console -------------------------------------------------------------
 
 /** Manage a share server with its root token: users, tokens, codes,
- * shares — the /api/admin surface as promise menus. */
-export async function adminConsole(host: ShareHostApi): Promise<void> {
-  // 1) pick the server
-  const entries = serverEntries()
-  const pickOptions: ShareDialogSelectOption<string>[] = entries.map((s) => ({
-    title: s.url,
-    value: s.url,
-    description: `${s.entry.label ? s.entry.label + " · " : ""}${s.entry.adminToken ? "admin token saved" : "no admin token saved"}`,
-  }))
-  pickOptions.push({ title: "Enter a server URL…", value: "__prompt" })
-  const picked = await showSelect(host.ui, { title: "Admin console — server", options: pickOptions })
-  if (picked === undefined) return
-  let url = picked
-  if (picked === "__prompt") {
-    const raw = await showPrompt(host.ui, { title: "Server URL", placeholder: "https://your-openshare-host" })
-    if (raw === undefined || raw === "") return
-    url = normServerUrl(raw)
+ * shares — the /api/admin surface as promise menus. Reached from the
+ * per-server submenu (Admin panel); pinnedUrl skips the server picker. */
+export async function adminConsole(host: ShareHostApi, pinnedUrl?: string): Promise<void> {
+  // 1) pick the server (skipped when pinned from a server submenu)
+  let url = pinnedUrl
+  if (!url) {
+    const entries = serverEntries()
+    const pickOptions: ShareDialogSelectOption<string>[] = entries.map((s) => ({
+      title: s.url,
+      value: s.url,
+      description: `${s.entry.label ? s.entry.label + " · " : ""}${s.entry.adminToken ? "admin token saved" : "no admin token saved"}`,
+    }))
+    pickOptions.push({ title: "Enter a server URL…", value: "__prompt" })
+    const picked = await showSelect(host.ui, { title: "Admin console — server", options: pickOptions })
+    if (picked === undefined) return
+    url = picked
+    if (picked === "__prompt") {
+      const raw = await showPrompt(host.ui, { title: "Server URL", placeholder: "https://your-openshare-host" })
+      if (raw === undefined || raw === "") return
+      url = normServerUrl(raw)
+    }
   }
 
   // 2) resolve the root token (saved adminToken / legacy createToken /
@@ -643,7 +658,11 @@ async function adminSharesMenu(host: ShareHostApi, client: ReturnType<typeof adm
   }
 }
 
-/** The settings dialog. Returns when the user exits. */
+/** The settings dialog: a compact ROOT of group entries (with live
+ * summaries) opening focused submenus. Two-level by design — one flat
+ * ~25-row dump was unreadable (owner-directed regroup 2026-10-19).
+ * Save semantics unchanged: root Exit saves when dirty; submenu Back
+ * just returns. */
 export async function settingsDialog(host: ShareHostApi, startAtSession?: string): Promise<void> {
   let cfg = currentConfig()
   let dirty = false
@@ -654,32 +673,30 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
   let writeTarget: WriteCandidate = candidates[0]
   const sources = configSourceMap(moduleDir())
 
-  while (true) {
-    const binding = startAtSession ? await readBinding(host.client, await resolveRoot(host.client, startAtSession)) : undefined
-    const shared = binding?.url ? (binding.enabled === false ? "attached (dormant)" : "live") : "not shared"
+  type GroupId = "session" | "connection" | "servers" | "sharing" | "readauth" | "interface" | "advanced" | "configfiles"
+  const GROUP_LABEL: Record<GroupId, string> = {
+    session: "This session",
+    connection: "Connection",
+    servers: "Servers",
+    sharing: "Sharing",
+    readauth: "Read auth",
+    interface: "Interface",
+    advanced: "Advanced",
+    configfiles: "Config files",
+  }
 
-    const options: ShareDialogSelectOption<string>[] = []
-    options.push({
-      title: "Write target",
-      value: "action:target",
-      description: writeTarget.label,
-      disabled: candidates.length <= 1,
-      help: `Which file "Save & exit" writes. The global settings home is always available; other files in the read chain only when they already exist (the TUI never creates deploy-time override files).\n\nWriting: ${writeTarget.path}`,
-    })
-    options.push({
-      title: "Where values come from",
-      value: "action:sources",
-      description: summarizeSources(sources),
-      help: `Config merges per key, highest priority wins: OPENSHARE_* env > plugin options > adjacent openshare.config.json > openshare.local.json (repo walk-up) > settings home > defaults. An empty string means unset for url/token keys.\n\n${sourcesMessage(sources)}`,
-    })
-    for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Connection") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
-    }
+  // ---- row builders (one per group) ---------------------------------------
+
+  const keyRows = (section: string): ShareDialogSelectOption<string>[] =>
+    Object.entries(LABELS)
+      .filter(([, meta]) => meta.section === section)
+      .map(([key, meta]) => ({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) }))
+
+  const serverRows = (): ShareDialogSelectOption<string>[] => {
     const servers = serverEntries(cfg)
-    options.push({ title: "— Servers —", value: "servers:none", description: servers.length ? `${servers.length} saved · active receives new sessions` : "no membership yet", disabled: true })
-    for (const s of servers) {
+    const rows: ShareDialogSelectOption<string>[] = servers.map((s) => {
       const cred = s.entry.token ? "token saved" : s.entry.code ? "code saved" : "enrolls on demand"
-      options.push({
+      return {
         title: s.url,
         value: `server:${s.url}`,
         description: `${s.entry.label ? s.entry.label + " · " : ""}${cred}${s.active ? " · ACTIVE" : ""}`,
@@ -689,119 +706,140 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           `Credential: ${s.entry.token ? `user token ${mask(s.entry.token)}` : s.entry.code ? "access code saved — enrolls on demand" : "none — public server, enrolls on demand"}`,
           `Receives new sessions: ${s.active ? "YES (active)" : "no"}`,
           "",
-          "Every ACTIVE server receives new sessions (fan-out); one active server is the normal setup. Tokens persist in the settings home; enroll once, then it just works. Admin token: " + (s.entry.adminToken ? "saved" : "not saved") + ".",
+          "Every ACTIVE server receives new sessions (fan-out); one active server is the normal setup. Tokens persist in the settings home; enroll once, then it just works. The per-server submenu (enter) adds the admin panel for this server.",
         ].join("\n"),
-      })
-    }
-    options.push({
+      }
+    })
+    rows.push({
       title: "Connect to a server",
       value: "server:add",
       description: "URL (+ access code) — enrolls and saves the token",
       help: "Onboarding flow: paste the server URL; public servers enroll immediately, private ones ask for an access code (osc_… from the hoster). The server issues a user token that persists in the settings home — the root CREATE_TOKEN is never needed for sharing.",
     })
-    options.push({
-      title: "Admin console",
-      value: "action:admin",
-      description: "manage a server with its root token (users, codes, tokens, shares)",
-      help: "Hoster tooling: manage users (freeze/unfreeze/mint/delete), revoke tokens, create access codes, list/reassign/delete shares, purge. Requires the server's root CREATE_TOKEN — user tokens cannot administer. The token can be saved per server (adminToken) so you enter it once.",
-    })
-    options.push({
+    rows.push({
       title: "Test connection",
       value: "action:test",
       description: "Probe the active server's /health",
       help: "Fetches /health on the active server and reports the service, auth mode, and socket policy. A quick way to verify URL and reachability before sharing.",
     })
-    for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
-    }
-    // Interface: dialog size preferences (host kv — per-host, not config)
+    return rows
+  }
+
+  const interfaceRows = (): ShareDialogSelectOption<string>[] => {
     const uiWidth = kvWidthOf(host.kv)
     const uiHeight = kvHeightPercentOf(host.kv)
-    options.push({
-      title: "Menu width",
-      value: "ui:width",
-      description: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)`,
-      help: `How wide OpenShare menus render. OpenCode exposes fixed widths only: medium = 60, large = 88, xlarge = 116 columns. Selecting cycles to the next size.\n\nCurrent: ${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)\nStored per host (opencode's own preference store), not in the config file.`,
-    })
-    options.push({
-      title: "Menu height",
-      value: "ui:height",
-      description: `${uiHeight}% of terminal`,
-      help: `Maximum height of OpenShare menus, as a percent of terminal rows (25-100). Short menus stay compact; long ones scroll inside this cap. Presets: compact 35, normal 50, tall 70, max 100.\n\nCurrent: ${uiHeight}%\nStored per host, not in the config file.`,
-    })
-    for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Read auth") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
-    }
-    for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Advanced") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) })
-    }
-    if (startAtSession) {
-      options.push({ title: `— This session (${shared}) —`, value: "session:none", description: "Per-session actions and overrides", disabled: true })
-      options.push({
+    return [
+      {
+        title: "Menu width",
+        value: "ui:width",
+        description: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)`,
+        help: `How wide OpenShare menus render. OpenCode exposes fixed widths only: medium = 60, large = 88, xlarge = 116 columns. Selecting cycles to the next size.\n\nCurrent: ${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)\nStored per host (opencode's own preference store), not in the config file.`,
+      },
+      {
+        title: "Menu height",
+        value: "ui:height",
+        description: `${uiHeight}% of terminal`,
+        help: `Maximum height of OpenShare menus, as a percent of terminal rows (25-100). Short menus stay compact; long ones scroll inside this cap. Presets: compact 35, normal 50, tall 70, max 100.\n\nCurrent: ${uiHeight}%\nStored per host, not in the config file.`,
+      },
+    ]
+  }
+
+  const configRows = (): ShareDialogSelectOption<string>[] => [
+    {
+      title: "Write target",
+      value: "action:target",
+      description: writeTarget.label,
+      disabled: candidates.length <= 1,
+      help: `Which file "Save & exit" writes. The global settings home is always available; other files in the read chain only when they already exist (the TUI never creates deploy-time override files).\n\nWriting: ${writeTarget.path}`,
+    },
+    {
+      title: "Where values come from",
+      value: "action:sources",
+      description: summarizeSources(sources),
+      help: `Config merges per key, highest priority wins: OPENSHARE_* env > plugin options > adjacent openshare.config.json > openshare.local.json (repo walk-up) > settings home > defaults. An empty string means unset for url/token keys.\n\n${sourcesMessage(sources)}`,
+    },
+  ]
+
+  const sessionRows = async (): Promise<ShareDialogSelectOption<string>[]> => {
+    if (!startAtSession) return []
+    const binding = await readBinding(host.client, await resolveRoot(host.client, startAtSession))
+    const rows: ShareDialogSelectOption<string>[] = [
+      {
         title: binding?.url ? "Copy share link" : "Share this session",
         value: "session:share",
         description: binding?.url ? "copy the share URL to the clipboard" : "Set the share flag; the server plugin creates the page",
         help: binding?.url
           ? `Copies the share URL to the clipboard.\n\nURL: ${binding.url}\nShare id: ${binding.id ?? "?"}`
           : "Publishes this session (and its subagent sessions) to the active server. The full history lands in the page — sharing mid-session is first-class, nothing is missed.",
-      })
-      if (binding?.url) {
-        options.push({
-          title: "Stop sharing",
-          value: "session:unshare",
-          description: "Delete the share page and clear the flag",
-          help: `Deletes the page(s) server-side and clears the share flag from this session's metadata. Every link stops working (viewers see a final "gone" state). Sharing again later creates fresh page(s) with new URLs.`,
-        })
-      }
-      options.push({
-        title: "Session TTL override (days)",
-        value: "session:ttl",
-        description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)",
-        help: `Per-session share lifetime. Overrides the config ttlDays for THIS session's pages; still capped by the server's MAX_TTL_DAYS and the token's maxTtlDays. Applied at the next create/attach.\n\nCurrent: ${binding?.opts?.ttlDays !== undefined ? `${binding.opts.ttlDays} days` : "(none — config default)"}`,
-      })
-      options.push({
-        title: "Session read auth",
-        value: "session:auth",
-        description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)",
-        help: `Login gate for THIS session's page only — viewers must log in (7-day cookie, lockout). Overrides the config read auth. Applied at the next create/attach; removing the login removes the gate.\n\nCurrent: ${binding?.opts?.authLogin ? `${binding.opts.authLogin} / (password set)` : "(none — config default applies)"}`,
+      },
+    ]
+    if (binding?.url) {
+      rows.push({
+        title: "Stop sharing",
+        value: "session:unshare",
+        description: "Delete the share page and clear the flag",
+        help: `Deletes the page(s) server-side and clears the share flag from this session's metadata. Every link stops working (viewers see a final "gone" state). Sharing again later creates fresh page(s) with new URLs.`,
       })
     }
-    options.push({ title: dirty ? "Save & exit" : "Exit", value: "action:exit", description: dirty ? `Write ${writeTarget.path}` : "No changes" })
+    rows.push({
+      title: "Session TTL override (days)",
+      value: "session:ttl",
+      description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)",
+      help: `Per-session share lifetime. Overrides the config ttlDays for THIS session's pages; still capped by the server's MAX_TTL_DAYS and the token's maxTtlDays. Applied at the next create/attach.\n\nCurrent: ${binding?.opts?.ttlDays !== undefined ? `${binding.opts.ttlDays} days` : "(none — config default)"}`,
+    })
+    rows.push({
+      title: "Session read auth",
+      value: "session:auth",
+      description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)",
+      help: `Login gate for THIS session's page only — viewers must log in (7-day cookie, lockout). Overrides the config read auth. Applied at the next create/attach; removing the login removes the gate.\n\nCurrent: ${binding?.opts?.authLogin ? `${binding.opts.authLogin} / (password set)` : "(none — config default applies)"}`,
+    })
+    return rows
+  }
 
-    const choice = await showSelect(host.ui, { title: "OpenShare settings", options })
-    if (choice === undefined || choice === "action:exit") {
-      if (dirty) {
-        const saved = saveConfig(cfg, writeTarget.path)
-        if (saved) host.ui.toast({ variant: "success", title: "OpenShare", message: `Saved ${saved.path}` })
-        else host.ui.toast({ variant: "error", title: "OpenShare", message: `Could not write ${writeTarget.path}.` })
-      }
-      host.ui.dialog.clear()
-      return
+  const rowsFor = async (id: GroupId): Promise<ShareDialogSelectOption<string>[]> => {
+    switch (id) {
+      case "session":
+        return await sessionRows()
+      case "connection":
+        return keyRows("Connection")
+      case "servers":
+        return serverRows()
+      case "sharing":
+        return keyRows("Sharing")
+      case "readauth":
+        return keyRows("Read auth")
+      case "interface":
+        return interfaceRows()
+      case "advanced":
+        return keyRows("Advanced")
+      case "configfiles":
+        return configRows()
     }
+  }
 
+  // ---- shared dispatch: every non-root choice, same handlers as ever ------
+
+  const dispatch = async (choice: string): Promise<void> => {
     if (choice === "action:target") {
-      const picked = await showSelect(
-        host.ui,
-        {
-          title: "Write target",
-          placeholder: "Files that already exist; the global home is always available",
-          options: candidates.map((candidate) => ({ title: candidate.label, value: candidate.path, description: candidate.path })),
-          current: writeTarget.path,
-        },
-      )
+      const picked = await showSelect(host.ui, {
+        title: "Write target",
+        placeholder: "Files that already exist; the global home is always available",
+        options: candidates.map((candidate) => ({ title: candidate.label, value: candidate.path, description: candidate.path })),
+        current: writeTarget.path,
+      })
       if (picked) writeTarget = candidates.find((candidate) => candidate.path === picked) ?? writeTarget
-      continue
+      return
     }
 
     if (choice === "action:sources") {
       await showInfo(host.ui, { title: "Where values come from", message: sourcesMessage(sources) })
-      continue
+      return
     }
 
     if (choice === "ui:width") {
       host.kv.set(UI_WIDTH_KV, nextDialogWidth(kvWidthOf(host.kv)))
       host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu width: ${kvWidthOf(host.kv)} (${DIALOG_WIDTH_COLUMNS[kvWidthOf(host.kv)]} columns) — applies to the next menu.` })
-      continue
+      return
     }
 
     if (choice === "ui:height") {
@@ -814,7 +852,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           const parsed = Number(raw)
           if (!Number.isFinite(parsed)) {
             host.ui.toast({ variant: "error", title: "OpenShare", message: "Height must be a number from 25 to 100." })
-            continue
+            return
           }
           height = clampHeightPercent(parsed)
         }
@@ -823,7 +861,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         host.kv.set(UI_HEIGHT_PERCENT_KV, height)
         host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu height: ${height}% of terminal — applies to the next menu.` })
       }
-      continue
+      return
     }
 
     if (choice === "action:test") {
@@ -834,36 +872,29 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         title: result.ok ? "Server reachable" : "Server unreachable",
         message: `${serverUrl || "(no server set)"} — ${result.detail}${result.ok && !serverEntries(cfg).some((s) => s.entry.token) ? "\nNote: no token held — the plugin enrolls on first contact (public) or needs a code (private)." : ""}`,
       })
-      continue
+      return
     }
 
     if (choice === "server:add") {
       const res = await connectServerFlow(host)
       host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.message, duration: 10000 })
       if (res.ok) cfg = currentConfig()
-      continue
-    }
-
-    if (choice === "action:admin") {
-      await adminConsole(host)
-      cfg = currentConfig()
-      continue
+      return
     }
 
     if (choice.startsWith("server:")) {
       await serverMenu(host, choice.slice(7))
       cfg = currentConfig()
-      continue
+      return
     }
 
     if (choice.startsWith("key:")) {
-      const key = choice.slice(4)
-      const next = await editKey(host, cfg, key)
+      const next = await editKey(host, cfg, choice.slice(4))
       if (next) {
         cfg = next
         dirty = true
       }
-      continue
+      return
     }
 
     if (choice.startsWith("session:") && startAtSession) {
@@ -871,40 +902,40 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       const current = await readBinding(host.client, root)
       if (choice === "session:share") {
         if (!isConfigured(cfg)) {
-          await showInfo(host.ui, { title: "Not configured", message: "Set workerUrl and createToken (Connection) first, then share." })
-          continue
+          await showInfo(host.ui, { title: "Not configured", message: "Connect a server (Servers group) first, then share." })
+          return
         }
         const result = await confirmShare(host, root)
         host.ui.toast({ variant: result.ok ? "success" : "error", title: "OpenShare", message: result.message, duration: result.ok ? 8000 : 15000 })
-        continue
+        return
       }
       if (choice === "session:unshare") {
         const okClear = await clearShareFlag(host.client, root)
         host.ui.toast({ variant: okClear ? "success" : "error", title: "OpenShare", message: okClear ? "Share flag cleared; the page is deleted via the sweeper path." : "Could not clear the flag." })
-        continue
+        return
       }
       if (choice === "session:ttl") {
         const raw = await showPrompt(host.ui, { title: "Session TTL (days)", placeholder: "days", value: current?.opts?.ttlDays !== undefined ? String(current.opts.ttlDays) : "" })
-        if (raw === undefined) continue
+        if (raw === undefined) return
         const opts: SessionOpts = { ...(current?.opts ?? {}) }
         if (raw === "") delete opts.ttlDays
         else {
           const days = Number(raw)
           if (!Number.isFinite(days) || days <= 0) {
             host.ui.toast({ variant: "error", title: "OpenShare", message: "TTL must be a positive number of days." })
-            continue
+            return
           }
           opts.ttlDays = Math.floor(days)
         }
         await setShareFlag(host.client, root, opts)
         host.ui.toast({ variant: "success", title: "OpenShare", message: opts.ttlDays !== undefined ? `Session TTL: ${opts.ttlDays}d (applies at the next attach/create)` : "Session TTL override cleared" })
-        continue
+        return
       }
       if (choice === "session:auth") {
         const login = await showPrompt(host.ui, { title: "Session read auth: login", placeholder: "empty = use config default", value: current?.opts?.authLogin ?? "" })
-        if (login === undefined) continue
+        if (login === undefined) return
         const password = await showPrompt(host.ui, { title: "Session read auth: password", placeholder: "empty = no password" })
-        if (password === undefined) continue
+        if (password === undefined) return
         const opts: SessionOpts = { ...(current?.opts ?? {}) }
         if (login === "") {
           delete opts.authLogin
@@ -916,8 +947,104 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         }
         await setShareFlag(host.client, root, opts)
         host.ui.toast({ variant: "success", title: "OpenShare", message: "Session read auth saved (applies at the next attach/create)." })
-        continue
+        return
       }
+    }
+  }
+
+  // ---- group submenu loop ---------------------------------------------------
+
+  const groupMenu = async (id: GroupId): Promise<void> => {
+    while (true) {
+      const rows = await rowsFor(id)
+      if (!rows.length) return
+      const options = [...rows, { title: "Back", value: "__back" }]
+      const choice = await showSelect(host.ui, { title: `OpenShare — ${GROUP_LABEL[id]}`, options })
+      if (choice === undefined || choice === "__back") return
+      await dispatch(choice)
+    }
+  }
+
+  // ---- root: compact group list with live summaries --------------------------
+
+  const seconds = (ms: number | undefined, fallback: number) => `${Math.round((ms ?? fallback) / 100) / 10}s`
+  while (true) {
+    const servers = serverEntries(cfg)
+    const active = servers.find((s) => s.active)
+    const connectionSummary = cfg.workerUrl
+      ? `${hostOf(cfg.workerUrl)}${cfg.createToken ? " · root token" : ""}`
+      : active
+        ? `${hostOf(active.url)} · servers group`
+        : "not configured"
+    const uiWidth = kvWidthOf(host.kv)
+
+    const groups: Array<{ id: GroupId; summary: string; help: string }> = []
+    if (startAtSession) {
+      const binding = await readBinding(host.client, await resolveRoot(host.client, startAtSession))
+      const shared = binding?.url ? (binding.enabled === false ? "attached (dormant)" : "live") : "not shared"
+      groups.push({
+        id: "session",
+        summary: shared,
+        help: `Per-session state and overrides for the session this dialog was opened on.\n\nStatus: ${shared}${binding?.url ? `\nURL: ${binding.url}` : ""}\n\nInside: share/stop sharing, session TTL override, session read auth.`,
+      })
+    }
+    groups.push({
+      id: "connection",
+      summary: connectionSummary,
+      help: `The legacy single-server pair: workerUrl + createToken (root). The Servers group is the canonical form — tokens per server, enrollment, fan-out; this pair still works and synthesizes into it.\n\nInside: Worker URL, Create token.`,
+    })
+    groups.push({
+      id: "servers",
+      summary: servers.length ? `${servers.length} saved${active ? ` · active: ${hostOf(active.url)}` : " · none active"}` : "no membership yet",
+      help: `Your share-server memberships: credentials, active destination, and per-server actions (enroll, rotate, disconnect, admin panel, test, remove). Connect adds a server by URL (+ access code on private ones).\n\nEvery ACTIVE server receives new sessions (fan-out).`,
+    })
+    groups.push({
+      id: "sharing",
+      summary: `sync ${seconds(cfg.debounceMs, 10000)} · completed ${seconds(cfg.completedDelayMs, 5000)} · TTL ${cfg.ttlDays ?? "server cap"}`,
+      help: `What and how sessions stream: share mode (all/manual), sync cadence, the completed-delay, the model label on pages, share TTL, and the viewer's task-tab behavior.\n\nCadence values are clamped by the server's policy window.`,
+    })
+    groups.push({
+      id: "readauth",
+      summary: cfg.authLogin ? `${cfg.authLogin} / ****` : "none set",
+      help: `Optional login gate for NEW share pages: viewers must enter login+password (PBKDF2 server-side, 7-day cookie, lockout after failures). Per-session overrides live in This session.\n\nWrite access is a separate lock — a login never lets anyone edit.`,
+    })
+    groups.push({
+      id: "interface",
+      summary: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} cols) · ${kvHeightPercentOf(host.kv)}% height`,
+      help: `OpenShare menu sizing: width (opencode's fixed dialog widths: 60/88/116 columns) and height (a percent of terminal rows, presets compact/normal/tall/max).\n\nStored in the host's preference store — per machine, not the config file.`,
+    })
+    groups.push({
+      id: "advanced",
+      summary: "spool dir · url file · stderr",
+      help: `Rarely-touched plumbing: the un-acked frame spool directory, the all-mode URL file (append log for CI), and the stderr announce lines.`,
+    })
+    groups.push({
+      id: "configfiles",
+      summary: `write: ${writeTarget.label}`,
+      help: `Which file Save & exit writes (global settings home by default; other existing files selectable) and the per-key source map of the current read chain (env > options > adjacent > local > home > defaults).`,
+    })
+
+    const options: ShareDialogSelectOption<string>[] = groups.map((group) => ({
+      title: GROUP_LABEL[group.id],
+      value: `group:${group.id}`,
+      description: group.summary,
+      help: group.help,
+    }))
+    options.push({ title: dirty ? "Save & exit" : "Exit", value: "action:exit", description: dirty ? `Write ${writeTarget.path}` : "No changes" })
+
+    const choice = await showSelect(host.ui, { title: "OpenShare settings", options })
+    if (choice === undefined || choice === "action:exit") {
+      if (dirty) {
+        const saved = saveConfig(cfg, writeTarget.path)
+        if (saved) host.ui.toast({ variant: "success", title: "OpenShare", message: `Saved ${saved.path}` })
+        else host.ui.toast({ variant: "error", title: "OpenShare", message: `Could not write ${writeTarget.path}.` })
+      }
+      host.ui.dialog.clear()
+      return
+    }
+    if (choice.startsWith("group:")) {
+      const id = choice.slice(6) as GroupId
+      if (GROUP_LABEL[id]) await groupMenu(id)
     }
   }
 }

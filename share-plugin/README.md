@@ -92,11 +92,13 @@ stays all-mode.
   manager: copy links (per server), per-server stop / leave-as-snapshot,
   share to another server, stop all. A credential conflict opens the
   collision dialog (copy debug info / share on a new share / don't share).
-- `/openshare` — settings dialog: Servers (connect, enroll, rotate,
-  disconnect, set active, remove), **Admin console** (manage any server
-  with its root token: users, freeze/delete, mint tokens, invite codes,
-  shares, reassign, purge), sharing defaults, read auth, advanced
-  (spoolDir, urlFile), this-session actions.
+- `/openshare` — grouped settings (compact root with live summaries →
+  focused submenus): This session, Connection (legacy pair), Servers
+  (connect, enroll, rotate, disconnect, set active, remove — and per
+  server the **Admin panel**: users, freeze/delete, mint tokens, invite
+  codes, shares, reassign, purge with the root token), Sharing, Read
+  auth, Interface (menu width/height), Advanced, Config files
+  (write target + source map).
 - Sidebar chip — share status next to the session title (`·N` when the
   session streams to several servers); click copies the link. A share
   whose page died server-side renders `⊘ gone` — clicking opens the share

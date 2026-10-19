@@ -31,7 +31,7 @@ One data contract everywhere: the upstream share `Data[]` snapshot model (sessio
 - **Backfill** — share a session mid-way (or after the fact) and the full history lands in the page: messages, parts, models, diff, subagent sessions. Including servers added *later*: joining a session mid-run mirrors its whole past.
 - **Multi-server fan-out** — one session can stream to several servers at once; switch the active set any time; per-session stop or leave-a-snapshot per server.
 - **Identity & enrollment** — the plugin enrolls itself: public servers take anyone who knows the host, private ones need an access code (activation-budgeted invites). Long-lived tokens, rotation, revocation, freeze — OAuth-ish without the refresh churn.
-- **Self-serve admin** — a full admin console *inside the TUI* (`/openshare → Admin console`): users, freeze/delete, mint tokens, invite codes, shares, reassign, purge.
+- **Self-serve admin** — a full admin console *inside the TUI* (`/openshare → Servers → <server> → Admin panel`): users, freeze/delete, mint tokens, invite codes, shares, reassign, purge.
 - **Subagent pages** — child sessions (`parentID`) route into the parent's share as numbered sub-pages; task rows link to them.
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share (per-token caps enforced server-side).
@@ -130,7 +130,7 @@ directory and printed to stderr (both switchable).
 
 Two roles, per server:
 
-- **Admin** — the root `CREATE_TOKEN` (env/secret, forever-valid bootstrap). Manages everything: users, tokens, codes, shares, policy. In the TUI: `/openshare → Admin console`.
+- **Admin** — the root `CREATE_TOKEN` (env/secret, forever-valid bootstrap). Manages everything: users, tokens, codes, shares, policy. In the TUI: `/openshare → Servers → <server> → Admin panel`.
 - **Users** — everyone the hoster lets in. Full control of their *own* shares, tokens and settings; nothing else.
 
 **Enrollment** (`POST /api/enroll`): a **public** server issues a user token to anyone who knows the hostname (per-IP rate limit); a **private** server additionally requires an **access code** (`osc_…`) minted by the admin with an activation budget — 1 for a personal invite, unlimited for a team code. Each activation issues a long-lived `osk_` token; holding a valid one lets you rotate without a code, forever.
@@ -147,11 +147,16 @@ Full semantics: [share-worker/README — Identity & enrollment](share-worker/REA
   - single server: copy link / stop sharing;
   - multiple servers: per-server copy, **manage per server** (stop here / leave as snapshot), share to another server, stop all;
   - a credential conflict opens the **collision dialog**: copy debug info (for the hoster / an issue), share on a new share, or don't share.
-- **`/openshare`** — settings:
-  - **Servers** — memberships with status; per-server: set active, enroll now, rotate token, disconnect (server-side revoke), test, remove; **Connect to a server** (URL + code → enrolled + active).
-  - **Admin console** — manage any server with its root token: users (freeze/unfreeze/mint/delete), tokens (revoke), access codes (create/disable — value copied, shown once), shares (reassign/delete), purge all, server info.
-  - Sharing defaults, read auth, advanced (spoolDir, urlFile), write-target picker, per-session actions (TTL override, session read auth).
+- **`/openshare`** — grouped settings (compact root, focused submenus):
+  - **This session** *(when opened from a session)* — share/stop, TTL override, session read auth.
+  - **Connection** — the legacy workerUrl + createToken pair.
+  - **Servers** — memberships with status; per-server: set active, enroll now, rotate token, disconnect (server-side revoke), **admin panel** (users, tokens, access codes, shares, purge — root token, saved per server), test, remove; **Connect to a server** (URL + code → enrolled + active).
+  - **Sharing** — share mode, sync interval, completed delay, model label, TTL, viewer task tabs.
+  - **Read auth** — the optional login gate for new pages.
   - **Interface** — menu width (medium/large/xlarge → 60/88/116 columns) and menu height (25–100% of the terminal, slider with presets). Stored in the host's own preference store — per machine, not the config file.
+  - **Advanced** — spool dir, url file, stderr announce.
+  - **Config files** — write-target picker and the per-key source map.
+  - Every group row carries a live summary (active server, sync cadence, auth state…); every group and row has an `[i]` pane.
 - **`[i]` info pane** — every meaningful menu row (settings, servers, share manager, admin console) carries a long-form detail pane: what the option does, current value + which file/env it comes from, defaults, effects and caveats, and the full data the row truncates (complete URLs, share ids, token kinds). Press `i` on a row, `esc` returns to the menu with the selection intact.
 - **Gone detection** — a binding can outlive its page (purge, TTL, host-side delete). Opening the share manager probes every bound server (credential-free); dead entries are cleared from the session automatically with a **"Share is gone"** modal offering *Share again* / *Close*. The sidebar chip verifies lazily (per session+server, 1/min) and renders a dim `⊘` state — clicking it opens the manager instead of copying a dead link. Network errors never count as gone.
 - **Sidebar chip** — `◉ re:share` next to the session title; click copies the link. `·N` when the session streams to several servers; `⊘` when the page is gone (click to fix).
