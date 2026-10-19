@@ -19,13 +19,33 @@ Reference the FILE (not this folder) from a one-file config:
 }
 ```
 
-Configure via env (CI) or the `openshare.config.json` next to the file:
+Configure via env (CI) or the `openshare.config.json` next to the file —
+either the legacy pair or the `servers` group (recommended; see the root
+README's [Configuration](../../README.md#configuration)):
 
 ```
-OPENSHARE_WORKER_URL=https://your-worker.workers.dev
-OPENSHARE_CREATE_TOKEN=…
+OPENSHARE_WORKER_URL=https://your-host
+OPENSHARE_CREATE_TOKEN=…            # legacy: root token
 OPENSHARE_URL_FILE=share-urls.txt   # each share URL appended + stderr line
 ```
+
+```jsonc
+// openshare.config.json — enrollment shape (no root token needed)
+{
+  "servers": {
+    "https://your-host": { "code": "osc_…" }   // or "token": "osk_…"
+  }
+}
+```
+
+With no token held, the bundle **enrolls itself** on first contact
+(public servers take anyone; private ones consume the one-time code) and
+persists the token to `~/.config/opencode/openshare.config.json` —
+enroll once, then every run just shares. A revoked token re-enrolls the
+same way; if enrollment is impossible the error lands on stderr and
+sharing stops (no retry storms). The bundle also supports **fan-out**:
+multiple `active` servers in the `servers` group each get the session
+(one urlFile line per server).
 
 On OpenCode v2, plugin targets should be directories/packages — wrap this
 file in a folder with a `package.json` exporting it (`{"exports": {".": "./openshare.js"}}`)

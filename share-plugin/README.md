@@ -31,9 +31,10 @@ CI (share everything, link to a file):
 ```jsonc
 // OPENCODE_CONFIG one-file setup
 {
-  "plugin": ["/path/to/openshare.js"],
-  ...env OPENSHARE_WORKER_URL, OPENSHARE_CREATE_TOKEN,
-  ...OPENSHARE_URL_FILE collects each share URL (also printed to stderr)
+  "plugin": ["/path/to/openshare.js"]
+  // + openshare.config.json next to the bundle (servers group or the
+  //   legacy env pair), OPENSHARE_URL_FILE collects each share URL
+  //   (also printed to stderr)
 }
 ```
 
@@ -74,10 +75,11 @@ entry. Registered → manual (opt-in per session). Not registered → all.
 No selfwiring: which parts you install IS the switch.
 
 Manual mode stores the opt-in in session metadata:
-`metadata.openshare = { enabled: true, opts? }` with per-session overrides
-(`ttlDays`, `authLogin`, `authPassword`, `modelLabel`). The full binding
-(`{id, secret, rev, url}`) is written next to it; the key is stripped from
-everything synced and never reaches viewers.
+`metadata.openshare = { v: 2, enabled: true, opts? }` with per-session
+overrides (`ttlDays`, `authLogin`, `authPassword`, `modelLabel`). The
+per-server binding map (`servers: {url: {id, secret, rev, url}}`) is
+written next to it — legacy flat bindings migrate at read. The key is
+stripped from everything synced and never reaches viewers.
 
 On OpenCode v2: the package declaring its `tui` entrypoint is the presence
 signal (the v2 host auto-loads it); the single file declares none and
@@ -115,29 +117,44 @@ provider):
 - `test:regression` — parity of legacy / single-file / package across the
   full lifecycle (create → prompt → completed → delete → 404).
 - `test:manual` — dormancy, flag activation + backfill, restart attach,
-  unshare, re-share, per-session auth opts, all-override.
-- `test:tui-flow` — the share/unshare flow code + config round-trip
-  (headless against a scripted host).
+  unshare, re-share, per-session auth opts, all-override, pre-existing
+  gates, undo tombstones, completed debounce, turn-mode drops.
+- `test:tui-flow` — share/unshare flows, config round-trip, connect
+  flow (enroll + persist + rotate), admin console round-trip.
 - `test:v2` — the v2 adapter against a scripted mock v2 host (event
   classification, message conversion, live re-sync, delete).
+- `test:auth` — server identity contract: enrollment, code burn, rotate,
+  freeze (secret dead too), limits, reassign, public mode (48 checks).
+- `test:enroll` — the plugin's enrollment lifecycle end to end (code
+  enroll, token persistence across processes, revoke → re-enroll,
+  blocked path, public zero-config).
+- `test:fanout` — multi-server: v2 bindings, content parity across
+  servers, mid-session join with full-history backfill, per-session
+  opt-outs.
+- `test:cli` — real `opencode run` end-to-end (single file + package +
+  silenced outputs), on-demand only (uses the default model).
+- `test:server-auth` / `test:server-enroll` — the SAME auth/enroll
+  suites against the portable Bun backend (`../share-server`): the
+  two-backends-one-protocol parity guarantee.
 
 Layout:
 
 ```
 src/
-  config.ts        config load/save, shareMode resolution, tui.json scan
-  core.ts          the engine: sessions, ws, spool, backfill, redaction
+  config.ts        config load/save (servers group, field-level merge), shareMode, tui.json scan
+  core.ts          the engine: fan-out remotes (socket/spool/rev per server),
+                   ws handshake, chunked syncs, backfill, collisions, opt-outs
   server.ts        v1 entry {id, server, setup}
   tui.tsx          v1 TUI entry + host facade
-  commands.ts      /share /unshare /openshare (priority layer, shadows built-ins)
-  share-flow.ts    host-agnostic flows (flag, binding wait, unshare delete)
-  settings.ts      settings dialog (dialog-stack only, host-agnostic)
-  sidebar.tsx      sidebar_title slot chip (v1)
+  commands.ts      /share (toggle + fan-out manager + collision dialog) /openshare
+  share-flow.ts    host-agnostic flows: flag, bindings v1/v2, enrollment,
+                   rotate/disconnect, admin client, unshare multi-delete
+  settings.ts      settings dialog + servers section + admin console
+  sidebar.tsx      sidebar_title slot chip (v1, box-rooted)
   tui-host.ts      host facade interface
   v2-server.ts     v2 setup: event mapping + client adapter + v2->v1 conversion
   v2-tui.ts        v2 TUI adapter (dialogs, keymap, kv)
   v2-types.ts      structural v2 types (no SDK import)
-  palette-category.ts  family palette registry (keep in sync across family plugins)
 ```
 
 The TUI surface (palette, dialogs, sidebar) is verified live; the flow

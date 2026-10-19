@@ -187,6 +187,8 @@ Admin API (Bearer `CREATE_TOKEN`):
   /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
 - `GET /api/admin/shares` (global, with ownerId)
 - `POST /api/admin/shares/:id/reassign {userId}`
+- `DELETE /api/share/:id` — root may delete any share directly (the
+  TUI admin console uses this)
 - `POST /api/admin/purge` (unchanged)
 
 `GET /health` reports `auth.mode` (`public`/`private`) next to the
@@ -250,17 +252,23 @@ registered), `dist/tui.js` (package TUI; its presence flips the server
 to manual mode with per-session opt-in via `/share`).
 
 Priority `OPENSHARE_*` env > plugin options > file > code defaults.
-Keys: workerUrl, createToken, shareMode ("all"/"manual"; default =
-TUI presence), debounceMs (10000), modelLabel ("$Provider/$Model";
-literal text as-is; "" hides), ttlDays (90), openTasksInNewTab (true),
-authLogin/authPassword (""), spoolDir, urlFile (all-mode only).
+Keys: servers (multi-server memberships: url → `{token?, code?, label?,
+active?, adminToken?}`; every active entry shares new sessions — fan-out
+— and tokenless entries self-enroll as described above), workerUrl +
+createToken (legacy single-server shorthand), shareMode ("all"/"manual";
+default = TUI presence), debounceMs (10000), completedDelayMs (5000),
+modelLabel ("$Provider/$Model"; literal text as-is; "" hides), ttlDays
+(90), openTasksInNewTab (true), authLogin/authPassword (""), spoolDir,
+urlFile (all-mode only; "none" disables), announceStderr (true). Full
+table: the root README's Configuration section.
 
 Manual mode stores the opt-in in session metadata
-(`metadata.openshare = { enabled: true, opts? }`; per-session opts:
-ttlDays, authLogin, authPassword, modelLabel) next to the binding
-`{id, secret, rev, url}`; flag removal deletes the share. The key is
-stripped from all synced data (worker strips session metadata on read
-paths as well).
+(`metadata.openshare = { v: 2, enabled: true, opts? }`; per-session
+opts: ttlDays, authLogin, authPassword, modelLabel) next to the
+per-server binding map `servers: {url: {id, secret, rev, url}}`
+(legacy flat `{id, secret, rev, url}` bindings migrate at read); flag
+removal deletes the share on every server. The key is stripped from all
+synced data (worker strips session metadata on read paths as well).
 
 ## Local viewing (decrypt_share_link.py, agent-side)
 
