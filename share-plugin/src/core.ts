@@ -91,50 +91,87 @@ export type SessionOpts = {
 
 type Binding = { id: string; secret: string; rev: number; url: string }
 
-type SessionState = {
-  sid: string
-  client: ClientApi | undefined
-  queue: Map<string, unknown> // key -> item (not yet sent)
-  pending: Array<{ items: unknown[]; status: string }> // spool frames awaiting ack
-  timer: ReturnType<typeof setTimeout> | null
-  metaTimer: ReturnType<typeof setTimeout> | null
-  completedTimer: ReturnType<typeof setTimeout> | null
-  settleTimer: ReturnType<typeof setTimeout> | null
-  idleDropTimer: ReturnType<typeof setTimeout> | null
-  lastFlushAt: number
-  statusEpoch: number
+/** One server's transport state within a session's fan-out: its share,
+ * socket handshake, spooled frames and socket policy are independent of
+ * every other server's. Content comes from the shared session queue. */
+type RemoteState = {
+  url: string
   shareId: string | null
   secret: string | null
   ackedRev: number
   ws: WebSocket | null
   wsReady: boolean
-  socketSeq?: number
+  connecting: boolean
+  socketSeq: number
   initTimer: ReturnType<typeof setTimeout> | null
   initWasAttach: boolean
   backoff: number
-  status: string
-  badSignal: boolean
-  lastSentStatus: string | null
-  connecting: boolean
-  closed: boolean
-  prefsSent: boolean
-  binding: Binding | null // mirrors what was written into session metadata
-  bindingQueried: boolean
   reconnectTimer: ReturnType<typeof setTimeout> | null
   intentionalClose: boolean
   connectQueued: boolean
-  /** identity dead-end (owner frozen, or private server with no way to
-   * enroll): stop reconnect loops for this session until the config
-   * changes — surfacing the error beats hammering the worker. */
+  /** identity dead-end for THIS server (frozen owner, unenrollable
+   * private server): stop reconnecting it; other servers unaffected. */
   authBlocked: boolean
+  pending: Array<{ items: unknown[]; status: string }> // frames awaiting ack (spool)
+  announced: boolean
+  settleTimer: ReturnType<typeof setTimeout> | null
+  idleDropTimer: ReturnType<typeof setTimeout> | null
+  /** attach refused on credential grounds: do NOT auto-recreate; the TUI
+   * offers copy-debug / share-new / don't-share (headless: share-new). */
+  collided: string | null
+}
+
+type SessionState = {
+  sid: string
+  client: ClientApi | undefined
+  queue: Map<string, unknown> // key -> item (not yet sent)
+  timer: ReturnType<typeof setTimeout> | null
+  metaTimer: ReturnType<typeof setTimeout> | null
+  completedTimer: ReturnType<typeof setTimeout> | null
+  lastFlushAt: number
+  statusEpoch: number
+  remotes: Map<string, RemoteState> // url -> transport state (fan-out)
+  status: string
+  badSignal: boolean
+  lastSentStatus: string | null
+  closed: boolean
+  prefsSent: boolean
+  binding: Record<string, unknown> | null // mirrors what was written into session metadata (v2 map)
+  bindingQueried: boolean
+  /** per-session server opt-outs (TUI "stop sharing here" / "leave as-is"):
+   * the engine never (re)creates remotes for these urls on this session */
+  optOuts: Set<string>
   // manual-mode bookkeeping
   opts: SessionOpts | undefined
   activated: boolean
-  announced: boolean
   wroteBinding: boolean
+  /** any remote completed a handshake — used to detect LATER creates
+   * (fan-out adds, post-mismatch recreates) which need a history backfill */
+  everConnected: boolean
 }
 
 type Message = { info?: Record<string, unknown>; parts?: Record<string, unknown>[] }
+
+/** Server-authoritative socket policy (WS init ack + /health). */
+type ServerPolicy = {
+  mode: "persistent" | "turn"
+  turnGraceMs: number
+  idleDropMs: number
+  finalizeAfterMs: number
+  debounceMinMs: number
+  debounceMaxMs: number
+  completedDelayMaxMs: number
+}
+
+const DEFAULT_POLICY: ServerPolicy = {
+  mode: "persistent",
+  turnGraceMs: 120000,
+  idleDropMs: 600000,
+  finalizeAfterMs: 300000,
+  debounceMinMs: 0,
+  debounceMaxMs: Infinity,
+  completedDelayMaxMs: Infinity,
+}
 
 export type ClientApi = {
   session: {
@@ -273,33 +310,69 @@ export function createEngine(deps: EngineDeps): Engine {
       },
     }
   }
-  // canonicalize: every workerUrl use below refers to the ACTIVE server
-  cfg.workerUrl = server.url
-  if (!cfg.createToken) cfg.createToken = server.token
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
 
-  // ---- server credential (identity) --------------------------------------
-  // The active server's token — a legacy root CREATE_TOKEN works forever
-  // (server-side bootstrap); an osk_ user token is the normal shape. When
-  // no token is held, the plugin ENROLLS: public servers take anyone,
-  // private ones need servers.{url}.code. Enrollment persists the token
-  // to the settings home so it happens once per server.
-  let credential = server.token
-  let credentialError = ""
-  let lastEnrollAt = 0
+  // ---- share servers (the fan-out set) -----------------------------------
+  // Every entry flagged active:true shares new sessions; when none is
+  // flagged, the first (legacy single-server semantics) does. Targets are
+  // re-resolved by refreshConfig between activations, so switching the
+  // active set in the TUI takes effect on the next event.
+  type ServerTarget = { url: string; entry: ServerEntry }
+  const resolveTargets = (): ServerTarget[] => {
+    const merged: Record<string, ServerEntry> = {}
+    if (cfg.workerUrl) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
+    if (cfg.servers) for (const [u, e] of Object.entries(cfg.servers)) merged[u] = { ...merged[u], ...e }
+    const urls = Object.keys(merged)
+    const actives = urls.filter((u) => merged[u].active)
+    const chosen = actives.length ? actives : urls.slice(0, 1)
+    return chosen.map((url) => ({ url, entry: merged[url] }))
+  }
+  let targets = resolveTargets()
+
+  // ---- per-server credentials (identity) ----------------------------------
+  // Each server enrolls INDEPENDENTLY: a legacy root CREATE_TOKEN works
+  // forever (server-side bootstrap); an osk_ user token is the normal
+  // shape. With no token the plugin ENROLLS: public servers take anyone,
+  // private ones need servers.{url}.code. Tokens persist to the settings
+  // home so enrollment happens once per server.
+  const credState = new Map<string, { credential: string; error: string; lastEnrollAt: number }>()
+  const credOf = (url: string) => {
+    let s = credState.get(url)
+    if (!s) {
+      s = { credential: "", error: "", lastEnrollAt: 0 }
+      credState.set(url, s)
+    }
+    return s
+  }
+  const seedCredentials = () => {
+    for (const t of targets) {
+      const c = credOf(t.url)
+      if (t.entry.token) {
+        if (c.credential !== t.entry.token) {
+          c.credential = t.entry.token
+          c.error = ""
+        }
+      } else if (!c.credential && !c.error) {
+        c.credential = "" // enrolled token may arrive via config refresh
+      }
+    }
+  }
+  seedCredentials()
   const ENROLL_RETRY_MS = 60000
 
-  const ensureCredential = async (): Promise<string> => {
-    if (credential) return credential
-    if (Date.now() - lastEnrollAt < ENROLL_RETRY_MS) return ""
-    lastEnrollAt = Date.now()
+  const ensureCredential = async (url: string): Promise<string> => {
+    const c = credOf(url)
+    const target = targets.find((t) => t.url === url)
+    if (c.credential) return c.credential
+    if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS) return ""
+    c.lastEnrollAt = Date.now()
     try {
-      const h = await fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) })
+      const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) })
       const hb = h.ok ? ((await h.json().catch(() => null)) as { auth?: { mode?: string } } | null) : null
-      const mode2 = hb?.auth?.mode
-      const code = server.entry.code ?? ""
-      if (mode2 === "public" || code) {
-        const r = await fetch(`${cfg.workerUrl}/api/enroll`, {
+      const authMode2 = hb?.auth?.mode
+      const code = target?.entry.code ?? ""
+      if (authMode2 === "public" || code) {
+        const r = await fetch(`${url}/api/enroll`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ code }),
@@ -307,93 +380,114 @@ export function createEngine(deps: EngineDeps): Engine {
         })
         const b = r.ok ? ((await r.json().catch(() => null)) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string } | null) : null
         if (b?.ok && typeof b.token === "string") {
-          credential = b.token
-          credentialError = ""
-          cfg.createToken = credential
-          const savedTo = saveServerToken(cfg.workerUrl, credential)
-          log(`enrolled at ${cfg.workerUrl} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
-          return credential
+          c.credential = b.token
+          c.error = ""
+          const savedTo = saveServerToken(url, c.credential)
+          log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
+          return c.credential
         }
-        credentialError = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
-      } else if (mode2 === "private") {
-        credentialError = "private server: add servers.{url}.code (or token) to enroll"
+        c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
+      } else if (authMode2 === "private") {
+        c.error = "private server: add servers.{url}.code (or token) to enroll"
       } else {
-        credentialError = `server health unreachable (HTTP ${h.status})`
+        c.error = `server health unreachable (HTTP ${h.status})`
       }
     } catch (e) {
-      credentialError = `enrollment failed: ${(e as Error)?.message || e}`
+      c.error = `enrollment failed: ${(e as Error)?.message || e}`
     }
-    logError(`no credential for ${cfg.workerUrl}: ${credentialError}`)
+    logError(`no credential for ${url}: ${c.error}`)
     return ""
   }
-  const wsUrl = () => cfg.workerUrl.replace(/^http/, "ws")
 
-  // ---- server policy (worker-owned) --------------------------------------
+  const remoteFor = (st: SessionState, url: string): RemoteState => {
+    let r = st.remotes.get(url)
+    if (!r) {
+      r = {
+        url,
+        shareId: null,
+        secret: null,
+        ackedRev: 0,
+        ws: null,
+        wsReady: false,
+        connecting: false,
+        socketSeq: 0,
+        initTimer: null,
+        initWasAttach: false,
+        backoff: 1000,
+        reconnectTimer: null,
+        intentionalClose: false,
+        connectQueued: false,
+        authBlocked: false,
+        pending: [],
+        announced: false,
+        settleTimer: null,
+        idleDropTimer: null,
+        collided: null,
+      }
+      st.remotes.set(url, r)
+    }
+    return r
+  }
+
+  // ---- server policy (worker-owned, per server) ---------------------------
   // The worker defines the socket policy and the allowed sync-cadence
-  // window; the plugin clamps its own preferences into it. Received in
-  // the WS init ack (authoritative) and from /health (covers the pure
-  // HTTP fallback). Defaults apply until the server answers.
-  type ServerPolicy = {
-    mode: "persistent" | "turn"
-    turnGraceMs: number
-    idleDropMs: number
-    finalizeAfterMs: number
-    debounceMinMs: number
-    debounceMaxMs: number
-    completedDelayMaxMs: number
-  }
-  let policy: ServerPolicy = {
-    mode: "persistent",
-    turnGraceMs: 120000,
-    idleDropMs: 600000,
-    finalizeAfterMs: 300000,
-    debounceMinMs: 0,
-    debounceMaxMs: Infinity,
-    completedDelayMaxMs: Infinity,
-  }
-  let policyAsked = false
+  // window; the plugin clamps its own preferences into the INTERSECTION
+  // of every connected server's window (cfg is shared across remotes).
+  // Received in the WS init ack (authoritative) and from /health (covers
+  // the pure HTTP fallback). Defaults apply until a server answers.
+  const policyMap = new Map<string, ServerPolicy>()
+  const policyAsked = new Set<string>()
+  const policyOf = (url: string): ServerPolicy => policyMap.get(url) ?? DEFAULT_POLICY
 
   const clampToPolicy = () => {
-    cfg.debounceMs = Math.min(Math.max(cfg.debounceMs, policy.debounceMinMs), policy.debounceMaxMs)
-    cfg.completedDelayMs = Math.min(Math.max(cfg.completedDelayMs, 0), policy.completedDelayMaxMs)
+    const policies = [...policyMap.values()]
+    if (!policies.length) return
+    const min = Math.max(0, ...policies.map((p) => p.debounceMinMs))
+    const max = Math.min(...policies.map((p) => p.debounceMaxMs))
+    cfg.debounceMs = Math.min(Math.max(cfg.debounceMs, min), Math.max(min, max))
+    const cd = Math.min(...policies.map((p) => p.completedDelayMaxMs))
+    cfg.completedDelayMs = Math.min(Math.max(cfg.completedDelayMs, 0), cd)
   }
 
-  const applyPolicy = (raw: unknown) => {
+  const applyPolicy = (raw: unknown, url: string) => {
     if (!raw || typeof raw !== "object") return
     const p = raw as Record<string, unknown>
     const num = (v: unknown, d: number): number => {
       const n = Number(v)
       return Number.isFinite(n) && n >= 0 ? n : d
     }
-    policy = {
+    const prev = policyOf(url)
+    policyMap.set(url, {
       mode: p.mode === "turn" ? "turn" : "persistent",
-      turnGraceMs: num(p.turnGraceMs, policy.turnGraceMs),
-      idleDropMs: num(p.idleDropMs, policy.idleDropMs),
-      finalizeAfterMs: num(p.finalizeAfterMs, policy.finalizeAfterMs),
+      turnGraceMs: num(p.turnGraceMs, prev.turnGraceMs),
+      idleDropMs: num(p.idleDropMs, prev.idleDropMs),
+      finalizeAfterMs: num(p.finalizeAfterMs, prev.finalizeAfterMs),
       debounceMinMs: num(p.debounceMinMs, 0),
       debounceMaxMs: Math.max(num(p.debounceMaxMs, Infinity), num(p.debounceMinMs, 0)),
       completedDelayMaxMs: num(p.completedDelayMaxMs, Infinity),
-    }
+    })
     clampToPolicy()
-    if (debugEvents) log(`server policy: ${JSON.stringify({ ...policy, debounceMaxMs: policy.debounceMaxMs === Infinity ? "none" : policy.debounceMaxMs, completedDelayMaxMs: policy.completedDelayMaxMs === Infinity ? "none" : policy.completedDelayMaxMs })}`)
+    if (debugEvents) log(`policy ${url}: ${JSON.stringify(policyOf(url))}`)
   }
 
-  const askPolicy = () => {
-    if (policyAsked) return
-    policyAsked = true
-    void fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) })
+  const askPolicy = (url: string) => {
+    if (policyAsked.has(url)) return
+    policyAsked.add(url)
+    void fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) })
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (b && typeof b === "object" && (b as { policy?: unknown }).policy) {
-          applyPolicy((b as { policy: unknown }).policy)
+          applyPolicy((b as { policy: unknown }).policy, url)
         }
       })
       .catch(() => {
         // unreachable worker: defaults stay; the init ack will correct us
-        policyAsked = false
+        policyAsked.delete(url)
       })
   }
+  const wsUrl = (url: string) => url.replace(/^http/, "ws")
 
+  // ---- spool root ---------------------------------------------------------
   let spoolRoot = spoolDirFor(cfg)
   try {
     mkdirSync(spoolRoot, { recursive: true })
@@ -415,48 +509,43 @@ export function createEngine(deps: EngineDeps): Engine {
     sid,
     client: deps.client,
     queue: new Map(),
-    pending: [],
     timer: null,
     metaTimer: null,
     completedTimer: null,
-    settleTimer: null,
-    idleDropTimer: null,
     lastFlushAt: 0,
     statusEpoch: 0,
-    shareId: null,
-    secret: null,
-    ackedRev: 0,
-    ws: null,
-    wsReady: false,
-    initTimer: null,
-    initWasAttach: false,
-    backoff: 1000,
+    remotes: new Map(),
     status: "live",
     badSignal: false,
     lastSentStatus: null,
-    connecting: false,
     closed: false,
     prefsSent: false,
     binding: null,
     bindingQueried: false,
-    reconnectTimer: null,
-    intentionalClose: false,
-    connectQueued: false,
-    authBlocked: false,
+    optOuts: new Set(),
     opts: undefined,
     activated: false,
-    announced: false,
     wroteBinding: false,
+    everConnected: false,
   })
 
   const refreshConfig = () => {
     // settings may change between activations (the TUI writes the config
     // file); each activation re-reads. env always wins, so CI is stable.
     const next = loadConfig(deps.pluginDir, deps.options)
-    if (next.workerUrl) {
+    const resolved = resolveServer(next)
+    if (resolved?.url) {
       cfg = next
       spoolRoot = spoolDirFor(cfg)
+      const before = new Set(targets.map((t) => t.url))
+      targets = resolveTargets()
+      seedCredentials()
       clampToPolicy()
+      if (debugEvents) {
+        const after = targets.map((t) => t.url)
+        const added = after.filter((u) => !before.has(u))
+        if (added.length) log(`fan-out set grew: ${added.join(", ")}`)
+      }
     }
   }
 
@@ -485,10 +574,10 @@ export function createEngine(deps: EngineDeps): Engine {
       chain = chain
         .then(() => seedManualStatus(st))
         .then(() => backfill(st, info))
-        .then(() => queueConnect(st))
+        .then(() => queueConnectAll(st))
         .catch((e) => logError("activation error", (e as Error)?.message || e))
     } else {
-      queueConnect(st)
+      queueConnectAll(st)
     }
     return st
   }
@@ -573,6 +662,30 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
+  /** Parse the metadata binding: v2 map ({v:2, servers:{url:{id,secret,
+   * rev,url,enabled?}}}) or legacy flat ({id,secret,rev,url}) which maps
+   * onto the first target. Returns per-server live entries. */
+  const parseBinding = (record: Record<string, unknown>): Map<string, { id: string; secret: string; rev: number; optedOut?: boolean }> => {
+    const out = new Map<string, { id: string; secret: string; rev: number; optedOut?: boolean }>()
+    if (record.servers && typeof record.servers === "object") {
+      for (const [url, raw] of Object.entries(record.servers as Record<string, unknown>)) {
+        if (!raw || typeof raw !== "object") continue
+        const e = raw as Record<string, unknown>
+        if (typeof e.id === "string" && typeof e.secret === "string" && e.id && e.secret) {
+          out.set(url, { id: e.id, secret: e.secret, rev: typeof e.rev === "number" ? e.rev : 0 })
+        } else if (e.optedOut === true) {
+          out.set(url, { id: "", secret: "", rev: 0, optedOut: true })
+        }
+      }
+      return out
+    }
+    if (typeof record.id === "string" && typeof record.secret === "string" && record.id) {
+      const url = targets[0]?.url ?? ""
+      if (url) out.set(url, { id: record.id, secret: record.secret, rev: typeof record.rev === "number" ? record.rev : 0 })
+    }
+    return out
+  }
+
   async function readBinding(st: SessionState) {
     if (!st.client || st.bindingQueried) return
     st.bindingQueried = true
@@ -585,12 +698,19 @@ export function createEngine(deps: EngineDeps): Engine {
           // flagless binding (unshared, or legacy): stay dormant
           return
         }
-        if (typeof record.id === "string" && typeof record.secret === "string") {
-          st.shareId = record.id
-          st.secret = record.secret
-          st.ackedRev = typeof record.rev === "number" ? record.rev : 0
+        const found = parseBinding(record)
+        if (found.size) {
+          for (const [url, e] of found) {
+            if (e.optedOut) continue
+            const r = remoteFor(st, url)
+            if (!r.shareId) {
+              r.shareId = e.id
+              r.secret = e.secret
+              r.ackedRev = e.rev
+            }
+          }
           if (mode === "manual") st.opts = shareFlag(info).opts ?? st.opts
-          log(`binding recovered from session metadata: share ${st.shareId} rev ${st.ackedRev}`)
+          log(`binding recovered from session metadata: ${[...found.keys()].join(", ")}`)
         }
       }
     } catch (e) {
@@ -599,20 +719,28 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   async function writeBinding(st: SessionState) {
-    if (!st.client || !st.shareId || !st.secret) return
-    const value: Record<string, unknown> = {
-      id: st.shareId,
-      secret: st.secret,
-      rev: st.ackedRev,
-      url: `${cfg.workerUrl}/s/${st.shareId}`,
+    if (!st.client) return
+    const servers: Record<string, unknown> = {}
+    let any = false
+    for (const [url, r] of st.remotes) {
+      if (!r.shareId || !r.secret) continue
+      any = true
+      const entry: Record<string, unknown> = { id: r.shareId, secret: r.secret, rev: r.ackedRev, url: `${url}/s/${r.shareId}` }
+      if (r.collided) entry.collided = r.collided
+      servers[url] = entry
     }
+    if (!any) return
+    // preserve per-session opt-outs in the written map — a retired remote
+    // is absent from `servers`, and dropping the marker would let the next
+    // refreshOptOuts resurrect (and re-create) the opted-out server
+    for (const url of st.optOuts) if (!servers[url]) servers[url] = { optedOut: true }
     // A binding in session metadata means opted-in — enabled: true in BOTH
     // modes (live-caught: all-mode bindings without `enabled` made the TUI
     // gate fall through to the consent dialog on an already-shared session;
-    // live is now uniformly `url && enabled !== false`).
-    value.enabled = true
+    // live is now uniformly "url && enabled !== false").
+    const value: Record<string, unknown> = { v: 2, servers, enabled: true }
     if (mode === "manual" && st.opts) value.opts = st.opts
-    st.binding = value as Binding
+    st.binding = value
     st.wroteBinding = true
     await writeMetadata(st, value)
   }
@@ -626,58 +754,98 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   // ---- spool (temporary buffer for unacked frames) ----------------------
-  const metaPath = (st: SessionState) => join(spoolRoot, `${st.sid}.meta.json`)
-  const queuePath = (st: SessionState) => join(spoolRoot, `${st.sid}.queue.jsonl`)
+  // One spool per session per server: `<sid>.<h8(url)>.meta/queue`. The
+  // legacy suffix-less files (single-server era) migrate onto the first
+  // target at load.
+  const h8 = (url: string): string => {
+    let h = 5381
+    for (let i = 0; i < url.length; i++) h = ((h << 5) + h + url.charCodeAt(i)) >>> 0
+    return h.toString(16).padStart(8, "0")
+  }
+  const metaPath = (st: SessionState, url: string) => join(spoolRoot, `${st.sid}.${h8(url)}.meta.json`)
+  const queuePath = (st: SessionState, url: string) => join(spoolRoot, `${st.sid}.${h8(url)}.queue.jsonl`)
+  const legacyMetaPath = (st: SessionState) => join(spoolRoot, `${st.sid}.meta.json`)
+  const legacyQueuePath = (st: SessionState) => join(spoolRoot, `${st.sid}.queue.jsonl`)
 
-  const spoolSave = (st: SessionState) => {
+  const spoolSave = (st: SessionState, r: RemoteState) => {
     try {
-      writeFileSync(metaPath(st), JSON.stringify({ shareId: st.shareId, secret: st.secret, ackedRev: st.ackedRev, sid: st.sid }))
-      writeFileSync(queuePath(st), st.pending.map((f) => JSON.stringify(f)).join("\n") + (st.pending.length ? "\n" : ""))
+      writeFileSync(metaPath(st, r.url), JSON.stringify({ shareId: r.shareId, secret: r.secret, ackedRev: r.ackedRev, sid: st.sid, url: r.url }))
+      writeFileSync(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join("\n") + (r.pending.length ? "\n" : ""))
     } catch (e) {
       logError("spool save failed", (e as Error)?.message || e)
     }
   }
-  const spoolLoad = (st: SessionState) => {
+  const spoolLoad = (st: SessionState, r: RemoteState) => {
     try {
-      const meta = JSON.parse(readFileSync(metaPath(st), "utf8"))
+      const meta = JSON.parse(readFileSync(metaPath(st, r.url), "utf8"))
       // metadata binding (db) is authoritative when both exist and disagree
-      if (!st.shareId && meta.shareId) {
-        st.shareId = meta.shareId
-        st.secret = meta.secret
-        st.ackedRev = meta.ackedRev ?? 0
+      if (!r.shareId && meta.shareId) {
+        r.shareId = meta.shareId
+        r.secret = meta.secret
+        r.ackedRev = meta.ackedRev ?? 0
       }
-      if (existsSync(queuePath(st))) {
-        st.pending = readFileSync(queuePath(st), "utf8")
+      if (existsSync(queuePath(st, r.url))) {
+        r.pending = readFileSync(queuePath(st, r.url), "utf8")
           .split("\n")
           .filter((l) => l.trim())
           .map((l) => JSON.parse(l))
       }
     } catch {
-      st.pending = []
+      r.pending = []
+    }
+    // single-server-era spool (no url suffix): belongs to the first target
+    if (!r.shareId && targets[0]?.url === r.url) {
+      try {
+        const meta = JSON.parse(readFileSync(legacyMetaPath(st), "utf8"))
+        if (meta.shareId && !r.shareId) {
+          r.shareId = meta.shareId
+          r.secret = meta.secret
+          r.ackedRev = meta.ackedRev ?? 0
+          if (existsSync(legacyQueuePath(st))) {
+            r.pending = readFileSync(legacyQueuePath(st), "utf8")
+              .split("\n")
+              .filter((l) => l.trim())
+              .map((l) => JSON.parse(l))
+          }
+          log(`migrated legacy spool for ${st.sid.slice(0, 18)} onto ${r.url}`)
+        }
+      } catch {}
     }
   }
-  const spoolClear = (st: SessionState) => {
+  const spoolClear = (st: SessionState, r: RemoteState) => {
     try {
-      rmSync(metaPath(st), { force: true })
-      rmSync(queuePath(st), { force: true })
+      rmSync(metaPath(st, r.url), { force: true })
+      rmSync(queuePath(st, r.url), { force: true })
     } catch {}
   }
 
-  // ---- websocket transport ----------------------------------------------
-  const wsSend = (st: SessionState, obj: unknown) => {
-    if (debugEvents) log(`ws#${st.socketSeq} send ${(obj as { op?: string })?.op} (ready=${st.wsReady})`)
+  // ---- websocket transport (per remote) ----------------------------------
+  const wsSend = (r: RemoteState, obj: unknown) => {
+    if (debugEvents) log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send ${(obj as { op?: string })?.op} (ready=${r.wsReady})`)
     try {
-      st.ws?.send(JSON.stringify(obj))
+      r.ws?.send(JSON.stringify(obj))
     } catch {
       return false
     }
     return true
   }
 
-  const announceUrl = (st: SessionState) => {
-    if (st.announced) return
-    st.announced = true
-    const url = `${cfg.workerUrl}/s/${st.shareId}`
+  /** Sync frames are chunked (~1MB WS cap on CF; a 5000-message backfill
+   * must ride several frames — worker apply is keyed-idempotent, chunks
+   * just bump rev). Status rides each chunk; last write wins. */
+  const SYNC_CHUNK = 200
+  const sendSync = (r: RemoteState, f: { items: unknown[]; status: string }) => {
+    if (!f.items.length) return wsSend(r, { op: "sync", items: [], status: f.status })
+    for (let i = 0; i < f.items.length; i += SYNC_CHUNK) {
+      wsSend(r, { op: "sync", items: f.items.slice(i, i + SYNC_CHUNK), status: f.status })
+    }
+    return true
+  }
+
+  const announceUrl = (st: SessionState, r: RemoteState) => {
+    if (r.announced) return
+    r.announced = true
+    const url = `${r.url}/s/${r.shareId}`
     if (cfg.announceStderr) log(`live: ${url}`)
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       // default: the file lives where the session lives (its directory,
@@ -712,11 +880,11 @@ export function createEngine(deps: EngineDeps): Engine {
   /** Best-effort cleanup of a share we are about to abandon (refused
    * attach, mismatch recreate). Prevents husk litter; failures are fine —
    * the TTL sweeper collects strays eventually. */
-  const deleteAbandoned = (st: SessionState) => {
-    const id = st.shareId
-    const secret = st.secret
+  const deleteAbandoned = (r: RemoteState) => {
+    const id = r.shareId
+    const secret = r.secret
     if (!id || !secret) return
-    void fetch(`${cfg.workerUrl}/api/share/${id}`, {
+    void fetch(`${r.url}/api/share/${id}`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret }),
@@ -729,60 +897,128 @@ export function createEngine(deps: EngineDeps): Engine {
    * STARTED — the connecting flag alone guards execution, not the queue,
    * and double connects used to create duplicate shares + init storms
    * (live-caught in the S11 repro: ws#1 create AND ws#2 create). */
-  const queueConnect = (st: SessionState) => {
-    if (st.closed || st.connectQueued || st.connecting || st.authBlocked) return
-    st.connectQueued = true
+  const queueConnect = (st: SessionState, r: RemoteState) => {
+    if (st.closed || r.connectQueued || r.connecting || r.authBlocked || r.collided) return
+    r.connectQueued = true
     chain = chain
       .then(() => {
-        st.connectQueued = false
-        return connect(st)
+        r.connectQueued = false
+        return connect(st, r)
       })
       .catch((e) => logError("connect error", (e as Error)?.message || e))
   }
 
-  const connect = async (st: SessionState) => {
-    if (st.closed || st.connecting) return
+  /** Connect every target (activation, resume) — remotes materialize from
+   * targets ∪ binding (a share bound on a no-longer-active server keeps
+   * receiving updates until explicitly unshared there). Opted-out servers
+   * (this session) are skipped entirely. */
+  const queueConnectAll = (st: SessionState) => {
+    if (st.closed) return
+    for (const t of targets) {
+      if (st.optOuts.has(t.url)) continue
+      queueConnect(st, remoteFor(st, t.url))
+    }
+    for (const r of st.remotes.values()) {
+      if (st.optOuts.has(r.url)) continue
+      queueConnect(st, r)
+    }
+  }
+
+  /** Re-read the session's binding map for per-server opt-outs (written by
+   * the TUI: "stop sharing here" deletes the share then opts out; "leave
+   * as-is" just opts out). Live remotes for newly opted-out servers are
+   * retired — the share keeps living server-side until its TTL.
+   * Also resolves collisions the TUI answered: entry removed → re-arm the
+   * remote (fresh create + backfill) unless opted out. */
+  const refreshOptOuts = async (st: SessionState) => {
+    if (!st.client) return
+    try {
+      const info = await sessionInfo(st.client, st.sid)
+      const raw = info?.metadata?.[METADATA_KEY]
+      if (!raw || typeof raw !== "object") return
+      const servers = (raw as Record<string, unknown>).servers
+      if (!servers || typeof servers !== "object") return
+      const entryUrls = new Set<string>()
+      for (const [url, e] of Object.entries(servers as Record<string, unknown>)) {
+        entryUrls.add(url)
+        const out = !!(e && typeof e === "object" && (e as Record<string, unknown>).optedOut === true)
+        if (out) st.optOuts.add(url)
+        else st.optOuts.delete(url)
+      }
+      // retire remotes that just got opted out (socket closed; spool
+      // dropped — the share is out of our hands by the TUI's choice)
+      for (const url of [...st.optOuts]) {
+        const r = st.remotes.get(url)
+        if (!r) continue
+        if (debugEvents) log(`remote ${url.slice(0, 24)} opted out for ${st.sid.slice(0, 18)} - retiring`)
+        r.intentionalClose = true
+        try {
+          r.ws?.close(1000, "opted out")
+        } catch {}
+        spoolClear(st, r)
+        st.remotes.delete(url)
+      }
+      // collisions resolved by the TUI: the binding entry for the server
+      // was removed — re-arm unless the same patch also opted out
+      for (const r of [...st.remotes.values()]) {
+        if (!r.collided || st.optOuts.has(r.url)) continue
+        if (entryUrls.has(r.url)) continue
+        if (debugEvents) log(`collision on ${r.url.slice(0, 24)} resolved - re-arming`)
+        r.collided = null
+        r.shareId = null
+        r.secret = null
+        r.ackedRev = 0
+        r.pending = []
+        r.announced = false
+        queueConnect(st, r)
+      }
+    } catch {}
+  }
+
+  const connect = async (st: SessionState, r: RemoteState) => {
+    if (st.closed || r.connecting || r.authBlocked || r.collided) return
     // "connecting" spans the WHOLE handshake: socket open + init ack. It
     // is only cleared on init-ok, socket death or the init timeout — an
     // event arriving mid-handshake must NEVER spawn a second socket (the
     // old connect() returned after merely SENDING init; a second socket
     // raced it, and the loser's late init-ok poisoned the winner's state
     // — live-caught: duplicate shares, mismatch storms, empty pages).
-    st.connecting = true
-    st.socketSeq = (st.socketSeq ?? 0) + 1
-    const seq = st.socketSeq
+    r.connecting = true
+    r.socketSeq += 1
+    const seq = r.socketSeq
     // supersede any previous socket: its frames are dead to us now
-    if (st.ws) {
-      const old = st.ws
+    if (r.ws) {
+      const old = r.ws
       try {
         old.close(4000, "superseded")
       } catch {}
     }
     try {
       await readBinding(st)
-      spoolLoad(st)
-      askPolicy()
+      spoolLoad(st, r)
+      askPolicy(r.url)
       // was this socket's init an ATTACH (resume) or a CREATE? A create
       // ack legitimately starts at rev 0 — the mismatch guard is for
       // attaches only (live-caught: create-ack rev 0 tripped it and
       // spawned a fresh husk share with the content dropped).
-      st.initWasAttach = !!(st.shareId && st.secret)
-      if (debugEvents) log(`ws#${seq} opening (${st.initWasAttach ? `attach ${st.shareId}` : "create"})`)
+      r.initWasAttach = !!(r.shareId && r.secret)
+      if (debugEvents) log(`ws ${r.url.slice(0, 24)} #${seq} opening (${r.initWasAttach ? `attach ${r.shareId}` : "create"})`)
       // creates need a credential (enrolls on demand — first contact with
       // a server); attaches ride the share secret alone when tokenless
-      const token = st.initWasAttach ? credential : credential || (await ensureCredential())
-      if (!st.initWasAttach && !token && credentialError) {
+      const cred = credOf(r.url)
+      const token = r.initWasAttach ? cred.credential : cred.credential || (await ensureCredential(r.url))
+      if (!r.initWasAttach && !token && cred.error) {
         // the server is reachable but enrollment is impossible (private,
         // no valid code / enroll refused). A tokenless create would just
-        // be refused in a loop — block this session, surface once.
-        st.authBlocked = true
-        st.connecting = false
-        st.ws = null
-        logError(`sharing disabled (no credential): ${credentialError}`)
+        // be refused in a loop — block this remote, surface once.
+        r.authBlocked = true
+        r.connecting = false
+        r.ws = null
+        logError(`sharing to ${r.url} disabled (no credential): ${cred.error}`)
         return
       }
-      const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(token ?? "")}`)
-      st.ws = ws
+      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws?token=${encodeURIComponent(token ?? "")}`)
+      r.ws = ws
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000)
         ws.addEventListener("open", () => {
@@ -797,190 +1033,236 @@ export function createEngine(deps: EngineDeps): Engine {
       ws.addEventListener("message", (ev) => {
         // stale sockets never touch live state (defense in depth: even a
         // superseded socket that still delivers frames is dropped here)
-        if (seq !== st.socketSeq) return
+        if (seq !== r.socketSeq) return
         let frame
         try {
           frame = JSON.parse((ev as MessageEvent).data as string)
         } catch {
           return
         }
-        handleFrame(st, frame).catch((e) => logError("frame error", (e as Error)?.message || e))
+        handleFrame(st, r, frame).catch((e) => logError("frame error", (e as Error)?.message || e))
       })
       ws.addEventListener("close", () => {
-        if (seq !== st.socketSeq) return
-        st.wsReady = false
-        st.connecting = false
+        if (seq !== r.socketSeq) return
+        r.wsReady = false
+        r.connecting = false
         // a deliberate turn-mode drop must not trigger the reconnect
         // backoff loop — the next event reconnects on demand
-        if (st.intentionalClose) {
-          st.intentionalClose = false
+        if (r.intentionalClose) {
+          r.intentionalClose = false
           return
         }
-        if (!st.closed) scheduleReconnect(st)
+        if (!st.closed) scheduleReconnect(st, r)
       })
 
-      if (st.initWasAttach) {
-        wsSend(st, { op: "init", attach: { id: st.shareId, secret: st.secret, ...authFrame(st) } })
+      if (r.initWasAttach) {
+        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
       } else {
-        wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
       }
 
       // handshake deadline: init sent but no ack (silent worker death)
       // — close, let the close listener reconnect us
-      st.initTimer = setTimeout(() => {
-        if (seq !== st.socketSeq) return
-        logError(`ws#${seq} init ack timeout`)
-        st.connecting = false
+      r.initTimer = setTimeout(() => {
+        if (seq !== r.socketSeq) return
+        logError(`ws ${r.url.slice(0, 24)} #${seq} init ack timeout`)
+        r.connecting = false
         try {
           ws.close(4000, "init timeout")
         } catch {}
-        if (!st.closed) scheduleReconnect(st)
+        if (!st.closed) scheduleReconnect(st, r)
       }, 20000)
     } catch (e) {
-      st.connecting = false
+      r.connecting = false
       logError("socket failed:", (e as Error)?.message || e, "- falling back to HTTP, will retry")
-      st.wsReady = false
-      void flushViaHttp(st).catch(() => {})
-      scheduleReconnect(st)
+      r.wsReady = false
+      void flushViaHttp(st, r).catch(() => {})
+      scheduleReconnect(st, r)
       return
     }
   }
 
-  const scheduleReconnect = (st: SessionState) => {
-    if (st.closed || st.reconnectTimer) return
-    const wait = st.backoff
-    st.backoff = Math.min(st.backoff * 2, 60000)
-    st.reconnectTimer = setTimeout(() => {
-      st.reconnectTimer = null
-      queueConnect(st)
+  const scheduleReconnect = (st: SessionState, r: RemoteState) => {
+    if (st.closed || r.reconnectTimer) return
+    const wait = r.backoff
+    r.backoff = Math.min(r.backoff * 2, 60000)
+    r.reconnectTimer = setTimeout(() => {
+      r.reconnectTimer = null
+      queueConnect(st, r)
     }, wait)
   }
 
   // ---- turn-scoped socket lifecycle (server policy "turn") ---------------
-  const dropSocket = (st: SessionState, why: string) => {
-    if (debugEvents) log(`turn: drop socket (${why}) sid=${st.sid.slice(0, 18)}`)
-    st.wsReady = false
-    st.intentionalClose = true
+  const dropSocket = (st: SessionState, r: RemoteState, why: string) => {
+    if (debugEvents) log(`turn: drop socket (${why}) ${r.url.slice(0, 24)} sid=${st.sid.slice(0, 18)}`)
+    r.wsReady = false
+    r.intentionalClose = true
     try {
-      st.ws?.close(1000, why)
+      r.ws?.close(1000, why)
     } catch {}
-    st.ws = null
+    r.ws = null
   }
 
-  const cancelSettleDrop = (st: SessionState) => {
-    if (st.settleTimer) {
-      clearTimeout(st.settleTimer)
-      st.settleTimer = null
+  const cancelSettleDrop = (r: RemoteState) => {
+    if (r.settleTimer) {
+      clearTimeout(r.settleTimer)
+      r.settleTimer = null
     }
   }
 
   const armSettleDrop = (st: SessionState) => {
-    if (policy.mode !== "turn" || policy.turnGraceMs <= 0) return
-    cancelSettleDrop(st)
-    st.settleTimer = setTimeout(() => {
-      st.settleTimer = null
-      if (st.closed || !st.ws) return
-      dropSocket(st, "turn end")
-    }, policy.turnGraceMs)
+    for (const r of st.remotes.values()) {
+      const p = policyOf(r.url)
+      if (p.mode !== "turn" || p.turnGraceMs <= 0) continue
+      cancelSettleDrop(r)
+      r.settleTimer = setTimeout(() => {
+        r.settleTimer = null
+        if (st.closed || !r.ws) return
+        dropSocket(st, r, "turn end")
+      }, p.turnGraceMs)
+    }
   }
 
   const armIdleDrop = (st: SessionState) => {
-    if (policy.mode !== "turn" || policy.idleDropMs <= 0) return
-    if (st.idleDropTimer) clearTimeout(st.idleDropTimer)
-    st.idleDropTimer = setTimeout(() => {
-      st.idleDropTimer = null
-      if (st.closed || !st.ws) return
-      // no signal for idleDropMs (incl. hosts that never emit idle):
-      // drop; the next event reconnects and the spool replays the gap
-      dropSocket(st, "idle timeout")
-    }, policy.idleDropMs)
+    for (const r of st.remotes.values()) {
+      const p = policyOf(r.url)
+      if (p.mode !== "turn" || p.idleDropMs <= 0) continue
+      if (r.idleDropTimer) clearTimeout(r.idleDropTimer)
+      r.idleDropTimer = setTimeout(() => {
+        r.idleDropTimer = null
+        if (st.closed || !r.ws) return
+        // no signal for idleDropMs (incl. hosts that never emit idle):
+        // drop; the next event reconnects and the spool replays the gap
+        dropSocket(st, r, "idle timeout")
+      }, p.idleDropMs)
+    }
   }
 
   /** Any activity: the turn is alive — cancel the settle drop, reset the
-   * no-signal fallback timer. */
+   * no-signal fallback timer (per server). */
   const touch = (st: SessionState) => {
-    cancelSettleDrop(st)
+    for (const r of st.remotes.values()) cancelSettleDrop(r)
     armIdleDrop(st)
   }
 
   /** An event arrived with no live socket (post-drop or post-fallback):
-   * reconnect now — the queue rides the normal flush path afterwards. */
+   * reconnect now — the queue rides the normal flush path afterwards.
+   * Target-set refresh is throttled (config files on disk per event would
+   * be heavy); 5s catches TUI server switches quickly enough. */
+  let lastTargetsCheck = 0
   const ensureConnected = (st: SessionState) => {
-    if (st.closed || st.connecting || st.reconnectTimer || st.wsReady) return
-    queueConnect(st)
+    if (st.closed) return
+    if (Date.now() - lastTargetsCheck > 5000) {
+      lastTargetsCheck = Date.now()
+      refreshConfig()
+    }
+    for (const t of targets) {
+      if (st.optOuts.has(t.url)) continue
+      const r = remoteFor(st, t.url)
+      if (r.connecting || r.reconnectTimer || r.wsReady || r.authBlocked || r.collided) continue
+      queueConnect(st, r)
+    }
+    for (const r of st.remotes.values()) {
+      if (st.optOuts.has(r.url)) continue
+      if (r.connecting || r.reconnectTimer || r.wsReady || r.authBlocked || r.collided) continue
+      queueConnect(st, r)
+    }
   }
 
-  const handleFrame = async (st: SessionState, frame: Record<string, unknown>) => {
+  const handleFrame = async (st: SessionState, r: RemoteState, frame: Record<string, unknown>) => {
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "")
         if (/frozen/i.test(err)) {
           // owner frozen: every control path is severed server-side.
           // Re-enrolling would orphan the shares — surface and stop.
-          st.authBlocked = true
-          logError("share frozen by the hoster (owner frozen) - edits refused; contact the server admin")
+          r.authBlocked = true
+          logError(`${r.url}: share frozen by the hoster (owner frozen) - edits refused; contact the server admin`)
           try {
-            st.ws?.close(4000, "frozen")
+            r.ws?.close(4000, "frozen")
           } catch {}
           return
         }
-        if (/token|credential/i.test(err) && !st.initWasAttach) {
+        if (/forbidden|bad secret/i.test(err) && r.initWasAttach && r.secret) {
+          // COLLISION: the binding's secret no longer opens this share and
+          // the socket token doesn't own it either (share recreated by a
+          // later run? host-side restore?). Auto-recreating could dupe a
+          // share someone else now owns — stop, mark, let the TUI offer
+          // copy-debug / share-on-new / don't-share (headless: share-new).
+          r.collided = err
+          r.connecting = false
+          logError(`${r.url}: attach refused (${err}) - credential collision on share ${r.shareId}; not auto-recreating`)
+          try {
+            r.ws?.close(4000, "collision")
+          } catch {}
+          // persist the collision into the binding so the TUI can offer
+          // the choice; writeBinding marks collided remotes
+          st.wroteBinding = false
+          chain = chain.then(() => writeBinding(st)).catch(() => {})
+          // headless (all-mode): resolve as "share on a new share"
+          if (mode === "all") resolveCollision(st, r)
+          return
+        }
+        if (/token|credential/i.test(err) && !r.initWasAttach) {
           // our token was rejected (revoked/expired): drop it, re-enroll
           // (60s-gated; public server or a fresh code), reconnect. A
           // legacy root token never lands here.
-          if (credential) {
-            credential = ""
-            cfg.createToken = ""
-            logError("server rejected our token - re-enrolling")
+          const cred = credOf(r.url)
+          if (cred.credential) {
+            cred.credential = ""
+            logError(`${r.url}: server rejected our token - re-enrolling`)
           }
           try {
-            st.ws?.close(4000, "auth")
+            r.ws?.close(4000, "auth")
           } catch {}
-          st.connecting = false
-          if (!st.closed) queueConnect(st)
+          r.connecting = false
+          if (!st.closed) queueConnect(st, r)
           return
         }
         // share swept / removed / revoked: start fresh, never merge into a
         // bad base (mismatch protocol). Content REPLAYS to the new share —
         // pending is never dropped on a reset (live-caught: the recreate
         // husk had the title but zero messages).
-        logError("init refused:", frame.error, "- creating fresh share")
-        deleteAbandoned(st)
-        st.shareId = null
-        st.secret = null
-        st.ackedRev = 0
-        wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        logError(`${r.url}: init refused:`, frame.error, "- creating fresh share")
+        deleteAbandoned(r)
+        r.shareId = null
+        r.secret = null
+        r.ackedRev = 0
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
         return
       }
-      if (st.initWasAttach && typeof frame.rev === "number" && frame.rev < st.ackedRev) {
+      if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
         // worker lost data behind our back (ATTACH only — a create ack
         // legitimately starts at rev 0; the old guard misread that as
         // data loss and spawned a fresh husk, live-caught)
-        logError(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`)
-        deleteAbandoned(st)
-        st.shareId = null
-        st.secret = null
-        st.ackedRev = 0
-        wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        logError(`${r.url}: mismatch: worker rev ${frame.rev} < acked ${r.ackedRev} - recreating`)
+        deleteAbandoned(r)
+        r.shareId = null
+        r.secret = null
+        r.ackedRev = 0
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
         return
       }
-      const shareChanged = !!frame.id && frame.id !== st.shareId
-      if (shareChanged) st.announced = false
-      st.shareId = (frame.id as string) ?? st.shareId
-      st.secret = (frame.secret as string) ?? st.secret
-      st.ackedRev = (frame.rev as number) ?? 0
-      st.wsReady = true
-      st.connecting = false
-      st.initWasAttach = false
-      if (st.initTimer) {
-        clearTimeout(st.initTimer)
-        st.initTimer = null
+      const wasFanoutCreate = !r.initWasAttach && st.everConnected
+      const shareChanged = !!frame.id && frame.id !== r.shareId
+      if (shareChanged) r.announced = false
+      r.shareId = (frame.id as string) ?? r.shareId
+      r.secret = (frame.secret as string) ?? r.secret
+      r.ackedRev = (frame.rev as number) ?? 0
+      r.wsReady = true
+      r.connecting = false
+      r.initWasAttach = false
+      r.collided = null
+      if (r.initTimer) {
+        clearTimeout(r.initTimer)
+        r.initTimer = null
       }
-      st.backoff = 1000
-      if (frame.policy) applyPolicy(frame.policy)
-      st.intentionalClose = false
+      r.backoff = 1000
+      st.everConnected = true
+      if (frame.policy) applyPolicy(frame.policy, r.url)
+      r.intentionalClose = false
       touch(st)
-      announceUrl(st)
+      announceUrl(st, r)
       // first binding write is immediate (the TUI waits on the URL in
       // session metadata); ack-driven rev updates stay debounced
       if (!st.wroteBinding) {
@@ -988,33 +1270,55 @@ export function createEngine(deps: EngineDeps): Engine {
       } else {
         scheduleBindingWrite(st)
       }
-      spoolSave(st)
-      if (st.pending.length) {
-        for (const f of st.pending) wsSend(st, { op: "sync", ...f })
+      spoolSave(st, r)
+      if (r.pending.length) {
+        for (const f of r.pending) sendSync(r, f)
       } else if (st.queue.size) {
         flush(st)
+      }
+      if (wasFanoutCreate) {
+        // a server joined an ALREADY-live session (fan-out add, or a
+        // post-mismatch recreate): its fresh share needs the full history —
+        // backfill is keyed-idempotent, other servers just re-upsert
+        chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", (e as Error)?.message || e))
       }
       return
     }
     if (frame.op === "ack") {
-      st.ackedRev = (frame.rev as number) ?? st.ackedRev
-      st.pending = []
-      spoolSave(st)
+      r.ackedRev = (frame.rev as number) ?? r.ackedRev
+      r.pending = []
+      spoolSave(st, r)
       scheduleBindingWrite(st)
       return
     }
     if (frame.op === "nack" || frame.op === "error") {
-      logError("worker refused frame:", JSON.stringify(frame).slice(0, 200))
+      logError(`${r.url}: worker refused frame:`, JSON.stringify(frame).slice(0, 200))
       // the control socket lost its attach state (worker-side eviction of
       // the control DO): force a reconnect — init attach replays pending
-      if (frame.op === "error" && st.wsReady && !st.closed) {
-        st.wsReady = false
+      if (frame.op === "error" && r.wsReady && !st.closed) {
+        r.wsReady = false
         try {
-          st.ws?.close()
+          r.ws?.close()
         } catch {}
-        scheduleReconnect(st)
+        scheduleReconnect(st, r)
       }
     }
+  }
+
+  /** Collision resolution "share on a new share": forget the dead binding
+   * entry for this server (debug info logged first), delete the husk if
+   * we still can, and reconnect — the create path makes a fresh share and
+   * the fan-out backfill fills it. */
+  const resolveCollision = (st: SessionState, r: RemoteState) => {
+    logError(`collision debug: server=${r.url} share=${r.shareId} rev=${r.ackedRev} sid=${st.sid}`)
+    deleteAbandoned(r)
+    r.collided = null
+    r.shareId = null
+    r.secret = null
+    r.ackedRev = 0
+    r.pending = []
+    r.announced = false
+    queueConnect(st, r)
   }
 
   // ---- flush -------------------------------------------------------------
@@ -1023,11 +1327,11 @@ export function createEngine(deps: EngineDeps): Engine {
     st.queue.clear()
     const statusChanged = st.status !== st.lastSentStatus
     if (!items.length && !statusChanged) {
-      if (debugEvents) log(`ws#${st.socketSeq ?? 0} flush skip (no items, status ${st.status}==${st.lastSentStatus})`)
+      if (debugEvents) log(`flush skip (no items, status ${st.status}==${st.lastSentStatus})`)
       return null
     }
     st.lastSentStatus = st.status
-    if (debugEvents) log(`ws#${st.socketSeq ?? 0} frame: ${items.length} items, status ${st.status} -> ${st.status === st.lastSentStatus ? "same" : "changed"}`)
+    if (debugEvents) log(`frame: ${items.length} items, status ${st.status}`)
     return { items, status: st.status }
   }
 
@@ -1038,48 +1342,52 @@ export function createEngine(deps: EngineDeps): Engine {
     if (st.closed) return
     const f = frameFrom(st)
     if (!f) return
-    // never send syncs before the init ack: the worker's per-socket
-    // ControlDO has no attach until OUR init completes, and a racing sync
-    // dies as "unknown op" (live-caught: post-drop reconnects lost whole
-    // turns). The init-ok handler flushes pending itself.
-    if (st.ws && !st.wsReady) {
-      st.pending.push(f)
-      spoolSave(st)
-      return
+    // fan out to every remote; each carries its own pending copy and acks
+    // independently. Remotes mid-handshake or auth-blocked just buffer.
+    let httpWork: Promise<unknown> | undefined
+    for (const r of st.remotes.values()) {
+      // never send syncs before the init ack: the worker's per-socket
+      // ControlDO has no attach until OUR init completes, and a racing
+      // sync dies as "unknown op" (live-caught: post-drop reconnects
+      // lost whole turns). The init-ok handler flushes pending itself.
+      r.pending.push(f)
+      spoolSave(st, r)
+      if (r.ws && !r.wsReady) continue
+      if (r.wsReady) {
+        sendSync(r, f)
+        continue
+      }
+      const viaHttp = flushViaHttp(st, r)
+      if (viaHttp) httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp)
     }
-    st.pending.push(f)
-    spoolSave(st)
-    st.lastFlushAt = Date.now()
-    if (st.wsReady) {
-      wsSend(st, { op: "sync", ...f })
-      return
-    }
-    return flushViaHttp(st)
+    if (st.remotes.size) st.lastFlushAt = Date.now()
+    return httpWork
   }
 
-  const flushViaHttp = async (st: SessionState) => {
-    if (!st.shareId || !st.pending.length) return
+  const flushViaHttp = async (st: SessionState, r: RemoteState) => {
+    if (!r.shareId || !r.pending.length) return
     // ALL pending frames, merged (keyed upserts — later wins). Sending
     // only the last frame dropped every earlier batch's items whenever
     // the HTTP fallback carried more than one (live-caught class:
     // content loss on reconnect paths).
     const items: unknown[] = []
     let status: string | undefined
-    for (const f of st.pending) {
+    for (const f of r.pending) {
       for (const it of f.items as unknown[]) items.push(it)
       if (f.status) status = f.status
     }
-    const r = await fetch(`${cfg.workerUrl}/api/share/${st.shareId}/sync`, {
+    const cred = credOf(r.url)
+    const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret: st.secret, data: items, status }),
+      headers: { "content-type": "application/json", ...(cred.credential ? { authorization: `Bearer ${cred.credential}` } : {}) },
+      body: JSON.stringify({ secret: r.secret ?? "", data: items, status }),
       signal: AbortSignal.timeout(15000),
     }).catch(() => null)
-    if (r && r.ok) {
-      const body = (await r.json().catch(() => ({}))) as { rev?: number }
-      st.ackedRev = body.rev ?? st.ackedRev
-      st.pending = []
-      spoolSave(st)
+    if (res && res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { rev?: number }
+      r.ackedRev = body.rev ?? r.ackedRev
+      r.pending = []
+      spoolSave(st, r)
     }
   }
 
@@ -1094,7 +1402,7 @@ export function createEngine(deps: EngineDeps): Engine {
     const wait = Math.max(0, cfg.debounceMs - elapsed)
     st.timer = setTimeout(() => {
       st.timer = null
-      if (debugEvents) log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} pending=${st.pending.length} ready=${st.wsReady}`)
+      if (debugEvents) log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} remotes=${st.remotes.size}`)
       chain = chain.then(() => flush(st)).catch((e) => logError("flush error", (e as Error)?.message || e))
     }, wait)
   }
@@ -1111,40 +1419,48 @@ export function createEngine(deps: EngineDeps): Engine {
   const remove = (st: SessionState) => {
     st.closed = true
     st.activated = false
-    st.connecting = false
-    st.connectQueued = false
     if (st.timer) clearTimeout(st.timer)
     if (st.metaTimer) clearTimeout(st.metaTimer)
-    if (st.initTimer) {
-      clearTimeout(st.initTimer)
-      st.initTimer = null
-    }
     if (st.completedTimer) {
       clearTimeout(st.completedTimer)
       st.completedTimer = null
     }
-    cancelSettleDrop(st)
-    if (st.idleDropTimer) {
-      clearTimeout(st.idleDropTimer)
-      st.idleDropTimer = null
-    }
-    if (st.wsReady) wsSend(st, { op: "delete" })
-    else if (st.shareId && st.secret) {
-      // turn mode may have dropped the socket after the last settle; the
-      // goodbye still must land — say it over HTTP
-      void fetch(`${cfg.workerUrl}/api/share/${st.shareId}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ secret: st.secret }),
-        signal: AbortSignal.timeout(8000),
-      }).catch(() => {})
+    for (const r of st.remotes.values()) {
+      r.connecting = false
+      r.connectQueued = false
+      if (r.initTimer) {
+        clearTimeout(r.initTimer)
+        r.initTimer = null
+      }
+      if (r.reconnectTimer) {
+        clearTimeout(r.reconnectTimer)
+        r.reconnectTimer = null
+      }
+      cancelSettleDrop(r)
+      if (r.idleDropTimer) {
+        clearTimeout(r.idleDropTimer)
+        r.idleDropTimer = null
+      }
+      if (r.wsReady) wsSend(r, { op: "delete" })
+      else if (r.shareId && r.secret) {
+        // turn mode may have dropped the socket after the last settle; the
+        // goodbye still must land — say it over HTTP
+        void fetch(`${r.url}/api/share/${r.shareId}`, {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ secret: r.secret }),
+          signal: AbortSignal.timeout(8000),
+        }).catch(() => {})
+      }
     }
     setTimeout(() => {
-      try {
-        st.ws?.close()
-      } catch {}
+      for (const r of st.remotes.values()) {
+        try {
+          r.ws?.close()
+        } catch {}
+      }
     }, 1000)
-    spoolClear(st)
+    for (const r of st.remotes.values()) spoolClear(st, r)
     sessions.delete(st.sid)
     try {
       chain = chain.then(async () => {
@@ -1311,11 +1627,25 @@ export function createEngine(deps: EngineDeps): Engine {
     if (parent && parent !== stray) {
       for (const [key, item] of stray.queue) parent.queue.set(key, item)
       stray.queue.clear()
-      for (const frame of stray.pending) parent.pending.push(frame)
-      stray.pending = []
+      // a stray's remotes may hold shares/pending the parent should adopt:
+      // merge per-server state so the parent's fan-out covers them
+      for (const [url, sr] of stray.remotes) {
+        const pr = remoteFor(parent, url)
+        if (!pr.shareId && sr.shareId) {
+          pr.shareId = sr.shareId
+          pr.secret = sr.secret
+          pr.ackedRev = sr.ackedRev
+        }
+        for (const frame of sr.pending) pr.pending.push(frame)
+        sr.pending = []
+        sr.shareId = null
+        sr.secret = null
+      }
       scheduleFlush(parent)
     }
-    if (stray.shareId) log(`stray child share ${stray.shareId} -> merging into ${parentSid}`)
+    for (const sr of stray.remotes.values()) {
+      if (sr.shareId) log(`stray child share ${sr.shareId} (${sr.url}) -> merging into ${parentSid}`)
+    }
     remove(stray)
   }
 
@@ -1347,6 +1677,7 @@ export function createEngine(deps: EngineDeps): Engine {
             enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
           }
           if (info) enqueue(st, itemFor("session", redact(info), sid))
+          if (t === "session.updated") chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
           return
         }
         activate(sid, flag.opts, info)
@@ -1379,7 +1710,7 @@ export function createEngine(deps: EngineDeps): Engine {
         const created = newSt(main)
         created.activated = true
         sessions.set(main, created)
-        queueConnect(created)
+        queueConnectAll(created)
       }
       adoptStrayChild(sid, main)
     }
@@ -1406,7 +1737,7 @@ export function createEngine(deps: EngineDeps): Engine {
         created.activated = true
         sessions.set(main, created)
         st = created
-        queueConnect(created)
+        queueConnectAll(created)
       }
     }
     if (!st) return
@@ -1415,6 +1746,9 @@ export function createEngine(deps: EngineDeps): Engine {
       enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
     }
     if (info) enqueue(st, itemFor("session", redact(info), sid))
+    if (t === "session.updated" && st.activated && !st.closed) {
+      chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
+    }
   }
 
   return {
@@ -1564,7 +1898,7 @@ export function createEngine(deps: EngineDeps): Engine {
                     remove(created)
                     return
                   }
-                  await connect(created)
+                  queueConnectAll(created)
                 })
                 .catch((e) => {
                   verifying.delete(main)
@@ -1625,30 +1959,36 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           if (st.timer) clearTimeout(st.timer)
           st.timer = null
-          if (st.initTimer) {
-            clearTimeout(st.initTimer)
-            st.initTimer = null
-          }
-          cancelSettleDrop(st)
-          if (st.idleDropTimer) {
-            clearTimeout(st.idleDropTimer)
-            st.idleDropTimer = null
+          for (const r of st.remotes.values()) {
+            if (r.initTimer) {
+              clearTimeout(r.initTimer)
+              r.initTimer = null
+            }
+            cancelSettleDrop(r)
+            if (r.idleDropTimer) {
+              clearTimeout(r.idleDropTimer)
+              r.idleDropTimer = null
+            }
           }
           const flushed = flush(st)
           if (flushed && typeof (flushed as Promise<unknown>).then === "function") await flushed.catch(() => {})
           // dispose with a mid-handshake socket: the deferred pending
           // would die with the process — land it over HTTP instead
-          if (!st.wsReady && st.shareId && st.pending.length) {
-            await flushViaHttp(st).catch(() => {})
+          for (const r of st.remotes.values()) {
+            if (!r.wsReady && r.shareId && r.pending.length) {
+              await flushViaHttp(st, r).catch(() => {})
+            }
           }
           if (st.metaTimer) clearTimeout(st.metaTimer)
           st.metaTimer = null
           await writeBinding(st).catch(() => {})
         }
         for (const st of sessions.values()) {
-          try {
-            st.ws?.close()
-          } catch {}
+          for (const r of st.remotes.values()) {
+            try {
+              r.ws?.close()
+            } catch {}
+          }
         }
       },
     },

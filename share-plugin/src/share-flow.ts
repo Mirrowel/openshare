@@ -109,19 +109,92 @@ export { saveServerEntry, deleteServerEntry }
 
 // --- session metadata helpers -------------------------------------------------
 
-export function bindingOf(info: SessionInfo | undefined): SessionBinding | undefined {
+/** All live per-server bindings from a v2 (or legacy v1) metadata record. */
+export function bindingsOf(info: SessionInfo | undefined): Array<SessionBinding & { server: string; collided?: string }> {
   const raw = info?.metadata?.[METADATA_KEY]
-  if (!raw || typeof raw !== "object") return undefined
+  if (!raw || typeof raw !== "object") return []
   const record = raw as Record<string, unknown>
-  if (typeof record.id !== "string" || typeof record.secret !== "string") return undefined
-  return {
-    id: record.id,
-    secret: record.secret,
-    rev: typeof record.rev === "number" ? record.rev : 0,
-    url: typeof record.url === "string" ? record.url : "",
-    enabled: record.enabled === true ? true : undefined,
-    opts: (record.opts as SessionOpts | undefined) ?? undefined,
+  const opts = (record.opts as SessionOpts | undefined) ?? undefined
+  const enabled = record.enabled === true ? true : undefined
+  const out: Array<SessionBinding & { server: string; collided?: string }> = []
+  if (record.servers && typeof record.servers === "object") {
+    for (const [server, entry] of Object.entries(record.servers as Record<string, unknown>)) {
+      if (!entry || typeof entry !== "object") continue
+      const e = entry as Record<string, unknown>
+      if (typeof e.id !== "string" || typeof e.secret !== "string" || !e.id) continue
+      const collided = typeof e.collided === "string" ? e.collided : undefined
+      out.push({
+        id: e.id,
+        secret: e.secret,
+        rev: typeof e.rev === "number" ? e.rev : 0,
+        url: typeof e.url === "string" ? e.url : "",
+        enabled,
+        opts,
+        server,
+        collided,
+      })
+    }
+    return out
   }
+  // legacy flat binding
+  if (typeof record.id === "string" && typeof record.secret === "string" && record.id) {
+    const collided = typeof record.collided === "string" ? record.collided : undefined
+    out.push({
+      id: record.id,
+      secret: record.secret,
+      rev: typeof record.rev === "number" ? record.rev : 0,
+      url: typeof record.url === "string" ? record.url : "",
+      enabled,
+      opts,
+      server: "",
+      collided,
+    })
+  }
+  return out
+}
+
+/** Read every live binding for a session (fan-out aware). */
+export async function readBindings(client: ClientApi | undefined, sid: string): Promise<Array<SessionBinding & { server: string; collided?: string }>> {
+  return bindingsOf(await getSession(client, sid))
+}
+
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
+
+/** Mutate metadata.openshare.servers[url] through a patcher (TUI per-
+ * server actions: opt-out entries, collision resolution). Reads-modifies-
+ * writes the whole metadata to keep foreign keys intact. */
+export async function patchSessionBinding(
+  client: ClientApi | undefined,
+  sid: string,
+  mutator: (servers: Record<string, unknown>, binding: Record<string, unknown>) => void,
+): Promise<boolean> {
+  const info = await getSession(client, sid)
+  if (!info) return false
+  const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
+  const raw = info.metadata?.[METADATA_KEY]
+  const binding: Record<string, unknown> =
+    raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : { v: 2, servers: {} }
+  const servers: Record<string, unknown> =
+    binding.servers && typeof binding.servers === "object" ? { ...(binding.servers as Record<string, unknown>) } : {}
+  mutator(servers, binding)
+  binding.servers = servers
+  metadata[METADATA_KEY] = binding
+  return patchMetadata(client, sid, metadata)
+}
+
+/** The display/primary binding: the active server's entry when bound
+ * there, else the first live entry (single-server configs are unchanged). */
+export function bindingOf(info: SessionInfo | undefined): SessionBinding | undefined {
+  const all = bindingsOf(info)
+  if (!all.length) return undefined
+  const active = activeServer()?.url
+  return all.find((b) => b.server === active) ?? all[0]
 }
 
 async function getSession(client: ClientApi | undefined, sid: string): Promise<SessionInfo | undefined> {
@@ -171,7 +244,9 @@ export async function readBinding(client: ClientApi | undefined, sid: string): P
   return bindingOf(await getSession(client, sid))
 }
 
-/** Sets metadata.openshare = { ...existingBinding, enabled: true, opts? }. */
+/** Sets metadata.openshare = { ...existing(v2 structure preserved),
+ * enabled: true, opts? }. The per-server binding entries are the ENGINE's
+ * to manage; the flag just opts the session in. */
 export async function setShareFlag(
   client: ClientApi | undefined,
   sid: string,
@@ -180,14 +255,12 @@ export async function setShareFlag(
   const info = await getSession(client, sid)
   if (!info) return false
   const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
-  const existing = bindingOf(info)
-  const value: Record<string, unknown> = {
-    id: existing?.id ?? "",
-    secret: existing?.secret ?? "",
-    rev: existing?.rev ?? 0,
-    url: existing?.url ?? "",
-    enabled: true,
-  }
+  const existing = info.metadata?.[METADATA_KEY]
+  const value: Record<string, unknown> =
+    existing && typeof existing === "object"
+      ? { ...(existing as Record<string, unknown>) }
+      : { v: 2, servers: {} }
+  value.enabled = true
   if (opts && Object.keys(opts).length) value.opts = opts
   metadata[METADATA_KEY] = value
   return patchMetadata(client, sid, metadata)
@@ -203,7 +276,7 @@ export async function clearShareFlag(client: ClientApi | undefined, sid: string)
 
 // --- worker direct access -------------------------------------------------------
 
-async function workerDeleteShare(workerUrl: string, id: string, secret: string): Promise<boolean> {
+export async function workerDeleteShare(workerUrl: string, id: string, secret: string): Promise<boolean> {
   try {
     const res = await fetch(`${workerUrl.replace(/\/$/, "")}/api/share/${id}`, {
       method: "DELETE",
@@ -418,23 +491,29 @@ export async function confirmShare(host: ShareHostApi, rootSessionID: string): P
 
 export async function runUnshareFlow(host: ShareHostApi, sessionID: string | undefined): Promise<FlowResult> {
   if (!sessionID) return { ok: false, message: "No active session." }
-  const cfg = currentConfig()
   const root = await resolveRoot(host.client, sessionID)
-  const binding = await readBinding(host.client, root)
-  if (!binding) return { ok: false, message: "This session is not shared." }
-  // clear flag first (stops the forwarder), then delete the page directly —
-  // the direct delete also covers server plugins that never saw the event
+  const info = await getSession(host.client, root)
+  const all = bindingsOf(info)
+  if (!all.length) return { ok: false, message: "This session is not shared." }
+  // clear flag first (stops the forwarder), then delete every server's
+  // page directly — the direct delete also covers server plugins that
+  // never saw the event
   await clearShareFlag(host.client, root)
-  let deleted = false
-  // the binding URL carries the origin the share actually lives on (with
-  // multi-server that can differ from today's active entry)
-  const bindingOrigin = binding.url ? binding.url.slice(0, binding.url.indexOf("/s/")) : ""
-  const deleteBase = bindingOrigin || resolveServer(cfg)?.url || ""
-  if (deleteBase && binding.id && binding.secret) {
-    deleted = await workerDeleteShare(deleteBase, binding.id, binding.secret)
+  let deleted = 0
+  for (const b of all) {
+    // the binding URL carries the origin the share lives on (with
+    // multi-server that can differ from today's active entry)
+    const bindingOrigin = b.url ? b.url.slice(0, b.url.indexOf("/s/")) : ""
+    const deleteBase = bindingOrigin || b.server
+    if (deleteBase && b.id && b.secret) {
+      if (await workerDeleteShare(deleteBase, b.id, b.secret)) deleted++
+    }
   }
   return {
     ok: true,
-    message: deleted ? "Sharing stopped and the share page was deleted." : "Sharing stopped (page deletion will follow via the sweeper).",
+    message:
+      deleted === all.length
+        ? `Sharing stopped; ${deleted} share page${deleted === 1 ? "" : "s"} deleted.`
+        : `Sharing stopped (${deleted}/${all.length} pages deleted; the rest will follow via the sweeper).`,
   }
 }

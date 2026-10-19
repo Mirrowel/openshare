@@ -341,6 +341,15 @@ function resolveShareMode(cfg, input) {
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
+var DEFAULT_POLICY = {
+  mode: "persistent",
+  turnGraceMs: 120000,
+  idleDropMs: 600000,
+  finalizeAfterMs: 300000,
+  debounceMinMs: 0,
+  debounceMaxMs: Infinity,
+  completedDelayMaxMs: Infinity
+};
 var stderrInfoAllowed = true;
 var log = (...a) => {
   if (!stderrInfoAllowed)
@@ -435,27 +444,59 @@ function createEngine(deps) {
       }
     };
   }
-  cfg.workerUrl = server.url;
-  if (!cfg.createToken)
-    cfg.createToken = server.token;
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
-  let credential = server.token;
-  let credentialError = "";
-  let lastEnrollAt = 0;
+  const resolveTargets = () => {
+    const merged = {};
+    if (cfg.workerUrl)
+      merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true };
+    if (cfg.servers)
+      for (const [u, e] of Object.entries(cfg.servers))
+        merged[u] = { ...merged[u], ...e };
+    const urls = Object.keys(merged);
+    const actives = urls.filter((u) => merged[u].active);
+    const chosen = actives.length ? actives : urls.slice(0, 1);
+    return chosen.map((url) => ({ url, entry: merged[url] }));
+  };
+  let targets = resolveTargets();
+  const credState = new Map;
+  const credOf = (url) => {
+    let s = credState.get(url);
+    if (!s) {
+      s = { credential: "", error: "", lastEnrollAt: 0 };
+      credState.set(url, s);
+    }
+    return s;
+  };
+  const seedCredentials = () => {
+    for (const t of targets) {
+      const c = credOf(t.url);
+      if (t.entry.token) {
+        if (c.credential !== t.entry.token) {
+          c.credential = t.entry.token;
+          c.error = "";
+        }
+      } else if (!c.credential && !c.error) {
+        c.credential = "";
+      }
+    }
+  };
+  seedCredentials();
   const ENROLL_RETRY_MS = 60000;
-  const ensureCredential = async () => {
-    if (credential)
-      return credential;
-    if (Date.now() - lastEnrollAt < ENROLL_RETRY_MS)
+  const ensureCredential = async (url) => {
+    const c = credOf(url);
+    const target = targets.find((t) => t.url === url);
+    if (c.credential)
+      return c.credential;
+    if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS)
       return "";
-    lastEnrollAt = Date.now();
+    c.lastEnrollAt = Date.now();
     try {
-      const h = await fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) });
+      const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) });
       const hb = h.ok ? await h.json().catch(() => null) : null;
-      const mode2 = hb?.auth?.mode;
-      const code = server.entry.code ?? "";
-      if (mode2 === "public" || code) {
-        const r = await fetch(`${cfg.workerUrl}/api/enroll`, {
+      const authMode2 = hb?.auth?.mode;
+      const code = target?.entry.code ?? "";
+      if (authMode2 === "public" || code) {
+        const r = await fetch(`${url}/api/enroll`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ code }),
@@ -463,41 +504,67 @@ function createEngine(deps) {
         });
         const b = r.ok ? await r.json().catch(() => null) : null;
         if (b?.ok && typeof b.token === "string") {
-          credential = b.token;
-          credentialError = "";
-          cfg.createToken = credential;
-          const savedTo = saveServerToken(cfg.workerUrl, credential);
-          log(`enrolled at ${cfg.workerUrl} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
-          return credential;
+          c.credential = b.token;
+          c.error = "";
+          const savedTo = saveServerToken(url, c.credential);
+          log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
+          return c.credential;
         }
-        credentialError = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
-      } else if (mode2 === "private") {
-        credentialError = "private server: add servers.{url}.code (or token) to enroll";
+        c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
+      } else if (authMode2 === "private") {
+        c.error = "private server: add servers.{url}.code (or token) to enroll";
       } else {
-        credentialError = `server health unreachable (HTTP ${h.status})`;
+        c.error = `server health unreachable (HTTP ${h.status})`;
       }
     } catch (e) {
-      credentialError = `enrollment failed: ${e?.message || e}`;
+      c.error = `enrollment failed: ${e?.message || e}`;
     }
-    logError(`no credential for ${cfg.workerUrl}: ${credentialError}`);
+    logError(`no credential for ${url}: ${c.error}`);
     return "";
   };
-  const wsUrl = () => cfg.workerUrl.replace(/^http/, "ws");
-  let policy = {
-    mode: "persistent",
-    turnGraceMs: 120000,
-    idleDropMs: 600000,
-    finalizeAfterMs: 300000,
-    debounceMinMs: 0,
-    debounceMaxMs: Infinity,
-    completedDelayMaxMs: Infinity
+  const remoteFor = (st, url) => {
+    let r = st.remotes.get(url);
+    if (!r) {
+      r = {
+        url,
+        shareId: null,
+        secret: null,
+        ackedRev: 0,
+        ws: null,
+        wsReady: false,
+        connecting: false,
+        socketSeq: 0,
+        initTimer: null,
+        initWasAttach: false,
+        backoff: 1000,
+        reconnectTimer: null,
+        intentionalClose: false,
+        connectQueued: false,
+        authBlocked: false,
+        pending: [],
+        announced: false,
+        settleTimer: null,
+        idleDropTimer: null,
+        collided: null
+      };
+      st.remotes.set(url, r);
+    }
+    return r;
   };
-  let policyAsked = false;
+  const policyMap = new Map;
+  const policyAsked = new Set;
+  const policyOf = (url) => policyMap.get(url) ?? DEFAULT_POLICY;
   const clampToPolicy = () => {
-    cfg.debounceMs = Math.min(Math.max(cfg.debounceMs, policy.debounceMinMs), policy.debounceMaxMs);
-    cfg.completedDelayMs = Math.min(Math.max(cfg.completedDelayMs, 0), policy.completedDelayMaxMs);
+    const policies = [...policyMap.values()];
+    if (!policies.length)
+      return;
+    const min = Math.max(0, ...policies.map((p) => p.debounceMinMs));
+    const max = Math.min(...policies.map((p) => p.debounceMaxMs));
+    cfg.debounceMs = Math.min(Math.max(cfg.debounceMs, min), Math.max(min, max));
+    const cd = Math.min(...policies.map((p) => p.completedDelayMaxMs));
+    cfg.completedDelayMs = Math.min(Math.max(cfg.completedDelayMs, 0), cd);
   };
-  const applyPolicy = (raw) => {
+  const applyPolicy = (raw, url) => {
     if (!raw || typeof raw !== "object")
       return;
     const p = raw;
@@ -505,31 +572,33 @@ function createEngine(deps) {
       const n = Number(v);
       return Number.isFinite(n) && n >= 0 ? n : d;
     };
-    policy = {
+    const prev = policyOf(url);
+    policyMap.set(url, {
       mode: p.mode === "turn" ? "turn" : "persistent",
-      turnGraceMs: num2(p.turnGraceMs, policy.turnGraceMs),
-      idleDropMs: num2(p.idleDropMs, policy.idleDropMs),
-      finalizeAfterMs: num2(p.finalizeAfterMs, policy.finalizeAfterMs),
+      turnGraceMs: num2(p.turnGraceMs, prev.turnGraceMs),
+      idleDropMs: num2(p.idleDropMs, prev.idleDropMs),
+      finalizeAfterMs: num2(p.finalizeAfterMs, prev.finalizeAfterMs),
       debounceMinMs: num2(p.debounceMinMs, 0),
       debounceMaxMs: Math.max(num2(p.debounceMaxMs, Infinity), num2(p.debounceMinMs, 0)),
       completedDelayMaxMs: num2(p.completedDelayMaxMs, Infinity)
-    };
+    });
     clampToPolicy();
     if (debugEvents)
-      log(`server policy: ${JSON.stringify({ ...policy, debounceMaxMs: policy.debounceMaxMs === Infinity ? "none" : policy.debounceMaxMs, completedDelayMaxMs: policy.completedDelayMaxMs === Infinity ? "none" : policy.completedDelayMaxMs })}`);
+      log(`policy ${url}: ${JSON.stringify(policyOf(url))}`);
   };
-  const askPolicy = () => {
-    if (policyAsked)
+  const askPolicy = (url) => {
+    if (policyAsked.has(url))
       return;
-    policyAsked = true;
-    fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) }).then((r) => r.ok ? r.json() : null).then((b) => {
+    policyAsked.add(url);
+    fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) }).then((r) => r.ok ? r.json() : null).then((b) => {
       if (b && typeof b === "object" && b.policy) {
-        applyPolicy(b.policy);
+        applyPolicy(b.policy, url);
       }
     }).catch(() => {
-      policyAsked = false;
+      policyAsked.delete(url);
     });
   };
+  const wsUrl = (url) => url.replace(/^http/, "ws");
   let spoolRoot = spoolDirFor(cfg);
   try {
     mkdirSync(spoolRoot, { recursive: true });
@@ -546,45 +615,41 @@ function createEngine(deps) {
     sid,
     client: deps.client,
     queue: new Map,
-    pending: [],
     timer: null,
     metaTimer: null,
     completedTimer: null,
-    settleTimer: null,
-    idleDropTimer: null,
     lastFlushAt: 0,
     statusEpoch: 0,
-    shareId: null,
-    secret: null,
-    ackedRev: 0,
-    ws: null,
-    wsReady: false,
-    initTimer: null,
-    initWasAttach: false,
-    backoff: 1000,
+    remotes: new Map,
     status: "live",
     badSignal: false,
     lastSentStatus: null,
-    connecting: false,
     closed: false,
     prefsSent: false,
     binding: null,
     bindingQueried: false,
-    reconnectTimer: null,
-    intentionalClose: false,
-    connectQueued: false,
-    authBlocked: false,
+    optOuts: new Set,
     opts: undefined,
     activated: false,
-    announced: false,
-    wroteBinding: false
+    wroteBinding: false,
+    everConnected: false
   });
   const refreshConfig = () => {
     const next = loadConfig(deps.pluginDir, deps.options);
-    if (next.workerUrl) {
+    const resolved = resolveServer(next);
+    if (resolved?.url) {
       cfg = next;
       spoolRoot = spoolDirFor(cfg);
+      const before = new Set(targets.map((t) => t.url));
+      targets = resolveTargets();
+      seedCredentials();
       clampToPolicy();
+      if (debugEvents) {
+        const after = targets.map((t) => t.url);
+        const added = after.filter((u) => !before.has(u));
+        if (added.length)
+          log(`fan-out set grew: ${added.join(", ")}`);
+      }
     }
   };
   const activate = (sid, opts, info, opts2) => {
@@ -602,9 +667,9 @@ function createEngine(deps) {
     st.opts = opts;
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
-      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnect(st)).catch((e) => logError("activation error", e?.message || e));
+      chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnectAll(st)).catch((e) => logError("activation error", e?.message || e));
     } else {
-      queueConnect(st);
+      queueConnectAll(st);
     }
     return st;
   };
@@ -670,6 +735,28 @@ function createEngine(deps) {
       log("metadata write failed (spool still covers reconnects):", e?.message || e);
     }
   }
+  const parseBinding = (record) => {
+    const out = new Map;
+    if (record.servers && typeof record.servers === "object") {
+      for (const [url, raw] of Object.entries(record.servers)) {
+        if (!raw || typeof raw !== "object")
+          continue;
+        const e = raw;
+        if (typeof e.id === "string" && typeof e.secret === "string" && e.id && e.secret) {
+          out.set(url, { id: e.id, secret: e.secret, rev: typeof e.rev === "number" ? e.rev : 0 });
+        } else if (e.optedOut === true) {
+          out.set(url, { id: "", secret: "", rev: 0, optedOut: true });
+        }
+      }
+      return out;
+    }
+    if (typeof record.id === "string" && typeof record.secret === "string" && record.id) {
+      const url = targets[0]?.url ?? "";
+      if (url)
+        out.set(url, { id: record.id, secret: record.secret, rev: typeof record.rev === "number" ? record.rev : 0 });
+    }
+    return out;
+  };
   async function readBinding(st) {
     if (!st.client || st.bindingQueried)
       return;
@@ -682,13 +769,21 @@ function createEngine(deps) {
         if (mode === "manual" && record.enabled !== true) {
           return;
         }
-        if (typeof record.id === "string" && typeof record.secret === "string") {
-          st.shareId = record.id;
-          st.secret = record.secret;
-          st.ackedRev = typeof record.rev === "number" ? record.rev : 0;
+        const found = parseBinding(record);
+        if (found.size) {
+          for (const [url, e] of found) {
+            if (e.optedOut)
+              continue;
+            const r = remoteFor(st, url);
+            if (!r.shareId) {
+              r.shareId = e.id;
+              r.secret = e.secret;
+              r.ackedRev = e.rev;
+            }
+          }
           if (mode === "manual")
             st.opts = shareFlag(info).opts ?? st.opts;
-          log(`binding recovered from session metadata: share ${st.shareId} rev ${st.ackedRev}`);
+          log(`binding recovered from session metadata: ${[...found.keys()].join(", ")}`);
         }
       }
     } catch (e) {
@@ -696,15 +791,25 @@ function createEngine(deps) {
     }
   }
   async function writeBinding(st) {
-    if (!st.client || !st.shareId || !st.secret)
+    if (!st.client)
       return;
-    const value = {
-      id: st.shareId,
-      secret: st.secret,
-      rev: st.ackedRev,
-      url: `${cfg.workerUrl}/s/${st.shareId}`
-    };
-    value.enabled = true;
+    const servers = {};
+    let any = false;
+    for (const [url, r] of st.remotes) {
+      if (!r.shareId || !r.secret)
+        continue;
+      any = true;
+      const entry = { id: r.shareId, secret: r.secret, rev: r.ackedRev, url: `${url}/s/${r.shareId}` };
+      if (r.collided)
+        entry.collided = r.collided;
+      servers[url] = entry;
+    }
+    if (!any)
+      return;
+    for (const url of st.optOuts)
+      if (!servers[url])
+        servers[url] = { optedOut: true };
+    const value = { v: 2, servers, enabled: true };
     if (mode === "manual" && st.opts)
       value.opts = st.opts;
     st.binding = value;
@@ -719,55 +824,87 @@ function createEngine(deps) {
       chain = chain.then(() => writeBinding(st)).catch(() => {});
     }, 30000);
   };
-  const metaPath = (st) => join2(spoolRoot, `${st.sid}.meta.json`);
-  const queuePath = (st) => join2(spoolRoot, `${st.sid}.queue.jsonl`);
-  const spoolSave = (st) => {
+  const h8 = (url) => {
+    let h = 5381;
+    for (let i = 0;i < url.length; i++)
+      h = (h << 5) + h + url.charCodeAt(i) >>> 0;
+    return h.toString(16).padStart(8, "0");
+  };
+  const metaPath = (st, url) => join2(spoolRoot, `${st.sid}.${h8(url)}.meta.json`);
+  const queuePath = (st, url) => join2(spoolRoot, `${st.sid}.${h8(url)}.queue.jsonl`);
+  const legacyMetaPath = (st) => join2(spoolRoot, `${st.sid}.meta.json`);
+  const legacyQueuePath = (st) => join2(spoolRoot, `${st.sid}.queue.jsonl`);
+  const spoolSave = (st, r) => {
     try {
-      writeFileSync2(metaPath(st), JSON.stringify({ shareId: st.shareId, secret: st.secret, ackedRev: st.ackedRev, sid: st.sid }));
-      writeFileSync2(queuePath(st), st.pending.map((f) => JSON.stringify(f)).join(`
-`) + (st.pending.length ? `
+      writeFileSync2(metaPath(st, r.url), JSON.stringify({ shareId: r.shareId, secret: r.secret, ackedRev: r.ackedRev, sid: st.sid, url: r.url }));
+      writeFileSync2(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join(`
+`) + (r.pending.length ? `
 ` : ""));
     } catch (e) {
       logError("spool save failed", e?.message || e);
     }
   };
-  const spoolLoad = (st) => {
+  const spoolLoad = (st, r) => {
     try {
-      const meta = JSON.parse(readFileSync2(metaPath(st), "utf8"));
-      if (!st.shareId && meta.shareId) {
-        st.shareId = meta.shareId;
-        st.secret = meta.secret;
-        st.ackedRev = meta.ackedRev ?? 0;
+      const meta = JSON.parse(readFileSync2(metaPath(st, r.url), "utf8"));
+      if (!r.shareId && meta.shareId) {
+        r.shareId = meta.shareId;
+        r.secret = meta.secret;
+        r.ackedRev = meta.ackedRev ?? 0;
       }
-      if (existsSync2(queuePath(st))) {
-        st.pending = readFileSync2(queuePath(st), "utf8").split(`
+      if (existsSync2(queuePath(st, r.url))) {
+        r.pending = readFileSync2(queuePath(st, r.url), "utf8").split(`
 `).filter((l) => l.trim()).map((l) => JSON.parse(l));
       }
     } catch {
-      st.pending = [];
+      r.pending = [];
+    }
+    if (!r.shareId && targets[0]?.url === r.url) {
+      try {
+        const meta = JSON.parse(readFileSync2(legacyMetaPath(st), "utf8"));
+        if (meta.shareId && !r.shareId) {
+          r.shareId = meta.shareId;
+          r.secret = meta.secret;
+          r.ackedRev = meta.ackedRev ?? 0;
+          if (existsSync2(legacyQueuePath(st))) {
+            r.pending = readFileSync2(legacyQueuePath(st), "utf8").split(`
+`).filter((l) => l.trim()).map((l) => JSON.parse(l));
+          }
+          log(`migrated legacy spool for ${st.sid.slice(0, 18)} onto ${r.url}`);
+        }
+      } catch {}
     }
   };
-  const spoolClear = (st) => {
+  const spoolClear = (st, r) => {
     try {
-      rmSync(metaPath(st), { force: true });
-      rmSync(queuePath(st), { force: true });
+      rmSync(metaPath(st, r.url), { force: true });
+      rmSync(queuePath(st, r.url), { force: true });
     } catch {}
   };
-  const wsSend = (st, obj) => {
+  const wsSend = (r, obj) => {
     if (debugEvents)
-      log(`ws#${st.socketSeq} send ${obj?.op} (ready=${st.wsReady})`);
+      log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send ${obj?.op} (ready=${r.wsReady})`);
     try {
-      st.ws?.send(JSON.stringify(obj));
+      r.ws?.send(JSON.stringify(obj));
     } catch {
       return false;
     }
     return true;
   };
-  const announceUrl = (st) => {
-    if (st.announced)
+  const SYNC_CHUNK = 200;
+  const sendSync = (r, f) => {
+    if (!f.items.length)
+      return wsSend(r, { op: "sync", items: [], status: f.status });
+    for (let i = 0;i < f.items.length; i += SYNC_CHUNK) {
+      wsSend(r, { op: "sync", items: f.items.slice(i, i + SYNC_CHUNK), status: f.status });
+    }
+    return true;
+  };
+  const announceUrl = (st, r) => {
+    if (r.announced)
       return;
-    st.announced = true;
-    const url = `${cfg.workerUrl}/s/${st.shareId}`;
+    r.announced = true;
+    const url = `${r.url}/s/${r.shareId}`;
     if (cfg.announceStderr)
       log(`live: ${url}`);
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
@@ -789,56 +926,121 @@ function createEngine(deps) {
     return { authLogin: login, authPassword: password };
   };
   const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
-  const deleteAbandoned = (st) => {
-    const id = st.shareId;
-    const secret = st.secret;
+  const deleteAbandoned = (r) => {
+    const id = r.shareId;
+    const secret = r.secret;
     if (!id || !secret)
       return;
-    fetch(`${cfg.workerUrl}/api/share/${id}`, {
+    fetch(`${r.url}/api/share/${id}`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret }),
       signal: AbortSignal.timeout(8000)
     }).catch(() => {});
   };
-  const queueConnect = (st) => {
-    if (st.closed || st.connectQueued || st.connecting || st.authBlocked)
+  const queueConnect = (st, r) => {
+    if (st.closed || r.connectQueued || r.connecting || r.authBlocked || r.collided)
       return;
-    st.connectQueued = true;
+    r.connectQueued = true;
     chain = chain.then(() => {
-      st.connectQueued = false;
-      return connect(st);
+      r.connectQueued = false;
+      return connect(st, r);
     }).catch((e) => logError("connect error", e?.message || e));
   };
-  const connect = async (st) => {
-    if (st.closed || st.connecting)
+  const queueConnectAll = (st) => {
+    if (st.closed)
       return;
-    st.connecting = true;
-    st.socketSeq = (st.socketSeq ?? 0) + 1;
-    const seq = st.socketSeq;
-    if (st.ws) {
-      const old = st.ws;
+    for (const t of targets) {
+      if (st.optOuts.has(t.url))
+        continue;
+      queueConnect(st, remoteFor(st, t.url));
+    }
+    for (const r of st.remotes.values()) {
+      if (st.optOuts.has(r.url))
+        continue;
+      queueConnect(st, r);
+    }
+  };
+  const refreshOptOuts = async (st) => {
+    if (!st.client)
+      return;
+    try {
+      const info = await sessionInfo(st.client, st.sid);
+      const raw = info?.metadata?.[METADATA_KEY];
+      if (!raw || typeof raw !== "object")
+        return;
+      const servers = raw.servers;
+      if (!servers || typeof servers !== "object")
+        return;
+      const entryUrls = new Set;
+      for (const [url, e] of Object.entries(servers)) {
+        entryUrls.add(url);
+        const out = !!(e && typeof e === "object" && e.optedOut === true);
+        if (out)
+          st.optOuts.add(url);
+        else
+          st.optOuts.delete(url);
+      }
+      for (const url of [...st.optOuts]) {
+        const r = st.remotes.get(url);
+        if (!r)
+          continue;
+        if (debugEvents)
+          log(`remote ${url.slice(0, 24)} opted out for ${st.sid.slice(0, 18)} - retiring`);
+        r.intentionalClose = true;
+        try {
+          r.ws?.close(1000, "opted out");
+        } catch {}
+        spoolClear(st, r);
+        st.remotes.delete(url);
+      }
+      for (const r of [...st.remotes.values()]) {
+        if (!r.collided || st.optOuts.has(r.url))
+          continue;
+        if (entryUrls.has(r.url))
+          continue;
+        if (debugEvents)
+          log(`collision on ${r.url.slice(0, 24)} resolved - re-arming`);
+        r.collided = null;
+        r.shareId = null;
+        r.secret = null;
+        r.ackedRev = 0;
+        r.pending = [];
+        r.announced = false;
+        queueConnect(st, r);
+      }
+    } catch {}
+  };
+  const connect = async (st, r) => {
+    if (st.closed || r.connecting || r.authBlocked || r.collided)
+      return;
+    r.connecting = true;
+    r.socketSeq += 1;
+    const seq = r.socketSeq;
+    if (r.ws) {
+      const old = r.ws;
       try {
         old.close(4000, "superseded");
       } catch {}
     }
     try {
       await readBinding(st);
-      spoolLoad(st);
-      askPolicy();
-      st.initWasAttach = !!(st.shareId && st.secret);
+      spoolLoad(st, r);
+      askPolicy(r.url);
+      r.initWasAttach = !!(r.shareId && r.secret);
       if (debugEvents)
-        log(`ws#${seq} opening (${st.initWasAttach ? `attach ${st.shareId}` : "create"})`);
-      const token = st.initWasAttach ? credential : credential || await ensureCredential();
-      if (!st.initWasAttach && !token && credentialError) {
-        st.authBlocked = true;
-        st.connecting = false;
-        st.ws = null;
-        logError(`sharing disabled (no credential): ${credentialError}`);
+        log(`ws ${r.url.slice(0, 24)} #${seq} opening (${r.initWasAttach ? `attach ${r.shareId}` : "create"})`);
+      const cred = credOf(r.url);
+      const token = r.initWasAttach ? cred.credential : cred.credential || await ensureCredential(r.url);
+      if (!r.initWasAttach && !token && cred.error) {
+        r.authBlocked = true;
+        r.connecting = false;
+        r.ws = null;
+        logError(`sharing to ${r.url} disabled (no credential): ${cred.error}`);
         return;
       }
-      const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(token ?? "")}`);
-      st.ws = ws;
+      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws?token=${encodeURIComponent(token ?? "")}`);
+      r.ws = ws;
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000);
         ws.addEventListener("open", () => {
@@ -851,7 +1053,7 @@ function createEngine(deps) {
         }, { once: true });
       });
       ws.addEventListener("message", (ev) => {
-        if (seq !== st.socketSeq)
+        if (seq !== r.socketSeq)
           return;
         let frame;
         try {
@@ -859,196 +1061,252 @@ function createEngine(deps) {
         } catch {
           return;
         }
-        handleFrame(st, frame).catch((e) => logError("frame error", e?.message || e));
+        handleFrame(st, r, frame).catch((e) => logError("frame error", e?.message || e));
       });
       ws.addEventListener("close", () => {
-        if (seq !== st.socketSeq)
+        if (seq !== r.socketSeq)
           return;
-        st.wsReady = false;
-        st.connecting = false;
-        if (st.intentionalClose) {
-          st.intentionalClose = false;
+        r.wsReady = false;
+        r.connecting = false;
+        if (r.intentionalClose) {
+          r.intentionalClose = false;
           return;
         }
         if (!st.closed)
-          scheduleReconnect(st);
+          scheduleReconnect(st, r);
       });
-      if (st.initWasAttach) {
-        wsSend(st, { op: "init", attach: { id: st.shareId, secret: st.secret, ...authFrame(st) } });
+      if (r.initWasAttach) {
+        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
-        wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
       }
-      st.initTimer = setTimeout(() => {
-        if (seq !== st.socketSeq)
+      r.initTimer = setTimeout(() => {
+        if (seq !== r.socketSeq)
           return;
-        logError(`ws#${seq} init ack timeout`);
-        st.connecting = false;
+        logError(`ws ${r.url.slice(0, 24)} #${seq} init ack timeout`);
+        r.connecting = false;
         try {
           ws.close(4000, "init timeout");
         } catch {}
         if (!st.closed)
-          scheduleReconnect(st);
+          scheduleReconnect(st, r);
       }, 20000);
     } catch (e) {
-      st.connecting = false;
+      r.connecting = false;
       logError("socket failed:", e?.message || e, "- falling back to HTTP, will retry");
-      st.wsReady = false;
-      flushViaHttp(st).catch(() => {});
-      scheduleReconnect(st);
+      r.wsReady = false;
+      flushViaHttp(st, r).catch(() => {});
+      scheduleReconnect(st, r);
       return;
     }
   };
-  const scheduleReconnect = (st) => {
-    if (st.closed || st.reconnectTimer)
+  const scheduleReconnect = (st, r) => {
+    if (st.closed || r.reconnectTimer)
       return;
-    const wait = st.backoff;
-    st.backoff = Math.min(st.backoff * 2, 60000);
-    st.reconnectTimer = setTimeout(() => {
-      st.reconnectTimer = null;
-      queueConnect(st);
+    const wait = r.backoff;
+    r.backoff = Math.min(r.backoff * 2, 60000);
+    r.reconnectTimer = setTimeout(() => {
+      r.reconnectTimer = null;
+      queueConnect(st, r);
     }, wait);
   };
-  const dropSocket = (st, why) => {
+  const dropSocket = (st, r, why) => {
     if (debugEvents)
-      log(`turn: drop socket (${why}) sid=${st.sid.slice(0, 18)}`);
-    st.wsReady = false;
-    st.intentionalClose = true;
+      log(`turn: drop socket (${why}) ${r.url.slice(0, 24)} sid=${st.sid.slice(0, 18)}`);
+    r.wsReady = false;
+    r.intentionalClose = true;
     try {
-      st.ws?.close(1000, why);
+      r.ws?.close(1000, why);
     } catch {}
-    st.ws = null;
+    r.ws = null;
   };
-  const cancelSettleDrop = (st) => {
-    if (st.settleTimer) {
-      clearTimeout(st.settleTimer);
-      st.settleTimer = null;
+  const cancelSettleDrop = (r) => {
+    if (r.settleTimer) {
+      clearTimeout(r.settleTimer);
+      r.settleTimer = null;
     }
   };
   const armSettleDrop = (st) => {
-    if (policy.mode !== "turn" || policy.turnGraceMs <= 0)
-      return;
-    cancelSettleDrop(st);
-    st.settleTimer = setTimeout(() => {
-      st.settleTimer = null;
-      if (st.closed || !st.ws)
-        return;
-      dropSocket(st, "turn end");
-    }, policy.turnGraceMs);
+    for (const r of st.remotes.values()) {
+      const p = policyOf(r.url);
+      if (p.mode !== "turn" || p.turnGraceMs <= 0)
+        continue;
+      cancelSettleDrop(r);
+      r.settleTimer = setTimeout(() => {
+        r.settleTimer = null;
+        if (st.closed || !r.ws)
+          return;
+        dropSocket(st, r, "turn end");
+      }, p.turnGraceMs);
+    }
   };
   const armIdleDrop = (st) => {
-    if (policy.mode !== "turn" || policy.idleDropMs <= 0)
-      return;
-    if (st.idleDropTimer)
-      clearTimeout(st.idleDropTimer);
-    st.idleDropTimer = setTimeout(() => {
-      st.idleDropTimer = null;
-      if (st.closed || !st.ws)
-        return;
-      dropSocket(st, "idle timeout");
-    }, policy.idleDropMs);
+    for (const r of st.remotes.values()) {
+      const p = policyOf(r.url);
+      if (p.mode !== "turn" || p.idleDropMs <= 0)
+        continue;
+      if (r.idleDropTimer)
+        clearTimeout(r.idleDropTimer);
+      r.idleDropTimer = setTimeout(() => {
+        r.idleDropTimer = null;
+        if (st.closed || !r.ws)
+          return;
+        dropSocket(st, r, "idle timeout");
+      }, p.idleDropMs);
+    }
   };
   const touch = (st) => {
-    cancelSettleDrop(st);
+    for (const r of st.remotes.values())
+      cancelSettleDrop(r);
     armIdleDrop(st);
   };
+  let lastTargetsCheck = 0;
   const ensureConnected = (st) => {
-    if (st.closed || st.connecting || st.reconnectTimer || st.wsReady)
+    if (st.closed)
       return;
-    queueConnect(st);
+    if (Date.now() - lastTargetsCheck > 5000) {
+      lastTargetsCheck = Date.now();
+      refreshConfig();
+    }
+    for (const t of targets) {
+      if (st.optOuts.has(t.url))
+        continue;
+      const r = remoteFor(st, t.url);
+      if (r.connecting || r.reconnectTimer || r.wsReady || r.authBlocked || r.collided)
+        continue;
+      queueConnect(st, r);
+    }
+    for (const r of st.remotes.values()) {
+      if (st.optOuts.has(r.url))
+        continue;
+      if (r.connecting || r.reconnectTimer || r.wsReady || r.authBlocked || r.collided)
+        continue;
+      queueConnect(st, r);
+    }
   };
-  const handleFrame = async (st, frame) => {
+  const handleFrame = async (st, r, frame) => {
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "");
         if (/frozen/i.test(err)) {
-          st.authBlocked = true;
-          logError("share frozen by the hoster (owner frozen) - edits refused; contact the server admin");
+          r.authBlocked = true;
+          logError(`${r.url}: share frozen by the hoster (owner frozen) - edits refused; contact the server admin`);
           try {
-            st.ws?.close(4000, "frozen");
+            r.ws?.close(4000, "frozen");
           } catch {}
           return;
         }
-        if (/token|credential/i.test(err) && !st.initWasAttach) {
-          if (credential) {
-            credential = "";
-            cfg.createToken = "";
-            logError("server rejected our token - re-enrolling");
+        if (/forbidden|bad secret/i.test(err) && r.initWasAttach && r.secret) {
+          r.collided = err;
+          r.connecting = false;
+          logError(`${r.url}: attach refused (${err}) - credential collision on share ${r.shareId}; not auto-recreating`);
+          try {
+            r.ws?.close(4000, "collision");
+          } catch {}
+          st.wroteBinding = false;
+          chain = chain.then(() => writeBinding(st)).catch(() => {});
+          if (mode === "all")
+            resolveCollision(st, r);
+          return;
+        }
+        if (/token|credential/i.test(err) && !r.initWasAttach) {
+          const cred = credOf(r.url);
+          if (cred.credential) {
+            cred.credential = "";
+            logError(`${r.url}: server rejected our token - re-enrolling`);
           }
           try {
-            st.ws?.close(4000, "auth");
+            r.ws?.close(4000, "auth");
           } catch {}
-          st.connecting = false;
+          r.connecting = false;
           if (!st.closed)
-            queueConnect(st);
+            queueConnect(st, r);
           return;
         }
-        logError("init refused:", frame.error, "- creating fresh share");
-        deleteAbandoned(st);
-        st.shareId = null;
-        st.secret = null;
-        st.ackedRev = 0;
-        wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        logError(`${r.url}: init refused:`, frame.error, "- creating fresh share");
+        deleteAbandoned(r);
+        r.shareId = null;
+        r.secret = null;
+        r.ackedRev = 0;
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
         return;
       }
-      if (st.initWasAttach && typeof frame.rev === "number" && frame.rev < st.ackedRev) {
-        logError(`mismatch: worker rev ${frame.rev} < acked ${st.ackedRev} - recreating`);
-        deleteAbandoned(st);
-        st.shareId = null;
-        st.secret = null;
-        st.ackedRev = 0;
-        wsSend(st, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+      if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
+        logError(`${r.url}: mismatch: worker rev ${frame.rev} < acked ${r.ackedRev} - recreating`);
+        deleteAbandoned(r);
+        r.shareId = null;
+        r.secret = null;
+        r.ackedRev = 0;
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
         return;
       }
-      const shareChanged = !!frame.id && frame.id !== st.shareId;
+      const wasFanoutCreate = !r.initWasAttach && st.everConnected;
+      const shareChanged = !!frame.id && frame.id !== r.shareId;
       if (shareChanged)
-        st.announced = false;
-      st.shareId = frame.id ?? st.shareId;
-      st.secret = frame.secret ?? st.secret;
-      st.ackedRev = frame.rev ?? 0;
-      st.wsReady = true;
-      st.connecting = false;
-      st.initWasAttach = false;
-      if (st.initTimer) {
-        clearTimeout(st.initTimer);
-        st.initTimer = null;
+        r.announced = false;
+      r.shareId = frame.id ?? r.shareId;
+      r.secret = frame.secret ?? r.secret;
+      r.ackedRev = frame.rev ?? 0;
+      r.wsReady = true;
+      r.connecting = false;
+      r.initWasAttach = false;
+      r.collided = null;
+      if (r.initTimer) {
+        clearTimeout(r.initTimer);
+        r.initTimer = null;
       }
-      st.backoff = 1000;
+      r.backoff = 1000;
+      st.everConnected = true;
       if (frame.policy)
-        applyPolicy(frame.policy);
-      st.intentionalClose = false;
+        applyPolicy(frame.policy, r.url);
+      r.intentionalClose = false;
       touch(st);
-      announceUrl(st);
+      announceUrl(st, r);
       if (!st.wroteBinding) {
         chain = chain.then(() => writeBinding(st)).catch(() => {});
       } else {
         scheduleBindingWrite(st);
       }
-      spoolSave(st);
-      if (st.pending.length) {
-        for (const f of st.pending)
-          wsSend(st, { op: "sync", ...f });
+      spoolSave(st, r);
+      if (r.pending.length) {
+        for (const f of r.pending)
+          sendSync(r, f);
       } else if (st.queue.size) {
         flush(st);
+      }
+      if (wasFanoutCreate) {
+        chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", e?.message || e));
       }
       return;
     }
     if (frame.op === "ack") {
-      st.ackedRev = frame.rev ?? st.ackedRev;
-      st.pending = [];
-      spoolSave(st);
+      r.ackedRev = frame.rev ?? r.ackedRev;
+      r.pending = [];
+      spoolSave(st, r);
       scheduleBindingWrite(st);
       return;
     }
     if (frame.op === "nack" || frame.op === "error") {
-      logError("worker refused frame:", JSON.stringify(frame).slice(0, 200));
-      if (frame.op === "error" && st.wsReady && !st.closed) {
-        st.wsReady = false;
+      logError(`${r.url}: worker refused frame:`, JSON.stringify(frame).slice(0, 200));
+      if (frame.op === "error" && r.wsReady && !st.closed) {
+        r.wsReady = false;
         try {
-          st.ws?.close();
+          r.ws?.close();
         } catch {}
-        scheduleReconnect(st);
+        scheduleReconnect(st, r);
       }
     }
+  };
+  const resolveCollision = (st, r) => {
+    logError(`collision debug: server=${r.url} share=${r.shareId} rev=${r.ackedRev} sid=${st.sid}`);
+    deleteAbandoned(r);
+    r.collided = null;
+    r.shareId = null;
+    r.secret = null;
+    r.ackedRev = 0;
+    r.pending = [];
+    r.announced = false;
+    queueConnect(st, r);
   };
   const frameFrom = (st) => {
     const items = Array.from(st.queue.values());
@@ -1056,12 +1314,12 @@ function createEngine(deps) {
     const statusChanged = st.status !== st.lastSentStatus;
     if (!items.length && !statusChanged) {
       if (debugEvents)
-        log(`ws#${st.socketSeq ?? 0} flush skip (no items, status ${st.status}==${st.lastSentStatus})`);
+        log(`flush skip (no items, status ${st.status}==${st.lastSentStatus})`);
       return null;
     }
     st.lastSentStatus = st.status;
     if (debugEvents)
-      log(`ws#${st.socketSeq ?? 0} frame: ${items.length} items, status ${st.status} -> ${st.status === st.lastSentStatus ? "same" : "changed"}`);
+      log(`frame: ${items.length} items, status ${st.status}`);
     return { items, status: st.status };
   };
   const flush = (st) => {
@@ -1070,42 +1328,47 @@ function createEngine(deps) {
     const f = frameFrom(st);
     if (!f)
       return;
-    if (st.ws && !st.wsReady) {
-      st.pending.push(f);
-      spoolSave(st);
-      return;
+    let httpWork;
+    for (const r of st.remotes.values()) {
+      r.pending.push(f);
+      spoolSave(st, r);
+      if (r.ws && !r.wsReady)
+        continue;
+      if (r.wsReady) {
+        sendSync(r, f);
+        continue;
+      }
+      const viaHttp = flushViaHttp(st, r);
+      if (viaHttp)
+        httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp);
     }
-    st.pending.push(f);
-    spoolSave(st);
-    st.lastFlushAt = Date.now();
-    if (st.wsReady) {
-      wsSend(st, { op: "sync", ...f });
-      return;
-    }
-    return flushViaHttp(st);
+    if (st.remotes.size)
+      st.lastFlushAt = Date.now();
+    return httpWork;
   };
-  const flushViaHttp = async (st) => {
-    if (!st.shareId || !st.pending.length)
+  const flushViaHttp = async (st, r) => {
+    if (!r.shareId || !r.pending.length)
       return;
     const items = [];
     let status;
-    for (const f of st.pending) {
+    for (const f of r.pending) {
       for (const it of f.items)
         items.push(it);
       if (f.status)
         status = f.status;
     }
-    const r = await fetch(`${cfg.workerUrl}/api/share/${st.shareId}/sync`, {
+    const cred = credOf(r.url);
+    const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret: st.secret, data: items, status }),
+      headers: { "content-type": "application/json", ...cred.credential ? { authorization: `Bearer ${cred.credential}` } : {} },
+      body: JSON.stringify({ secret: r.secret ?? "", data: items, status }),
       signal: AbortSignal.timeout(15000)
     }).catch(() => null);
-    if (r && r.ok) {
-      const body = await r.json().catch(() => ({}));
-      st.ackedRev = body.rev ?? st.ackedRev;
-      st.pending = [];
-      spoolSave(st);
+    if (res && res.ok) {
+      const body = await res.json().catch(() => ({}));
+      r.ackedRev = body.rev ?? r.ackedRev;
+      r.pending = [];
+      spoolSave(st, r);
     }
   };
   const scheduleFlush = (st) => {
@@ -1116,7 +1379,7 @@ function createEngine(deps) {
     st.timer = setTimeout(() => {
       st.timer = null;
       if (debugEvents)
-        log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} pending=${st.pending.length} ready=${st.wsReady}`);
+        log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} remotes=${st.remotes.size}`);
       chain = chain.then(() => flush(st)).catch((e) => logError("flush error", e?.message || e));
     }, wait);
   };
@@ -1133,41 +1396,50 @@ function createEngine(deps) {
   const remove = (st) => {
     st.closed = true;
     st.activated = false;
-    st.connecting = false;
-    st.connectQueued = false;
     if (st.timer)
       clearTimeout(st.timer);
     if (st.metaTimer)
       clearTimeout(st.metaTimer);
-    if (st.initTimer) {
-      clearTimeout(st.initTimer);
-      st.initTimer = null;
-    }
     if (st.completedTimer) {
       clearTimeout(st.completedTimer);
       st.completedTimer = null;
     }
-    cancelSettleDrop(st);
-    if (st.idleDropTimer) {
-      clearTimeout(st.idleDropTimer);
-      st.idleDropTimer = null;
-    }
-    if (st.wsReady)
-      wsSend(st, { op: "delete" });
-    else if (st.shareId && st.secret) {
-      fetch(`${cfg.workerUrl}/api/share/${st.shareId}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ secret: st.secret }),
-        signal: AbortSignal.timeout(8000)
-      }).catch(() => {});
+    for (const r of st.remotes.values()) {
+      r.connecting = false;
+      r.connectQueued = false;
+      if (r.initTimer) {
+        clearTimeout(r.initTimer);
+        r.initTimer = null;
+      }
+      if (r.reconnectTimer) {
+        clearTimeout(r.reconnectTimer);
+        r.reconnectTimer = null;
+      }
+      cancelSettleDrop(r);
+      if (r.idleDropTimer) {
+        clearTimeout(r.idleDropTimer);
+        r.idleDropTimer = null;
+      }
+      if (r.wsReady)
+        wsSend(r, { op: "delete" });
+      else if (r.shareId && r.secret) {
+        fetch(`${r.url}/api/share/${r.shareId}`, {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ secret: r.secret }),
+          signal: AbortSignal.timeout(8000)
+        }).catch(() => {});
+      }
     }
     setTimeout(() => {
-      try {
-        st.ws?.close();
-      } catch {}
+      for (const r of st.remotes.values()) {
+        try {
+          r.ws?.close();
+        } catch {}
+      }
     }, 1000);
-    spoolClear(st);
+    for (const r of st.remotes.values())
+      spoolClear(st, r);
     sessions.delete(st.sid);
     try {
       chain = chain.then(async () => {
@@ -1308,13 +1580,25 @@ function createEngine(deps) {
       for (const [key, item] of stray.queue)
         parent.queue.set(key, item);
       stray.queue.clear();
-      for (const frame of stray.pending)
-        parent.pending.push(frame);
-      stray.pending = [];
+      for (const [url, sr] of stray.remotes) {
+        const pr = remoteFor(parent, url);
+        if (!pr.shareId && sr.shareId) {
+          pr.shareId = sr.shareId;
+          pr.secret = sr.secret;
+          pr.ackedRev = sr.ackedRev;
+        }
+        for (const frame of sr.pending)
+          pr.pending.push(frame);
+        sr.pending = [];
+        sr.shareId = null;
+        sr.secret = null;
+      }
       scheduleFlush(parent);
     }
-    if (stray.shareId)
-      log(`stray child share ${stray.shareId} -> merging into ${parentSid}`);
+    for (const sr of stray.remotes.values()) {
+      if (sr.shareId)
+        log(`stray child share ${sr.shareId} (${sr.url}) -> merging into ${parentSid}`);
+    }
     remove(stray);
   };
   const handleSessionEvent = (t, sid, info) => {
@@ -1344,6 +1628,8 @@ function createEngine(deps) {
           }
           if (info)
             enqueue(st2, itemFor("session", redact(info), sid));
+          if (t === "session.updated")
+            chain = chain.then(() => refreshOptOuts(st2)).catch(() => {});
           return;
         }
         activate(sid, flag.opts, info);
@@ -1367,7 +1653,7 @@ function createEngine(deps) {
         const created = newSt(main);
         created.activated = true;
         sessions.set(main, created);
-        queueConnect(created);
+        queueConnectAll(created);
       }
       adoptStrayChild(sid, main);
     }
@@ -1392,7 +1678,7 @@ function createEngine(deps) {
         created.activated = true;
         sessions.set(main, created);
         st = created;
-        queueConnect(created);
+        queueConnectAll(created);
       }
     }
     if (!st)
@@ -1403,6 +1689,9 @@ function createEngine(deps) {
     }
     if (info)
       enqueue(st, itemFor("session", redact(info), sid));
+    if (t === "session.updated" && st.activated && !st.closed) {
+      chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
+    }
   };
   return {
     mode,
@@ -1516,7 +1805,7 @@ function createEngine(deps) {
                   remove(created);
                   return;
                 }
-                await connect(created);
+                queueConnectAll(created);
               }).catch((e) => {
                 verifying.delete(main);
                 logError("verify error", e?.message || e);
@@ -1571,20 +1860,24 @@ function createEngine(deps) {
           if (st.timer)
             clearTimeout(st.timer);
           st.timer = null;
-          if (st.initTimer) {
-            clearTimeout(st.initTimer);
-            st.initTimer = null;
-          }
-          cancelSettleDrop(st);
-          if (st.idleDropTimer) {
-            clearTimeout(st.idleDropTimer);
-            st.idleDropTimer = null;
+          for (const r of st.remotes.values()) {
+            if (r.initTimer) {
+              clearTimeout(r.initTimer);
+              r.initTimer = null;
+            }
+            cancelSettleDrop(r);
+            if (r.idleDropTimer) {
+              clearTimeout(r.idleDropTimer);
+              r.idleDropTimer = null;
+            }
           }
           const flushed = flush(st);
           if (flushed && typeof flushed.then === "function")
             await flushed.catch(() => {});
-          if (!st.wsReady && st.shareId && st.pending.length) {
-            await flushViaHttp(st).catch(() => {});
+          for (const r of st.remotes.values()) {
+            if (!r.wsReady && r.shareId && r.pending.length) {
+              await flushViaHttp(st, r).catch(() => {});
+            }
           }
           if (st.metaTimer)
             clearTimeout(st.metaTimer);
@@ -1592,9 +1885,11 @@ function createEngine(deps) {
           await writeBinding(st).catch(() => {});
         }
         for (const st of sessions.values()) {
-          try {
-            st.ws?.close();
-          } catch {}
+          for (const r of st.remotes.values()) {
+            try {
+              r.ws?.close();
+            } catch {}
+          }
         }
       }
     }

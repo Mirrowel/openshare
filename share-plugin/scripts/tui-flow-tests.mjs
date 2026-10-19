@@ -33,6 +33,7 @@ import {
   SERVE_PORT,
   LLM_PORT,
   PROVIDER,
+  bindingUrlOf,
 } from "./suite-lib.mjs"
 
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url))
@@ -234,7 +235,7 @@ try {
     check("F2: second share copies existing link", again.ok === true && again.url === shared.url, again.message)
     const after = await httpGet(`${serve.base}/session/${sid}`)
     const bindingNow = (await after.json())?.metadata?.openshare
-    check("F2: no duplicate share created", bindingNow?.url?.split("/").pop() === shareId)
+    check("F2: no duplicate share created", bindingUrlOf(bindingNow)?.split("/").pop() === shareId)
 
     // F3: unshare deletes the page and clears the flag
     const unshared = await flows.runUnshareFlow(host, sid)

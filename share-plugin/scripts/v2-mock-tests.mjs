@@ -13,8 +13,9 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { sleep, waitFor, httpGet, killPortOwners,
-  killWranglerSuites, startWorker, WORKER_URL, WORKER_PORT } from "./suite-lib.mjs"
+import { sleep, waitFor, httpGet, killPortOwners, bindingUrlOf,
+  killWranglerSuites, startWorker, WORKER_URL, WORKER_PORT,
+} from "./suite-lib.mjs"
 
 const distUrl = (name) => new URL(`../dist/${name}`, import.meta.url).href
 
@@ -184,8 +185,8 @@ try {
   check("V1: dormant before the flag event (no binding write)", mock.store.updates.length === 0, JSON.stringify(mock.store.updates))
 
   // flag -> share + backfill with converted items
-  const bindingUpdate = await waitFor(() => mock.store.updates.find((u) => u.metadata?.openshare?.url), "V1: binding written into session metadata")
-  const shareId = bindingUpdate.metadata.openshare.url.split("/").pop()
+  const bindingUpdate = await waitFor(() => mock.store.updates.find((u) => bindingUrlOf(u.metadata?.openshare)), "V1: binding written into session metadata")
+  const shareId = bindingUrlOf(bindingUpdate.metadata.openshare).split("/").pop()
 
   const body = await waitFor(async () => {
     const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)

@@ -39,6 +39,7 @@ import {
   SERVE_PORT,
   LLM_PORT,
   PROVIDER,
+  bindingUrlOf,
 } from "./suite-lib.mjs"
 
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url))
@@ -172,10 +173,10 @@ try {
     const binding = await waitFor(async () => {
       const s = await (await httpGet(`${serve.base}/session/${sid}`)).json()
       const b = s?.metadata?.openshare
-      return b?.url ? b : undefined
+      return bindingUrlOf(b) ? b : undefined
     }, "S2: binding (url) written into session metadata")
     check("S2: binding has enabled flag", binding.enabled === true, JSON.stringify(binding))
-    shareId = binding.url.split("/").pop()
+    shareId = bindingUrlOf(binding).split("/").pop()
 
     firstShareBody = await waitFor(async () => {
       const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
@@ -213,9 +214,9 @@ try {
     const reattached = await waitFor(async () => {
       const s = await (await httpGet(`${serve2.base}/session/${sid}`)).json()
       const b = s?.metadata?.openshare
-      return b?.url ? b : undefined
+      return bindingUrlOf(b) ? b : undefined
     }, "S5: binding present after restart")
-    check("S5: restart attaches SAME share", reattached.url.split("/").pop() === shareId, `${reattached.url} vs ${shareId} binding=${JSON.stringify(reattached)}`)
+    check("S5: restart attaches SAME share", bindingUrlOf(reattached).split("/").pop() === shareId, `${bindingUrlOf(reattached)} vs ${shareId} binding=${JSON.stringify(reattached)}`)
 
     await patchMetadata(serve2, sid, {})
     await waitFor(async () => {
@@ -230,9 +231,9 @@ try {
     const reactivated = await waitFor(async () => {
       const s = await (await httpGet(`${serve2.base}/session/${sid}`)).json()
       const b = s?.metadata?.openshare
-      return b?.url ? b : undefined
+      return bindingUrlOf(b) ? b : undefined
     }, "S4: re-share binding")
-    const newShareId = reactivated.url.split("/").pop()
+    const newShareId = bindingUrlOf(reactivated).split("/").pop()
     check("S4: re-share creates a NEW share", newShareId !== shareId && !!newShareId)
 
     const secondBody = await waitFor(async () => {
@@ -261,9 +262,9 @@ try {
     const authBinding = await waitFor(async () => {
       const s = await (await httpGet(`${serve4.base}/session/${sid}`)).json()
       const b = s?.metadata?.openshare
-      return b?.url ? b : undefined
+      return bindingUrlOf(b) ? b : undefined
     }, "S7: share attached with auth opts")
-    const authShareId = authBinding.url.split("/").pop()
+    const authShareId = bindingUrlOf(authBinding).split("/").pop()
     await waitFor(async () => {
       const r = await httpGet(`${WORKER_URL}/api/share/${authShareId}/data`)
       // 200 = open share, 401 = gated (both mean the share exists)
@@ -313,7 +314,7 @@ try {
     const ob = osession?.metadata?.openshare
     // Since the live-caught consent-on-shared-session fix, bindings are
     // enabled:true in BOTH modes (live <=> url && enabled !== false).
-    check("S6: all-mode binding carries enabled:true", !!ob?.url && ob.enabled === true, JSON.stringify(ob))
+    check("S6: all-mode binding carries enabled:true", !!bindingUrlOf(ob) && ob.enabled === true, JSON.stringify(ob))
   } finally {
     await stopServe(serve3);
   }
@@ -394,9 +395,9 @@ try {
     const optIn = await waitFor(async () => {
       const s = await (await httpGet(`${preServe2.base}/session/${preSid}`)).json()
       const b = s?.metadata?.openshare
-      return b?.url ? b : undefined
+      return bindingUrlOf(b) ? b : undefined
     }, "S8: flag-gated binding written")
-    const optInId = optIn.url.split("/").pop()
+    const optInId = bindingUrlOf(optIn).split("/").pop()
     const optInBody = await waitFor(async () => {
       const r = await httpGet(`${WORKER_URL}/api/share/${optInId}/data`)
       if (!r.ok) throw new Error(`${r.status}`)
@@ -412,13 +413,14 @@ try {
     const reBound = await waitFor(async () => {
       const s = await (await httpGet(`${preServe2.base}/session/${boundSid}`)).json()
       const b = s?.metadata?.openshare
-      return b?.url ? b : undefined
+      return bindingUrlOf(b) ? b : undefined
     }, "S8: bound session re-attached")
+    const reBoundUrl = bindingUrlOf(reBound)
     const boundUrls = ((await readUrlFile(preUrlFile)) ?? "").trim().split("\n").filter(Boolean)
     check(
       "S8: bound session attaches SAME share (no duplicate)",
-      boundUrls.includes(reBound.url),
-      `${reBound.url} in [${boundUrls.join(", ")}]`,
+      boundUrls.includes(reBoundUrl),
+      `${reBoundUrl} in [${boundUrls.join(", ")}]`,
     )
   } finally {
     await stopServe(preServe2)

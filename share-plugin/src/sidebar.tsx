@@ -25,7 +25,7 @@
 // Remove once the live crash is cornered.
 
 import type { JSX } from "@opentui/solid"
-import { bindingOf } from "./share-flow.js"
+import { bindingsOf, bindingOf } from "./share-flow.js"
 import type { TuiPluginApi, TuiSlotContext } from "@opencode-ai/plugin/tui"
 import type { Session } from "@opencode-ai/sdk/v2"
 import { appendFileSync } from "node:fs"
@@ -95,7 +95,9 @@ export function createSidebarSlot(api: TuiPluginApi) {
           const title = String(props?.title ?? "") || "Session"
           const session = sid ? api.state.session.get(sid) : undefined
           const binding = bindingOf(session as never)
+          const liveCount = bindingsOf(session as never).filter((b) => b.url && b.enabled !== false).length
           const status = session?.time?.archived ? undefined : binding?.url ? (binding.enabled === false ? "attached" : "live") : undefined
+          const multi = liveCount > 1 ? `·${liveCount} ` : ""
           const theme = ctx?.theme?.current ?? api.theme.current
           dbgLog(
             `render#${seq} sid=${dbg(sid)} title=${dbg(title)} session=${session ? "found" : "MISSING"} binding=${binding ? `id=${dbg(binding.id)} enabled=${dbg(binding.enabled)}` : "none"} status=${dbg(status)} theme=${dbg(theme)}`,
@@ -134,7 +136,7 @@ export function createSidebarSlot(api: TuiPluginApi) {
               {status ? (
                 <box onMouseDown={copyLink}>
                   <text fg={binding?.enabled === false ? theme.warning : theme.success}>
-                    {status === "live" ? "◉ re:share — click to copy link" : "◉ re:share (dormant)"}
+                    {status === "live" ? `◉ re:share ${multi}— click to copy link` : "◉ re:share (dormant)"}
                   </text>
                 </box>
               ) : null}

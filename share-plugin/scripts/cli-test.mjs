@@ -16,7 +16,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { sleep, waitFor, httpGet, killWranglerSuites, startMockLLM, startWorker, startServe, stopServe, WORKER_URL, WORKER_PORT, LLM_PORT } from "./suite-lib.mjs"
+import { sleep, waitFor, httpGet, killWranglerSuites, startMockLLM, startWorker, startServe, stopServe, WORKER_URL, WORKER_PORT, LLM_PORT, bindingUrlOf,
+} from "./suite-lib.mjs"
 
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url)).replace(/\\/g, "/")
 
@@ -341,9 +342,9 @@ try {
     })
     try {
       const sessions = await (await httpGet(`${offServe.base}/session`)).json()
-      const bound = (Array.isArray(sessions) ? sessions : []).find((s) => s?.metadata?.openshare?.url)
+      const bound = (Array.isArray(sessions) ? sessions : []).find((s) => bindingUrlOf(s?.metadata?.openshare))
       check("outputs-off: binding still written to session metadata", Boolean(bound), JSON.stringify(sessions).slice(0, 200))
-      const offId = bound.metadata.openshare.url.split("/").pop()
+      const offId = bindingUrlOf(bound.metadata.openshare).split("/").pop()
       const offBody = await waitFor(async () => {
         const r = await httpGet(`${WORKER_URL}/api/share/${offId}/data`)
         if (!r.ok) throw new Error(`${r.status}`)

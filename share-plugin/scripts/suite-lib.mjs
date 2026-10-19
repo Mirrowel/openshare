@@ -506,6 +506,20 @@ function diffSummary(a, b) {
   return diffs.slice(0, 5).join(" | ")
 }
 
+/** Primary share URL from a raw metadata.openshare record — v2 map
+ * ({v:2, servers:{url:{...,url}}}) or legacy flat ({url}). Suites use this
+ * so both binding generations assert identically. */
+export function bindingUrlOf(raw) {
+  if (!raw || typeof raw !== "object") return undefined
+  if (raw.servers && typeof raw.servers === "object") {
+    for (const e of Object.values(raw.servers)) {
+      if (e && typeof e.url === "string" && e.url) return e.url
+    }
+    return undefined
+  }
+  return typeof raw.url === "string" && raw.url ? raw.url : undefined
+}
+
 export {
   sleep,
   waitFor,
