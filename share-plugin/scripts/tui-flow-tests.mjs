@@ -166,6 +166,13 @@ try {
   const sandbox = join(suiteDir, "tui")
   const projectDir = join(sandbox, "project")
   mkdirSync(projectDir, { recursive: true })
+  // In-process flow calls (saveConfig default target = configHomePath)
+  // must NEVER write the real settings home — redirect XDG for the whole
+  // suite process (live-caught: F4 once overwrote the owner's real
+  // openshare.config.json with sandbox values).
+  const homeDir = join(sandbox, "xdghome")
+  mkdirSync(join(homeDir, "opencode"), { recursive: true })
+  process.env.XDG_CONFIG_HOME = homeDir
   // TUI presence -> manual mode on the server
   writeFileSync(join(projectDir, "tui.json"), JSON.stringify({ plugin: [join(ROOT, "dist", "tui.js").replace(/\\/g, "/")] }))
 
@@ -244,11 +251,27 @@ try {
     writeFileSync(join(cfgDir, "openshare.config.json"), JSON.stringify({ $comment: "keep me", ttlDays: 42 }, null, 2))
     const cfg = flows.currentConfig(cfgDir)
     check("F4: currentConfig reads sandbox file", cfg.ttlDays === 42, `ttlDays=${cfg.ttlDays}`)
-    const saved = flows.saveConfig({ ...cfg, workerUrl: "https://new.example", createToken: "tok" }, cfgDir)
+    const saved = flows.saveConfig({ ...cfg, workerUrl: "https://new.example", createToken: "tok" }, join(cfgDir, "openshare.config.json"), cfgDir)
     check("F4: saveConfig writes", !!saved?.path && existsSync(saved.path))
     const raw = JSON.parse(readFileSync(saved.path, "utf8"))
     check("F4: $comment preserved", raw.$comment === "keep me")
     check("F4: values written", raw.workerUrl === "https://new.example" && raw.createToken === "tok")
+
+    // F5: write-target rules (owner-directed): default is ALWAYS the
+    // global settings home — never the first existing file in the read
+    // chain (the adjacent template must not absorb TUI edits) — and an
+    // explicit target is honored. XDG_CONFIG_HOME is suite-redirected
+    // (see setup), so configHomePath() is the sandbox home.
+    const expectedHome = join(homeDir, "opencode", "openshare.config.json")
+    const byDefault = flows.saveConfig({ ...cfg, ttlDays: 7 }, undefined, cfgDir)
+    check("F5: default target is the global home", byDefault?.path === expectedHome, `got ${byDefault?.path}`)
+    check("F5: adjacent template NOT written", !readFileSync(join(cfgDir, "openshare.config.json"), "utf8").includes('"ttlDays": 7'))
+    const explicitPath = join(cfgDir, "chosen.config.json")
+    writeFileSync(explicitPath, "{}")
+    const byExplicit = flows.saveConfig({ ...cfg, ttlDays: 9 }, explicitPath, cfgDir)
+    check("F5: explicit target honored", byExplicit?.path === explicitPath && JSON.parse(readFileSync(explicitPath, "utf8")).ttlDays === 9)
+    const candidates = (await import(distUrl("config.js"))).writeCandidates(cfgDir)
+    check("F5: writeCandidates lists global + existing adjacent only", candidates[0].path === expectedHome && candidates.some((c) => c.path === join(cfgDir, "openshare.config.json")) && !candidates.some((c) => c.path === explicitPath), candidates.map((c) => c.path).join(" | "))
   } finally {
     await stopServe(serve);
   }

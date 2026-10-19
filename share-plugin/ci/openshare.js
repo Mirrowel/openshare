@@ -22,7 +22,7 @@
 //
 // src/config.ts
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 var METADATA_KEY = "openshare";
 var URL_FILE_NONE = "none";

@@ -5,7 +5,7 @@
 //
 // Sections: Connection, Sharing, Read auth, Advanced, This session.
 
-import type { ShareConfig } from "./config.js"
+import { configSourceMap, moduleDir, writeCandidates, type ShareConfig, type WriteCandidate } from "./config.js"
 import {
   clearShareFlag,
   confirmShare,
@@ -19,6 +19,22 @@ import {
 } from "./share-flow.js"
 import type { SessionOpts } from "./core.js"
 import type { ShareDialogSelectOption, ShareHostApi } from "./tui-host.js"
+
+/** description suffix: `[from <source>]` when a key is overridden by a
+ * file/env higher in the chain than the write target. */
+function withSource(display: string, source: string | undefined): string {
+  return source ? `${display} [${source}]` : display
+}
+
+function summarizeSources(sources: Record<string, string>): string {
+  const labels = [...new Set(Object.values(sources))]
+  return labels.length ? labels.slice(0, 2).join(" + ") + (labels.length > 2 ? "…" : "") : "all defaults"
+}
+
+function sourcesMessage(sources: Record<string, string>): string {
+  const lines = Object.entries(sources).map(([key, source]) => `${key}: ${source}`)
+  return lines.length ? lines.join("\n") : "All values are defaults — no config file or env var sets anything yet."
+}
 
 type UI = ShareHostApi["ui"]
 
@@ -116,24 +132,32 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
 export async function settingsDialog(host: ShareHostApi, startAtSession?: string): Promise<void> {
   let cfg = currentConfig()
   let dirty = false
+  // Write target (owner rule): global settings home by default; any other
+  // existing file in the read chain may be chosen explicitly. The TUI
+  // never creates deploy-time override files.
+  const candidates = writeCandidates(moduleDir())
+  let writeTarget: WriteCandidate = candidates[0]
+  const sources = configSourceMap(moduleDir())
 
   while (true) {
     const binding = startAtSession ? await readBinding(host.client, await resolveRoot(host.client, startAtSession)) : undefined
     const shared = binding?.url ? (binding.enabled === false ? "attached (dormant)" : "live") : "not shared"
 
     const options: ShareDialogSelectOption<string>[] = []
+    options.push({ title: "Write target", value: "action:target", description: writeTarget.label, disabled: candidates.length <= 1 })
+    options.push({ title: "Where values come from", value: "action:sources", description: summarizeSources(sources) })
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Connection") options.push({ title: meta.label, value: `key:${key}`, description: displayValue(key, cfg) })
+      if (meta.section === "Connection") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
     }
     options.push({ title: "Test connection", value: "action:test", description: "Probe the worker's /health endpoint" })
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: displayValue(key, cfg) })
+      if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
     }
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Read auth") options.push({ title: meta.label, value: `key:${key}`, description: displayValue(key, cfg) })
+      if (meta.section === "Read auth") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
     }
     for (const [key, meta] of Object.entries(LABELS)) {
-      if (meta.section === "Advanced") options.push({ title: meta.label, value: `key:${key}`, description: displayValue(key, cfg) })
+      if (meta.section === "Advanced") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
     }
     if (startAtSession) {
       options.push({ title: `— This session (${shared}) —`, value: "session:none", description: "Per-session actions and overrides", disabled: true })
@@ -142,17 +166,36 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       options.push({ title: "Session TTL override (days)", value: "session:ttl", description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)" })
       options.push({ title: "Session read auth", value: "session:auth", description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)" })
     }
-    options.push({ title: dirty ? "Save & exit" : "Exit", value: "action:exit", description: dirty ? "Write openshare.config.json" : "No changes" })
+    options.push({ title: dirty ? "Save & exit" : "Exit", value: "action:exit", description: dirty ? `Write ${writeTarget.path}` : "No changes" })
 
     const choice = await showSelect(host.ui, { title: "OpenShare settings", options })
     if (choice === undefined || choice === "action:exit") {
       if (dirty) {
-        const saved = saveConfig(cfg)
+        const saved = saveConfig(cfg, writeTarget.path)
         if (saved) host.ui.toast({ variant: "success", title: "OpenShare", message: `Saved ${saved.path}` })
-        else host.ui.toast({ variant: "error", title: "OpenShare", message: "Could not write the config file." })
+        else host.ui.toast({ variant: "error", title: "OpenShare", message: `Could not write ${writeTarget.path}.` })
       }
       host.ui.dialog.clear()
       return
+    }
+
+    if (choice === "action:target") {
+      const picked = await showSelect(
+        host.ui,
+        {
+          title: "Write target",
+          placeholder: "Files that already exist; the global home is always available",
+          options: candidates.map((candidate) => ({ title: candidate.label, value: candidate.path, description: candidate.path })),
+          current: writeTarget.path,
+        },
+      )
+      if (picked) writeTarget = candidates.find((candidate) => candidate.path === picked) ?? writeTarget
+      continue
+    }
+
+    if (choice === "action:sources") {
+      await showInfo(host.ui, { title: "Where values come from", message: sourcesMessage(sources) })
+      continue
     }
 
     if (choice === "action:test") {

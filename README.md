@@ -94,7 +94,9 @@ Runs on OpenCode **v1 and v2** from the same package (dual `{ id, server, setup 
 
 ## Configuration
 
-Priority: `OPENSHARE_*` env > plugin options > `openshare.config.json` > defaults.
+Priority: `OPENSHARE_*` env > adjacent `openshare.config.json` > `openshare.local.json` (repo walk-up) > `~/.config/opencode/openshare.config.json` > defaults.
+
+**Where the TUI writes:** `/openshare` saves to the **global settings home** (`~/.config/opencode/openshare.config.json`) by default; any *other* config file in the chain can be chosen as the write target if it already exists on disk (Write target row — the TUI never creates deploy-time override files). Each setting row shows `[source]` when a file or env var higher in the chain overrides it, and *Where values come from* lists every attribution.
 
 | Key | Default | Meaning |
 |---|---|---|

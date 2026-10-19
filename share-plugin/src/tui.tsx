@@ -215,15 +215,29 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       return route.name === "session" ? (route.params?.sessionID as string | undefined) : undefined
     },
     clipboard: {
+      // navigator.clipboard.writeText resolves as a silent no-op in the
+      // TUI runtime (live-caught: the menu copy said "copied" but nothing
+      // landed; the sidebar chip worked because it falls back to OSC52).
+      // Belt-and-braces: try navigator, then ALWAYS emit the OSC52 escape
+      // — harmless when the terminal ignores it, correct when it honors it.
       async write(text) {
+        let ok = false
         try {
           const clip = (navigator as unknown as { clipboard?: { writeText?: (t: string) => Promise<void> } }).clipboard
           if (typeof clip?.writeText === "function") {
-            await clip.writeText(text)
-            return true
+            await clip.writeText(text).then(
+              () => {
+                ok = true
+              },
+              () => {},
+            )
           }
         } catch {}
-        return false
+        try {
+          process.stdout.write(`\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`)
+          ok = true
+        } catch {}
+        return ok
       },
     },
   }

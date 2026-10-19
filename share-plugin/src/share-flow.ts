@@ -39,19 +39,19 @@ export function currentConfig(baseDir: string = moduleDir()): ShareConfig {
   return loadConfig(baseDir)
 }
 
-/** Writes the config file (first existing path wins — a repo-local
- * `openshare.local.json` absorbs edits there; otherwise the opencode
- * config folder is the canonical settings home; $comment and foreign
- * keys preserved). */
-export function saveConfig(cfg: ShareConfig, baseDir: string = moduleDir()): { path: string } | undefined {
-  const paths = pluginConfigPaths(baseDir)
-  const target = paths.find((p) => existsSync(p)) ?? configHomePath()
-  if (!target) return undefined
+/** Writes the config file. Target rule (owner-directed): the global
+ * settings home by default, or an explicit existing file chosen in the
+ * TUI — NEVER "first existing in the read chain" (that wrote TUI edits
+ * into the tracked adjacent template, live-caught). $comment and foreign
+ * keys preserved. */
+export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = moduleDir()): { path: string } | undefined {
+  const path = target ?? configHomePath()
+  if (!path) return undefined
   try {
-    const previous: Record<string, unknown> = existsSync(target)
+    const previous: Record<string, unknown> = existsSync(path)
       ? (() => {
           try {
-            return JSON.parse(readFileSync(target, "utf8"))
+            return JSON.parse(readFileSync(path, "utf8"))
           } catch {
             return {}
           }
@@ -72,11 +72,12 @@ export function saveConfig(cfg: ShareConfig, baseDir: string = moduleDir()): { p
       "spoolDir",
       "urlFile",
       "shareMode",
+      "announceStderr",
     ] as Array<keyof ShareConfig>) {
       next[key] = cfg[key]
     }
-    writeFileSync(target, JSON.stringify(next, null, 2) + "\n")
-    return { path: target }
+    writeFileSync(path, JSON.stringify(next, null, 2) + "\n")
+    return { path }
   } catch {
     return undefined
   }

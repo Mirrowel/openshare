@@ -271,15 +271,26 @@ export function buildV2HostApi(context: V2TuiContext): ShareHostApi {
     sessionInfo: () => undefined,
     currentSessionID: undefined,
     clipboard: {
+      // same belt-and-braces as the v1 facade: navigator may resolve as a
+      // silent no-op in the TUI runtime; OSC52 is the reliable path
       async write(text) {
+        let ok = false
         try {
           const clip = (navigator as unknown as { clipboard?: { writeText?: (t: string) => Promise<void> } }).clipboard
           if (typeof clip?.writeText === "function") {
-            await clip.writeText(text)
-            return true
+            await clip.writeText(text).then(
+              () => {
+                ok = true
+              },
+              () => {},
+            )
           }
         } catch {}
-        return false
+        try {
+          process.stdout.write(`\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`)
+          ok = true
+        } catch {}
+        return ok
       },
     },
   }

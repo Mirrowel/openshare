@@ -106,6 +106,8 @@ export function createSidebarSlot(api: TuiPluginApi) {
           const copyLink = () => {
             const url = binding?.url
             if (!url) return
+            // navigator first (no-op-resolves in the TUI runtime are
+            // possible), then ALWAYS OSC52 — the empirically working path
             let copied = false
             try {
               const clip = (navigator as unknown as { clipboard?: { writeText?: (t: string) => Promise<void> } }).clipboard
@@ -117,13 +119,11 @@ export function createSidebarSlot(api: TuiPluginApi) {
                 copied = true
               }
             } catch {}
-            if (!copied) {
+            try {
               // OSC52 escape (most modern terminals, incl. Windows Terminal)
-              try {
-                process.stdout.write(`\x1b]52;c;${Buffer.from(url, "utf8").toString("base64")}\x07`)
-                copied = true
-              } catch {}
-            }
+              process.stdout.write(`\x1b]52;c;${Buffer.from(url, "utf8").toString("base64")}\x07`)
+              copied = true
+            } catch {}
             try {
               api.ui.toast({ variant: copied ? "success" : "info", title: "OpenShare", message: copied ? `Share link copied: ${url}` : `Share link: ${url}`, duration: 6000 })
             } catch {}

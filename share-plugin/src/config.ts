@@ -19,7 +19,7 @@
 // selfwiring — the two parts are installed deliberately).
 
 import { existsSync, readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export type ShareMode = "all" | "manual"
@@ -120,6 +120,79 @@ export function configPaths(pluginDir: string, env: NodeJS.ProcessEnv = process.
  * adjacent config exists): the opencode config folder. */
 export function configHomePath(env: NodeJS.ProcessEnv = process.env): string {
   return join(globalConfigDir(env), CONFIG_NAME)
+}
+
+export type WriteCandidate = { path: string; label: string; always?: boolean }
+
+/** Write-target candidates for the TUI picker: the global settings home
+ * (always writable) plus every OTHER file in the read chain that already
+ * exists on disk (deploy-time overrides are never created from the TUI —
+ * owner rule). Order: global first (default), then the rest by read
+ * precedence (highest first). */
+export function writeCandidates(pluginDir: string, env: NodeJS.ProcessEnv = process.env): WriteCandidate[] {
+  const candidates: WriteCandidate[] = [{ path: configHomePath(env), label: "global settings (~/.config/opencode)", always: true }]
+  const labels: Array<[string, string]> = [
+    [join(pluginDir, CONFIG_NAME), "plugin folder (adjacent template)"],
+    [join(packageRoot(pluginDir), CONFIG_NAME), "package root"],
+  ]
+  let current = pluginDir
+  for (let i = 0; i < 5; i++) {
+    labels.push([join(current, LOCAL_NAME), `local override (${relative(process.cwd(), join(current, LOCAL_NAME)) || join(current, LOCAL_NAME)})`])
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  for (const [path, label] of labels) {
+    if (path === candidates[0].path) continue
+    if (existsSync(path)) candidates.push({ path, label })
+  }
+  return candidates
+}
+
+/** Per-key source attribution mirroring loadConfig precedence exactly
+ * (env > adjacent > package root > local walks > global > default).
+ * Values of "" count as unset for the credential/path keys. */
+export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"])
+  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode"])
+  const sources: Record<string, string> = {}
+  const envKeys: Record<string, string | undefined> = {
+    workerUrl: env.OPENSHARE_WORKER_URL,
+    createToken: env.OPENSHARE_CREATE_TOKEN,
+    debounceMs: env.OPENSHARE_DEBOUNCE_MS,
+    completedDelayMs: env.OPENSHARE_COMPLETED_DELAY_MS,
+    modelLabel: env.OPENSHARE_MODEL_LABEL,
+    ttlDays: env.OPENSHARE_TTL_DAYS,
+    authLogin: env.OPENSHARE_AUTH_LOGIN,
+    authPassword: env.OPENSHARE_AUTH_PASSWORD,
+    urlFile: env.OPENSHARE_URL_FILE,
+    spoolDir: env.OPENSHARE_SPOOL_DIR,
+    announceStderr: env.OPENSHARE_ANNOUNCE_STDERR,
+    shareMode: env.OPENSHARE_SHARE_MODE,
+  }
+  for (const [key, value] of Object.entries(envKeys)) {
+    if (value !== undefined && value !== "") sources[key] = "environment"
+  }
+  // configPaths() is ordered lowest-priority-first? No: index 0 is the
+  // ADJACENT file (highest). Merge order reverses it; attribution walks
+  // it as-is so the first hit is the winning (highest) source.
+  for (const path of configPaths(pluginDir, env)) {
+    let raw: Record<string, unknown>
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"))
+      if (!raw || typeof raw !== "object") continue
+    } catch {
+      continue
+    }
+    const label = basename(path) === LOCAL_NAME ? `openshare.local.json (${dirname(path).split(/[\\/]/).pop()})` : `${basename(path)} (${dirname(path).split(/[\\/]/).pop()})`
+    for (const [key, value] of Object.entries(raw)) {
+      if (sources[key] !== undefined || !known.has(key)) continue
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
+      sources[key] = label
+    }
+  }
+  return sources
 }
 
 function num(value: unknown, fallback: number): number {
