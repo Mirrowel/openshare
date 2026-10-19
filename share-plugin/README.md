@@ -93,12 +93,16 @@ stays all-mode.
   share to another server, stop all. A credential conflict opens the
   collision dialog (copy debug info / share on a new share / don't share).
 - `/openshare` — grouped settings (compact root with live summaries →
-  focused submenus): This session, Connection (legacy pair), Servers
-  (connect, enroll, rotate, disconnect, set active, remove — and per
-  server the **Admin panel**: users, freeze/delete, mint tokens, invite
-  codes, shares, reassign, purge with the root token), Sharing, Read
-  auth, Interface (menu width/height), Advanced, Config files
-  (write target + source map).
+  focused submenus): This session (share/stop — delete or leave a
+  snapshot —, TTL override, session read auth), **Servers** (connection
+  AND membership: legacy pair, connect, enroll, rotate, get-a-user-token
+  for root holders, disconnect, per-server **admin panel** — users,
+  tokens, codes, shares, purge —, test, remove), Sharing (share mode +
+  booleans via selection menus), Read auth, Interface (one combined
+  Menu-size picker: live width cycling + height slider + capped-height
+  preview), Advanced, Config files. Danger rows red, dirty rows green,
+  `[i]` panes paged (`## sections`, 1-9 jump), messages wrap in real
+  bodies (no clipped one-liners).
 - Sidebar chip — share status next to the session title (`·N` when the
   session streams to several servers); click copies the link. A share
   whose page died server-side renders `⊘ gone` — clicking opens the share

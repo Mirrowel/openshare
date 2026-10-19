@@ -37,6 +37,12 @@ import type { ShareHostApi, ShareHostLayerCommand } from "./tui-host.js"
 export const PALETTE_CATEGORY = "OpenShare"
 
 function finish(host: ShareHostApi, result: { ok: boolean; message: string; url?: string; unconfigured?: boolean }) {
+  // terminal point of a flow: the dialog chain is over — clear the host
+  // stack explicitly (done() no longer clears; replace-without-clear was
+  // the flicker fix, so chain ENDS own the clear)
+  try {
+    host.ui.dialog.clear()
+  } catch {}
   host.ui.toast({
     variant: result.ok ? "success" : result.unconfigured ? "warning" : "error",
     title: "OpenShare",
@@ -122,12 +128,45 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
           return
         }
         if (choice === "stop") {
-          const yes = await host.ui.showConfirm({
+          const how = await host.ui.showMenu<string>({
             title: "Stop sharing",
-            message: "Delete the share page for this session? The link stops working for everyone.",
-            confirmLabel: "Stop sharing",
+            hint: b.url,
+            options: [
+              {
+                title: "Delete the page",
+                value: "delete",
+                description: "the link stops working for everyone",
+                danger: true,
+                help: `Deletes the page on ${hostOf(b.url || b.server)} and clears this session's share flag. Viewers with the link see a final "gone" state. Sharing again later creates a fresh page with a new URL.`,
+              },
+              {
+                title: "Leave as-is (snapshot)",
+                value: "leave",
+                description: "stop updating; the page stays until its TTL",
+                help: `Stops mirroring WITHOUT deleting anything — viewers keep reading the snapshot until the share's TTL expires. Useful for handing someone a frozen copy while you keep working.`,
+              },
+              { title: "Cancel", value: "cancel" },
+            ],
           })
-          if (!yes) return
+          if (!how || how === "cancel") return
+          if (how === "leave") {
+            await patchSessionBinding(host.client, root, (servers) => {
+              delete servers[b.server]
+              servers[b.server] = { optedOut: true }
+            })
+            finish(host, { ok: true, message: `${hostOf(b.url || b.server)} left as-is — a snapshot until its TTL.` })
+            return
+          }
+          const yes = await host.ui.showConfirm({
+            title: "Delete the share page",
+            message: `Delete the page on ${hostOf(b.url || b.server)}?\nThe link stops working for everyone.`,
+            confirmLabel: "Delete",
+            danger: true,
+          })
+        if (!yes) {
+          host.ui.dialog.clear()
+          return
+        }
           finish(host, await runUnshareFlow(host, sessionID()))
         }
       })
@@ -135,7 +174,7 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
   }
 
   // fan-out menu
-  const options: Array<{ title: string; value: string; description?: string; help?: string }> = all.map((b) => ({
+  const options: Array<{ title: string; value: string; description?: string; help?: string; danger?: boolean }> = all.map((b) => ({
     title: `Copy link — ${hostOf(b.url || b.server)}`,
     value: `copy:${b.server}`,
     description: b.url,
@@ -158,8 +197,9 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
   options.push({
     title: "Stop sharing (all)",
     value: "stop-all",
-    description: "delete every server's page",
-    help: `Deletes the page on all ${all.length} servers and clears the share flag. Every link stops working; sharing again creates fresh pages.`,
+    description: "delete every server's page, or leave snapshots",
+    danger: true,
+    help: `Deletes the page on all ${all.length} servers (or leaves them as read-only snapshots — your choice on the next screen) and clears the share flag. Sharing again creates fresh pages.`,
   })
   options.push({ title: "Cancel", value: "cancel" })
   const choice = await host.ui.showMenu<string>({ title: `Session is shared · ${all.length} servers`, options })
@@ -173,10 +213,30 @@ async function showShareManager(host: ShareHostApi, sessionID: () => string | un
     return
   }
   if (choice === "stop-all") {
+    const how = await host.ui.showMenu<string>({
+      title: `Stop sharing · ${all.length} servers`,
+      options: [
+        { title: "Delete every page", value: "delete", description: "all links stop working", danger: true, help: `Deletes the page on every bound server (${all.map((b) => hostOf(b.url || b.server)).join(", ")}) and clears the share flag.` },
+        { title: "Leave all as-is (snapshots)", value: "leave", description: "stop updating; pages stay until their TTLs", help: `Stops mirroring everywhere without deleting anything — every page stays readable as a frozen snapshot until its TTL expires.` },
+        { title: "Cancel", value: "cancel" },
+      ],
+    })
+    if (!how || how === "cancel") return
+    if (how === "leave") {
+      await patchSessionBinding(host.client, root, (servers) => {
+        for (const b of all) {
+          delete servers[b.server]
+          servers[b.server] = { optedOut: true }
+        }
+      })
+      finish(host, { ok: true, message: `${all.length} server(s) left as-is — snapshots until their TTLs.` })
+      return
+    }
     const yes = await host.ui.showConfirm({
       title: "Stop sharing",
       message: `Delete the share pages on all ${all.length} servers? The links stop working for everyone.`,
       confirmLabel: "Stop all",
+      danger: true,
     })
     if (!yes) return
     finish(host, await runUnshareFlow(host, sessionID()))
@@ -336,6 +396,7 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
       // field are live too — only an explicit false is dormant)
       if (bindings.some((b) => b.url && b.enabled !== false)) {
         await showShareManager(host, sessionID)
+        host.ui.dialog.clear()
         return
       }
       // not shared (or dormant): the normal flow — consent once, then share

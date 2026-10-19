@@ -257,10 +257,13 @@ export function mergeServerGroups(base: Record<string, ServerEntry> | undefined,
 }
 
 /** The server new sessions share to: the `active` entry (or the first).
- * Legacy workerUrl/createToken merge in as the implicit first entry. */
+ * Legacy workerUrl/createToken merge in as the implicit first entry — with
+ * the root token ALSO filed as adminToken (the createToken IS root; filing
+ * it only as `token` made the TUI offer user-actions like rotate to a root
+ * holder — live-caught "can either be admin or user but not both"). */
 export function resolveServer(cfg: ShareConfig): { url: string; token: string; entry: ServerEntry } | undefined {
   const servers: Record<string, ServerEntry> = {}
-  if (cfg.workerUrl) servers[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
+  if (cfg.workerUrl) servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true }
   if (cfg.servers) for (const [url, entry] of Object.entries(cfg.servers)) servers[url] = entry
   const urls = Object.keys(servers)
   if (!urls.length) return undefined

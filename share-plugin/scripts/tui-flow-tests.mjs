@@ -66,6 +66,9 @@ function mockHost(client, { consent = true } = {}) {
     promptAnswers: [],
     menuAnswers: [],
     menus: [],
+    prompts: [],
+    alerts: [],
+    sizePickerAnswers: [],
   }
   const confirmAnswer = () => state.dialogAnswers.shift() ?? consent
   return {
@@ -93,6 +96,9 @@ function mockHost(client, { consent = true } = {}) {
           clear() {},
           setSize() {},
         },
+        showBusy() {
+          return () => {}
+        },
         async showMenu(props) {
           state.menus.push(props)
           return state.menuAnswers.shift() ?? props.options[0]?.value
@@ -100,9 +106,15 @@ function mockHost(client, { consent = true } = {}) {
         async showConfirm(props) {
           return confirmAnswer()
         },
-        async showAlert() {},
-        async showPrompt() {
+        async showAlert(props) {
+          state.alerts.push(props)
+        },
+        async showPrompt(props) {
+          state.prompts.push(props)
           return state.promptAnswers.shift() ?? ""
+        },
+        async showSizePicker() {
+          return state.sizePickerAnswers.shift()
         },
         DialogSelect(props) {
           props.onSelect(props.options[0])
@@ -309,10 +321,15 @@ try {
     check("F6: old token revoked, new valid", oldMe.status === 401 && newMe.status === 200, `${oldMe.status}/${newMe.status}`)
 
     // F7: admin console — legacy createToken resolves as the admin
-    // credential; the underlying admin surface round-trips end to end
-    state.menuAnswers.push(WORKER_URL, "info", "back")
+    // credential; the underlying admin surface round-trips end to end.
+    // Server info must render the policy FORMATTED (no raw JSON blob) and
+    // explain what "private" auth needs.
+    state.menuAnswers.push(WORKER_URL, "info", "__back", "__back")
     await settings.adminConsole(host)
     check("F7: admin console walks (legacy root token, info, back)", true)
+    const infoAlert = state.alerts.find((a) => a.title === "Server info")
+    check("F7: server info formats policy lines", !!infoAlert && /turnGraceMs: \d/.test(infoAlert.message) && !infoAlert.message.includes('{"mode"'), infoAlert?.message.slice(0, 120))
+    check("F7: server info explains private auth", !!infoAlert && infoAlert.message.includes("private — joining needs an access code"), infoAlert?.message.slice(0, 200))
     const admin = flows.adminClient(WORKER_URL, CREATE_TOKEN)
     const made = await admin.createUser("adminmade")
     check("F7: admin creates user", made.ok === true && !!made.data?.userId, JSON.stringify(made))
@@ -370,21 +387,48 @@ try {
     const metaAfter = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
     check("F8: gone binding entry auto-cleared", !(metaAfter?.servers ?? {})[WORKER_URL], JSON.stringify(metaAfter?.servers ?? null))
 
-    // F9: interface prefs — grouped settings: root lists GROUPS only (no key
-    // rows), Interface opens its own menu (width cycle, height via the
-    // prompt fallback on the mock host), rows carry [i] help.
-    state.menuAnswers.push("group:interface", "ui:width", "ui:height", "__back", "action:exit")
-    state.promptAnswers.push("66")
+    // F9: interface prefs — one combined "Menu size…" row (the config-studio
+    // picker is facade-driven; the mock scripts its result). Root lists
+    // GROUPS only; every group row carries [i] help.
+    state.sizePickerAnswers.push({ width: "xlarge", heightPercent: 66 })
+    state.menuAnswers.push("group:interface", "ui:size", "__back", "action:exit")
     await settings.settingsDialog(host)
-    check("F9: width cycled large -> xlarge in kv", state.kv.get("openshare.ui-width") === "xlarge", JSON.stringify(state.kv.get("openshare.ui-width")))
-    check("F9: height persisted (clamped) in kv", state.kv.get("openshare.ui-height-percent") === 66, JSON.stringify(state.kv.get("openshare.ui-height-percent")))
+    check("F9: size picker persisted both dims in kv", state.kv.get("openshare.ui-width") === "xlarge" && state.kv.get("openshare.ui-height-percent") === 66, JSON.stringify([...state.kv]))
     const rootMenu = state.menus.findLast((m) => m.title === "OpenShare settings")
-    check("F9: root is compact groups only", !!rootMenu && rootMenu.options.length <= 10 && !rootMenu.options.some((o) => o.value.startsWith("key:")), JSON.stringify(rootMenu?.options.map((o) => o.value)))
-    check("F9: interface group row present", rootMenu?.options.some((o) => o.value === "group:interface"))
+    check("F9: root is compact groups only", !!rootMenu && rootMenu.options.length <= 9 && !rootMenu.options.some((o) => o.value.startsWith("key:")), JSON.stringify(rootMenu?.options.map((o) => o.value)))
+    check("F9: no separate connection group", !rootMenu?.options.some((o) => o.value === "group:connection"))
+    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 6, JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
     const interfaceMenu = state.menus.findLast((m) => m.title === "OpenShare — Interface")
-    check("F9: interface submenu opened with Back", !!interfaceMenu && interfaceMenu.options.some((o) => o.value === "__back"), interfaceMenu?.title ?? "(no menu)")
-    check("F9: interface rows carry [i] help", interfaceMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 2, JSON.stringify(interfaceMenu?.options.map((o) => [o.value, !!o.help])))
-    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 7, JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
+    check("F9: interface group is the single size row", !!interfaceMenu && interfaceMenu.options.filter((o) => o.value === "ui:size").length === 1, JSON.stringify(interfaceMenu?.options.map((o) => o.value)))
+
+    // F10: root-token holder adopts a user identity — the "admin can't be
+    // a user" fix. Craft the legacy-synthesis state (token === root), then
+    // Servers → server → "Get a user token" (label prompt, prefilled) →
+    // minted osk_ saved as token, root stays in adminToken.
+    flows.saveServerEntry(WORKER_URL, { token: CREATE_TOKEN, adminToken: CREATE_TOKEN, active: true })
+    state.menuAnswers.push("group:servers", `server:${WORKER_URL}`, "adopt", "__back", "__back", "action:exit")
+    state.promptAnswers.push("boss")
+    await settings.settingsDialog(host)
+    const adoptCfg = JSON.parse(readFileSync(expectedHome, "utf8"))
+    const adopted = adoptCfg.servers?.[WORKER_URL]
+    check("F10: user token adopted (osk_, not root)", typeof adopted?.token === "string" && adopted.token.startsWith("osk_") && adopted.token !== CREATE_TOKEN, JSON.stringify(adopted ?? null))
+    check("F10: root stays as adminToken", adopted?.adminToken === CREATE_TOKEN)
+    const adoptPrompt = state.prompts.find((p) => p.title.includes("user label"))
+    check("F10: label prompt prefilled with admin-<host>", !!adoptPrompt && /admin-/.test(String(adoptPrompt.value)), JSON.stringify(adoptPrompt?.value))
+    const serverMenuShown = state.menus.filter((m) => m.title === "Share server")
+    check("F10: root holder sees Get a user token", serverMenuShown.some((m) => m.options.some((o) => o.value === "adopt")), JSON.stringify(serverMenuShown.at(-1)?.options.map((o) => o.value)))
+
+    // F11: fixed-vocabulary settings edit via SELECTION, not typing:
+    // shareMode → auto/all/manual menu; saved through Save & exit.
+    const homeBefore = existsSync(expectedHome) ? JSON.parse(readFileSync(expectedHome, "utf8")) : {}
+    delete homeBefore.shareMode
+    writeFileSync(expectedHome, JSON.stringify(homeBefore, null, 2))
+    state.menuAnswers.push("group:sharing", "key:shareMode", "manual", "__back", "__back", "action:exit")
+    await settings.settingsDialog(host)
+    const modeCfg = JSON.parse(readFileSync(expectedHome, "utf8"))
+    check("F11: share mode set via selection", modeCfg.shareMode === "manual", JSON.stringify(modeCfg.shareMode))
+    const modeMenu = state.menus.findLast((m) => m.title === "Share mode")
+    check("F11: selection menu offers auto/all/manual", !!modeMenu && ["auto", "all", "manual"].every((v) => modeMenu.options.some((o) => o.value === v)), JSON.stringify(modeMenu?.options.map((o) => o.value)))
   } finally {
     await stopServe(serve);
   }

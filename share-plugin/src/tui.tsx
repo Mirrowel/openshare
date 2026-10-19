@@ -11,30 +11,29 @@ import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClientApi } from "./core.js"
 import { registerCommands, buildShareCommand } from "./commands.js"
 import { createSidebarSlot, dbgLog, dbg } from "./sidebar.js"
-import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, showHeightSliderOnce, toMenuOptions } from "./dialogs.js"
-import { clampHeightPercent } from "./ui-prefs.js"
+import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, showSizePickerOnce, toMenuOptions } from "./dialogs.js"
+import { clampHeightPercent, kvHeightPercentOf, kvWidthOf } from "./ui-prefs.js"
 import type { ShareHostApi } from "./tui-host.js"
 import { createV2TuiSetup } from "./v2-tui.js"
 
 /** Builds the host facade over the v1 TuiPluginApi. */
 
-/** Height slider flow (agent-variants' showHeightSlider shape): slider →
- * optional custom-percent prompt → save. Undefined = cancelled. */
-async function showHeightSliderFlow(api: TuiPluginApi, current: number): Promise<number | undefined> {
-  let value = clampHeightPercent(current)
+/** Combined size-picker flow (config-studio showSizeSlider shape): picker →
+ * optional custom-percent prompt → saved result. Undefined = cancelled. */
+async function showSizePickerFlow(api: TuiPluginApi, current: { width: string; heightPercent: number }): Promise<{ width: string; heightPercent: number } | undefined> {
+  let heightPercent = clampHeightPercent(current.heightPercent)
   while (true) {
-    const choice = await showHeightSliderOnce(api, value)
+    const choice = await showSizePickerOnce(api, { width: kvWidthOf(api.kv), heightPercent })
     if (!choice) return undefined
-    value = clampHeightPercent(choice.value)
-    if (choice.action === "save") return value
-    const input = await showPromptOnce(api, { title: "Menu height percent", placeholder: "25-100", value: String(value) })
+    if (choice.heightPercent >= 0) return { width: kvWidthOf(api.kv), heightPercent: clampHeightPercent(choice.heightPercent) }
+    const input = await showPromptOnce(api, { title: "Menu height percent", placeholder: "25-100", value: String(heightPercent) })
     if (input === undefined) continue
     const parsed = Number(input)
     if (!Number.isFinite(parsed)) {
       await showAlertMenu(api, { title: "Invalid height", message: "Enter a number from 25 to 100." })
       continue
     }
-    value = clampHeightPercent(parsed)
+    heightPercent = clampHeightPercent(parsed)
   }
 }
 
@@ -169,7 +168,21 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       showConfirm: (props) => showConfirmMenu(api, props),
       showAlert: (props) => showAlertMenu(api, props),
       showPrompt: (props) => showPromptOnce(api, props),
-      showHeightSlider: (current: number) => showHeightSliderFlow(api, current),
+      showSizePicker: (current) => showSizePickerFlow(api, current),
+      showBusy: (title: string) => {
+        const theme = () => api.theme.current
+        api.ui.dialog.replace(() => (
+          <box flexDirection="column" width="100%" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+            <text fg={theme().accent}><b>{title}</b></text>
+            <text fg={theme().textMuted}>working… (esc does not cancel)</text>
+          </box>
+        ))
+        return () => {
+          try {
+            api.ui.dialog.clear()
+          } catch {}
+        }
+      },
       // CUSTOM interactive dialogs (family MenuDialog pattern: own
       // priority-10000 key layer + mode push + input shield). The host's
       // ui.DialogX components under plugin dialog.replace render but

@@ -115,7 +115,7 @@ function mergeServerGroups(base, add) {
 function resolveServer(cfg) {
   const servers = {};
   if (cfg.workerUrl)
-    servers[cfg.workerUrl] = { token: cfg.createToken || "", active: true };
+    servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true };
   if (cfg.servers)
     for (const [url2, entry] of Object.entries(cfg.servers))
       servers[url2] = entry;

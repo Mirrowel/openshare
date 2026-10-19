@@ -12,8 +12,15 @@ export type ShareDialogSelectOption<Value = string> = {
   description?: string
   category?: string
   disabled?: boolean
-  /** long-form detail shown in the [i] pane (v1 menus; other hosts ignore) */
+  /** long-form detail shown in the [i] pane (v1 menus; other hosts ignore).
+   * "## Header" lines split paged sections. */
   help?: string
+  /** destructive action — renders red (v1 menus) */
+  danger?: boolean
+  /** pending/edited — renders green (v1 menus) */
+  edited?: boolean
+  /** non-interactive separator row (v1 menus) */
+  divider?: boolean
 }
 
 export type ShareHostKeyContext = {
@@ -78,11 +85,13 @@ export type ShareHostApi = {
     }
     /** Promise menus (the family showMenuOnce pattern). Preferred UI on v1. */
     showMenu<Value = string>(props: { title: string; options: ShareDialogSelectOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined>
-    showConfirm(props: { title: string; message: string; confirmLabel?: string }): Promise<boolean>
+    showConfirm(props: { title: string; message: string; confirmLabel?: string; danger?: boolean }): Promise<boolean>
     showAlert(props: { title: string; message: string }): Promise<void>
     showPrompt(props: { title: string; placeholder?: string; value?: string }): Promise<string | undefined>
-    /** Height-slider dialog (v1 facade only; feature-detected by settings). */
-    showHeightSlider?(current: number): Promise<number | undefined>
+    /** Combined menu-size picker (v1 facade only; feature-detected). */
+    showSizePicker?(current: { width: string; heightPercent: number }): Promise<{ width: string; heightPercent: number } | undefined>
+    /** Non-cancelable busy dialog; returns the done() that clears it. */
+    showBusy?(title: string): (() => void) | undefined
     // Callback dialogs (v2 adapter bridge only — host ui.DialogX under
     // plugin dialog.replace receives no keys on opencode 1.19.x).
     DialogSelect<Value = string>(props: {

@@ -144,22 +144,37 @@ Full semantics: [share-worker/README — Identity & enrollment](share-worker/REA
 ## TUI commands
 
 - **`/share`** — shadows the deprecated built-in. Not connected yet → the connect flow (URL + code). First share → one-time consent, then the URL is copied. Already shared → the **share manager**:
-  - single server: copy link / stop sharing;
-  - multiple servers: per-server copy, **manage per server** (stop here / leave as snapshot), share to another server, stop all;
+  - single server: copy link / **stop sharing** — with the choice to **delete the page** (links die, final "gone" frame) or **leave it as-is** (a frozen snapshot that stays readable until its TTL) — also reachable from `/openshare → This session → Stop sharing`;
+  - multiple servers: per-server copy, **manage per server** (stop here / leave as snapshot), share to another server, stop all (delete everywhere or leave snapshots everywhere);
   - a credential conflict opens the **collision dialog**: copy debug info (for the hoster / an issue), share on a new share, or don't share.
 - **`/openshare`** — grouped settings (compact root, focused submenus):
-  - **This session** *(when opened from a session)* — share/stop, TTL override, session read auth.
-  - **Connection** — the legacy workerUrl + createToken pair.
-  - **Servers** — memberships with status; per-server: set active, enroll now, rotate token, disconnect (server-side revoke), **admin panel** (users, tokens, access codes, shares, purge — root token, saved per server), test, remove; **Connect to a server** (URL + code → enrolled + active).
-  - **Sharing** — share mode, sync interval, completed delay, model label, TTL, viewer task tabs.
+  - **This session** *(when opened from a session)* — share/stop (delete or snapshot), TTL override, session read auth.
+  - **Servers** — connection *and* membership in one place: the legacy workerUrl + createToken pair, saved servers (set active, enroll now, rotate token, **get a user token** for root holders, disconnect, **admin panel**, test, remove), **Connect to a server** (URL + code → enrolled + active), Test connection.
+  - **Sharing** — share mode (**selection menu**: auto/all/manual), sync interval, completed delay, model label, TTL, viewer task tabs (**true/false menus** — no typed booleans anywhere).
   - **Read auth** — the optional login gate for new pages.
-  - **Interface** — menu width (medium/large/xlarge → 60/88/116 columns) and menu height (25–100% of the terminal, slider with presets). Stored in the host's own preference store — per machine, not the config file.
+  - **Interface** — **Menu size…**: one combined picker (ported from config-studio) — `w` cycles width live (60/88/116 columns), `←→`/`↑↓` slide height (25–100%), presets `1-4`, and a live mini-preview shows the *actual* capped height. Stored in the host's own preference store — per machine, not the config file.
   - **Advanced** — spool dir, url file, stderr announce.
   - **Config files** — write-target picker and the per-key source map.
-  - Every group row carries a live summary (active server, sync cadence, auth state…); every group and row has an `[i]` pane.
-- **`[i]` info pane** — every meaningful menu row (settings, servers, share manager, admin console) carries a long-form detail pane: what the option does, current value + which file/env it comes from, defaults, effects and caveats, and the full data the row truncates (complete URLs, share ids, token kinds). Press `i` on a row, `esc` returns to the menu with the selection intact.
+  - Every group row carries a live summary (active server, sync cadence, auth state…); every group and row has an `[i]` pane; destructive rows (purge, delete, disconnect, stop sharing) render **red**, edited rows render **green**; dirty keys are marked until Save & exit.
+- **Root holders are users too** — configuring with the legacy `createToken` files the root token as `adminToken`; the server menu then offers **Get a user token** (label prompt, prefilled `admin-<host>`): admin-mints your own user identity, saves its `osk_` token for rotate/disconnect/ownership, and keeps root for the admin panel. Also in the admin console as **Mint my user token**.
+- **`[i]` info pane** — every meaningful menu row (settings, servers, share manager, admin console) carries a long-form detail pane: what the option does, current value + which file/env it comes from, defaults, effects and caveats, and the full data the row truncates (complete URLs, share ids, token kinds). Press `i` on a row, `esc` returns with the selection intact. The pane sizes to its **content** (not the menu that opened it), word-wraps hard tokens (JSON never escapes the frame), and long texts render as **paged sections** (`## headers`, `p`/`n` and `1-9` to jump, page/home/end scroll).
+- **Confirm/alert bodies are real dialogs** — messages wrap and scroll (the old one-line hint clipped destructive prompts mid-URL); confirms carry clickable action buttons, danger actions render red.
+- **Server info, the readable kind** — policy rendered as `key: value` lines (durations humanized), auth explained in words (`private — joining needs an access code (osc_…) from the hoster` / `public`), *your* standing on the server (user token / root only / none), and follow-up actions (create an access code).
+- **Admin console** — busy indicator during fetches, empty states ("No users yet…"), and Back always returns exactly one level.
 - **Gone detection** — a binding can outlive its page (purge, TTL, host-side delete). Opening the share manager probes every bound server (credential-free); dead entries are cleared from the session automatically with a **"Share is gone"** modal offering *Share again* / *Close*. The sidebar chip verifies lazily (per session+server, 1/min) and renders a dim `⊘` state — clicking it opens the manager instead of copying a dead link. Network errors never count as gone.
 - **Sidebar chip** — `◉ re:share` next to the session title; click copies the link. `·N` when the session streams to several servers; `⊘` when the page is gone (click to fix).
+- **No flicker** — menus chain by atomic replace (no clear-between); the dialog only closes when a flow truly ends.
+
+## The viewer
+
+Each share serves a self-contained page at `<worker>/s/<id>` (and `/s/<id>/<sub>` for a subagent's sub-page — task rows link there, new-tab behavior configurable). The page is static asset hosting — it ships with the worker, no build step for you.
+
+- **Live updates** — the page attaches over WebSocket and merges frames client-side (keyed, idempotent; message/part tombstones remove undone work the same way opencode does). If the socket drops (server turn-sockets idle out, laptop sleeps), it falls back to 5-second polling and re-attaches automatically — a refresh is never required.
+- **Status badges** — `live` (streaming), `completed`, `error`, `interrupted` (plugin vanished without goodbye — finalized server-side after the grace window), `gone` (deleted or TTL-expired; the final frame says so).
+- **Multi-session shares** — a share that carries subagent sessions lists them; each opens its own sub-page with the parent linked back. Folded undone turns stay folded (the revert pointer is honored), diffs render unified or split.
+- **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer renders a login form, exchanges it for a 7-day cookie, and locks out after repeated failures (429). The gate never grants write access — editing is plugin-only.
+- **Reader settings** (gear icon, persisted in a 1-year cookie): themes (system/light/dark/mirrobot/midnight/sepia/nord), continuous scroll or paged, follow-live, text and reading sizes, unified/split diffs, reasoning auto-open, tool info/output visibility, tool grouping, content centering.
+- **Local snapshots** — the same viewer renders embedded local snapshots (a single HTML file with the data inlined) — used for exports/attachments; identical rendering, no server.
 
 ## Configuration
 

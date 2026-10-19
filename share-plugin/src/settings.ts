@@ -20,9 +20,12 @@ import {
   normServerUrl,
   probeAuthMode,
   probeWorker,
+  patchSessionBinding,
   readBinding,
+  readBindings,
   resolveRoot,
   rotateAtServer,
+  runUnshareFlow,
   saveConfig,
   saveServerEntry,
   serverEntries,
@@ -68,7 +71,7 @@ function showPrompt(ui: UI, props: { title: string; placeholder?: string; value?
   return ui.showPrompt(props)
 }
 
-function showConfirm(ui: UI, props: { title: string; message: string; confirmLabel?: string }): Promise<boolean> {
+function showConfirm(ui: UI, props: { title: string; message: string; confirmLabel?: string; danger?: boolean }): Promise<boolean> {
   return ui.showConfirm(props)
 }
 
@@ -87,7 +90,7 @@ type EditKind = "text" | "number" | "password"
 /** Row metadata: label (column 1), help (the one-line description), kind
  * (editor), section — plus `info` (the long-form [i] pane text: what it
  * does, effects, caveats) and `def` (the default shown in the pane). */
-type LabelMeta = { label: string; help: string; kind: EditKind; section: string; info?: string; def?: string }
+type LabelMeta = { label: string; help: string; kind: EditKind; section: string; info?: string; def?: string; /** fixed vocabulary — edits via a selection menu, not a prompt */ options?: string[] }
 
 const LABELS: Record<string, LabelMeta> = {
   workerUrl: {
@@ -110,6 +113,7 @@ const LABELS: Record<string, LabelMeta> = {
     label: "Share mode",
     help: '"all" shares every session; "manual" needs /share. Default: TUI presence.',
     kind: "text",
+    options: ["auto", "all", "manual"],
     section: "Sharing",
     info: 'all: every NEW session shares automatically (CI posture). Sessions that existed before the plugin started are never auto-shared — share those explicitly. manual: sessions stay private until you run /share.\n\nDefault (empty): TUI presence decides — installing the TUI part means manual, server-only means all.',
     def: "auto (TUI presence)",
@@ -150,6 +154,7 @@ const LABELS: Record<string, LabelMeta> = {
     label: "Open tasks in new tab",
     help: "Viewer: task rows open subagent pages in a new tab.",
     kind: "text",
+    options: ["true", "false"],
     section: "Sharing",
     info: "Viewer behavior only: clicking a task (subagent) row opens its sub-page in a new browser tab instead of navigating. true/false.",
     def: "true",
@@ -190,6 +195,7 @@ const LABELS: Record<string, LabelMeta> = {
     label: "Announce on stderr",
     help: '"true"/"false": the [openshare] live: and url file: log lines. false silences them; the share itself is unaffected.',
     kind: "text",
+    options: ["true", "false"],
     section: "Advanced",
     info: "Whether the informational [openshare] lines reach stderr in all-mode (CI logs). Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
     def: "true",
@@ -219,6 +225,26 @@ function displayValue(key: string, cfg: ShareConfig): string {
 async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promise<ShareConfig | undefined> {
   const meta = LABELS[key]
   if (!meta) return undefined
+  // selection-backed settings (owner: "setting share mode i need to enter it
+  // manually? No selection?") — fixed vocabularies become menus
+  if (meta.options) {
+    const current = String((cfg as unknown as Record<string, unknown>)[key] ?? "")
+    const picked = await showSelect(host.ui, {
+      title: meta.label,
+      options: meta.options.map((option) => ({
+        title: option,
+        value: option,
+        description: option === current ? "● current" : "",
+      })),
+      current,
+    })
+    if (picked === undefined) return undefined
+    const next = { ...cfg } as unknown as Record<string, unknown>
+    if (key === "shareMode") next[key] = picked === "auto" ? undefined : picked
+    else if (key === "openTasksInNewTab" || key === "announceStderr") next[key] = picked === "true"
+    else next[key] = picked
+    return next as ShareConfig
+  }
   const raw = await showPrompt(host.ui, {
     title: `${meta.label} — ${displayValue(key, cfg)}`,
     placeholder: meta.kind === "number" ? "number" : meta.kind === "password" ? "paste token" : "value",
@@ -233,17 +259,9 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
       return undefined
     }
     next[key] = Math.floor(parsed)
-  } else if (key === "openTasksInNewTab" || key === "announceStderr") {
-    next[key] = raw === "true" || raw === "yes" || raw === "1"
   } else if (key === "urlFile") {
     // "" = default path, "none" = disabled, anything else = explicit path
     next[key] = raw.trim().toLowerCase() === "none" ? "none" : raw
-  } else if (key === "shareMode") {
-    if (raw !== "all" && raw !== "manual" && raw !== "") {
-      host.ui.toast({ variant: "error", title: "OpenShare", message: 'Share mode must be "all", "manual", or empty (auto).' })
-      return undefined
-    }
-    next[key] = raw === "" ? undefined : raw
   } else {
     next[key] = raw
   }
@@ -279,24 +297,38 @@ export async function connectServerFlow(host: ShareHostApi): Promise<{ ok: boole
   return { ok: true, message: `Connected to ${url} as "${res.label}" — sharing goes there now.`, url }
 }
 
-/** Per-server submenu: identity status + membership actions. */
+/** Per-server submenu: identity status + membership actions. Root-token
+ * holders get "Get a user token" (admin mints their own user identity —
+ * root stays as adminToken; being admin and being a user are NOT mutually
+ * exclusive, live-caught). */
 async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
   while (true) {
     const entries = serverEntries()
     const mine = entries.find((s) => s.url === url)
     if (!mine) return
-    const cred = mine.entry.token
-      ? `token ${mask(mine.entry.token)}`
-      : mine.entry.code
-        ? "no token (code saved, enrolls on demand)"
-        : "no token (public server, enrolls on demand)"
+    const holdsRoot = !!mine.entry.token && mine.entry.token === (mine.entry.adminToken ?? adminTokenFor(url))
+    const cred = holdsRoot
+      ? `ROOT token ${mask(mine.entry.token)} — admin, no user identity`
+      : mine.entry.token
+        ? `token ${mask(mine.entry.token)}`
+        : mine.entry.code
+          ? "no token (code saved, enrolls on demand)"
+          : "no token (public server, enrolls on demand)"
     const options: ShareDialogSelectOption<string>[] = [
       { title: url, value: "info", description: `${mine.entry.label ?? "(no label)"} · ${cred}${mine.active ? " · ACTIVE" : ""}`, disabled: true },
     ]
     if (!mine.active) options.push({ title: "Set active", value: "active", description: "new sessions share here" })
-    if (!mine.entry.token) options.push({ title: "Enroll now", value: "enroll", description: "get a user token immediately" })
-    if (mine.entry.token) options.push({ title: "Rotate token", value: "rotate", description: "new token, old one revoked" })
-    if (mine.entry.token) options.push({ title: "Disconnect", value: "disconnect", description: "revoke the token server-side and forget it" })
+    if (holdsRoot) {
+      options.push({
+        title: "Get a user token",
+        value: "adopt",
+        description: "admin-mint YOUR user token; root stays saved",
+        help: `You hold the server's ROOT token — full admin, but root is not a user identity: rotate/disconnect act on user tokens, and a root-holder "user" doesn't exist.\n\nThis creates your own user on ${url} (label prompt, prefilled), mints its token, and saves it as this server's user token. The root token stays in adminToken for the admin panel. You become admin AND user.`,
+      })
+    }
+    if (!mine.entry.token || holdsRoot) options.push({ title: "Enroll now", value: "enroll", description: holdsRoot ? "join as a user via code/public enrollment" : "get a user token immediately" })
+    if (mine.entry.token && !holdsRoot) options.push({ title: "Rotate token", value: "rotate", description: "new token, old one revoked" })
+    if (mine.entry.token && !holdsRoot) options.push({ title: "Disconnect", value: "disconnect", description: "revoke the token server-side and forget it", danger: true })
     options.push({
       title: "Admin panel",
       value: "admin",
@@ -304,11 +336,11 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       help: `Opens the admin console for THIS server: manage users (freeze/unfreeze/mint/delete), revoke tokens, create access codes, list/reassign/delete shares, purge.\n\nNeeds the server's root CREATE_TOKEN (saved admin token used first; prompted otherwise, and then saved). User tokens cannot administer.`,
     })
     options.push({ title: "Test this server", value: "test", description: "probe /health" })
-    options.push({ title: "Remove from config", value: "remove", description: "drop the saved membership (server-side state untouched)" })
-    options.push({ title: "Back", value: "back" })
+    options.push({ title: "Remove from config", value: "remove", description: "drop the saved membership (server-side state untouched)", danger: true })
+    options.push({ title: "Back", value: "__back" })
 
     const choice = await showSelect(host.ui, { title: "Share server", options })
-    if (choice === undefined || choice === "back") return
+    if (choice === undefined || choice === "__back") return
 
     if (choice === "active") {
       for (const other of entries) {
@@ -317,6 +349,30 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       saveServerEntry(url, { active: true })
       host.ui.toast({ variant: "success", title: "OpenShare", message: `${url} is now the active server.` })
       return
+    }
+    if (choice === "adopt") {
+      const rootToken = mine.entry.adminToken ?? adminTokenFor(url)
+      if (!rootToken) {
+        await showInfo(host.ui, { title: "No admin token", message: "The root token is needed to mint your user token. Open the Admin panel once (it saves the token), then retry." })
+        continue
+      }
+      const prefill = `admin-${hostOf(url).replace(/[^a-z0-9-]/gi, "") || "user"}`
+      const label = (await showPrompt(host.ui, { title: "Your user label on this server", placeholder: "shown in the admin user list", value: prefill }))?.trim()
+      if (!label) continue
+      const client = adminClient(url, rootToken)
+      const made = await client.createUser(label)
+      if (!made.ok || !made.data?.userId) {
+        await showInfo(host.ui, { title: "User creation failed", message: `${url}: ${made.error ?? "unknown error"}` })
+        continue
+      }
+      const minted = await client.mintToken(made.data.userId, label)
+      if (!minted.ok || !minted.data?.token) {
+        await showInfo(host.ui, { title: "Token mint failed", message: `${url}: ${minted.error ?? "unknown error"} (user was created — retry mint from the admin panel)` })
+        continue
+      }
+      saveServerEntry(url, { token: minted.data.token, label, adminToken: rootToken })
+      host.ui.toast({ variant: "success", title: "OpenShare", message: `User token for "${label}" saved — rotate and disconnect now work; root stays for the admin panel.` })
+      continue
     }
     if (choice === "enroll") {
       const probe = await probeAuthMode(url)
@@ -351,7 +407,7 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       continue
     }
     if (choice === "disconnect") {
-      const sure = await showConfirm(host.ui, { title: "Disconnect", message: `Revoke the token at ${url} and forget it?\nYour shares stay (read-only for you until TTL).`, confirmLabel: "Disconnect" })
+      const sure = await showConfirm(host.ui, { title: "Disconnect", message: `Revoke the token at ${url} and forget it?\nYour shares stay (read-only for you until TTL).`, confirmLabel: "Disconnect", danger: true })
       if (!sure) continue
       const res = await disconnectAtServer(url, mine.entry.token ?? "")
       saveServerEntry(url, { token: undefined })
@@ -368,7 +424,7 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       continue
     }
     if (choice === "remove") {
-      const sure = await showConfirm(host.ui, { title: "Remove server", message: `Remove the saved membership for\n${url}?`, confirmLabel: "Remove" })
+      const sure = await showConfirm(host.ui, { title: "Remove server", message: `Remove the saved membership for\n${url}?`, confirmLabel: "Remove", danger: true })
       if (!sure) continue
       deleteServerEntry(url)
       host.ui.toast({ variant: "success", title: "OpenShare", message: "Membership removed." })
@@ -432,36 +488,38 @@ export async function adminConsole(host: ShareHostApi, pinnedUrl?: string): Prom
     if (saved) host.ui.toast({ variant: "info", title: "OpenShare", message: `Admin token saved for ${url} (servers entry).` })
   }
 
-  // 3) the console loop
+  // 3) the console loop — busy dialog around the fetch batch (config-studio
+  // port: zero feedback while four network calls run reads as a freeze)
   while (true) {
-    const [usersR, tokensR, codesR, sharesR] = await Promise.all([client.users(), client.tokens(), client.codes(), client.shares()])
-    const users = usersR.data?.users ?? []
-    const tokens = tokensR.data?.tokens ?? []
-    const codes = codesR.data?.codes ?? []
-    const shares = sharesR.data?.shares ?? []
+    const users: AdminUser[] = []
+    const tokens: Array<{ id: string; userId: string; label: string; createdAt: number; lastUsedAt: number; revoked: boolean }> = []
+    const codes: Array<{ id: string; label: string; activationsLeft: number; used: number; disabled: boolean }> = []
+    const shares: AdminShare[] = []
+    await withBusy(host, `Loading ${hostOf(url)}…`, async () => {
+      const [usersR, tokensR, codesR, sharesR] = await Promise.all([client.users(), client.tokens(), client.codes(), client.shares()])
+      users.push(...(usersR.data?.users ?? []))
+      tokens.push(...(tokensR.data?.tokens ?? []))
+      codes.push(...(codesR.data?.codes ?? []))
+      shares.push(...(sharesR.data?.shares ?? []))
+    })
 
     const choice = await showSelect(host.ui, {
       title: `Admin — ${url}`,
       options: [
-        { title: "Server info", value: "info", description: "health, policy, auth mode" },
+        { title: "Server info", value: "info", description: "health, policy, auth mode, your standing", help: `Full server state: service version, socket policy (formatted, not a JSON blob), what joining requires, and what THIS plugin instance holds (user token / root / none) — with follow-up actions.` },
         { title: `Users (${users.length})`, value: "users", description: `${users.filter((u) => u.frozen).length} frozen` },
         { title: `Tokens (${tokens.length})`, value: "tokens", description: `${tokens.filter((t) => !t.revoked).length} active` },
         { title: `Access codes (${codes.length})`, value: "codes", description: "invite codes with activation budgets" },
         { title: `Shares (${shares.length})`, value: "shares", description: "every share on this server" },
-        { title: "Purge ALL shares", value: "purge", description: "delete every share — maintenance" },
-        { title: "Back", value: "back" },
+        { title: "Mint my user token", value: "adopt", description: "admin-mint YOUR user token and save it", help: `Creates your own user on ${url} and saves its token as this server's user credential — so rotate/disconnect and share ownership work for you. The root token stays untouched in adminToken.` },
+        { title: "Purge ALL shares", value: "purge", description: "delete every share — maintenance", danger: true },
+        { title: "Back", value: "__back" },
       ],
     })
-    if (choice === undefined || choice === "back") return
+    if (choice === undefined || choice === "__back") return
 
     if (choice === "info") {
-      const h = await client.health()
-      await showInfo(host.ui, {
-        title: h.ok ? "Server info" : "Unreachable",
-        message: h.ok
-          ? `${url}\nservice: ${h.data?.service ?? "?"}\nauth: ${h.data?.auth?.mode ?? "?"}\npolicy: ${JSON.stringify(h.data?.policy ?? {})}`
-          : `${url}: ${h.error ?? "unreachable"}`,
-      })
+      await serverInfoScreen(host, url, client)
       continue
     }
 
@@ -481,11 +539,16 @@ export async function adminConsole(host: ShareHostApi, pinnedUrl?: string): Prom
       await adminSharesMenu(host, client, url, shares, users)
       continue
     }
+    if (choice === "adopt") {
+      await adoptUserToken(host, url, adminToken)
+      continue
+    }
     if (choice === "purge") {
       const sure = await showConfirm(host.ui, {
         title: "Purge every share",
         message: `Delete ALL ${shares.length} shares on\n${url}?\nViewers get a final "gone" frame. Users, tokens and codes are untouched.`,
         confirmLabel: "Purge",
+        danger: true,
       })
       if (!sure) continue
       const res = await client.purge()
@@ -493,6 +556,95 @@ export async function adminConsole(host: ShareHostApi, pinnedUrl?: string): Prom
       continue
     }
   }
+}
+
+/** Busy dialog (config-studio showBusy port): non-cancelable, and the
+ * teardown ordering matters — the busy dialog must finish clearing BEFORE
+ * the next menu opens, or its clear() wipes the replacing menu. Facade
+ * method (v1 renders it; the mock is a no-op). */
+async function withBusy(host: ShareHostApi, title: string, work: Promise<void> | (() => Promise<void>)): Promise<void> {
+  const doneBusy = host.ui.showBusy?.(title)
+  try {
+    await (typeof work === "function" ? work() : work)
+  } catch {}
+  doneBusy?.()
+}
+
+/** Server info, the readable version (live-caught: the raw JSON policy line
+ * escaped the dialog border): formatted policy lines, auth explained in
+ * words, YOUR standing on this server, and follow-up actions. */
+async function serverInfoScreen(host: ShareHostApi, url: string, client: ReturnType<typeof adminClient>): Promise<void> {
+  const h = await client.health()
+  if (!h.ok) {
+    await showInfo(host.ui, { title: "Unreachable", message: `${url}: ${h.error ?? "unreachable"}` })
+    return
+  }
+  const policy = (h.data?.policy ?? {}) as Record<string, unknown>
+  const policyLines = Object.entries(policy).map(([key, value]) => {
+    if (typeof value === "number" && /ms$/i.test(key)) return `${key}: ${value >= 60000 ? `${Math.round(value / 60000)}m` : `${Math.round(value / 1000)}s`} (${value}ms)`
+    return `${key}: ${String(value)}`
+  })
+  const mode = h.data?.auth?.mode
+  const entry = serverEntries().find((s) => s.url === url)?.entry
+  const standing = entry?.token
+    ? entry.token === (entry.adminToken ?? adminTokenFor(url))
+      ? `root token only — admin, NO user identity (see "Get a user token")`
+      : `user token ${mask(entry.token)}${entry.adminToken ? " + root adminToken" : ""}`
+    : entry?.code
+      ? "access code saved — enrolls on demand"
+      : "no credential held — public enrollment on demand"
+  const message = [
+    `${url}`,
+    `service: ${h.data?.service ?? "?"}`,
+    "",
+    "Auth:",
+    mode === "private" ? "private — joining needs an access code (osc_…) issued by the hoster" : mode === "public" ? "public — anyone with the URL may enroll and share" : `unknown (${String(mode)})`,
+    "You hold: " + standing,
+    "",
+    "Policy (server-owned; clients get clamped into it):",
+    ...policyLines,
+  ].join("\n")
+  await showInfo(host.ui, { title: "Server info", message })
+  const followUp = await showSelect(host.ui, {
+    title: "Server info — actions",
+    options: [
+      { title: "Create access code", value: "code", description: "invite: N activations, each issues a user token", help: `Mints an osc_ access code on ${url}. Each activation creates a new user + token; the budget limits how many. Shown once — copy it right away.` },
+      { title: "Back", value: "__back" },
+    ],
+  })
+  if (followUp === "code") {
+    const raw = await showPrompt(host.ui, { title: "Activations budget", placeholder: "how many users this code may create", value: "1" })
+    if (raw === undefined) return
+    const activations = Math.max(1, Math.floor(Number(raw) || 1))
+    const res = await client.createCode(`info-${new Date().toISOString().slice(0, 10)}`, activations)
+    if (res.ok && res.data?.code) {
+      await host.clipboard.write(res.data.code).catch(() => false)
+      await showInfo(host.ui, { title: "Access code created", message: `${res.data.code}\n\n${activations} activation(s). Copied to the clipboard — shown once.` })
+    } else {
+      await showInfo(host.ui, { title: "Creation failed", message: res.error ?? "unknown error" })
+    }
+  }
+}
+
+/** Admin-mint your own user identity on a server (the "admin can't be a
+ * user" fix; shared by the admin console and the server submenu). */
+async function adoptUserToken(host: ShareHostApi, url: string, rootToken: string): Promise<void> {
+  const prefill = `admin-${hostOf(url).replace(/[^a-z0-9-]/gi, "") || "user"}`
+  const label = (await showPrompt(host.ui, { title: "Your user label on this server", placeholder: "shown in the admin user list", value: prefill }))?.trim()
+  if (!label) return
+  const client = adminClient(url, rootToken)
+  const made = await client.createUser(label)
+  if (!made.ok || !made.data?.userId) {
+    await showInfo(host.ui, { title: "User creation failed", message: `${url}: ${made.error ?? "unknown error"}` })
+    return
+  }
+  const minted = await client.mintToken(made.data.userId, label)
+  if (!minted.ok || !minted.data?.token) {
+    await showInfo(host.ui, { title: "Token mint failed", message: `${url}: ${minted.error ?? "unknown error"} (user was created — retry mint from the admin panel)` })
+    return
+  }
+  saveServerEntry(url, { token: minted.data.token, label, adminToken: rootToken })
+  host.ui.toast({ variant: "success", title: "OpenShare", message: `User token for "${label}" saved — root stays for the admin panel.` })
 }
 
 async function adminUsersMenu(host: ShareHostApi, client: ReturnType<typeof adminClient>, url: string, users: AdminUser[]): Promise<void> {
@@ -503,6 +655,7 @@ async function adminUsersMenu(host: ShareHostApi, client: ReturnType<typeof admi
   }))
   options.push({ title: "Create user", value: "__create", description: "empty user record; mint a token next" })
   options.push({ title: "Back", value: "__back" })
+  if (users.length === 0) options.splice(0, 0, { title: "No users yet", value: "__empty", description: "create one below, or share an access code", disabled: true })
   while (true) {
     const picked = await showSelect(host.ui, { title: `Users — ${url}`, options })
     if (picked === undefined || picked === "__back") return
@@ -520,15 +673,15 @@ async function adminUsersMenu(host: ShareHostApi, client: ReturnType<typeof admi
       options: [
         { title: user.frozen ? "Unfreeze" : "Freeze", value: "freeze", description: user.frozen ? "restore edit rights on their shares" : "sever ALL edit paths on their shares (view unaffected)" },
         { title: "Mint token", value: "mint", description: "issue a new osk_ token (shown once)" },
-        { title: "Delete user", value: "delete", description: "default freezes; delete mode also removes shares + tokens" },
-        { title: "Back", value: "back" },
+        { title: "Delete user", value: "delete", description: "default freezes; delete mode also removes shares + tokens", danger: true },
+        { title: "Back", value: "__back" },
       ],
     })
-    if (action === undefined || action === "back") continue
+    if (action === undefined || action === "__back") continue
     if (action === "freeze") {
       const res = user.frozen ? await client.unfreeze(user.id) : await client.freeze(user.id)
       host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? (user.frozen ? "Unfrozen." : `Frozen (${res.data?.shares ?? "?"} shares locked).`) : `Failed: ${res.error}` })
-      return
+      continue
     }
     if (action === "mint") {
       const res = await client.mintToken(user.id)
@@ -545,14 +698,14 @@ async function adminUsersMenu(host: ShareHostApi, client: ReturnType<typeof admi
         title: `Delete ${user.label}?`,
         options: [
           { title: "Freeze instead (default)", value: "freeze", description: "reversible — shares stay, edits blocked" },
-          { title: "Delete everything", value: "delete", description: "remove their shares + tokens + user" },
-          { title: "Cancel", value: "cancel" },
+          { title: "Delete everything", value: "delete", description: "remove their shares + tokens + user", danger: true },
+          { title: "Cancel", value: "__cancel" },
         ],
       })
-      if (mode === undefined || mode === "cancel") continue
+      if (mode === undefined || mode === "__cancel") continue
       const res = await client.deleteUser(user.id, mode === "delete" ? "delete" : "freeze")
       host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? (mode === "delete" ? `Deleted (${res.data?.shares ?? "?"} shares removed).` : "Frozen.") : `Failed: ${res.error}` })
-      return
+      continue
     }
   }
 }
@@ -567,10 +720,11 @@ async function adminTokensMenu(host: ShareHostApi, client: ReturnType<typeof adm
         value: t.id,
         description: `last used ${t.lastUsedAt ? new Date(t.lastUsedAt).toISOString().slice(0, 16).replace("T", " ") : "never"}`,
       }))
+    if (options.length === 0) options.push({ title: "No active tokens", value: "__empty", description: "mint one from a user in Users", disabled: true })
     options.push({ title: "Back", value: "__back" })
     const picked = await showSelect(host.ui, { title: `Active tokens (${options.length - 1}) — revoke`, options })
     if (picked === undefined || picked === "__back") return
-    const sure = await showConfirm(host.ui, { title: "Revoke token", message: `Revoke ${picked}?\nThe holder can no longer write (existing shares keep their secrets unless the user is frozen).`, confirmLabel: "Revoke" })
+    const sure = await showConfirm(host.ui, { title: "Revoke token", message: `Revoke ${picked}?\nThe holder can no longer write (existing shares keep their secrets unless the user is frozen).`, confirmLabel: "Revoke", danger: true })
     if (!sure) continue
     const res = await client.revokeToken(picked)
     host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Token revoked." : `Failed: ${res.error}` })
@@ -585,6 +739,7 @@ async function adminCodesMenu(host: ShareHostApi, client: ReturnType<typeof admi
       value: c.id,
       description: c.activationsLeft === -1 ? "unlimited activations" : `${c.activationsLeft} left · ${c.used} used`,
     }))
+    if (fresh.length === 0) options.push({ title: "No access codes yet", value: "__empty", description: "create one below to invite users", disabled: true })
     options.push({ title: "Create code", value: "__create", description: "invite: label + activation budget" })
     options.push({ title: "Back", value: "__back" })
     const picked = await showSelect(host.ui, { title: "Access codes", options })
@@ -623,20 +778,21 @@ async function adminSharesMenu(host: ShareHostApi, client: ReturnType<typeof adm
       value: s.id,
       description: `${labelOf(s.ownerId)} · ${new Date(s.createdAt).toISOString().slice(0, 16).replace("T", " ")}`,
     }))
+    if (fresh.length === 0) options.push({ title: "No shares on this server", value: "__empty", description: "nothing is being shared right now", disabled: true })
     options.push({ title: "Back", value: "__back" })
     const picked = await showSelect(host.ui, { title: `Shares — ${url}`, options })
-    if (picked === undefined || picked === "__back") return
+    if (picked === undefined || picked === "__back" || picked === "__empty") return
     const share = fresh.find((s) => s.id === picked)
     if (!share) continue
     const action = await showSelect(host.ui, {
       title: `Share ${picked.slice(0, 12)}…`,
       options: [
         { title: "Reassign owner", value: "reassign", description: `currently ${labelOf(share.ownerId)} — the rescue path` },
-        { title: "Delete share", value: "delete", description: "viewers get a final gone frame" },
-        { title: "Back", value: "back" },
+        { title: "Delete share", value: "delete", description: "viewers get a final gone frame", danger: true },
+        { title: "Back", value: "__back" },
       ],
     })
-    if (action === undefined || action === "back") continue
+    if (action === undefined || action === "__back") continue
     if (action === "reassign") {
       const usersNow = (await client.users()).data?.users ?? []
       const target = await showSelect(host.ui, {
@@ -649,7 +805,7 @@ async function adminSharesMenu(host: ShareHostApi, client: ReturnType<typeof adm
       continue
     }
     if (action === "delete") {
-      const sure = await showConfirm(host.ui, { title: "Delete share", message: `Delete ${picked} permanently?`, confirmLabel: "Delete" })
+      const sure = await showConfirm(host.ui, { title: "Delete share", message: `Delete ${picked} permanently?`, confirmLabel: "Delete", danger: true })
       if (!sure) continue
       const res = await client.deleteShare(picked)
       host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Share deleted." : `Failed: ${res.error}` })
@@ -673,10 +829,9 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
   let writeTarget: WriteCandidate = candidates[0]
   const sources = configSourceMap(moduleDir())
 
-  type GroupId = "session" | "connection" | "servers" | "sharing" | "readauth" | "interface" | "advanced" | "configfiles"
+  type GroupId = "session" | "servers" | "sharing" | "readauth" | "interface" | "advanced" | "configfiles"
   const GROUP_LABEL: Record<GroupId, string> = {
     session: "This session",
-    connection: "Connection",
     servers: "Servers",
     sharing: "Sharing",
     readauth: "Read auth",
@@ -684,32 +839,38 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     advanced: "Advanced",
     configfiles: "Config files",
   }
+  // which keys have edits pending in this dialog (green "edited" markers)
+  const dirtyKeys = new Set<string>()
 
   // ---- row builders (one per group) ---------------------------------------
 
   const keyRows = (section: string): ShareDialogSelectOption<string>[] =>
     Object.entries(LABELS)
       .filter(([, meta]) => meta.section === section)
-      .map(([key, meta]) => ({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources) }))
+      .map(([key, meta]) => ({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]), help: helpForKey(key, cfg, sources), edited: dirtyKeys.has(key) }))
 
   const serverRows = (): ShareDialogSelectOption<string>[] => {
     const servers = serverEntries(cfg)
-    const rows: ShareDialogSelectOption<string>[] = servers.map((s) => {
+    const rows: ShareDialogSelectOption<string>[] = keyRows("Connection")
+    rows.push({ title: "— saved servers —", value: "__divider_servers", divider: true } as ShareDialogSelectOption<string>)
+    for (const s of servers) {
       const cred = s.entry.token ? "token saved" : s.entry.code ? "code saved" : "enrolls on demand"
-      return {
+      rows.push({
         title: s.url,
         value: `server:${s.url}`,
         description: `${s.entry.label ? s.entry.label + " · " : ""}${cred}${s.active ? " · ACTIVE" : ""}`,
         help: [
+          `## Server`,
           `Server: ${s.url}`,
           `Label: ${s.entry.label ?? "(none)"}`,
           `Credential: ${s.entry.token ? `user token ${mask(s.entry.token)}` : s.entry.code ? "access code saved — enrolls on demand" : "none — public server, enrolls on demand"}`,
           `Receives new sessions: ${s.active ? "YES (active)" : "no"}`,
           "",
+          "## Notes",
           "Every ACTIVE server receives new sessions (fan-out); one active server is the normal setup. Tokens persist in the settings home; enroll once, then it just works. The per-server submenu (enter) adds the admin panel for this server.",
         ].join("\n"),
-      }
-    })
+      })
+    }
     rows.push({
       title: "Connect to a server",
       value: "server:add",
@@ -730,16 +891,10 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     const uiHeight = kvHeightPercentOf(host.kv)
     return [
       {
-        title: "Menu width",
-        value: "ui:width",
-        description: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)`,
-        help: `How wide OpenShare menus render. OpenCode exposes fixed widths only: medium = 60, large = 88, xlarge = 116 columns. Selecting cycles to the next size.\n\nCurrent: ${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns)\nStored per host (opencode's own preference store), not in the config file.`,
-      },
-      {
-        title: "Menu height",
-        value: "ui:height",
-        description: `${uiHeight}% of terminal`,
-        help: `Maximum height of OpenShare menus, as a percent of terminal rows (25-100). Short menus stay compact; long ones scroll inside this cap. Presets: compact 35, normal 50, tall 70, max 100.\n\nCurrent: ${uiHeight}%\nStored per host, not in the config file.`,
+        title: "Menu size…",
+        value: "ui:size",
+        description: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} cols) · ${uiHeight}% height`,
+        help: `## Width\nmedium = 60, large = 88, xlarge = 116 columns — opencode exposes fixed widths only. In the picker, w cycles the width and the dialog resizes live.\n\n## Height\nA percent of terminal rows (25-100), capped at 75% of the terminal minus chrome (the host's backdrop offset). Presets: compact 35, normal 50, tall 70, max 100. The picker's live preview shows the true capped height.\n\nCurrent: ${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} columns) at ${uiHeight}%\nStored per host (opencode's own preference store), not in the config file.`,
       },
     ]
   }
@@ -777,8 +932,9 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       rows.push({
         title: "Stop sharing",
         value: "session:unshare",
-        description: "Delete the share page and clear the flag",
-        help: `Deletes the page(s) server-side and clears the share flag from this session's metadata. Every link stops working (viewers see a final "gone" state). Sharing again later creates fresh page(s) with new URLs.`,
+        description: "delete the page(s), or leave a snapshot",
+        danger: true,
+        help: `Choose per run: DELETE every page server-side (links stop working — final "gone" state), or LEAVE AS-IS (stop updating; pages stay readable until their TTL — a frozen snapshot).\n\nURLs:\n${[binding.url].join("\n")}\n\nSharing again later always creates fresh page(s) with new URLs.`,
       })
     }
     rows.push({
@@ -800,8 +956,6 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     switch (id) {
       case "session":
         return await sessionRows()
-      case "connection":
-        return keyRows("Connection")
       case "servers":
         return serverRows()
       case "sharing":
@@ -836,30 +990,29 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       return
     }
 
-    if (choice === "ui:width") {
-      host.kv.set(UI_WIDTH_KV, nextDialogWidth(kvWidthOf(host.kv)))
-      host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu width: ${kvWidthOf(host.kv)} (${DIALOG_WIDTH_COLUMNS[kvWidthOf(host.kv)]} columns) — applies to the next menu.` })
-      return
-    }
-
-    if (choice === "ui:height") {
-      let height: number | undefined
-      if (host.ui.showHeightSlider) {
-        height = await host.ui.showHeightSlider(kvHeightPercentOf(host.kv))
+    if (choice === "ui:size") {
+      if (host.ui.showSizePicker) {
+        const result = await host.ui.showSizePicker({ width: kvWidthOf(host.kv), heightPercent: kvHeightPercentOf(host.kv) })
+        if (result) {
+          // the picker persisted through the raw api on v1; mirror it on
+          // hosts where showSizePicker is an adapter (idempotent there)
+          host.kv.set(UI_WIDTH_KV, result.width)
+          host.kv.set(UI_HEIGHT_PERCENT_KV, clampHeightPercent(result.heightPercent))
+          host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu size: ${result.width} · ${result.heightPercent}% of terminal.` })
+        }
       } else {
-        const raw = await showPrompt(host.ui, { title: "Menu height percent", placeholder: "25-100", value: String(kvHeightPercentOf(host.kv)) })
-        if (raw !== undefined) {
-          const parsed = Number(raw)
+        // non-v1 hosts: prompt fallback (width cycle + height number)
+        const rawHeight = await showPrompt(host.ui, { title: "Menu height percent", placeholder: "25-100", value: String(kvHeightPercentOf(host.kv)) })
+        if (rawHeight !== undefined) {
+          const parsed = Number(rawHeight)
           if (!Number.isFinite(parsed)) {
             host.ui.toast({ variant: "error", title: "OpenShare", message: "Height must be a number from 25 to 100." })
             return
           }
-          height = clampHeightPercent(parsed)
+          host.kv.set(UI_HEIGHT_PERCENT_KV, clampHeightPercent(parsed))
+          host.kv.set(UI_WIDTH_KV, nextDialogWidth(kvWidthOf(host.kv)))
+          host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu size: ${kvWidthOf(host.kv)} · ${kvHeightPercentOf(host.kv)}%` })
         }
-      }
-      if (height !== undefined) {
-        host.kv.set(UI_HEIGHT_PERCENT_KV, height)
-        host.ui.toast({ variant: "info", title: "OpenShare", message: `Menu height: ${height}% of terminal — applies to the next menu.` })
       }
       return
     }
@@ -889,10 +1042,12 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     }
 
     if (choice.startsWith("key:")) {
-      const next = await editKey(host, cfg, choice.slice(4))
+      const key = choice.slice(4)
+      const next = await editKey(host, cfg, key)
       if (next) {
         cfg = next
         dirty = true
+        dirtyKeys.add(key)
       }
       return
     }
@@ -910,8 +1065,29 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         return
       }
       if (choice === "session:unshare") {
-        const okClear = await clearShareFlag(host.client, root)
-        host.ui.toast({ variant: okClear ? "success" : "error", title: "OpenShare", message: okClear ? "Share flag cleared; the page is deleted via the sweeper path." : "Could not clear the flag." })
+        const how = await showSelect(host.ui, {
+          title: "Stop sharing",
+          options: [
+            { title: "Delete every page", value: "delete", description: "all links stop working", danger: true, help: "Deletes every bound server's page and clears the share flag. Viewers see a final gone state." },
+            { title: "Leave as-is (snapshot)", value: "leave", description: "stop updating; pages stay until their TTL", help: "Stops mirroring without deleting anything — pages stay readable as frozen snapshots until their TTL expires." },
+            { title: "Cancel", value: "__cancel" },
+          ],
+        })
+        if (how === undefined || how === "__cancel") return
+        if (how === "leave") {
+          const all = await readBindings(host.client, root)
+          const okPatch = await patchSessionBinding(host.client, root, (servers) => {
+            for (const b of all) {
+              if (!b.server) continue
+              delete servers[b.server]
+              servers[b.server] = { optedOut: true }
+            }
+          })
+          host.ui.toast({ variant: okPatch ? "success" : "error", title: "OpenShare", message: okPatch ? "Left as-is — snapshots until their TTLs." : "Could not update the binding." })
+          return
+        }
+        const result = await runUnshareFlow(host, startAtSession)
+        host.ui.toast({ variant: result.ok ? "success" : "error", title: "OpenShare", message: result.message })
         return
       }
       if (choice === "session:ttl") {
@@ -971,11 +1147,6 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
   while (true) {
     const servers = serverEntries(cfg)
     const active = servers.find((s) => s.active)
-    const connectionSummary = cfg.workerUrl
-      ? `${hostOf(cfg.workerUrl)}${cfg.createToken ? " · root token" : ""}`
-      : active
-        ? `${hostOf(active.url)} · servers group`
-        : "not configured"
     const uiWidth = kvWidthOf(host.kv)
 
     const groups: Array<{ id: GroupId; summary: string; help: string }> = []
@@ -985,18 +1156,17 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       groups.push({
         id: "session",
         summary: shared,
-        help: `Per-session state and overrides for the session this dialog was opened on.\n\nStatus: ${shared}${binding?.url ? `\nURL: ${binding.url}` : ""}\n\nInside: share/stop sharing, session TTL override, session read auth.`,
+        help: `Per-session state and overrides for the session this dialog was opened on.\n\nStatus: ${shared}${binding?.url ? `\nURL: ${binding.url}` : ""}\n\nInside: share/stop sharing (delete or leave a snapshot), session TTL override, session read auth.`,
       })
     }
     groups.push({
-      id: "connection",
-      summary: connectionSummary,
-      help: `The legacy single-server pair: workerUrl + createToken (root). The Servers group is the canonical form — tokens per server, enrollment, fan-out; this pair still works and synthesizes into it.\n\nInside: Worker URL, Create token.`,
-    })
-    groups.push({
       id: "servers",
-      summary: servers.length ? `${servers.length} saved${active ? ` · active: ${hostOf(active.url)}` : " · none active"}` : "no membership yet",
-      help: `Your share-server memberships: credentials, active destination, and per-server actions (enroll, rotate, disconnect, admin panel, test, remove). Connect adds a server by URL (+ access code on private ones).\n\nEvery ACTIVE server receives new sessions (fan-out).`,
+      summary: servers.length
+        ? `${servers.length} saved${active ? ` · active: ${hostOf(active.url)}` : " · none active"}${cfg.workerUrl ? " · legacy pair set" : ""}`
+        : cfg.workerUrl
+          ? `${hostOf(cfg.workerUrl)} · legacy pair`
+          : "no server yet",
+      help: `Server connection, memberships, and admin — one place (owner: "we already do connection in servers, why was it separate").\n\nInside: the legacy workerUrl + createToken pair, saved servers (enroll, rotate, disconnect, admin panel, test, remove), Connect to a server, Test connection.\n\nEvery ACTIVE server receives new sessions (fan-out).`,
     })
     groups.push({
       id: "sharing",
