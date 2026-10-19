@@ -23,8 +23,24 @@
 // (10k iterations, per-share salt — free-tier CPU friendly; the hash
 // never leaves the DO), session cookie tokens (7d, up to 5 devices),
 // exponential lockout per IP (5 fails -> 1min doubling to 24h) and
-// per-share total (20 fails -> 24h). Writes are gated separately by
-// CREATE_TOKEN (creation) and the per-share secret (sync/delete).
+// per-share total (20 fails -> 24h).
+//
+// Write auth (identity):
+//   * user tokens "osk_…" — SHA-256-hashed in the AuthDO; every share
+//     records its owner. Control ops accept the owner's valid token OR
+//     the per-share secret while the owner is in good standing.
+//   * enrollment: POST /api/enroll — public servers (AUTH_MODE=public)
+//     issue tokens to anyone; private servers require an access code
+//     ("osc_…") with an activation budget (1 for a personal invite,
+//     -1 unlimited). Codes are minted by the admin.
+//   * token lifecycle: POST /api/token/rotate, DELETE /api/token (self),
+//     GET/PUT /api/me + /api/me/settings + /api/me/shares.
+//   * per-token limits (enforced server-side at create): maxLiveShares,
+//     maxTtlDays, dailyCreates (0 = unlimited).
+//   * frozen user -> all their shares reject EVERY edit (even valid
+//     secrets); viewing is unaffected until TTL. Admin unfreeze/reassign
+//     is the rescue path. The root CREATE_TOKEN stays the forever-valid
+//     admin bootstrap (admin = root only in this model).
 //
 // Viewer privacy: session items never leave with their `metadata` field
 // (the plugin stores its share binding there — belt and suspenders).
@@ -60,7 +76,90 @@ export default {
     })
 
     try {
-      if (path === "/health") return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env) })
+      if (path === "/health")
+        return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env), auth: { mode: authMode(env) } })
+
+      // ---- identity -------------------------------------------------------
+      // Enrollment + self-service. The heavy lifting lives in the AuthDO
+      // (single writer for users/tokens/codes); the router only checks
+      // the root bootstrap and forwards.
+      if (path === "/api/enroll" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/enroll", {
+          code: typeof body.code === "string" ? body.code : "",
+          label: typeof body.label === "string" ? body.label.slice(0, 64) : "",
+          ip: req.headers.get("cf-connecting-ip") ?? "unknown",
+        })
+        return json(r.status, r.body)
+      }
+
+      if (path === "/api/me" && req.method === "GET") {
+        const r = await authCall(env, "/me", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/me/settings" && (req.method === "GET" || req.method === "PUT")) {
+        const body = req.method === "PUT" ? await req.json().catch(() => ({})) : {}
+        const r = await authCall(env, "/settings", { token: bearer(req), patch: body, maxTtl: clampTtl(undefined, env) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/me/shares" && req.method === "GET") {
+        const r = await authCall(env, "/me-shares", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token/rotate" && req.method === "POST") {
+        const r = await authCall(env, "/rotate", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token" && req.method === "DELETE") {
+        const r = await authCall(env, "/token-delete", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+
+      // ---- admin (root CREATE_TOKEN only in this model) --------------------
+      if (path.startsWith("/api/admin/") && path !== "/api/admin/purge") {
+        const token = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "")
+        if (!env.CREATE_TOKEN || token !== env.CREATE_TOKEN) return json(403, { error: "forbidden" })
+        const body = await req.json().catch(() => ({}))
+        const call = async (route) => {
+          const r = await authCall(env, route, body)
+          return [r.status, r.body]
+        }
+        if (path === "/api/admin/users" && req.method === "POST") return json(...(await call("/user-create")))
+        if (path === "/api/admin/users" && req.method === "GET") return json(...(await call("/users-get")))
+        let m = path.match(/^\/api\/admin\/users\/([^/]+)\/(freeze|unfreeze)$/)
+        if (m && req.method === "POST") {
+          body.userId = m[1]
+          return json(...(await call(`/user-freeze:${m[2] === "unfreeze" ? "0" : "1"}`)))
+        }
+        m = path.match(/^\/api\/admin\/users\/([^/]+)$/)
+        if (m && req.method === "DELETE") return json(...(await call("/user-delete:" + m[1])))
+        if (path === "/api/admin/tokens" && req.method === "POST") return json(...(await call("/token-mint")))
+        if (path === "/api/admin/tokens" && req.method === "GET") return json(...(await call("/tokens-get")))
+        m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
+        if (m && req.method === "DELETE") return json(...(await call("/token-revoke:" + m[1])))
+        if (path === "/api/admin/codes" && req.method === "POST") return json(...(await call("/code-create")))
+        if (path === "/api/admin/codes" && req.method === "GET") return json(...(await call("/codes-get")))
+        m = path.match(/^\/api\/admin\/codes\/([^/]+)$/)
+        if (m && req.method === "DELETE") return json(...(await call("/code-disable:" + m[1])))
+        if (path === "/api/admin/shares" && req.method === "GET") {
+          // global list straight from the KV index (ownerId rides along)
+          const shares = []
+          let cursor
+          do {
+            const page = await env.SHARE_INDEX.list({ cursor })
+            for (const k of page.keys) {
+              if (!k.name.startsWith("share:")) continue
+              const raw = await env.SHARE_INDEX.get(k.name)
+              if (raw) shares.push({ id: k.name.slice(6), ...JSON.parse(raw) })
+            }
+            cursor = page.list_complete ? undefined : page.cursor
+          } while (cursor)
+          return json(200, { ok: true, shares })
+        }
+        m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/reassign$/)
+        if (m && req.method === "POST") return json(...(await call("/reassign:" + m[1])))
+        return json(404, { error: "not found" })
+      }
 
       // ---- admin purge: Bearer CREATE_TOKEN, wipes EVERY share ----
       // Maintenance endpoint (owner-only): iterates the share index and
@@ -138,28 +237,21 @@ export default {
 
       if (req.method === "POST" && op === "") {
         const auth = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "")
-        if (!env.CREATE_TOKEN || auth !== env.CREATE_TOKEN) return json(401, { error: "bad create token" })
-        const body = await req.json().catch(() => ({}))
-        if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
-        const newId = randomId()
-        const r = await shareStub(env, newId).fetch("https://do/init", {
-          method: "POST",
-          body: JSON.stringify({
-            id: newId,
-            sessionID: body.sessionID,
-            ttlDays: clampTtl(body.ttlDays, env),
-            authLogin: body.authLogin ?? "",
-            authPassword: body.authPassword ?? "",
-          }),
-        })
-        return json(r.status, await r.json())
+        if (auth && env.CREATE_TOKEN && auth === env.CREATE_TOKEN) {
+          // root bootstrap: ownerless create (legacy path keeps working)
+          return await httpCreate(env, json, await req.json().catch(() => ({})), null, 0)
+        }
+        const chk = await authCall(env, "/create-check", { token: auth ?? "" })
+        if (!chk.body?.ok) return json(chk.body?.httpStatus ?? 401, { error: chk.body?.error ?? "bad create token" })
+        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0)
       }
 
       if (req.method === "POST" && op === "/sync") {
         const body = await req.json().catch(() => ({}))
+        const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/sync", {
           method: "POST",
-          body: JSON.stringify({ secret: body.secret ?? "", data: body.data ?? [], status: body.status }),
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, data: body.data ?? [], status: body.status }),
         })
         return json(r.status, await r.json())
       }
@@ -175,9 +267,10 @@ export default {
 
       if (req.method === "DELETE" && op === "") {
         const body = await req.json().catch(() => ({}))
+        const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/remove", {
           method: "POST",
-          body: JSON.stringify({ secret: body.secret ?? "" }),
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root }),
         })
         return json(r.status, await r.json())
       }
@@ -209,10 +302,57 @@ function randomId() {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")
 }
 
-function clampTtl(days, env) {
-  const max = Number(env.MAX_TTL_DAYS || 90)
+function clampTtl(days, env, tokenMax = 0) {
+  let max = Number(env.MAX_TTL_DAYS || 90)
+  if (tokenMax > 0) max = Math.min(max, tokenMax)
   if (days == null || !Number.isFinite(Number(days))) return max
   return Math.max(1, Math.min(Math.floor(Number(days)), max))
+}
+
+function authMode(env) {
+  return String(env.AUTH_MODE ?? "private").toLowerCase() === "public" ? "public" : "private"
+}
+
+async function sha256hex(s) {
+  const d = await crypto.subtle.digest("SHA-256", encoder.encode(s))
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("")
+}
+
+// All identity logic lives in the singleton AuthDO; HTTP routes and the
+// ControlDO talk to it through this tiny RPC. Never throws — a failed
+// call degrades to a 500 body the caller can surface.
+async function authCall(env, route, body) {
+  try {
+    const r = await env.AUTH_DO.get(env.AUTH_DO.idFromName("singleton")).fetch("https://auth" + route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    })
+    return { status: r.status, body: await r.json() }
+  } catch (e) {
+    return { status: 500, body: { ok: false, error: "auth do unavailable: " + (e?.message || e) } }
+  }
+}
+
+async function httpCreate(env, json, body, ownerId, ttlMax) {
+  if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
+  const newId = randomId()
+  const ttlDays = clampTtl(body.ttlDays, env, ttlMax)
+  const r = await shareStub(env, newId).fetch("https://do/init", {
+    method: "POST",
+    body: JSON.stringify({
+      id: newId,
+      sessionID: body.sessionID,
+      ttlDays,
+      authLogin: body.authLogin ?? "",
+      authPassword: body.authPassword ?? "",
+      ownerId,
+    }),
+  })
+  const out = await r.json()
+  if (out.ok && ownerId) await authCall(env, "/register", { userId: ownerId, shareId: newId, sessionID: body.sessionID })
+  if (out.ok) return json(r.status, { ...out, ttlDays })
+  return json(r.status, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +394,19 @@ function resolvePolicy(env) {
   }
 }
 
+// Bearer user tokens can drive sync/delete for their OWN shares (the
+// "control all my shares with my token" promise). Resolve the request
+// identity once: root flag or the token's userId.
+async function resolveIdentity(env, req, body) {
+  if (body.secret) return { ownerId: null, root: false } // secret path is checked in the DO
+  const token = bearer(req)
+  if (!token) return { ownerId: null, root: false }
+  if (env.CREATE_TOKEN && token === env.CREATE_TOKEN) return { ownerId: null, root: true }
+  const chk = await authCall(env, "/check", { token })
+  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false }
+  return { ownerId: null, root: false }
+}
+
 function shareStub(env, id) {
   return env.SHARE_DO.get(env.SHARE_DO.idFromName(id))
 }
@@ -280,6 +433,8 @@ export class ControlDO {
     this.env = env
     this.attachId = undefined
     this.attachSecret = undefined
+    this.attachOwner = null
+    this.attachRoot = false
     this.token = ""
     this.earlySyncs = [] // syncs that raced init (each webSocketMessage runs concurrently)
   }
@@ -307,21 +462,51 @@ export class ControlDO {
       if (saved) {
         this.attachId = saved.id
         this.attachSecret = saved.secret
+        this.attachOwner = saved.ownerId ?? null
+        this.attachRoot = !!saved.root
       }
     } catch {}
   }
 
-  async saveAttach(id, secret) {
+  /** AuthDO RPC from inside the socket lifecycle. */
+  async authCall(route, body) {
+    const r = await this.env.AUTH_DO.get(this.env.AUTH_DO.idFromName("singleton")).fetch("https://auth" + route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    })
+    return r.json()
+  }
+
+  /** Resolve the socket's bearer token to {ownerId, root}. */
+  async socketIdentity() {
+    const t = this.token ?? ""
+    if (t && this.env.CREATE_TOKEN && t === this.env.CREATE_TOKEN) return { ownerId: null, root: true }
+    if (!t) return { ownerId: null, root: false }
+    const chk = await this.authCall("/check", { token: t })
+    return chk.kind === "user" ? { ownerId: chk.userId, root: false } : { ownerId: null, root: false }
+  }
+
+  /** Credential fields for ShareDO control calls (secret XOR owner XOR root). */
+  attachBody() {
+    return { secret: this.attachSecret ?? "", ownerId: this.attachOwner ?? null, root: !!this.attachRoot }
+  }
+
+  async saveAttach(id, secret, ownerId = null, root = false) {
     this.attachId = id
     this.attachSecret = secret
+    this.attachOwner = ownerId
+    this.attachRoot = root
     try {
-      await this.state.storage.put("attach", { id, secret })
+      await this.state.storage.put("attach", { id, secret, ownerId, root })
     } catch {}
   }
 
   async clearAttach() {
     this.attachId = undefined
     this.attachSecret = undefined
+    this.attachOwner = null
+    this.attachRoot = false
     this.earlySyncs = []
     try {
       await this.state.storage.delete("attach")
@@ -341,7 +526,7 @@ export class ControlDO {
       try {
         const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(this.attachId)).fetch("https://do/sync", {
           method: "POST",
-          body: JSON.stringify({ secret: this.attachSecret, data: frame.items ?? [], status: frame.status }),
+          body: JSON.stringify({ ...this.attachBody(), data: frame.items ?? [], status: frame.status }),
         })
         const body = await r.json()
         send({ op: body.ok ? "ack" : "nack", ...body })
@@ -359,38 +544,51 @@ export class ControlDO {
 
       if (frame.op === "init") {
         if (frame.create) {
-          if (!this.token || !this.env.CREATE_TOKEN || this.token !== this.env.CREATE_TOKEN) {
-            return send({ op: "init", ok: false, error: "bad create token" })
+          // identity: root bootstrap (ownerless), user token (owned,
+          // limits enforced server-side), or anonymous on public servers
+          let ownerId = null
+          let ttlMax = 0
+          if (!(this.token && this.env.CREATE_TOKEN && this.token === this.env.CREATE_TOKEN)) {
+            const chk = await this.authCall("/create-check", { token: this.token ?? "" })
+            if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
+            ownerId = chk.userId ?? null
+            ttlMax = chk.ttlMaxDays ?? 0
           }
           const id = randomId()
+          const ttlDays = clampTtl(frame.create.ttlDays, this.env, ttlMax)
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/init", {
             method: "POST",
             body: JSON.stringify({
               id,
               sessionID: frame.create.sessionID,
-              ttlDays: clampTtl(frame.create.ttlDays, this.env),
+              ttlDays,
               authLogin: frame.create.authLogin ?? "",
               authPassword: frame.create.authPassword ?? "",
+              ownerId,
             }),
           })
           const body = await r.json()
           if (!body.ok) return send({ op: "init", ok: false, error: body.error })
-          await this.saveAttach(id, body.secret)
+          if (ownerId) await this.authCall("/register", { userId: ownerId, shareId: id, sessionID: frame.create.sessionID })
+          await this.saveAttach(id, body.secret, ownerId)
           await this.flushEarlySyncs(send)
-          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", policy: resolvePolicy(this.env) })
+          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(this.env) })
         }
         if (frame.attach) {
+          const ident = await this.socketIdentity()
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(frame.attach.id)).fetch("https://do/attach", {
             method: "POST",
             body: JSON.stringify({
               secret: frame.attach.secret ?? "",
+              ownerId: ident.ownerId,
+              root: ident.root,
               authLogin: frame.attach.authLogin,
               authPassword: frame.attach.authPassword,
             }),
           })
         const body = await r.json()
         if (!body.ok) return send({ op: "init", ok: false, error: body.error })
-        await this.saveAttach(frame.attach.id, frame.attach.secret)
+        await this.saveAttach(frame.attach.id, frame.attach.secret, ident.ownerId, ident.root)
         await this.flushEarlySyncs(send)
         return send({
             op: "init",
@@ -416,7 +614,7 @@ export class ControlDO {
         }
         const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(this.attachId)).fetch("https://do/sync", {
           method: "POST",
-          body: JSON.stringify({ secret: this.attachSecret, data: frame.items ?? [], status: frame.status }),
+          body: JSON.stringify({ ...this.attachBody(), data: frame.items ?? [], status: frame.status }),
         })
         const body = await r.json()
         return send({ op: body.ok ? "ack" : "nack", ...body })
@@ -425,7 +623,7 @@ export class ControlDO {
       if (frame.op === "delete" && this.attachId) {
         await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(this.attachId)).fetch("https://do/remove", {
           method: "POST",
-          body: JSON.stringify({ secret: this.attachSecret }),
+          body: JSON.stringify(this.attachBody()),
         })
         await this.clearAttach()
         return send({ op: "deleted" })
@@ -500,13 +698,15 @@ export class ShareDO {
         pluginSeen: now,
         rev: 0,
         status: "live",
+        ownerId: body.ownerId ?? null,
+        frozen: false,
         auth,
         tokens: [],
         attempts: { ips: {}, total: 0, lockUntil: 0 },
       })
       await this.state.storage.put("items", {})
       try {
-        await this.env.SHARE_INDEX.put(`share:${body.id}`, JSON.stringify({ createdAt: now, sessionID: body.sessionID }))
+        await this.env.SHARE_INDEX.put(`share:${body.id}`, JSON.stringify({ createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null }))
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
       } catch (e) {
         console.log("[init] index error", e?.message || e)
@@ -518,16 +718,29 @@ export class ShareDO {
       const body = await req.json()
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { ok: false, error: "share not found" })
-      if (body.secret !== meta.secret) return json(403, { ok: false, error: "bad secret" })
+      const gate = this.writeGate(meta, body)
+      if (gate) return json(403, { ok: false, error: gate })
 
-      // plugin is alive: cancel any pending finalize and note the contact
+      // plugin is alive: cancel any pending finalize and note the contact.
+      // ORDER MATTERS: persist pluginSeen BEFORE touching the alarm — some
+      // workerd builds throw on setAlarm(null), and a crash before the
+      // put left pluginSeen stale, so the still-armed alarm later marked
+      // healthy shares "interrupted" (live-caught by the auth suite: any
+      // attach-after-drop failed its init entirely).
       meta.pluginSeen = Date.now()
       const pendingFinalize = await this.state.storage.get("finalizeAt")
       if (pendingFinalize) {
         await this.state.storage.delete("finalizeAt")
-        await this.state.storage.setAlarm(null)
+        await this.state.storage.put("meta", meta)
+        try {
+          await this.state.storage.setAlarm(null)
+        } catch {
+          // this build rejects null: leave the alarm armed — /finalize's
+          // pluginSeen freshness check makes the stale fire a no-op
+        }
+      } else {
+        await this.state.storage.put("meta", meta)
       }
-      await this.state.storage.put("meta", meta)
 
       // resume retroactively applies/updates/clears the read gate
       if (body.authLogin !== undefined && body.authPassword !== undefined) {
@@ -668,7 +881,9 @@ export class ShareDO {
       const body = await req.json()
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { ok: true })
-      if (body.secret !== meta.secret) return json(403, { ok: false })
+      const gate = this.writeGate(meta, body)
+      if (gate) return json(403, { ok: false, error: gate })
+      await this.unregister(meta)
       try { await this.env.SHARE_INDEX.delete(`share:${this.state.id.name}`) } catch {}
       await this.broadcast({ op: "frame", status: "gone", rev: (meta.rev ?? 0) + 1, items: [] })
       await this.state.storage.deleteAll()
@@ -676,14 +891,67 @@ export class ShareDO {
     }
 
     if (path === "/remove-all" && req.method === "POST") {
-      // Internal-only (sweeper): the public router never routes here.
+      // Internal-only (sweeper/admin): the public router never routes here.
+      const meta = await this.state.storage.get("meta")
+      if (meta) await this.unregister(meta)
       await this.broadcast({ op: "frame", status: "gone", rev: 1, items: [] })
       await this.state.storage.deleteAll()
       try { await this.env.SHARE_INDEX.delete(`share:${this.state.id.name}`) } catch {}
       return json(200, { ok: true })
     }
 
+    // Internal (AuthDO fan-out): freeze/unfreeze a share's edits. Viewing
+    // is unaffected — a frozen share is read-only until unfrozen or TTL.
+    if (path === "/set-frozen" && req.method === "POST") {
+      const body = await req.json()
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: true })
+      meta.frozen = !!body.frozen
+      await this.state.storage.put("meta", meta)
+      console.log("[set-frozen]", this.state.id.name, body.frozen ? "frozen" : "unfrozen")
+      return json(200, { ok: true })
+    }
+
+    // Internal (AuthDO reassign): move ownership to another user; the
+    // rescue path for lost identities also clears any freeze. Accepts
+    // ownerId|userId (the AuthDO RPC sends {userId}).
+    if (path === "/set-owner" && req.method === "POST") {
+      const body = await req.json()
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: false })
+      meta.ownerId = body.ownerId ?? body.userId ?? null
+      meta.frozen = false
+      await this.state.storage.put("meta", meta)
+      try {
+        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, JSON.stringify({ createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId }))
+      } catch {}
+      return json(200, { ok: true })
+    }
+
     return json(404, { error: "not found" })
+  }
+
+  /** Write gate: per-share secret, owner token (ownerId resolved by the
+   * caller from a validated user token — never client-asserted), or the
+   * root bootstrap. A frozen owner rejects EVERY path, valid secret
+   * included; viewing is never gated here. Returns "" or an error word. */
+  writeGate(meta, body) {
+    if (body?.root === true) return ""
+    if (body?.secret && body.secret === meta.secret) return meta.frozen ? "frozen" : ""
+    if (body?.ownerId && meta.ownerId && body.ownerId === meta.ownerId) return meta.frozen ? "frozen" : ""
+    return "forbidden"
+  }
+
+  /** Drop this share from its owner's registry (best-effort). */
+  async unregister(meta) {
+    if (!meta?.ownerId) return
+    try {
+      await this.env.AUTH_DO.get(this.env.AUTH_DO.idFromName("singleton")).fetch("https://auth/unregister", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ shareId: this.state.id.name, userId: meta.ownerId }),
+      })
+    } catch {}
   }
 
   async makeAuth(login, password) {
@@ -709,7 +977,8 @@ export class ShareDO {
   async apply(body) {
     const meta = await this.state.storage.get("meta")
     if (!meta) return [404, { ok: false, error: "share not found" }]
-    if (body.secret !== meta.secret) return [403, { ok: false, error: "bad secret" }]
+    const gate = this.writeGate(meta, body)
+    if (gate) return [gate === "frozen" ? 403 : 403, { ok: false, error: gate }]
     const items = (await this.state.storage.get("items")) ?? {}
     const batch = []
     for (const it of body.data ?? []) {
@@ -784,6 +1053,446 @@ function redactItems(items) {
     }
     return it
   })
+}
+
+// ---------------------------------------------------------------------------
+// AuthDO — singleton: users, tokens, enrollment codes, share registry.
+//
+// Model (see header): opaque user tokens "osk_…" stored SHA-256-hashed;
+// enrollment via nothing (public) or an activation-budgeted code "osc_…"
+// (private); every share records its owner; a frozen user's shares reject
+// ALL edits (denormalized onto each ShareDO by fan-out). Admin = the root
+// env CREATE_TOKEN only. All state lives in DO storage:
+//   u:<userId>            {id,label,createdAt,frozen,settings}
+//   uShares:<userId>      [{id,sessionID,createdAt}]  (share registry)
+//   shareOwner:<shareId>  userId                     (reverse index)
+//   t:<sha256(token)>     {id,hash,userId,label,limits,…}
+//   c:<sha256(code)>      {id,hash,label,activationsLeft,…}
+//   rl:<ip> / dc:<tokenId>:<day>   rate limit + daily create counters
+// ---------------------------------------------------------------------------
+export class AuthDO {
+  constructor(state, env) {
+    this.state = state
+    this.env = env
+  }
+
+  async fetch(req) {
+    const url = new URL(req.url)
+    const [route, param] = url.pathname.split(":")
+    const body = await req.json().catch(() => ({}))
+    const json = (code, b) => new Response(JSON.stringify(b), { status: code, headers: { "content-type": "application/json" } })
+    try {
+      switch (route) {
+        case "/check": return json(200, await this.check(body))
+        case "/create-check": return json(200, await this.createCheck(body))
+        case "/enroll": return json(...(await this.enroll(body)))
+        case "/rotate": return json(...(await this.rotate(body)))
+        case "/token-delete": return json(...(await this.tokenDelete(body)))
+        case "/me": return json(...(await this.me(body)))
+        case "/settings": return json(...(await this.settings(body)))
+        case "/me-shares": return json(...(await this.meShares(body)))
+        case "/register": return json(200, await this.register(body))
+        case "/unregister": return json(200, await this.unregister(body))
+        case "/user-create": return json(...(await this.userCreate(body)))
+        case "/users-get": return json(...(await this.usersGet()))
+        case "/user-freeze": return json(...(await this.userFreeze(param === "1", body)))
+        case "/user-delete": return json(...(await this.userDelete(param, body)))
+        case "/token-mint": return json(...(await this.tokenMint(body)))
+        case "/tokens-get": return json(...(await this.tokensGet()))
+        case "/token-revoke": return json(...(await this.tokenRevoke(param)))
+        case "/code-create": return json(...(await this.codeCreate(body)))
+        case "/codes-get": return json(...(await this.codesGet()))
+        case "/code-disable": return json(...(await this.codeDisable(param)))
+        case "/reassign": return json(...(await this.reassign(param, body)))
+        default: return json(404, { ok: false, error: "not found" })
+      }
+    } catch (e) {
+      console.log("[authdo] error", route, e?.message || e)
+      return json(500, { ok: false, error: "auth internal" })
+    }
+  }
+
+  // ---- token resolution ---------------------------------------------------
+
+  async checkToken(token) {
+    if (!token) return { kind: "none" }
+    if (this.env.CREATE_TOKEN && token === this.env.CREATE_TOKEN) return { kind: "root" }
+    const t = await this.state.storage.get("t:" + (await sha256hex(token)))
+    if (!t || t.revokedAt || (t.expiresAt && t.expiresAt < Date.now())) return { kind: "none" }
+    const u = await this.state.storage.get("u:" + t.userId)
+    if (!u || u.frozen) return { kind: "none" } // frozen user: tokens dead too
+    if (Date.now() - (t.lastUsedAt ?? 0) > 60000) {
+      t.lastUsedAt = Date.now()
+      await this.state.storage.put("t:" + t.hash, t)
+    }
+    return { kind: "user", userId: t.userId, user: u, token: t }
+  }
+
+  async check(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label }
+    return { kind: chk.kind }
+  }
+
+  /** Pre-create authorization: resolves identity and enforces per-token
+   * limits atomically (single-writer DO). Burns one daily-create slot on
+   * success — a subsequent failed ShareDO init wastes at most one slot. */
+  async createCheck(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind === "root") return { ok: true }
+    if (chk.kind === "none") {
+      if (authMode(this.env) === "public") return { ok: true } // anonymous ownerless
+      return { ok: false, error: "token required", httpStatus: 401 }
+    }
+    const t = chk.token
+    const now = Date.now()
+    if (t.limits.maxLiveShares > 0) {
+      const shares = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
+      if (shares.length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+    }
+    if (t.limits.dailyCreates > 0) {
+      const key = `dc:${t.id}:${new Date(now).toISOString().slice(0, 10)}`
+      const n = (await this.state.storage.get(key)) ?? 0
+      if (n >= t.limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
+      await this.state.storage.put(key, n + 1)
+    }
+    return { ok: true, userId: t.userId, ttlMaxDays: t.limits.maxTtlDays || 0 }
+  }
+
+  // ---- enrollment + lifecycle ----------------------------------------------
+
+  defaultLimits() {
+    const num = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0 }
+    return {
+      maxLiveShares: num(this.env.DEFAULT_MAX_LIVE_SHARES),
+      maxTtlDays: num(this.env.DEFAULT_MAX_TTL_DAYS),
+      dailyCreates: num(this.env.DEFAULT_DAILY_CREATES),
+    }
+  }
+
+  normLimits(input) {
+    const d = this.defaultLimits()
+    if (!input || typeof input !== "object") return d
+    const one = (v, def) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 0 ? n : def }
+    return {
+      maxLiveShares: one(input.maxLiveShares, d.maxLiveShares),
+      maxTtlDays: one(input.maxTtlDays, d.maxTtlDays),
+      dailyCreates: one(input.dailyCreates, d.dailyCreates),
+    }
+  }
+
+  async mint(userId, label, limits) {
+    const value = "osk_" + randomId() + randomId()
+    const hash = await sha256hex(value)
+    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
+    await this.state.storage.put("t:" + hash, rec)
+    return { value, rec }
+  }
+
+  async enroll(body) {
+    const mode = authMode(this.env)
+    const now = Date.now()
+    let code = null
+    if (body.code) {
+      code = await this.state.storage.get("c:" + (await sha256hex(String(body.code))))
+      const invalid = !code || code.disabled || (code.expiresAt && code.expiresAt < now) || (code.activationsLeft !== -1 && code.activationsLeft <= 0)
+      if (invalid) return [403, { ok: false, error: "invalid code" }]
+    } else if (mode !== "public") {
+      return [403, { ok: false, error: "code required" }]
+    }
+    if (!code) {
+      const rl = await this.rateLimit(String(body.ip ?? "unknown"))
+      if (!rl) return [429, { ok: false, error: "too many enrollments, try later" }]
+    }
+    if (code) {
+      code.used += 1
+      if (code.activationsLeft !== -1) code.activationsLeft -= 1
+      await this.state.storage.put("c:" + code.hash, code)
+    }
+    const label = String(body.label ?? "").trim().slice(0, 64)
+      || (code ? `${code.label || "invite"}-${code.used}` : "user-" + randomId().slice(0, 4))
+    const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: now, frozen: false, settings: {} }
+    await this.state.storage.put("u:" + user.id, user)
+    const token = await this.mint(user.id, label, this.defaultLimits())
+    console.log("[authdo] enrolled", user.id, label, code ? "via code" : "anonymous")
+    return [200, { ok: true, token: token.value, userId: user.id, label }]
+  }
+
+  async rateLimit(ip) {
+    const key = "rl:" + ip
+    const now = Date.now()
+    const rl = await this.state.storage.get(key)
+    if (!rl || rl.resetAt < now) {
+      await this.state.storage.put(key, { n: 1, resetAt: now + 3600000 })
+      return true
+    }
+    if (rl.n >= 10) return false
+    rl.n += 1
+    await this.state.storage.put(key, rl)
+    return true
+  }
+
+  async rotate(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    const t = chk.token
+    t.revokedAt = Date.now()
+    await this.state.storage.put("t:" + t.hash, t)
+    const fresh = await this.mint(t.userId, t.label, t.limits)
+    return [200, { ok: true, token: fresh.value, userId: t.userId }]
+  }
+
+  async tokenDelete(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    const t = chk.token
+    t.revokedAt = Date.now()
+    await this.state.storage.put("t:" + t.hash, t)
+    return [200, { ok: true }]
+  }
+
+  // ---- self-service ---------------------------------------------------------
+
+  tokenView(t) {
+    return { id: t.id, label: t.label, limits: t.limits, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
+  }
+
+  async me(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    return [200, { ok: true, userId: chk.userId, label: chk.user.label, settings: chk.user.settings ?? {}, token: this.tokenView(chk.token) }]
+  }
+
+  async settings(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    const u = chk.user
+    const patch = body.patch ?? {}
+    const next = { ...(u.settings ?? {}) }
+    if (patch.defaultTtlDays !== undefined) {
+      const n = Math.floor(Number(patch.defaultTtlDays))
+      const max = Math.max(1, Math.floor(Number(body.maxTtl) || 90))
+      next.defaultTtlDays = Number.isFinite(n) && n > 0 ? Math.min(n, max) : max
+    }
+    u.settings = next
+    await this.state.storage.put("u:" + u.id, u)
+    return [200, { ok: true, settings: next }]
+  }
+
+  async meShares(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    const reg = (await this.state.storage.get(`uShares:${chk.userId}`)) ?? []
+    const shares = await Promise.all(reg.map(async (s) => {
+      const status = await this.shareField(s.id, "status")
+      return { ...s, status }
+    }))
+    return [200, { ok: true, shares }]
+  }
+
+  async shareField(id, field) {
+    try {
+      const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/meta")
+      if (r.status !== 200) return "gone"
+      const m = await r.json()
+      return m[field] ?? "unknown"
+    } catch {
+      return "unknown"
+    }
+  }
+
+  // ---- registry ---------------------------------------------------------------
+
+  async register(body) {
+    if (!body?.userId || !body?.shareId) return { ok: false, error: "userId and shareId required" }
+    const u = await this.state.storage.get("u:" + body.userId)
+    if (!u) return { ok: false, error: "no such user" }
+    const key = `uShares:${body.userId}`
+    const reg = (await this.state.storage.get(key)) ?? []
+    if (!reg.some((s) => s.id === body.shareId)) {
+      reg.push({ id: body.shareId, sessionID: body.sessionID ?? "", createdAt: Date.now() })
+      await this.state.storage.put(key, reg.slice(-10000))
+    }
+    await this.state.storage.put(`shareOwner:${body.shareId}`, body.userId)
+    return { ok: true }
+  }
+
+  async unregister(body) {
+    if (!body?.shareId) return { ok: false }
+    const ownerId = body.userId ?? (await this.state.storage.get(`shareOwner:${body.shareId}`))
+    await this.state.storage.delete(`shareOwner:${body.shareId}`)
+    if (!ownerId) return { ok: true }
+    const key = `uShares:${ownerId}`
+    const reg = (await this.state.storage.get(key)) ?? []
+    const next = reg.filter((s) => s.id !== body.shareId)
+    if (next.length !== reg.length) await this.state.storage.put(key, next)
+    return { ok: true }
+  }
+
+  // ---- admin -------------------------------------------------------------------
+
+  async userCreate(body) {
+    const label = String(body?.label ?? "").trim().slice(0, 64) || "user-" + randomId().slice(0, 4)
+    const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: Date.now(), frozen: false, settings: {} }
+    await this.state.storage.put("u:" + user.id, user)
+    return [200, { ok: true, userId: user.id, label }]
+  }
+
+  async usersGet() {
+    const out = []
+    const tokens = await this.listPrefix("t:")
+    let cursor
+    do {
+      const page = await this.state.storage.list({ prefix: "u:", cursor })
+      for (const [k, u] of page) {
+        const toks = tokens.filter((t) => t.userId === u.id)
+        out.push({
+          id: u.id, label: u.label, createdAt: u.createdAt, frozen: !!u.frozen,
+          shares: ((await this.state.storage.get(`uShares:${u.id}`)) ?? []).length,
+          tokens: toks.length, tokensActive: toks.filter((t) => !t.revokedAt).length,
+        })
+      }
+      cursor = page.list_complete ? undefined : page.cursor
+    } while (cursor)
+    return [200, { ok: true, users: out }]
+  }
+
+  /** Freeze/unfreeze fan-out: denormalizes the freeze onto every share the
+   * user owns so the ShareDO write gate can reject locally (no AuthDO hop
+   * in the hot path). Tokens die simultaneously via checkToken's user
+   * check, so both control paths sever together. */
+  async userFreeze(freeze, body) {
+    const u = await this.state.storage.get("u:" + body?.userId)
+    if (!u) return [404, { ok: false, error: "no such user" }]
+    u.frozen = !!freeze
+    await this.state.storage.put("u:" + u.id, u)
+    const reg = (await this.state.storage.get(`uShares:${u.id}`)) ?? []
+    for (const s of reg) {
+      try {
+        await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(s.id)).fetch("https://do/set-frozen", {
+          method: "POST", body: JSON.stringify({ frozen: !!freeze }),
+        })
+      } catch {}
+    }
+    console.log("[authdo] user", u.id, freeze ? "frozen" : "unfrozen", `(${reg.length} shares)`)
+    return [200, { ok: true, frozen: !!freeze, shares: reg.length }]
+  }
+
+  async userDelete(userId, body) {
+    const u = await this.state.storage.get("u:" + userId)
+    if (!u) return [404, { ok: false, error: "no such user" }]
+    if (String(body?.mode ?? "") === "delete") {
+      const reg = (await this.state.storage.get(`uShares:${userId}`)) ?? []
+      for (const s of reg) {
+        try {
+          await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(s.id)).fetch("https://do/remove-all", { method: "POST" })
+        } catch {}
+      }
+      const tokens = await this.listPrefix("t:")
+      for (const t of tokens.filter((t) => t.userId === userId)) {
+        t.revokedAt = Date.now()
+        await this.state.storage.put("t:" + t.hash, t)
+      }
+      await this.state.storage.delete(`uShares:${userId}`)
+      await this.state.storage.delete("u:" + userId)
+      console.log("[authdo] user deleted", userId, `(${reg.length} shares removed)`)
+      return [200, { ok: true, mode: "delete", shares: reg.length }]
+    }
+    // default mode: freeze in place (reversible)
+    return this.userFreeze(true, { userId })
+  }
+
+  async tokenMint(body) {
+    const u = await this.state.storage.get("u:" + body?.userId)
+    if (!u) return [404, { ok: false, error: "no such user" }]
+    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits))
+    return [200, { ok: true, token: t.value, id: t.rec.id, userId: u.id }]
+  }
+
+  async tokensGet() {
+    const tokens = (await this.listPrefix("t:")).map((t) => ({ ...this.tokenView(t), userId: t.userId, revoked: !!t.revokedAt }))
+    return [200, { ok: true, tokens }]
+  }
+
+  async tokenRevoke(tokenId) {
+    const tokens = await this.listPrefix("t:")
+    const t = tokens.find((x) => x.id === tokenId)
+    if (!t) return [404, { ok: false, error: "no such token" }]
+    t.revokedAt = Date.now()
+    await this.state.storage.put("t:" + t.hash, t)
+    return [200, { ok: true }]
+  }
+
+  async codeCreate(body) {
+    const activations = Math.floor(Number(body?.activations))
+    const left = Number.isFinite(activations) && activations >= 1 ? activations : -1
+    const value = "osc_" + randomId()
+    const hash = await sha256hex(value)
+    const rec = {
+      id: "c_" + randomId().slice(0, 10), hash,
+      label: String(body?.label ?? "").trim().slice(0, 64) || "invite",
+      activationsLeft: left, used: 0, createdAt: Date.now(),
+      expiresAt: Number(body?.ttlHours) > 0 ? Date.now() + Number(body.ttlHours) * 3600000 : 0,
+      disabled: false,
+    }
+    await this.state.storage.put("c:" + hash, rec)
+    return [200, { ok: true, code: value, id: rec.id, activationsLeft: left }]
+  }
+
+  async codesGet() {
+    const codes = (await this.listPrefix("c:")).map((c) => ({
+      id: c.id, label: c.label, activationsLeft: c.activationsLeft, used: c.used,
+      createdAt: c.createdAt, expiresAt: c.expiresAt, disabled: !!c.disabled,
+    }))
+    return [200, { ok: true, codes }]
+  }
+
+  async codeDisable(codeId) {
+    const codes = await this.listPrefix("c:")
+    const c = codes.find((x) => x.id === codeId)
+    if (!c) return [404, { ok: false, error: "no such code" }]
+    c.disabled = true
+    await this.state.storage.put("c:" + c.hash, c)
+    return [200, { ok: true }]
+  }
+
+  async reassign(shareId, body) {
+    const target = await this.state.storage.get("u:" + body?.userId)
+    if (!target) return [404, { ok: false, error: "no such user" }]
+    const oldOwnerId = await this.state.storage.get(`shareOwner:${shareId}`)
+    let entry = { id: shareId, sessionID: "", createdAt: Date.now() }
+    if (oldOwnerId) {
+      const key = `uShares:${oldOwnerId}`
+      const reg = (await this.state.storage.get(key)) ?? []
+      const idx = reg.findIndex((s) => s.id === shareId)
+      if (idx >= 0) entry = reg[idx]
+      const next = reg.filter((s) => s.id !== shareId)
+      if (next.length !== reg.length) await this.state.storage.put(key, next)
+    }
+    const tkey = `uShares:${target.id}`
+    const treg = (await this.state.storage.get(tkey)) ?? []
+    if (!treg.some((s) => s.id === shareId)) treg.push(entry)
+    await this.state.storage.put(tkey, treg)
+    await this.state.storage.put(`shareOwner:${shareId}`, target.id)
+    try {
+      await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(shareId)).fetch("https://do/set-owner", {
+        method: "POST", body: JSON.stringify({ userId: target.id }),
+      })
+    } catch {}
+    console.log("[authdo] share", shareId, "reassigned", oldOwnerId ?? "(none)", "->", target.id)
+    return [200, { ok: true }]
+  }
+
+  async listPrefix(prefix) {
+    const out = []
+    let cursor
+    do {
+      const page = await this.state.storage.list({ prefix, cursor })
+      for (const [, v] of page) out.push(v)
+      cursor = page.list_complete ? undefined : page.cursor
+    } while (cursor)
+    return out
+  }
 }
 
 // ---------------------------------------------------------------------------

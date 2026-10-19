@@ -5,10 +5,22 @@ workers_dev = true
 preview_urls = false
 
 # See README.md for the full protocol. Secrets (wrangler secret put):
-#   CREATE_TOKEN — required to create shares (the plugin holds it)
+#   CREATE_TOKEN — root admin bootstrap (everything); regular plugins
+#                  enroll via /api/enroll instead (public) or an access
+#                  code minted with POST /api/admin/codes (private).
 [vars]
 # Hard cap for per-share ttlDays overrides (client may request less).
 MAX_TTL_DAYS = "90"
+# AUTH_MODE: private (default — enrollment needs an access code) | public
+#            (anyone knowing the hostname can enroll; rate-limited per IP)
+# AUTH_MODE = "private"
+# Per-token default limits for newly enrolled users (0 = unlimited):
+#   DEFAULT_MAX_LIVE_SHARES — max non-swept shares owned at once
+#   DEFAULT_MAX_TTL_DAYS    — extra cap on per-share ttlDays
+#   DEFAULT_DAILY_CREATES   — max share creations per UTC day
+# DEFAULT_MAX_LIVE_SHARES = "0"
+# DEFAULT_MAX_TTL_DAYS = "0"
+# DEFAULT_DAILY_CREATES = "0"
 # Server policy — the worker owns socket rules + the allowed client sync
 # cadence window; plugins clamp themselves in (init ack + /health). All
 # optional; defaults live in worker.js resolvePolicy().
@@ -46,6 +58,10 @@ class_name = "ControlDO"
 name = "SWEEPER"
 class_name = "SweeperDO"
 
+[[durable_objects.bindings]]
+name = "AUTH_DO"
+class_name = "AuthDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ShareDO", "SweeperDO"]
@@ -53,6 +69,10 @@ new_sqlite_classes = ["ShareDO", "SweeperDO"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["ControlDO"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["AuthDO"]
 
 # Static viewer: the vendored upstream share page (tools/share-viewer,
 # built with `npm run build` there — 24MB dist incl. shiki grammars +

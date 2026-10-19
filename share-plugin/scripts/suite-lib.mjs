@@ -175,14 +175,17 @@ function startMockLLM() {
 
 // --- wrangler dev ---------------------------------------------------------------
 
-async function startWorker(suiteDir) {
+async function startWorker(suiteDir, opts = {}) {
+  const port = Number(opts.port) > 0 ? Number(opts.port) : WORKER_PORT
+  const url = `http://127.0.0.1:${port}`
+  const extraVars = Object.entries(opts.vars ?? {}).flatMap(([k, v]) => ["--var", `${k}:${v}`])
   const attempt = async () => {
-    killWranglerSuites() // leftover supervisors respawn workerd forever; sweep first
+    killWranglerSuites(port) // leftover supervisors respawn workerd forever; sweep first
     const assetsDir = join(suiteDir, "assets")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(join(assetsDir, "index.html"), "<!doctype html><title>openshare suite stub</title>\n")
 
-    const configPath = join(suiteDir, "wrangler.suite.toml")
+    const configPath = join(suiteDir, opts.configSuffix ? `wrangler.suite.${opts.configSuffix}.toml` : "wrangler.suite.toml")
     const original = readFileSync(join(dirname(ROOT), "share-worker", "wrangler.toml"), "utf8")
     const config = original
       .replace('name = "openshare-worker"', 'name = "openshare-worker-suite"')
@@ -192,7 +195,7 @@ async function startWorker(suiteDir) {
 
     const { child, kill } = spawnTree(
       "npx",
-      ["wrangler", "dev", "--config", configPath, "--port", String(WORKER_PORT), "--ip", "127.0.0.1", "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
+      ["wrangler", "dev", "--config", configPath, "--port", String(port), "--ip", "127.0.0.1", "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
         // suite-tuned server policy: TURN mode forced (wrangler dev runs
         // on workerd, so auto would resolve persistent — the suites
         // simulate the VPS deployment shape), fast turn lifecycle +
@@ -201,7 +204,8 @@ async function startWorker(suiteDir) {
         "--var", "SOCKET_POLICY:turn",
         "--var", "TURN_GRACE_MS:2000",
         "--var", "FINALIZE_AFTER_MS:4000",
-        "--var", "DEBOUNCE_MIN_MS:100"],
+        "--var", "DEBOUNCE_MIN_MS:100",
+        ...extraVars],
       { cwd: join(dirname(ROOT), "share-worker") },
     )
     let output = ""
@@ -210,13 +214,13 @@ async function startWorker(suiteDir) {
     const fail = async (error) => {
       kill()
       await sleep(1500)
-      killPortOwners(WORKER_PORT)
+      killPortOwners(port)
       return new Error(`${error.message}\n--- wrangler output ---\n${output.slice(-4000)}`)
     }
     try {
       await waitFor(async () => {
         try {
-          return (await httpGet(`${WORKER_URL}/health`)).ok
+          return (await httpGet(`${url}/health`)).ok
         } catch {
           return false
         }
@@ -226,7 +230,7 @@ async function startWorker(suiteDir) {
       // port late; one full sweep + fresh retry resolves it
       throw await fail(error)
     }
-    return { kill, output: () => output }
+    return { kill, output: () => output, url, port }
   }
 
   try {

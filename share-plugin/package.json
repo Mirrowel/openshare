@@ -69,7 +69,8 @@
     "test:manual": "node scripts/manual-tests.mjs",
     "test:tui-flow": "node scripts/tui-flow-tests.mjs",
     "test:v2": "node scripts/v2-mock-tests.mjs",
-    "test": "npm run test:regression && npm run test:manual && npm run test:tui-flow && npm run test:v2",
+    "test:auth": "node scripts/auth-tests.mjs",
+    "test": "npm run test:regression && npm run test:manual && npm run test:tui-flow && npm run test:v2 && npm run test:auth",
     "test:cli": "node scripts/cli-test.mjs"
   },
   "devDependencies": {

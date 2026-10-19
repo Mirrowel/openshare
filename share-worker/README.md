@@ -132,10 +132,69 @@ share-locked 24h). Credentials are sent on create AND attach: resuming
 retroactively applies/updates them; empty-on-resume removes protection
 (intentional owner action — write access is separately keyed).
 
-**Write access is a different lock**: creating shares requires the
-worker-level `CREATE_TOKEN`; writing (sync/delete) requires the
-per-share secret held only by the plugin that created it. A URL plus
-valid login still cannot write a byte.
+**Write access is a different lock**: creating shares requires a valid
+identity (user token or the root bootstrap), writing (sync/delete)
+requires the owner's token or the per-share secret held only by the
+plugin that created it. A URL plus valid login still cannot write a
+byte. See "Identity & enrollment" below.
+
+## Identity & enrollment
+
+Two roles, one secret store (singleton AuthDO, tokens SHA-256-hashed at
+rest):
+
+- **Admin** = the root `CREATE_TOKEN` secret (env, forever-valid
+  bootstrap). Manages everything: users, tokens, codes, shares, policy.
+  No admin *tokens* — root is the only admin in this model.
+- **Users** — anyone the hoster lets in. Full control of their OWN
+  shares, tokens and settings; nothing else.
+
+**Enrollment** (`POST /api/enroll`): a **public** server (`AUTH_MODE =
+"public"`) issues a user token to anyone who knows the hostname
+(per-IP rate limit); a **private** server (default) additionally
+requires an **access code** (`osc_…`) minted by the admin with an
+activation budget — 1 for a personal invite, `-1` unlimited for a team
+code. Each activation burns one use and issues `osk_…`. Holding a valid
+token lets you rotate (`POST /api/token/rotate`) without a code,
+forever — tokens are long-lived by design (the OAuth-ish part without
+the refresh churn).
+
+**Ownership**: every share records its owner. Control ops accept the
+owner's valid token **or** the per-share secret while the owner is in
+good standing. **Freezing a user** severs BOTH paths on all their
+shares at once (a valid secret no longer writes; viewing is unaffected
+until TTL) — the kill switch for leaked identities. Unfreeze and
+reassign-to-another-user are the admin rescue paths. Revoking a single
+token only invalidates that token.
+
+Per-token limits (enforced server-side at create): `maxLiveShares`,
+`maxTtlDays`, `dailyCreates` (0 = unlimited; defaults via
+`DEFAULT_*` vars). Default-limit knobs users may change themselves:
+`PUT /api/me/settings` (`defaultTtlDays`, clamped by the server).
+
+Self-service: `GET /api/me`, `GET /api/me/shares`,
+`POST /api/token/rotate`, `DELETE /api/token` (self-revoke).
+
+Admin API (Bearer `CREATE_TOKEN`):
+
+- `POST /api/admin/users {label}` · `GET /api/admin/users`
+- `POST /api/admin/users/:id/freeze` · `/unfreeze`
+- `DELETE /api/admin/users/:id {mode?}` — default freezes; `{"mode":
+  "delete"}` also removes every share and token
+- `POST /api/admin/tokens {userId, label?, limits?}` · `GET
+  /api/admin/tokens` · `DELETE /api/admin/tokens/:id`
+- `POST /api/admin/codes {label, activations, ttlHours?}` · `GET
+  /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
+- `GET /api/admin/shares` (global, with ownerId)
+- `POST /api/admin/shares/:id/reassign {userId}`
+- `POST /api/admin/purge` (unchanged)
+
+`GET /health` reports `auth.mode` (`public`/`private`) next to the
+socket policy so clients adapt without config.
+
+Migration: shares created with the bare `CREATE_TOKEN` bearer are
+ownerless (secret-only control, never frozen) — the legacy plugin
+config keeps working unchanged.
 
 ## Subagent pages
 
@@ -149,15 +208,22 @@ title/version/model.
 ## Worker API
 
 - `GET /api/share/:id/ws` — viewer socket (hibernating; auth cookie)
-- `GET /api/ws?token=CREATE_TOKEN` — plugin socket: `init`
-  (create/attach), `sync` → ack, `delete`
+- `GET /api/ws?token=<user token | CREATE_TOKEN>` — plugin socket:
+  `init` (create/attach; user tokens create OWNED shares under their
+  limits, the root token creates ownerless legacy shares; attach works
+  with the share secret OR — for the socket's own token holder — by
+  ownership), `sync` → ack, `delete`
 - Tombstones: a sync item may carry `del: true` (`{type:"message",
   del:true, data:{id}}` / part variant) — the worker deletes the keyed
   item and broadcasts the tombstone so live viewers drop it. Message
   tombstones cascade-delete that message's parts (opencode's undo
   cleanup removes messages without per-part events).
-- HTTP fallback: `POST /api/share/<hex-suffix>` (Bearer CREATE_TOKEN; the URL suffix is required by routing but ignored, the share id is generated server-side),
-  `POST /api/share/:id/sync`, `GET /api/share/:id/data`,
+- HTTP fallback: `POST /api/share/<hex-suffix>` (Bearer user token or
+  CREATE_TOKEN; anonymous ownerless allowed on public servers; the URL
+  suffix is required by routing but ignored, the share id is generated
+  server-side),
+  `POST /api/share/:id/sync` (secret or Bearer owner token),
+  `GET /api/share/:id/data`,
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
 - `GET /branding` — the deployment's `BRAND_*` skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl; all optional — absent =
@@ -166,7 +232,9 @@ title/version/model.
   iterates the share index and removes EVERY share (DO storage + index;
   connected viewers get a final `gone` frame). Returns `{removed}`.
 - ShareDO per share; ControlDO per plugin socket (attach state persisted
-  to DO storage — survives hibernation eviction); SweeperDO daily alarm
+  to DO storage — survives hibernation eviction); AuthDO singleton
+  (users/tokens/codes/registry; freeze denormalized onto each ShareDO so
+  the write gate rejects locally); SweeperDO daily alarm
   deletes shares idle beyond their own ttlDays (create-time override,
   capped at MAX_TTL_DAYS).
 
