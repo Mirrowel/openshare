@@ -31,9 +31,12 @@ function finish(host: ShareHostApi, result: { ok: boolean; message: string; url?
 
 /** The already-shared state: manage the existing share. */
 function showShareManager(host: ShareHostApi, url: string, sessionID: () => string | undefined) {
-  host.ui.dialog.replace(
-    () =>
-      host.ui.DialogSelect({
+  dbgLog(`showShareManager: url=${url}`)
+  try {
+    host.ui.dialog.replace(
+      () => {
+        dbgLog("showShareManager: thunk invoked")
+        return host.ui.DialogSelect({
         title: "Session is shared",
         placeholder: "Share link is below — copy it or stop sharing",
         options: [
@@ -67,9 +70,15 @@ function showShareManager(host: ShareHostApi, url: string, sessionID: () => stri
             )
           }
         },
-      }),
-    () => host.ui.dialog.clear(),
-  )
+        })
+      },
+      () => host.ui.dialog.clear(),
+    )
+    const stack = host.ui.dialog as unknown as { depth?: number; open?: boolean }
+    dbgLog(`showShareManager: replace returned; dialog depth=${stack.depth} open=${stack.open}`)
+  } catch (e) {
+    dbgLog(`showShareManager THREW: ${(e as Error)?.stack ?? e}`)
+  }
 }
 
 export function buildShareCommand(host: ShareHostApi, sessionID: () => string | undefined): ShareHostLayerCommand {
@@ -115,8 +124,19 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
               confirmLabel: "Share",
               onConfirm: () => {
                 host.ui.dialog.clear()
-                host.kv.set(CONSENT_KV_KEY, true)
-                void confirmShare(host, root).then((res) => finish(host, res))
+                try {
+                  host.kv.set(CONSENT_KV_KEY, true)
+                  dbgLog("consent kv.set ok")
+                } catch (e) {
+                  dbgLog(`consent kv.set THREW: ${(e as Error)?.message ?? e}`)
+                }
+                void confirmShare(host, root).then(
+                  (res) => finish(host, res),
+                  (e) => {
+                    dbgLog(`confirmShare rejected: ${(e as Error)?.stack ?? e}`)
+                    finish(host, { ok: false, message: "Share failed (see debug log)." })
+                  },
+                )
               },
               onCancel: () => host.ui.dialog.clear(),
             }),

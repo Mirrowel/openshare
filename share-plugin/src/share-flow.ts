@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { loadConfig, moduleDir, configPaths, configHomePath, METADATA_KEY, type ShareConfig } from "./config.js"
+import { dbg, dbgLog } from "./sidebar.js"
 import type { ClientApi, SessionInfo, SessionOpts } from "./core.js"
 import type { ShareHostApi } from "./tui-host.js"
 
@@ -114,11 +115,21 @@ async function getSession(client: ClientApi | undefined, sid: string): Promise<S
 }
 
 async function patchMetadata(client: ClientApi | undefined, sid: string, metadata: Record<string, unknown>): Promise<boolean> {
-  if (!client?.session?.update) return false
+  if (!client?.session?.update) {
+    dbgLog(`patchMetadata(${sid}): no client.session.update`)
+    return false
+  }
   try {
     const res = await client.session.update({ path: { id: sid }, body: { metadata } })
-    return !(res && typeof res === "object" && "error" in res && (res as { error?: unknown }).error)
-  } catch {
+    if (res && typeof res === "object" && "error" in res && (res as { error?: unknown }).error) {
+      const err = (res as { error?: { name?: string; data?: { message?: string; ref?: string } } }).error
+      dbgLog(`patchMetadata(${sid}) ERROR: ${err?.name}: ${err?.data?.message ?? ""} ref=${err?.data?.ref ?? ""}`)
+      return false
+    }
+    dbgLog(`patchMetadata(${sid}): ok res=${dbg(res)}`)
+    return true
+  } catch (e) {
+    dbgLog(`patchMetadata(${sid}) THREW: ${(e as Error)?.stack ?? e}`)
     return false
   }
 }
@@ -242,9 +253,12 @@ export async function runShareFlow(host: ShareHostApi, sessionID: string | undef
 
 /** Post-consent share: set the flag, wait for the URL, copy it. */
 export async function confirmShare(host: ShareHostApi, rootSessionID: string): Promise<FlowResult> {
+  dbgLog(`confirmShare: setShareFlag(${rootSessionID})`)
   const set = await setShareFlag(host.client, rootSessionID)
+  dbgLog(`confirmShare: setShareFlag -> ${set}`)
   if (!set) return { ok: false, message: "Could not write the share flag into session metadata." }
   const binding = await waitForBinding(host.client, rootSessionID)
+  dbgLog(`confirmShare: waitForBinding -> ${binding?.url ? binding.url : "timeout"}`)
   if (!binding?.url) {
     return {
       ok: false,

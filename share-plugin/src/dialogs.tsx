@@ -23,6 +23,13 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ShareDialogSelectOption } from "./tui-host.js"
 import { dbgLog } from "./sidebar.js"
 
+/** clear() can throw on an empty dialog stack (1.19.x) — never fatal. */
+function safeClear(api: TuiPluginApi) {
+  try {
+    api.ui.dialog.clear()
+  } catch {}
+}
+
 type KeyContext = { event?: { preventDefault?: () => void; stopPropagation?: () => void } }
 
 const blockKey = (ctx: KeyContext | undefined) => {
@@ -76,23 +83,25 @@ function useDialogKeys(api: TuiPluginApi, prefix: string, spec: LayerSpec): () =
   return dispose
 }
 
-function DialogFrame(props: { theme: () => Record<string, unknown>; title: string; children: JSX.Element; width?: number }): JSX.Element {
+function DialogFrame(props: { theme: () => Record<string, unknown>; title: string; children: JSX.Element }): JSX.Element {
   const t = props.theme
+  // Natural sizing: no fixed width — the host dialog backdrop centers the
+  // box and content defines extent (live-caught: width=64 left the border
+  // extending past the menu body on the right).
   return (
     <box
       borderStyle="rounded"
       borderColor={t().accent as never}
       flexDirection="column"
-      paddingTop={1}
+      paddingTop={0}
       paddingBottom={1}
-      paddingLeft={2}
-      paddingRight={2}
-      width={props.width ?? 64}
+      paddingLeft={1}
+      paddingRight={1}
     >
       <text fg={t().accent as never}>
         <b>{props.title}</b>
       </text>
-      <box flexDirection="column" paddingTop={1} paddingBottom={1}>
+      <box flexDirection="column" paddingTop={1} paddingBottom={0}>
         {props.children}
       </box>
     </box>
@@ -118,7 +127,7 @@ export function ConfirmDialog(props: {
     settled = true
     dbgLog(`dialog.confirm(${props.title}) -> ${which}`)
     disposeKeys()
-    props.api.ui.dialog.clear()
+    safeClear(props.api)
     if (which === "confirm") props.onConfirm()
     else props.onCancel?.()
   }
@@ -167,6 +176,7 @@ export function SelectDialog(props: {
   onSelect: (option: ShareDialogSelectOption) => void
   onCancel?: () => void
 }): JSX.Element {
+  dbgLog(`SelectDialog: component body START (title=${props.title})`)
   const theme = () => props.api.theme.current as unknown as Record<string, unknown>
   const startAt = Math.max(0, props.options.findIndex((o) => o.value === props.current))
   const [index, setIndex] = createSignal(startAt)
@@ -180,7 +190,7 @@ export function SelectDialog(props: {
     settled = true
     dbgLog(`dialog.select(${props.title}) -> ${JSON.stringify(option.value)}`)
     disposeKeys()
-    props.api.ui.dialog.clear()
+    safeClear(props.api)
     props.onSelect(option)
   }
   const cancel = () => {
@@ -188,7 +198,7 @@ export function SelectDialog(props: {
     settled = true
     dbgLog(`dialog.select(${props.title}) -> cancel`)
     disposeKeys()
-    props.api.ui.dialog.clear()
+    safeClear(props.api)
     props.onCancel?.()
   }
   const move = (delta: number) =>
@@ -260,7 +270,7 @@ export function AlertDialog(props: { api: TuiPluginApi; title: string; message: 
     settled = true
     dbgLog(`dialog.alert(${props.title}) -> ok`)
     disposeKeys()
-    props.api.ui.dialog.clear()
+    safeClear(props.api)
     props.onConfirm?.()
   }
   const prefix = `openshare.alert.${Math.random().toString(36).slice(2)}`
@@ -310,7 +320,7 @@ export function PromptDialog(props: {
     settled = true
     dbgLog(`dialog.prompt(${props.title}) -> len=${text().length}`)
     disposeKeys()
-    props.api.ui.dialog.clear()
+    safeClear(props.api)
     props.onConfirm(text())
   }
   const cancel = () => {
@@ -318,7 +328,7 @@ export function PromptDialog(props: {
     settled = true
     dbgLog(`dialog.prompt(${props.title}) -> cancel`)
     disposeKeys()
-    props.api.ui.dialog.clear()
+    safeClear(props.api)
     props.onCancel?.()
   }
   const prefix = `openshare.prompt.${Math.random().toString(36).slice(2)}`
@@ -345,7 +355,7 @@ export function PromptDialog(props: {
   dbgLog(`dialog.prompt(${props.title}) OPEN`)
   const t = theme()
   return (
-    <DialogFrame theme={theme} title={props.title} width={72}>
+    <DialogFrame theme={theme} title={props.title}>
       <box backgroundColor={theme().secondary as never} paddingLeft={1} paddingRight={1}>
         <text fg={t.text as never}>{text() || props.placeholder || ""}</text>
         <text fg={t.accent as never}>{"▌"}</text>

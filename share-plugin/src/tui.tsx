@@ -20,13 +20,120 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
   return {
     hostVersion: 1,
     app: { version: api.app?.version },
-    client: api.client as unknown as ClientApi,
+    // 1.19.x hands plugins the v2 SDK client — a LAZY PROXY (methods
+    // materialize on property access; spreading it destroys them, which
+    // broke session.update: live-caught "no client.session.update" after
+    // the adapter was added). Wrap with passthrough Proxies instead:
+    //  - path args are translated id -> sessionID (the v2 SDK's URL
+    //    builder left "{sessionID}" literally in the URL for {path:{id}}
+    //    calls — server log: "Expected a string starting with ses, got
+    //    %7BsessionID%7D" — so every session.get/update failed silently),
+    //  - session.get fills metadata from the state store when the v2
+    //    response lacks it,
+    //  - everything else reaches the original proxy untouched.
+    client: (() => {
+      const raw = api.client as unknown as Record<string, unknown> & { session?: Record<string, unknown> }
+      const rawSession = raw?.session
+      if (!rawSession) return raw as unknown as ClientApi
+      const translateArgs = (args: unknown): unknown => {
+        if (!args || typeof args !== "object") return args
+        const a = args as { path?: Record<string, unknown>; body?: Record<string, unknown> }
+        if (a.path && "id" in a.path && !("sessionID" in a.path)) {
+          const { id, ...rest } = a.path
+          return { ...a, path: { ...rest, sessionID: id } }
+        }
+        return args
+      }
+      // v2 arg-shape probing: hey-api left "{sessionID}" literally in the
+      // URL for {path:{id}} calls (server: "Expected a string starting
+      // with ses, got %7BsessionID%7D"), and {path:{sessionID}} fared no
+      // better — the v2 convention is FLAT args ({sessionID, ...body},
+      // matching the beta client's SessionUpdateInput). Failed calls are
+      // side-effect-free (URL 500s), so probe: path-shape first, then
+      // flat. The winning shape is cached and logged once.
+      let argShape: "path" | "flat" | undefined
+      const callV2 = async (method: string, args: unknown): Promise<Record<string, unknown> | undefined> => {
+        const orig = rawSession[method] as ((a: unknown) => Promise<unknown>) | undefined
+        if (!orig) return undefined
+        const a = args as { path?: Record<string, unknown>; body?: Record<string, unknown> }
+        const flat = { sessionID: a.path?.id ?? a.path?.sessionID, ...(a.body ?? {}) }
+        const attempts: Array<["path" | "flat", unknown]> =
+          argShape === "flat"
+            ? [["flat", flat]]
+            : argShape === "path"
+              ? [["path", translateArgs(args)]]
+              : [
+                  ["path", translateArgs(args)],
+                  ["flat", flat],
+                ]
+        let last: Record<string, unknown> | undefined
+        for (const [shape, callArgs] of attempts) {
+          try {
+            last = (await orig.call(rawSession, callArgs)) as Record<string, unknown> | undefined
+          } catch (e) {
+            last = { error: e } as Record<string, unknown>
+          }
+          const failed = !last || (typeof last === "object" && "error" in last && (last as { error?: unknown }).error)
+          if (!failed) {
+            if (!argShape) {
+              argShape = shape
+              dbgLog(`client.${method} arg shape = ${shape}`)
+            }
+            return last
+          }
+        }
+        return last
+      }
+      const adaptedGet = async (args: { path: { id: string } }) => {
+        const res = (await callV2("get", args)) as Record<string, unknown> | undefined
+        const info = (res && typeof res === "object" && "data" in (res as object) ? (res as { data?: Record<string, unknown> }).data : (res as Record<string, unknown> | undefined)) ?? undefined
+        if (info && typeof info === "object" && !info.metadata) {
+          const stateInfo = api.state.session.get(args.path.id) as { metadata?: Record<string, unknown> } | undefined
+          if (stateInfo?.metadata) {
+            dbgLog(`client.get metadata fallback: client keys=${Object.keys(info).slice(0, 12).join("|")} -> state metadata used`)
+            if (res && typeof res === "object" && "data" in res) return { ...res, data: { ...info, metadata: stateInfo.metadata } }
+            return { ...info, metadata: stateInfo.metadata }
+          }
+        }
+        return res
+      }
+      const adaptedSession = new Proxy(rawSession, {
+        get(target, key: string) {
+          if (key === "get") return adaptedGet
+          if (key === "update") return (args: unknown) => callV2("update", args)
+          const value = Reflect.get(target, key, target)
+          return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value
+        },
+      })
+      return new Proxy(raw, {
+        get(target, key: string) {
+          if (key === "session") return adaptedSession
+          const value = Reflect.get(target, key, target)
+          return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value
+        },
+      }) as unknown as ClientApi
+    })(),
     kv: api.kv,
     lifecycle: api.lifecycle,
     theme: api.theme,
     ui: {
       toast: (input) => api.ui.toast(input),
-      dialog: api.ui.dialog,
+      // dialog.clear() THROWS on an already-empty stack on 1.19.x — and
+      // flows legitimately clear after my components already settled+cleared
+      // (the throw killed confirmShare before it started, live-caught via
+      // the debug log). Idempotent wrapper for every call site.
+      dialog: new Proxy({} as ShareHostApi["ui"]["dialog"], {
+        get: (_t, key: string) => {
+          if (key === "clear")
+            return () => {
+              try {
+                api.ui.dialog.clear()
+              } catch {}
+            }
+          const value = (api.ui.dialog as unknown as Record<string, unknown>)[key]
+          return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(api.ui.dialog) : value
+        },
+      }),
       // CUSTOM interactive dialogs (family MenuDialog pattern: own
       // priority-10000 key layer + mode push + input shield). The host's
       // ui.DialogX components under plugin dialog.replace render but
@@ -34,10 +141,10 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       // These are component functions: flows invoke them inside their own
       // dialog.replace(() => ...) render thunk (the host renders the thunk
       // in a proper Solid root, so the hooks inside run with an owner).
-      DialogSelect: (props) => SelectDialog({ api, ...(props as object) } as never) as never,
-      DialogPrompt: (props) => PromptDialog({ api, ...(props as object) } as never) as never,
-      DialogConfirm: (props) => ConfirmDialog({ api, ...(props as object) } as never) as never,
-      DialogAlert: (props) => AlertDialog({ api, ...(props as object) } as never) as never,
+      DialogSelect: (props) => (<SelectDialog {...({ api, ...props } as unknown as Parameters<typeof SelectDialog>[0])} />) as never,
+      DialogPrompt: (props) => (<PromptDialog {...({ api, ...props } as unknown as Parameters<typeof PromptDialog>[0])} />) as never,
+      DialogConfirm: (props) => (<ConfirmDialog {...({ api, ...props } as unknown as Parameters<typeof ConfirmDialog>[0])} />) as never,
+      DialogAlert: (props) => (<AlertDialog {...({ api, ...props } as unknown as Parameters<typeof AlertDialog>[0])} />) as never,
     },
     keymap: {
       registerLayer(layer) {
