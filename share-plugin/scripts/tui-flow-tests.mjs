@@ -63,6 +63,7 @@ function mockHost(client, { consent = true } = {}) {
     kv: new Map(),
     dialogAnswers: [],
     promptAnswers: [],
+    menuAnswers: [],
   }
   const confirmAnswer = () => state.dialogAnswers.shift() ?? consent
   return {
@@ -91,7 +92,7 @@ function mockHost(client, { consent = true } = {}) {
           setSize() {},
         },
         async showMenu(props) {
-          return props.options[0]?.value
+          return state.menuAnswers.shift() ?? props.options[0]?.value
         },
         async showConfirm(props) {
           return confirmAnswer()
@@ -299,6 +300,43 @@ try {
     const oldMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${savedTok}` } })
     const newMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${rotated.token}` } })
     check("F6: old token revoked, new valid", oldMe.status === 401 && newMe.status === 200, `${oldMe.status}/${newMe.status}`)
+
+    // F7: admin console — legacy createToken resolves as the admin
+    // credential; the underlying admin surface round-trips end to end
+    state.menuAnswers.push(WORKER_URL, "info", "back")
+    await settings.adminConsole(host)
+    check("F7: admin console walks (legacy root token, info, back)", true)
+    const admin = flows.adminClient(WORKER_URL, CREATE_TOKEN)
+    const made = await admin.createUser("adminmade")
+    check("F7: admin creates user", made.ok === true && !!made.data?.userId, JSON.stringify(made))
+    const minted = await admin.mintToken(made.data.userId, "console-mint")
+    check("F7: admin mints token", minted.ok === true && minted.data?.token?.startsWith("osk_"))
+    const mintMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${minted.data.token}` } })
+    check("F7: minted token is live", mintMe.status === 200)
+    const ownedRes = await httpGet(`${WORKER_URL}/api/share/00`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${minted.data.token}` },
+      body: JSON.stringify({ sessionID: "ses_adminflow" }),
+    })
+    const ownedShare = await ownedRes.json()
+    check("F7: minted token creates owned share", ownedShare.ok === true)
+    const froze = await admin.freeze(made.data.userId)
+    check("F7: freeze reports share count", froze.ok === true && froze.data?.shares === 1, JSON.stringify(froze))
+    const frozenSync = await httpGet(`${WORKER_URL}/api/share/${ownedShare.id}/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: ownedShare.secret, data: [{ type: "message", data: { id: "m_frozen", role: "user" } }] }),
+    })
+    check("F7: frozen user cannot sync", frozenSync.status === 403 && (await frozenSync.json())?.error === "frozen")
+    const adminCode = await admin.createCode("console-invite", 1)
+    check("F7: admin creates invite code", adminCode.ok === true && adminCode.data?.code?.startsWith("osc_"))
+    const invited = await flows.enrollAtServer(WORKER_URL, adminCode.data.code)
+    check("F7: invite code enrolls a user", invited.ok === true && !!invited.token, JSON.stringify(invited))
+    const gone = await admin.deleteUser(made.data.userId, "delete")
+    check("F7: user delete removes shares", gone.ok === true && gone.data?.shares === 1, JSON.stringify(gone))
+    const purged = await admin.purge()
+    const sharesAfterPurge = (await admin.shares()).data?.shares ?? []
+    check("F7: purge leaves the server empty", purged.ok === true && sharesAfterPurge.length === 0, JSON.stringify(purged))
   } finally {
     await stopServe(serve);
   }

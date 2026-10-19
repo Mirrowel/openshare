@@ -28,12 +28,15 @@ export type ShareMode = "all" | "manual"
  * config group; the entry with `active: true` (or the first) is where
  * new sessions share. `token` is the enrolled user token (osk_…) or the
  * legacy root CREATE_TOKEN; `code` is an enrollment access code for
- * private servers (used once when no token is held). */
+ * private servers (used once when no token is held); `adminToken` is the
+ * server's root CREATE_TOKEN for the /openshare admin console (optional
+ * convenience — the hoster's own machines only). */
 export type ServerEntry = {
   token?: string
   code?: string
   label?: string
   active?: boolean
+  adminToken?: string
 }
 
 export type ShareConfig = {
@@ -235,6 +238,7 @@ export function normalizeServers(raw: unknown): Record<string, ServerEntry> | un
     if (typeof e.token === "string" && e.token) entry.token = e.token
     if (typeof e.code === "string" && e.code) entry.code = e.code
     if (typeof e.label === "string" && e.label) entry.label = e.label
+    if (typeof e.adminToken === "string" && e.adminToken) entry.adminToken = e.adminToken
     if (e.active === true) entry.active = true
     out[url] = entry
   }

@@ -7,6 +7,8 @@
 
 import { configSourceMap, moduleDir, writeCandidates, type ShareConfig, type WriteCandidate } from "./config.js"
 import {
+  adminClient,
+  adminTokenFor,
   clearShareFlag,
   confirmShare,
   currentConfig,
@@ -24,6 +26,8 @@ import {
   saveServerEntry,
   serverEntries,
   setShareFlag,
+  type AdminShare,
+  type AdminUser,
 } from "./share-flow.js"
 import type { SessionOpts } from "./core.js"
 import type { ShareDialogSelectOption, ShareHostApi } from "./tui-host.js"
@@ -253,6 +257,283 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
   }
 }
 
+// --- admin console -------------------------------------------------------------
+
+/** Manage a share server with its root token: users, tokens, codes,
+ * shares — the /api/admin surface as promise menus. */
+export async function adminConsole(host: ShareHostApi): Promise<void> {
+  // 1) pick the server
+  const entries = serverEntries()
+  const pickOptions: ShareDialogSelectOption<string>[] = entries.map((s) => ({
+    title: s.url,
+    value: s.url,
+    description: `${s.entry.label ? s.entry.label + " · " : ""}${s.entry.adminToken ? "admin token saved" : "no admin token saved"}`,
+  }))
+  pickOptions.push({ title: "Enter a server URL…", value: "__prompt" })
+  const picked = await showSelect(host.ui, { title: "Admin console — server", options: pickOptions })
+  if (picked === undefined) return
+  let url = picked
+  if (picked === "__prompt") {
+    const raw = await showPrompt(host.ui, { title: "Server URL", placeholder: "https://your-openshare-host" })
+    if (raw === undefined || raw === "") return
+    url = normServerUrl(raw)
+  }
+
+  // 2) resolve the root token (saved adminToken / legacy createToken /
+  //    prompt), verify it actually opens the admin API
+  let adminToken = adminTokenFor(url)
+  let prompted = false
+  let client = adminClient(url, adminToken)
+  while (true) {
+    const probe = adminToken ? await client.users() : { ok: false, error: "no admin token" }
+    if (probe.ok) break
+    const raw = await showPrompt(host.ui, {
+      title: `Admin (root) token for ${url}`,
+      placeholder: "the worker's CREATE_TOKEN",
+      value: "",
+    })
+    if (raw === undefined) return
+    adminToken = raw.trim()
+    prompted = true
+    client = adminClient(url, adminToken)
+    const retry = await client.users()
+    if (!retry.ok) {
+      await showInfo(host.ui, { title: "Not an admin token", message: `${url}: ${retry.error ?? "rejected"} — the root CREATE_TOKEN is required (user tokens cannot administer).` })
+      return
+    }
+    break
+  }
+  if (prompted && adminToken) {
+    const saved = saveServerEntry(url, { adminToken })
+    if (saved) host.ui.toast({ variant: "info", title: "OpenShare", message: `Admin token saved for ${url} (servers entry).` })
+  }
+
+  // 3) the console loop
+  while (true) {
+    const [usersR, tokensR, codesR, sharesR] = await Promise.all([client.users(), client.tokens(), client.codes(), client.shares()])
+    const users = usersR.data?.users ?? []
+    const tokens = tokensR.data?.tokens ?? []
+    const codes = codesR.data?.codes ?? []
+    const shares = sharesR.data?.shares ?? []
+
+    const choice = await showSelect(host.ui, {
+      title: `Admin — ${url}`,
+      options: [
+        { title: "Server info", value: "info", description: "health, policy, auth mode" },
+        { title: `Users (${users.length})`, value: "users", description: `${users.filter((u) => u.frozen).length} frozen` },
+        { title: `Tokens (${tokens.length})`, value: "tokens", description: `${tokens.filter((t) => !t.revoked).length} active` },
+        { title: `Access codes (${codes.length})`, value: "codes", description: "invite codes with activation budgets" },
+        { title: `Shares (${shares.length})`, value: "shares", description: "every share on this server" },
+        { title: "Purge ALL shares", value: "purge", description: "delete every share — maintenance" },
+        { title: "Back", value: "back" },
+      ],
+    })
+    if (choice === undefined || choice === "back") return
+
+    if (choice === "info") {
+      const h = await client.health()
+      await showInfo(host.ui, {
+        title: h.ok ? "Server info" : "Unreachable",
+        message: h.ok
+          ? `${url}\nservice: ${h.data?.service ?? "?"}\nauth: ${h.data?.auth?.mode ?? "?"}\npolicy: ${JSON.stringify(h.data?.policy ?? {})}`
+          : `${url}: ${h.error ?? "unreachable"}`,
+      })
+      continue
+    }
+
+    if (choice === "users") {
+      await adminUsersMenu(host, client, url, users)
+      continue
+    }
+    if (choice === "tokens") {
+      await adminTokensMenu(host, client, tokens)
+      continue
+    }
+    if (choice === "codes") {
+      await adminCodesMenu(host, client, codes)
+      continue
+    }
+    if (choice === "shares") {
+      await adminSharesMenu(host, client, url, shares, users)
+      continue
+    }
+    if (choice === "purge") {
+      const sure = await showConfirm(host.ui, {
+        title: "Purge every share",
+        message: `Delete ALL ${shares.length} shares on\n${url}?\nViewers get a final "gone" frame. Users, tokens and codes are untouched.`,
+        confirmLabel: "Purge",
+      })
+      if (!sure) continue
+      const res = await client.purge()
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? `Removed ${res.data?.removed ?? "?"} shares.` : `Purge failed: ${res.error}` })
+      continue
+    }
+  }
+}
+
+async function adminUsersMenu(host: ShareHostApi, client: ReturnType<typeof adminClient>, url: string, users: AdminUser[]): Promise<void> {
+  const options: ShareDialogSelectOption<string>[] = users.map((u) => ({
+    title: u.label,
+    value: u.id,
+    description: `${u.shares} shares · ${u.tokensActive}/${u.tokens} tokens${u.frozen ? " · FROZEN" : ""}`,
+  }))
+  options.push({ title: "Create user", value: "__create", description: "empty user record; mint a token next" })
+  options.push({ title: "Back", value: "__back" })
+  while (true) {
+    const picked = await showSelect(host.ui, { title: `Users — ${url}`, options })
+    if (picked === undefined || picked === "__back") return
+    if (picked === "__create") {
+      const label = await showPrompt(host.ui, { title: "New user label", placeholder: "name (optional)" })
+      if (label === undefined) continue
+      const res = await client.createUser(label.trim())
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? `User created: ${res.data?.label}` : `Failed: ${res.error}` })
+      continue
+    }
+    const user = users.find((u) => u.id === picked)
+    if (!user) return
+    const action = await showSelect(host.ui, {
+      title: `${user.label}${user.frozen ? " (FROZEN)" : ""}`,
+      options: [
+        { title: user.frozen ? "Unfreeze" : "Freeze", value: "freeze", description: user.frozen ? "restore edit rights on their shares" : "sever ALL edit paths on their shares (view unaffected)" },
+        { title: "Mint token", value: "mint", description: "issue a new osk_ token (shown once)" },
+        { title: "Delete user", value: "delete", description: "default freezes; delete mode also removes shares + tokens" },
+        { title: "Back", value: "back" },
+      ],
+    })
+    if (action === undefined || action === "back") continue
+    if (action === "freeze") {
+      const res = user.frozen ? await client.unfreeze(user.id) : await client.freeze(user.id)
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? (user.frozen ? "Unfrozen." : `Frozen (${res.data?.shares ?? "?"} shares locked).`) : `Failed: ${res.error}` })
+      return
+    }
+    if (action === "mint") {
+      const res = await client.mintToken(user.id)
+      if (res.ok && res.data?.token) {
+        await host.clipboard.write(res.data.token)
+        await showInfo(host.ui, { title: "Token minted", message: `For ${user.label}:\n${res.data.token}\n\n(copied to clipboard — shown once)` })
+      } else {
+        await showInfo(host.ui, { title: "Mint failed", message: res.error ?? "unknown error" })
+      }
+      continue
+    }
+    if (action === "delete") {
+      const mode = await showSelect(host.ui, {
+        title: `Delete ${user.label}?`,
+        options: [
+          { title: "Freeze instead (default)", value: "freeze", description: "reversible — shares stay, edits blocked" },
+          { title: "Delete everything", value: "delete", description: "remove their shares + tokens + user" },
+          { title: "Cancel", value: "cancel" },
+        ],
+      })
+      if (mode === undefined || mode === "cancel") continue
+      const res = await client.deleteUser(user.id, mode === "delete" ? "delete" : "freeze")
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? (mode === "delete" ? `Deleted (${res.data?.shares ?? "?"} shares removed).` : "Frozen.") : `Failed: ${res.error}` })
+      return
+    }
+  }
+}
+
+async function adminTokensMenu(host: ShareHostApi, client: ReturnType<typeof adminClient>, tokens: Array<{ id: string; userId: string; label: string; createdAt: number; lastUsedAt: number; revoked: boolean }>): Promise<void> {
+  while (true) {
+    const fresh = (await client.tokens()).data?.tokens ?? []
+    const options: ShareDialogSelectOption<string>[] = fresh
+      .filter((t) => !t.revoked)
+      .map((t) => ({
+        title: `${t.label || "(unlabeled)"} ${t.id}`,
+        value: t.id,
+        description: `last used ${t.lastUsedAt ? new Date(t.lastUsedAt).toISOString().slice(0, 16).replace("T", " ") : "never"}`,
+      }))
+    options.push({ title: "Back", value: "__back" })
+    const picked = await showSelect(host.ui, { title: `Active tokens (${options.length - 1}) — revoke`, options })
+    if (picked === undefined || picked === "__back") return
+    const sure = await showConfirm(host.ui, { title: "Revoke token", message: `Revoke ${picked}?\nThe holder can no longer write (existing shares keep their secrets unless the user is frozen).`, confirmLabel: "Revoke" })
+    if (!sure) continue
+    const res = await client.revokeToken(picked)
+    host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Token revoked." : `Failed: ${res.error}` })
+  }
+}
+
+async function adminCodesMenu(host: ShareHostApi, client: ReturnType<typeof adminClient>, codes: Array<{ id: string; label: string; activationsLeft: number; used: number; disabled: boolean }>): Promise<void> {
+  while (true) {
+    const fresh = (await client.codes()).data?.codes ?? []
+    const options: ShareDialogSelectOption<string>[] = fresh.map((c) => ({
+      title: `${c.label}${c.disabled ? " (disabled)" : ""}`,
+      value: c.id,
+      description: c.activationsLeft === -1 ? "unlimited activations" : `${c.activationsLeft} left · ${c.used} used`,
+    }))
+    options.push({ title: "Create code", value: "__create", description: "invite: label + activation budget" })
+    options.push({ title: "Back", value: "__back" })
+    const picked = await showSelect(host.ui, { title: "Access codes", options })
+    if (picked === undefined || picked === "__back") return
+    if (picked === "__create") {
+      const label = await showPrompt(host.ui, { title: "Code label", placeholder: "e.g. friends, team" })
+      if (label === undefined) continue
+      const raw = await showPrompt(host.ui, { title: "Activations", placeholder: "1 (personal invite) · number · -1 = unlimited" })
+      if (raw === undefined) continue
+      const n = Number(raw.trim() === "" ? "1" : raw.trim())
+      const activations = Number.isFinite(n) && n >= 1 ? Math.floor(n) : -1
+      const res = await client.createCode(label.trim() || "invite", activations)
+      if (res.ok && res.data?.code) {
+        await host.clipboard.write(res.data.code)
+        await showInfo(host.ui, { title: "Code created", message: `${label.trim() || "invite"}: ${res.data.code}\n(${activations === -1 ? "unlimited" : activations} activation${activations === 1 ? "" : "s"})\n\n(copied to clipboard — shown once)` })
+      } else {
+        await showInfo(host.ui, { title: "Create failed", message: res.error ?? "unknown error" })
+      }
+      continue
+    }
+    const code = fresh.find((c) => c.id === picked)
+    if (!code || code.disabled) continue
+    const sure = await showConfirm(host.ui, { title: "Disable code", message: `Disable "${code.label}"?\nHolders can no longer enroll with it (existing tokens unaffected).`, confirmLabel: "Disable" })
+    if (!sure) continue
+    const res = await client.disableCode(picked)
+    host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Code disabled." : `Failed: ${res.error}` })
+  }
+}
+
+async function adminSharesMenu(host: ShareHostApi, client: ReturnType<typeof adminClient>, url: string, shares: AdminShare[], users: AdminUser[]): Promise<void> {
+  const labelOf = (id: string | null | undefined) => users.find((u) => u.id === id)?.label ?? id ?? "(ownerless)"
+  while (true) {
+    const fresh = (await client.shares()).data?.shares ?? []
+    const options: ShareDialogSelectOption<string>[] = fresh.map((s) => ({
+      title: `${s.id.slice(0, 10)}…`,
+      value: s.id,
+      description: `${labelOf(s.ownerId)} · ${new Date(s.createdAt).toISOString().slice(0, 16).replace("T", " ")}`,
+    }))
+    options.push({ title: "Back", value: "__back" })
+    const picked = await showSelect(host.ui, { title: `Shares — ${url}`, options })
+    if (picked === undefined || picked === "__back") return
+    const share = fresh.find((s) => s.id === picked)
+    if (!share) continue
+    const action = await showSelect(host.ui, {
+      title: `Share ${picked.slice(0, 12)}…`,
+      options: [
+        { title: "Reassign owner", value: "reassign", description: `currently ${labelOf(share.ownerId)} — the rescue path` },
+        { title: "Delete share", value: "delete", description: "viewers get a final gone frame" },
+        { title: "Back", value: "back" },
+      ],
+    })
+    if (action === undefined || action === "back") continue
+    if (action === "reassign") {
+      const usersNow = (await client.users()).data?.users ?? []
+      const target = await showSelect(host.ui, {
+        title: "Reassign to user",
+        options: [...usersNow.map((u) => ({ title: u.label, value: u.id, description: u.frozen ? "FROZEN — unfreeze after" : `${u.shares} shares` })), { title: "Cancel", value: "__cancel" }],
+      })
+      if (target === undefined || target === "__cancel") continue
+      const res = await client.reassign(picked, target)
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Reassigned (freeze cleared on this share)." : `Failed: ${res.error}` })
+      continue
+    }
+    if (action === "delete") {
+      const sure = await showConfirm(host.ui, { title: "Delete share", message: `Delete ${picked} permanently?`, confirmLabel: "Delete" })
+      if (!sure) continue
+      const res = await client.deleteShare(picked)
+      host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.ok ? "Share deleted." : `Failed: ${res.error}` })
+      continue
+    }
+  }
+}
+
 /** The settings dialog. Returns when the user exits. */
 export async function settingsDialog(host: ShareHostApi, startAtSession?: string): Promise<void> {
   let cfg = currentConfig()
@@ -281,6 +562,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       options.push({ title: s.url, value: `server:${s.url}`, description: `${s.entry.label ? s.entry.label + " · " : ""}${cred}${s.active ? " · ACTIVE" : ""}` })
     }
     options.push({ title: "Connect to a server", value: "server:add", description: "URL (+ access code) — enrolls and saves the token" })
+    options.push({ title: "Admin console", value: "action:admin", description: "manage a server with its root token (users, codes, tokens, shares)" })
     options.push({ title: "Test connection", value: "action:test", description: "Probe the active server's /health" })
     for (const [key, meta] of Object.entries(LABELS)) {
       if (meta.section === "Sharing") options.push({ title: meta.label, value: `key:${key}`, description: withSource(displayValue(key, cfg), sources[key]) })
@@ -345,6 +627,12 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       const res = await connectServerFlow(host)
       host.ui.toast({ variant: res.ok ? "success" : "error", title: "OpenShare", message: res.message, duration: 10000 })
       if (res.ok) cfg = currentConfig()
+      continue
+    }
+
+    if (choice === "action:admin") {
+      await adminConsole(host)
+      cfg = currentConfig()
       continue
     }
 

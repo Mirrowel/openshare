@@ -301,6 +301,60 @@ export async function disconnectAtServer(workerUrl: string, token: string): Prom
   }
 }
 
+// --- admin console (root CREATE_TOKEN) ----------------------------------------
+
+export type AdminUser = { id: string; label: string; createdAt: number; frozen: boolean; shares: number; tokens: number; tokensActive: number }
+export type AdminToken = { id: string; userId: string; label: string; limits: Record<string, number>; createdAt: number; lastUsedAt: number; expiresAt: number; revoked: boolean }
+export type AdminCode = { id: string; label: string; activationsLeft: number; used: number; createdAt: number; expiresAt: number; disabled: boolean }
+export type AdminShare = { id: string; createdAt: number; sessionID?: string; ownerId?: string | null }
+
+/** Thin typed client for the worker's /api/admin surface. `token` must be
+ * the server's root CREATE_TOKEN (user osk_ tokens get 403). */
+export function adminClient(workerUrl: string, token: string) {
+  const base = normServerUrl(workerUrl)
+  const call = async <T>(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data?: T; error?: string }> => {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method,
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(12000),
+      })
+      const parsed = (await res.json().catch(() => ({}))) as T & { ok?: boolean; error?: string }
+      if (!res.ok) return { ok: false, status: res.status, error: parsed?.error ?? `HTTP ${res.status}` }
+      return { ok: parsed?.ok !== false, status: res.status, data: parsed, error: parsed?.error }
+    } catch (error) {
+      return { ok: false, status: 0, error: (error as Error).message }
+    }
+  }
+  return {
+    users: () => call<{ users: AdminUser[] }>("GET", "/api/admin/users"),
+    createUser: (label: string) => call<{ userId: string; label: string }>("POST", "/api/admin/users", { label }),
+    freeze: (userId: string) => call<{ frozen: boolean; shares: number }>("POST", `/api/admin/users/${userId}/freeze`),
+    unfreeze: (userId: string) => call<{ frozen: boolean; shares: number }>("POST", `/api/admin/users/${userId}/unfreeze`),
+    deleteUser: (userId: string, mode: "freeze" | "delete") => call<{ mode: string; shares: number }>("DELETE", `/api/admin/users/${userId}`, { mode }),
+    tokens: () => call<{ tokens: AdminToken[] }>("GET", "/api/admin/tokens"),
+    mintToken: (userId: string, label?: string, limits?: Record<string, number>) => call<{ token: string; id: string }>("POST", "/api/admin/tokens", { userId, label, limits }),
+    revokeToken: (tokenId: string) => call("DELETE", `/api/admin/tokens/${tokenId}`),
+    codes: () => call<{ codes: AdminCode[] }>("GET", "/api/admin/codes"),
+    createCode: (label: string, activations: number) => call<{ code: string; id: string; activationsLeft: number }>("POST", "/api/admin/codes", { label, activations }),
+    disableCode: (codeId: string) => call("DELETE", `/api/admin/codes/${codeId}`),
+    shares: () => call<{ shares: AdminShare[] }>("GET", "/api/admin/shares"),
+    deleteShare: (shareId: string) => call("DELETE", `/api/share/${shareId}`),
+    reassign: (shareId: string, userId: string) => call("POST", `/api/admin/shares/${shareId}/reassign`, { userId }),
+    purge: () => call<{ removed: number }>("POST", "/api/admin/purge"),
+    health: () => call<{ ok: boolean; service: string; policy: Record<string, unknown>; auth: { mode: string } }>("GET", "/health"),
+  }
+}
+
+/** Resolve the admin credential for a server: the entry's adminToken, the
+ * legacy createToken (when it points at this server), or prompt. */
+export function adminTokenFor(url: string, cfg: ShareConfig = currentConfig()): string {
+  const base = normServerUrl(url)
+  const entry = serverEntries(cfg).find((s) => s.url === base)
+  return entry?.entry.adminToken ?? (cfg.workerUrl && normServerUrl(cfg.workerUrl) === base ? cfg.createToken : "") ?? ""
+}
+
 // --- the flows --------------------------------------------------------------------
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))

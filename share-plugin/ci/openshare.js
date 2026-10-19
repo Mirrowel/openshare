@@ -98,6 +98,8 @@ function normalizeServers(raw) {
       entry.code = e.code;
     if (typeof e.label === "string" && e.label)
       entry.label = e.label;
+    if (typeof e.adminToken === "string" && e.adminToken)
+      entry.adminToken = e.adminToken;
     if (e.active === true)
       entry.active = true;
     out[url] = entry;
