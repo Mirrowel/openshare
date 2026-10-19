@@ -30,3 +30,6 @@ Thumbs.db
 
 # agent tooling scratch
 .cortexkit/
+
+# stray run logs
+share-plugin/*.out
