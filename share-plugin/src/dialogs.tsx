@@ -99,6 +99,22 @@ function cappedHeight(count: number, max: number, min = 1) {
   return Math.max(min, Math.min(count, max))
 }
 
+/** OpenShare visual frame: rounded accent border + accent title row. The
+ * logic inside the menus stays the ported family pattern; this wrapper is
+ * purely presentation (owner-preferred styling). Natural width — the host
+ * dialog panel provides the container; the border hugs the content. */
+function DialogFrame(props: { api: TuiPluginApi; title: string; children: JSX.Element }): JSX.Element {
+  const theme = () => props.api.theme.current
+  return (
+    <box borderStyle="rounded" borderColor={theme().accent} flexDirection="column" paddingLeft={1} paddingRight={1}>
+      <text fg={theme().accent}><b>{props.title}</b></text>
+      <box flexDirection="column" paddingTop={1}>
+        {props.children}
+      </box>
+    </box>
+  )
+}
+
 // --- the menu (ported from agent-variants' MenuDialog) -----------------------
 
 export type MenuOption<Value = string> = {
@@ -161,16 +177,11 @@ export function MenuDialog<Value>(props: {
   })
 
   return (
-    <box flexDirection="column" width="100%" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+    <DialogFrame api={props.api} title={props.title}>
       <box flexDirection="row" justifyContent="space-between" width="100%" marginBottom={1}>
-        <text fg={theme().text}><b>{props.title}</b></text>
+        <text fg={theme().textMuted}>{props.hint ?? ""}</text>
         <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc</text>
       </box>
-      <Show when={props.hint}>
-        <box marginBottom={1}>
-          <text fg={theme().textMuted}>{props.hint}</text>
-        </box>
-      </Show>
       <box flexDirection="row" gap={3} marginBottom={1}>
         <text fg={theme().textMuted}>enter select</text>
         <text fg={theme().textMuted}>up/down move</text>
@@ -195,7 +206,7 @@ export function MenuDialog<Value>(props: {
                     if (!option.disabled) props.onDone(option.value)
                   }}
                 >
-                  <text flexGrow={1} fg={fg()} wrapMode="none" overflow="hidden"><b>{option.title}</b></text>
+                  <text flexGrow={1} fg={fg()} wrapMode="none" overflow="hidden"><b>{active() ? "❯ " : "  "}{option.title}</b></text>
                   <text flexGrow={2} fg={descFg()} wrapMode="none" overflow="hidden">{option.description ?? ""}</text>
                 </box>
               )
@@ -203,7 +214,7 @@ export function MenuDialog<Value>(props: {
           </For>
         </box>
       </scrollbox>
-    </box>
+    </DialogFrame>
   )
 }
 
@@ -289,11 +300,7 @@ export function PromptDialog(props: {
     popMode()
   })
   return (
-    <box flexDirection="column" width="100%" paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-      <box flexDirection="row" justifyContent="space-between" width="100%" marginBottom={1}>
-        <text fg={theme().text}><b>{props.title}</b></text>
-        <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc</text>
-      </box>
+    <DialogFrame api={props.api} title={props.title}>
       <box backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} marginBottom={1}>
         <text fg={text() ? theme().text : theme().textMuted}>{text() || props.placeholder || ""}</text>
         <text fg={theme().accent}>{"▌"}</text>
@@ -302,7 +309,7 @@ export function PromptDialog(props: {
         <text fg={theme().textMuted}>enter confirm</text>
         <text fg={theme().textMuted}>esc cancel</text>
       </box>
-    </box>
+    </DialogFrame>
   )
 }
 

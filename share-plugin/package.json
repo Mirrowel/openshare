@@ -60,7 +60,8 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc --outDir dist --declaration && npm run build:standalone",
+    "build": "npm run clean && tsc --outDir dist --declaration && npm run build:tui && npm run build:standalone",
+    "build:tui": "bun scripts/build-tui.mjs",
     "build:standalone": "bun scripts/build-standalone.mjs",
     "typecheck": "tsc --noEmit",
     "test:regression": "node scripts/regression-tests.mjs",
