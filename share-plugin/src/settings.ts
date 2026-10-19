@@ -137,7 +137,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     }
     if (startAtSession) {
       options.push({ title: `— This session (${shared}) —`, value: "session:none", description: "Per-session actions and overrides", disabled: true })
-      options.push({ title: binding?.url ? "Copy share link" : "Share this session", value: "session:share", description: binding?.url ?? "Set the share flag; the server plugin creates the page" })
+      options.push({ title: binding?.url ? "Copy share link" : "Share this session", value: "session:share", description: binding?.url ? "copy the share URL to the clipboard" : "Set the share flag; the server plugin creates the page" })
       if (binding?.url) options.push({ title: "Stop sharing", value: "session:unshare", description: "Delete the share page and clear the flag" })
       options.push({ title: "Session TTL override (days)", value: "session:ttl", description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)" })
       options.push({ title: "Session read auth", value: "session:auth", description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)" })

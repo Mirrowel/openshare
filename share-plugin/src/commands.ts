@@ -38,7 +38,7 @@ function showShareManager(host: ShareHostApi, url: string, sessionID: () => stri
       title: "Session is shared",
       hint: url,
       options: [
-        { title: "Copy share link", value: "copy", description: url },
+        { title: "Copy share link", value: "copy", description: "copy the share URL to the clipboard" },
         { title: "Stop sharing", value: "stop", description: "Delete the share page — the link stops working for everyone" },
         { title: "Cancel", value: "cancel" },
       ],

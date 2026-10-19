@@ -136,6 +136,10 @@ export function MenuDialog<Value>(props: {
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
   const listHeight = createMemo(() => cappedHeight(props.options.length, 14, 4))
+  // fixed title column shared by every row (family menuTitleWidth): flex
+  // columns stagger per-row because flex splits by content — a computed
+  // width is what makes the value/description column align (live-caught).
+  const titleWidth = createMemo(() => Math.max(...props.options.map((option) => option.title.length), 8))
   let scroll: ScrollBoxRenderable | undefined
   const popMode = props.api.mode.push("openshare.dialog")
   const [selected, setSelected] = createSignal(Math.max(0, props.options.findIndex((option) => option.value === props.current)))
@@ -178,14 +182,11 @@ export function MenuDialog<Value>(props: {
 
   return (
     <DialogFrame api={props.api} title={props.title}>
-      <box flexDirection="row" justifyContent="space-between" width="100%" marginBottom={1}>
-        <text fg={theme().textMuted}>{props.hint ?? ""}</text>
-        <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc</text>
-      </box>
-      <box flexDirection="row" gap={3} marginBottom={1}>
-        <text fg={theme().textMuted}>enter select</text>
-        <text fg={theme().textMuted}>up/down move</text>
-      </box>
+      <Show when={props.hint}>
+        <box marginBottom={1} paddingLeft={1} paddingRight={1}>
+          <text fg={theme().textMuted} wrapMode="none" overflow="hidden">{props.hint}</text>
+        </box>
+      </Show>
       <scrollbox maxHeight={listHeight()} ref={(element: ScrollBoxRenderable) => (scroll = element)}>
         <box flexDirection="column" gap={0}>
           <For each={props.options}>
@@ -206,14 +207,20 @@ export function MenuDialog<Value>(props: {
                     if (!option.disabled) props.onDone(option.value)
                   }}
                 >
-                  <text flexGrow={1} fg={fg()} wrapMode="none" overflow="hidden"><b>{active() ? "❯ " : "  "}{option.title}</b></text>
-                  <text flexGrow={2} fg={descFg()} wrapMode="none" overflow="hidden">{option.description ?? ""}</text>
+                  <text width={2} flexShrink={0} fg={fg()}>{active() ? "❯" : " "}</text>
+                  <text width={titleWidth()} flexShrink={0} fg={fg()} wrapMode="none" overflow="hidden"><b>{option.title}</b></text>
+                  <text flexGrow={1} fg={descFg()} wrapMode="none" overflow="hidden">{option.description ?? ""}</text>
                 </box>
               )
             }}
           </For>
         </box>
       </scrollbox>
+      <box flexDirection="row" gap={3} paddingTop={1} paddingLeft={1}>
+        <text fg={theme().textMuted}>enter select</text>
+        <text fg={theme().textMuted}>up/down move</text>
+        <text fg={theme().textMuted} onMouseUp={() => props.onDone(undefined)}>esc back</text>
+      </box>
     </DialogFrame>
   )
 }
