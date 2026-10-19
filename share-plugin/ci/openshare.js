@@ -21,7 +21,7 @@
 // shareMode ("all" | "manual"; default = TUI presence).
 //
 // src/config.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 var METADATA_KEY = "openshare";
@@ -73,12 +73,76 @@ function configPaths(pluginDir, env = process.env) {
   paths.push(join(globalConfigDir(env), CONFIG_NAME));
   return paths;
 }
+function configHomePath(env = process.env) {
+  return join(globalConfigDir(env), CONFIG_NAME);
+}
 function num(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 function str(value) {
   return typeof value === "string" ? value : undefined;
+}
+function normalizeServers(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return;
+  const out = {};
+  for (const [url, value] of Object.entries(raw)) {
+    if (!url.startsWith("http") || !value || typeof value !== "object")
+      continue;
+    const e = value;
+    const entry = {};
+    if (typeof e.token === "string" && e.token)
+      entry.token = e.token;
+    if (typeof e.code === "string" && e.code)
+      entry.code = e.code;
+    if (typeof e.label === "string" && e.label)
+      entry.label = e.label;
+    if (e.active === true)
+      entry.active = true;
+    out[url] = entry;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+function mergeServerGroups(base, add) {
+  const merged = { ...base ?? {} };
+  for (const [url, entry] of Object.entries(add))
+    merged[url] = { ...merged[url] ?? {}, ...entry };
+  return merged;
+}
+function resolveServer(cfg) {
+  const servers = {};
+  if (cfg.workerUrl)
+    servers[cfg.workerUrl] = { token: cfg.createToken || "", active: true };
+  if (cfg.servers)
+    for (const [url2, entry] of Object.entries(cfg.servers))
+      servers[url2] = entry;
+  const urls = Object.keys(servers);
+  if (!urls.length)
+    return;
+  const url = urls.find((u) => servers[u].active) ?? urls[0];
+  return { url, token: servers[url].token ?? "", entry: servers[url] };
+}
+function saveServerToken(url, token, target) {
+  const path = target ?? configHomePath();
+  if (!path || !token)
+    return;
+  try {
+    let previous = {};
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"));
+      if (!previous || typeof previous !== "object")
+        previous = {};
+    } catch {}
+    const servers = normalizeServers(previous.servers) ?? {};
+    servers[url] = { ...servers[url], token };
+    previous.servers = servers;
+    writeFileSync(path, JSON.stringify(previous, null, 2) + `
+`);
+    return path;
+  } catch {
+    return;
+  }
 }
 function loadConfig(pluginDir, options) {
   const cfg = { ...DEFAULTS };
@@ -90,6 +154,12 @@ function loadConfig(pluginDir, options) {
       if (!raw || typeof raw !== "object")
         continue;
       for (const [key, value] of Object.entries(raw)) {
+        if (key === "servers") {
+          const servers = normalizeServers(value);
+          if (servers)
+            cfg.servers = mergeServerGroups(cfg.servers, servers);
+          continue;
+        }
         if (!known.has(key))
           continue;
         if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
@@ -101,6 +171,9 @@ function loadConfig(pluginDir, options) {
     } catch {}
   }
   if (options && typeof options === "object") {
+    const serversOpt = normalizeServers(options.servers);
+    if (serversOpt)
+      cfg.servers = mergeServerGroups(cfg.servers, serversOpt);
     for (const key of Object.keys(DEFAULTS)) {
       const value = options[key];
       if (value === undefined || value === null)
@@ -261,7 +334,7 @@ function resolveShareMode(cfg, input) {
 }
 
 // src/core.ts
-import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
 var stderrInfoAllowed = true;
 var log = (...a) => {
@@ -336,7 +409,7 @@ function createEngine(deps) {
     stderrInfoAllowed = false;
   if (process.env.OPENSHARE_DEBUG_FILE) {
     try {
-      writeFileSync(process.env.OPENSHARE_DEBUG_FILE, JSON.stringify({
+      writeFileSync2(process.env.OPENSHARE_DEBUG_FILE, JSON.stringify({
         mode,
         directory: deps.directory,
         worktree: deps.worktree,
@@ -345,8 +418,9 @@ function createEngine(deps) {
       }, null, 2));
     } catch {}
   }
-  if (!cfg.workerUrl || !cfg.createToken) {
-    log("disabled: workerUrl/createToken not configured");
+  const server = resolveServer(cfg);
+  if (!server || !server.url) {
+    log("disabled: no share server configured (workerUrl or a servers entry)");
     return {
       mode,
       config: () => cfg,
@@ -356,7 +430,53 @@ function createEngine(deps) {
       }
     };
   }
+  cfg.workerUrl = server.url;
+  if (!cfg.createToken)
+    cfg.createToken = server.token;
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
+  let credential = server.token;
+  let credentialError = "";
+  let lastEnrollAt = 0;
+  const ENROLL_RETRY_MS = 60000;
+  const ensureCredential = async () => {
+    if (credential)
+      return credential;
+    if (Date.now() - lastEnrollAt < ENROLL_RETRY_MS)
+      return "";
+    lastEnrollAt = Date.now();
+    try {
+      const h = await fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) });
+      const hb = h.ok ? await h.json().catch(() => null) : null;
+      const mode2 = hb?.auth?.mode;
+      const code = server.entry.code ?? "";
+      if (mode2 === "public" || code) {
+        const r = await fetch(`${cfg.workerUrl}/api/enroll`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code }),
+          signal: AbortSignal.timeout(1e4)
+        });
+        const b = r.ok ? await r.json().catch(() => null) : null;
+        if (b?.ok && typeof b.token === "string") {
+          credential = b.token;
+          credentialError = "";
+          cfg.createToken = credential;
+          const savedTo = saveServerToken(cfg.workerUrl, credential);
+          log(`enrolled at ${cfg.workerUrl} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
+          return credential;
+        }
+        credentialError = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
+      } else if (mode2 === "private") {
+        credentialError = "private server: add servers.{url}.code (or token) to enroll";
+      } else {
+        credentialError = `server health unreachable (HTTP ${h.status})`;
+      }
+    } catch (e) {
+      credentialError = `enrollment failed: ${e?.message || e}`;
+    }
+    logError(`no credential for ${cfg.workerUrl}: ${credentialError}`);
+    return "";
+  };
   const wsUrl = () => cfg.workerUrl.replace(/^http/, "ws");
   let policy = {
     mode: "persistent",
@@ -448,6 +568,7 @@ function createEngine(deps) {
     reconnectTimer: null,
     intentionalClose: false,
     connectQueued: false,
+    authBlocked: false,
     opts: undefined,
     activated: false,
     announced: false,
@@ -597,8 +718,8 @@ function createEngine(deps) {
   const queuePath = (st) => join2(spoolRoot, `${st.sid}.queue.jsonl`);
   const spoolSave = (st) => {
     try {
-      writeFileSync(metaPath(st), JSON.stringify({ shareId: st.shareId, secret: st.secret, ackedRev: st.ackedRev, sid: st.sid }));
-      writeFileSync(queuePath(st), st.pending.map((f) => JSON.stringify(f)).join(`
+      writeFileSync2(metaPath(st), JSON.stringify({ shareId: st.shareId, secret: st.secret, ackedRev: st.ackedRev, sid: st.sid }));
+      writeFileSync2(queuePath(st), st.pending.map((f) => JSON.stringify(f)).join(`
 `) + (st.pending.length ? `
 ` : ""));
     } catch (e) {
@@ -676,7 +797,7 @@ function createEngine(deps) {
     }).catch(() => {});
   };
   const queueConnect = (st) => {
-    if (st.closed || st.connectQueued || st.connecting)
+    if (st.closed || st.connectQueued || st.connecting || st.authBlocked)
       return;
     st.connectQueued = true;
     chain = chain.then(() => {
@@ -703,7 +824,15 @@ function createEngine(deps) {
       st.initWasAttach = !!(st.shareId && st.secret);
       if (debugEvents)
         log(`ws#${seq} opening (${st.initWasAttach ? `attach ${st.shareId}` : "create"})`);
-      const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(cfg.createToken ?? "")}`);
+      const token = st.initWasAttach ? credential : credential || await ensureCredential();
+      if (!st.initWasAttach && !token && credentialError) {
+        st.authBlocked = true;
+        st.connecting = false;
+        st.ws = null;
+        logError(`sharing disabled (no credential): ${credentialError}`);
+        return;
+      }
+      const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(token ?? "")}`);
       st.ws = ws;
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000);
@@ -825,6 +954,29 @@ function createEngine(deps) {
   const handleFrame = async (st, frame) => {
     if (frame.op === "init") {
       if (!frame.ok) {
+        const err = String(frame.error ?? "");
+        if (/frozen/i.test(err)) {
+          st.authBlocked = true;
+          logError("share frozen by the hoster (owner frozen) - edits refused; contact the server admin");
+          try {
+            st.ws?.close(4000, "frozen");
+          } catch {}
+          return;
+        }
+        if (/token|credential/i.test(err) && !st.initWasAttach) {
+          if (credential) {
+            credential = "";
+            cfg.createToken = "";
+            logError("server rejected our token - re-enrolling");
+          }
+          try {
+            st.ws?.close(4000, "auth");
+          } catch {}
+          st.connecting = false;
+          if (!st.closed)
+            queueConnect(st);
+          return;
+        }
         logError("init refused:", frame.error, "- creating fresh share");
         deleteAbandoned(st);
         st.shareId = null;

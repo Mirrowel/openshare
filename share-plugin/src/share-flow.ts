@@ -62,6 +62,7 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
     for (const key of [
       "workerUrl",
       "createToken",
+      "servers",
       "debounceMs",
       "completedDelayMs",
       "modelLabel",

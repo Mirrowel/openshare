@@ -18,15 +18,30 @@
 // Detection is read-only: this plugin NEVER writes tui.json (no
 // selfwiring — the two parts are installed deliberately).
 
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export type ShareMode = "all" | "manual"
 
+/** One share-server membership. Keyed by server URL in the `servers`
+ * config group; the entry with `active: true` (or the first) is where
+ * new sessions share. `token` is the enrolled user token (osk_…) or the
+ * legacy root CREATE_TOKEN; `code` is an enrollment access code for
+ * private servers (used once when no token is held). */
+export type ServerEntry = {
+  token?: string
+  code?: string
+  label?: string
+  active?: boolean
+}
+
 export type ShareConfig = {
   workerUrl: string
   createToken: string
+  /** Multi-server memberships (URL -> entry). Legacy workerUrl/createToken
+   * synthesize into this group at load; the group is the canonical form. */
+  servers?: Record<string, ServerEntry>
   debounceMs: number
   completedDelayMs: number
   modelLabel: string
@@ -154,7 +169,7 @@ export function writeCandidates(pluginDir: string, env: NodeJS.ProcessEnv = proc
  * Values of "" count as unset for the credential/path keys. */
 export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"])
-  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode"])
+  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode", "servers"])
   const sources: Record<string, string> = {}
   const envKeys: Record<string, string | undefined> = {
     workerUrl: env.OPENSHARE_WORKER_URL,
@@ -186,6 +201,10 @@ export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = proc
     }
     const label = basename(path) === LOCAL_NAME ? `openshare.local.json (${dirname(path).split(/[\\/]/).pop()})` : `${basename(path)} (${dirname(path).split(/[\\/]/).pop()})`
     for (const [key, value] of Object.entries(raw)) {
+      if (key === "servers") {
+        if (sources.servers === undefined && normalizeServers(value)) sources.servers = label
+        continue
+      }
       if (sources[key] !== undefined || !known.has(key)) continue
       if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
       if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
@@ -202,6 +221,69 @@ function num(value: unknown, fallback: number): number {
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
+}
+
+/** Sanitized `servers` group from raw config JSON (invalid entries
+ * dropped; url keys kept verbatim). */
+export function normalizeServers(raw: unknown): Record<string, ServerEntry> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const out: Record<string, ServerEntry> = {}
+  for (const [url, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!url.startsWith("http") || !value || typeof value !== "object") continue
+    const e = value as Record<string, unknown>
+    const entry: ServerEntry = {}
+    if (typeof e.token === "string" && e.token) entry.token = e.token
+    if (typeof e.code === "string" && e.code) entry.code = e.code
+    if (typeof e.label === "string" && e.label) entry.label = e.label
+    if (e.active === true) entry.active = true
+    out[url] = entry
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/** Field-level merge of servers groups: entries only carry present fields
+ * (normalizeServers), so a static `code` in plugin options and a persisted
+ * `token` in the settings home combine instead of shadowing — per-URL
+ * wholesale replacement would re-enroll on every boot (live-caught in
+ * suite design review). */
+export function mergeServerGroups(base: Record<string, ServerEntry> | undefined, add: Record<string, ServerEntry>): Record<string, ServerEntry> {
+  const merged: Record<string, ServerEntry> = { ...(base ?? {}) }
+  for (const [url, entry] of Object.entries(add)) merged[url] = { ...(merged[url] ?? {}), ...entry }
+  return merged
+}
+
+/** The server new sessions share to: the `active` entry (or the first).
+ * Legacy workerUrl/createToken merge in as the implicit first entry. */
+export function resolveServer(cfg: ShareConfig): { url: string; token: string; entry: ServerEntry } | undefined {
+  const servers: Record<string, ServerEntry> = {}
+  if (cfg.workerUrl) servers[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
+  if (cfg.servers) for (const [url, entry] of Object.entries(cfg.servers)) servers[url] = entry
+  const urls = Object.keys(servers)
+  if (!urls.length) return undefined
+  const url = urls.find((u) => servers[u].active) ?? urls[0]
+  return { url, token: servers[url].token ?? "", entry: servers[url] }
+}
+
+/** Persist an enrolled/rotated token for a server into the settings-home
+ * config's `servers` group — surgical merge (never rewrites other keys,
+ * never touches deploy-time files). */
+export function saveServerToken(url: string, token: string, target?: string): string | undefined {
+  const path = target ?? configHomePath()
+  if (!path || !token) return undefined
+  try {
+    let previous: Record<string, unknown> = {}
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"))
+      if (!previous || typeof previous !== "object") previous = {}
+    } catch {}
+    const servers = normalizeServers(previous.servers) ?? {}
+    servers[url] = { ...servers[url], token }
+    previous.servers = servers
+    writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
+    return path
+  } catch {
+    return undefined
+  }
 }
 
 /** Load the effective config. `options` is the plugin-array options tuple
@@ -222,6 +304,11 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
       const raw = JSON.parse(readFileSync(path, "utf8"))
       if (!raw || typeof raw !== "object") continue
       for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        if (key === "servers") {
+          const servers = normalizeServers(value)
+          if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
+          continue
+        }
         if (!known.has(key)) continue
         if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
         if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
@@ -231,6 +318,8 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   }
 
   if (options && typeof options === "object") {
+    const serversOpt = normalizeServers((options as Record<string, unknown>).servers)
+    if (serversOpt) cfg.servers = mergeServerGroups(cfg.servers, serversOpt)
     for (const key of Object.keys(DEFAULTS) as Array<keyof ShareConfig>) {
       const value = options[key]
       if (value === undefined || value === null) continue

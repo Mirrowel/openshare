@@ -195,7 +195,13 @@ async function startWorker(suiteDir, opts = {}) {
 
     const { child, kill } = spawnTree(
       "npx",
-      ["wrangler", "dev", "--config", configPath, "--port", String(port), "--ip", "127.0.0.1", "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
+      ["wrangler", "dev", "--config", configPath, "--port", String(port), "--ip", "127.0.0.1",
+        // isolated local state: two suite workers (e.g. private + public
+        // auth modes) sharing the default .wrangler/state are literally
+        // the same store — KV + DOs collide across ports (live-caught in
+        // S14: the "public" worker answered with the private one's users)
+        "--persist-to", join(suiteDir, `wrangler-state-${opts.configSuffix ?? "main"}`),
+        "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
         // suite-tuned server policy: TURN mode forced (wrangler dev runs
         // on workerd, so auto would resolve persistent — the suites
         // simulate the VPS deployment shape), fast turn lifecycle +

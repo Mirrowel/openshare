@@ -44,7 +44,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, type ShareConfig, type ShareMode } from "./config.js"
+import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -123,6 +123,10 @@ type SessionState = {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   intentionalClose: boolean
   connectQueued: boolean
+  /** identity dead-end (owner frozen, or private server with no way to
+   * enroll): stop reconnect loops for this session until the config
+   * changes — surfacing the error beats hammering the worker. */
+  authBlocked: boolean
   // manual-mode bookkeeping
   opts: SessionOpts | undefined
   activated: boolean
@@ -257,8 +261,9 @@ export function createEngine(deps: EngineDeps): Engine {
       )
     } catch {}
   }
-  if (!cfg.workerUrl || !cfg.createToken) {
-    log("disabled: workerUrl/createToken not configured")
+  const server = resolveServer(cfg)
+  if (!server || !server.url) {
+    log("disabled: no share server configured (workerUrl or a servers entry)")
     return {
       mode,
       config: () => cfg,
@@ -268,7 +273,59 @@ export function createEngine(deps: EngineDeps): Engine {
       },
     }
   }
+  // canonicalize: every workerUrl use below refers to the ACTIVE server
+  cfg.workerUrl = server.url
+  if (!cfg.createToken) cfg.createToken = server.token
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
+
+  // ---- server credential (identity) --------------------------------------
+  // The active server's token — a legacy root CREATE_TOKEN works forever
+  // (server-side bootstrap); an osk_ user token is the normal shape. When
+  // no token is held, the plugin ENROLLS: public servers take anyone,
+  // private ones need servers.{url}.code. Enrollment persists the token
+  // to the settings home so it happens once per server.
+  let credential = server.token
+  let credentialError = ""
+  let lastEnrollAt = 0
+  const ENROLL_RETRY_MS = 60000
+
+  const ensureCredential = async (): Promise<string> => {
+    if (credential) return credential
+    if (Date.now() - lastEnrollAt < ENROLL_RETRY_MS) return ""
+    lastEnrollAt = Date.now()
+    try {
+      const h = await fetch(`${cfg.workerUrl}/health`, { signal: AbortSignal.timeout(8000) })
+      const hb = h.ok ? ((await h.json().catch(() => null)) as { auth?: { mode?: string } } | null) : null
+      const mode2 = hb?.auth?.mode
+      const code = server.entry.code ?? ""
+      if (mode2 === "public" || code) {
+        const r = await fetch(`${cfg.workerUrl}/api/enroll`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code }),
+          signal: AbortSignal.timeout(10000),
+        })
+        const b = r.ok ? ((await r.json().catch(() => null)) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string } | null) : null
+        if (b?.ok && typeof b.token === "string") {
+          credential = b.token
+          credentialError = ""
+          cfg.createToken = credential
+          const savedTo = saveServerToken(cfg.workerUrl, credential)
+          log(`enrolled at ${cfg.workerUrl} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
+          return credential
+        }
+        credentialError = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
+      } else if (mode2 === "private") {
+        credentialError = "private server: add servers.{url}.code (or token) to enroll"
+      } else {
+        credentialError = `server health unreachable (HTTP ${h.status})`
+      }
+    } catch (e) {
+      credentialError = `enrollment failed: ${(e as Error)?.message || e}`
+    }
+    logError(`no credential for ${cfg.workerUrl}: ${credentialError}`)
+    return ""
+  }
   const wsUrl = () => cfg.workerUrl.replace(/^http/, "ws")
 
   // ---- server policy (worker-owned) --------------------------------------
@@ -385,6 +442,7 @@ export function createEngine(deps: EngineDeps): Engine {
     reconnectTimer: null,
     intentionalClose: false,
     connectQueued: false,
+    authBlocked: false,
     opts: undefined,
     activated: false,
     announced: false,
@@ -672,7 +730,7 @@ export function createEngine(deps: EngineDeps): Engine {
    * and double connects used to create duplicate shares + init storms
    * (live-caught in the S11 repro: ws#1 create AND ws#2 create). */
   const queueConnect = (st: SessionState) => {
-    if (st.closed || st.connectQueued || st.connecting) return
+    if (st.closed || st.connectQueued || st.connecting || st.authBlocked) return
     st.connectQueued = true
     chain = chain
       .then(() => {
@@ -710,7 +768,20 @@ export function createEngine(deps: EngineDeps): Engine {
       // spawned a fresh husk share with the content dropped).
       st.initWasAttach = !!(st.shareId && st.secret)
       if (debugEvents) log(`ws#${seq} opening (${st.initWasAttach ? `attach ${st.shareId}` : "create"})`)
-      const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(cfg.createToken ?? "")}`)
+      // creates need a credential (enrolls on demand — first contact with
+      // a server); attaches ride the share secret alone when tokenless
+      const token = st.initWasAttach ? credential : credential || (await ensureCredential())
+      if (!st.initWasAttach && !token && credentialError) {
+        // the server is reachable but enrollment is impossible (private,
+        // no valid code / enroll refused). A tokenless create would just
+        // be refused in a loop — block this session, surface once.
+        st.authBlocked = true
+        st.connecting = false
+        st.ws = null
+        logError(`sharing disabled (no credential): ${credentialError}`)
+        return
+      }
+      const ws = new WebSocket(`${wsUrl()}/api/ws?token=${encodeURIComponent(token ?? "")}`)
       st.ws = ws
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000)
@@ -842,6 +913,33 @@ export function createEngine(deps: EngineDeps): Engine {
   const handleFrame = async (st: SessionState, frame: Record<string, unknown>) => {
     if (frame.op === "init") {
       if (!frame.ok) {
+        const err = String(frame.error ?? "")
+        if (/frozen/i.test(err)) {
+          // owner frozen: every control path is severed server-side.
+          // Re-enrolling would orphan the shares — surface and stop.
+          st.authBlocked = true
+          logError("share frozen by the hoster (owner frozen) - edits refused; contact the server admin")
+          try {
+            st.ws?.close(4000, "frozen")
+          } catch {}
+          return
+        }
+        if (/token|credential/i.test(err) && !st.initWasAttach) {
+          // our token was rejected (revoked/expired): drop it, re-enroll
+          // (60s-gated; public server or a fresh code), reconnect. A
+          // legacy root token never lands here.
+          if (credential) {
+            credential = ""
+            cfg.createToken = ""
+            logError("server rejected our token - re-enrolling")
+          }
+          try {
+            st.ws?.close(4000, "auth")
+          } catch {}
+          st.connecting = false
+          if (!st.closed) queueConnect(st)
+          return
+        }
         // share swept / removed / revoked: start fresh, never merge into a
         // bad base (mismatch protocol). Content REPLAYS to the new share —
         // pending is never dropped on a reset (live-caught: the recreate

@@ -44,6 +44,26 @@ Then configure (`openshare.config.json` next to the package — see the
 { "workerUrl": "https://your-worker.workers.dev", "createToken": "…" }
 ```
 
+Or the multi-server form (canonical; `workerUrl`/`createToken` above is
+the single-server shorthand):
+
+```jsonc
+{
+  "servers": {
+    "https://your-worker.workers.dev": { "token": "osk_…", "active": true },
+    "https://team-server.example.com": { "code": "osc_invite-from-hoster" }
+  }
+}
+```
+
+**With no token the plugin enrolls itself** on first contact: public
+servers (hoster set `AUTH_MODE=public`) take anyone; private ones need
+a `code` from the hoster (activation-budgeted invite). The enrolled
+token persists to `~/.config/opencode/openshare.config.json` — enroll
+once per server, then it just works. A revoked token re-enrolls the
+same way (public/code available); if enrollment is impossible the
+plugin says so on stderr and stops — no retry storms.
+
 ## Share modes
 
 `shareMode` is explicit config (`"all"` / `"manual"`, env
