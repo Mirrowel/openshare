@@ -10,7 +10,7 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClientApi } from "./core.js"
 import { registerCommands } from "./commands.js"
-import { createSidebarSlot } from "./sidebar.js"
+import { createSidebarSlot, dbgLog, dbg } from "./sidebar.js"
 import type { ShareHostApi } from "./tui-host.js"
 import { createV2TuiSetup } from "./v2-tui.js"
 
@@ -74,6 +74,7 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
 }
 
 const tui: TuiPlugin = async (api) => {
+  dbgLog(`tui entry running; host v=${dbg(api.app?.version)} slots=${!!api.slots} keymap=${!!api.keymap} state=${!!api.state}`)
   const host = buildV1HostApi(api)
 
   const sessionID = () => host.currentSessionID?.() ?? undefined
@@ -81,11 +82,15 @@ const tui: TuiPlugin = async (api) => {
 
   // sidebar chip (v1 slots; the v2 context has no slot registry). The
   // slots registry has no unregister API — registration lives for the
-  // process lifetime.
+  // process lifetime. (crash-hunt: registration errors are logged, not
+  // swallowed — see sidebar.tsx for the temporary debug logger)
   try {
-    api.slots.register(createSidebarSlot(api) as never)
-  } catch {
-    /* the chip is decorative — registration failure must not break sharing */
+    const slot = createSidebarSlot(api)
+    dbgLog(`registering sidebar slot: ${Object.keys(slot?.slots ?? {}).join(",") || "NO SLOTS"}`)
+    const reg = api.slots.register(slot as never)
+    dbgLog(`sidebar slot registered -> ${dbg(reg)}`)
+  } catch (error) {
+    dbgLog(`sidebar slot REGISTRATION THREW ${(error as Error)?.stack ?? String(error)}`)
   }
 
   api.lifecycle.onDispose(() => {
