@@ -175,7 +175,7 @@ try {
     servers: { [WORKER_URL]: { token: CREATE_TOKEN, active: true } },
   }
   await stopServe(serve)
-  serve = await startServe({ name: "late", path: PKG, options: lateOpts }, serve3sandbox, join(serve3sandbox, "project"), { OPENSHARE_URL_FILE: lateUrlFile, OPENSHARE_DEBOUNCE_MS: "300" })
+  serve = await startServe({ name: "late", path: PKG, options: lateOpts }, serve3sandbox, join(serve3sandbox, "project"), { OPENSHARE_URL_FILE: lateUrlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_DEBUG_EVENTS: "1" })
   const lateSid = await createAndPrompt(serve, "late join turn one")
   await waitFor(() => urlLines(lateUrlFile).length >= 1, "F3: first share (server1 only)", 45000)
   const before2 = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
@@ -188,9 +188,9 @@ try {
   await promptSession(serve, lateSid, "late join turn two")
   await waitFor(async () => {
     const shares = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
-    return shares.length === 1 ? shares : undefined
+    return shares.some((s) => s.sessionID === lateSid) ? shares : undefined
   }, "F3: server2 share created after join", 60000)
-  const late2 = (await adminList(W2_URL, "/api/admin/shares")).shares[0]
+  const late2 = (await adminList(W2_URL, "/api/admin/shares")).shares.find((s) => s.sessionID === lateSid)
   const lateBody = await waitFor(async () => {
     const parsed = await shareBody(W2_URL, late2.id)
     const msgs = (parsed?.data ?? []).filter((i) => i.type === "message")
@@ -225,8 +225,13 @@ try {
 } catch (e) {
   failures.push(`suite crashed: ${e?.stack || e}`)
   console.log(`CRASH ${e?.stack || e}`)
+  try {
+    const out = serve?.output?.() ?? ""
+    console.log(`--- serve [openshare] tail ---\n${out.split("\n").filter((l) => l.includes("[openshare]")).slice(-30).join("\n")}`)
+  } catch {}
 } finally {
   clearTimeout(watchdog)
+  const keep = failures.length > 0
   try { await stopServe(serve) } catch {}
   try { llm?.close() } catch {}
   try { worker1?.kill() } catch {}
@@ -234,7 +239,11 @@ try {
   await sleep(1500)
   killWranglerSuites(WORKER_PORT)
   killWranglerSuites(W2_PORT)
-  try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
+  if (!keep) {
+    try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
+  } else {
+    console.log(`suite dir kept for inspection: ${suiteDir}`)
+  }
 }
 
 console.log(`\n[fanout] ${failures.length === 0 ? "all checks passed" : `${failures.length} FAILURES`}`)

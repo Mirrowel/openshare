@@ -7,7 +7,7 @@
 
 import { spawn, execSync } from "node:child_process"
 import { createServer } from "node:http"
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -246,8 +246,56 @@ async function startWorker(suiteDir, opts = {}) {
   }
 }
 
-/** Resolves when nothing listens on the port (or after timeout). */
-async function waitForPortFree(port, timeoutMs = 30000) {
+/** The portable Bun backend (../share-server/server.ts) — used by the
+ * parity suites: the SAME protocol tests run against both backends.
+ * Fresh SQLite file per start; port swept first like every spawn. */
+async function startBunServer(suiteDir, opts = {}) {
+  const port = Number(opts.port) > 0 ? Number(opts.port) : 8795
+  const url = `http://127.0.0.1:${port}`
+  killPortOwners(port)
+  const db = join(suiteDir, `bun-${opts.name ?? port}.db`)
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      rmSync(db + suffix, { force: true })
+    } catch {}
+  }
+  const { child, kill } = spawnTree(
+    "bun",
+    // relative script path: the repo path contains a space and
+    // shell-spawn concatenation would split it (bun "C:\…\OC Plugins\…")
+    ["server.ts"],
+    {
+      cwd: join(dirname(ROOT), "share-server"),
+      env: {
+        ...process.env,
+        PORT: String(port),
+        CREATE_TOKEN: opts.createToken ?? CREATE_TOKEN,
+        OPENSHARE_DB: db,
+        AUTH_MODE: opts.authMode ?? "private",
+        ...(opts.vars ?? {}),
+      },
+    },
+  )
+  let output = ""
+  child.stdout.on("data", (d) => (output += d))
+  child.stderr.on("data", (d) => (output += d))
+  try {
+    await waitFor(async () => {
+      try {
+        return (await httpGet(`${url}/health`)).ok
+      } catch {
+        return false
+      }
+    }, "bun server /health", 30000)
+  } catch (error) {
+    kill()
+    killPortOwners(port)
+    throw new Error(`bun server failed: ${error.message}\n--- output ---\n${output.slice(-3000)}`)
+  }
+  return { kill, output: () => output, url, port }
+}
+
+/** Resolves when nothing listens on the port (or after timeout). */async function waitForPortFree(port, timeoutMs = 30000) {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     let listening = false
@@ -530,6 +578,7 @@ export {
   waitForPortFree,
   startMockLLM,
   startWorker,
+  startBunServer,
   startServe,
   stopServe,
   normalizeItem,

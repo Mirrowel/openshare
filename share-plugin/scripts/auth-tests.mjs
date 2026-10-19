@@ -10,10 +10,21 @@ import { join } from "node:path"
 import {
   CREATE_TOKEN,
   WORKER_PORT,
+  killPortOwners,
   killWranglerSuites,
   startWorker,
+  startBunServer,
   waitFor,
 } from "./suite-lib.mjs"
+
+// OPENSHARE_BACKEND=bun (or a "bun" argv token, e.g. `-- --backend bun`)
+// runs the SAME checks against the portable Bun server (../share-server)
+// — the parity guarantee between backends.
+const BACKEND = process.env.OPENSHARE_BACKEND === "bun" || process.argv.includes("bun") ? "bun" : "wrangler"
+const B1_PORT = BACKEND === "bun" ? 8795 : WORKER_PORT
+const B2_PORT = B1_PORT + 10
+const startBackend = (suiteDir, opts = {}) =>
+  BACKEND === "bun" ? startBunServer(suiteDir, { ...opts, port: opts.port ?? B1_PORT }) : startWorker(suiteDir, opts)
 
 const SUITE = "auth"
 let passed = 0
@@ -94,7 +105,7 @@ let worker2
 
 try {
   console.log(`[${SUITE}] starting private-mode worker…`)
-  worker1 = await startWorker(suiteDir, { configSuffix: "priv" })
+  worker1 = await startBackend(suiteDir, { configSuffix: "priv", name: "b1" })
   const W1 = worker1.url
 
   // T01 — health advertises auth mode
@@ -240,7 +251,7 @@ try {
 
   // T20 — public mode worker: open enrollment + anonymous creates
   console.log(`[${SUITE}] starting public-mode worker…`)
-  worker2 = await startWorker(suiteDir, { port: WORKER_PORT + 10, configSuffix: "pub", vars: { AUTH_MODE: "public" } })
+  worker2 = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public" }, authMode: "public" })
   const W2 = worker2.url
   const h2 = await req(W2, "GET", "/health")
   ok("T20 health auth.mode=public", h2.json?.auth?.mode === "public")
@@ -258,8 +269,13 @@ try {
   try { worker1?.kill() } catch {}
   try { worker2?.kill() } catch {}
   await waitFor(async () => false, "settle", 1500).catch(() => {})
-  killWranglerSuites(WORKER_PORT)
-  killWranglerSuites(WORKER_PORT + 10)
+  if (BACKEND === "wrangler") {
+    killWranglerSuites(B1_PORT)
+    killWranglerSuites(B2_PORT)
+  } else {
+    killPortOwners(B1_PORT)
+    killPortOwners(B2_PORT)
+  }
   try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
 }
 

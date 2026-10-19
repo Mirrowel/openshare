@@ -44,9 +44,18 @@ opencode (plugin)  --ws-->  Cloudflare Worker  <--ws--  viewers (browser)
 ```
 
 - **`share-plugin/`** — `@mirrowel/opencode-openshare`, the opencode plugin (server + optional TUI). Also builds `openshare.js`, a zero-dependency single file for CI bundles.
-- **`share-worker/`** — Cloudflare Worker: `ShareDO` per share, `ControlDO` per plugin socket, `SweeperDO` daily TTL sweep, KV index.
+- **`share-worker/`** — Cloudflare Worker: `ShareDO` per share, `ControlDO` per plugin socket, `AuthDO` for users/tokens/codes, `SweeperDO` daily TTL sweep, KV index.
+- **`share-server/`** — the portable backend: one Bun process, SQLite, native WebSockets — protocol-identical to the worker for VPS/self-hosting (`bun server.ts`, Docker-ready).
 - **`share-viewer/`** — the vendored upstream share page (vite + solid + tailwind, client-only build) with branding and settings bolted on.
 - **`tools/`** — agent-side companions (export/decrypt for the passive CI archive).
+
+One session can fan out to **several servers at once** (every `active`
+entry in the `servers` config group); servers can join mid-session with a
+full-history backfill, and per-session opt-outs leave a read-only
+snapshot behind. Identity is per-server: the plugin **enrolls itself**
+(public servers take anyone; private ones need an access code from the
+hoster) and holds one long-lived token per server — see
+[Identity & enrollment](share-worker/README.md#identity--enrollment).
 
 Delivery reliability without expensive pulls: every accepted sync bumps a monotonic rev, acked on the socket; unacked frames spool to disk and replay on reconnect; the share binding lives inside opencode session metadata, so recovery never depends on the spool. The binding key (`metadata.openshare`) is stripped from everything synced, and the worker strips session metadata on all read paths — the write secret never reaches viewers.
 

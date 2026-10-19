@@ -17,6 +17,8 @@ import {
   killWranglerSuites,
   startMockLLM,
   startWorker,
+  startBunServer,
+  killPortOwners,
   startServe,
   stopServe,
   CREATE_TOKEN,
@@ -29,8 +31,16 @@ import {
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 const ROOT = here("../")
 const PKG = join(ROOT, "dist", "server.js").replace(/\\/g, "/")
-const W2_PORT = WORKER_PORT + 10
+
+// OPENSHARE_BACKEND=bun runs the same engine lifecycle against the
+// portable Bun server (../share-server) - engine-level backend parity
+const BACKEND = process.env.OPENSHARE_BACKEND === "bun" || process.argv.includes("bun") ? "bun" : "wrangler"
+const B1_PORT = BACKEND === "bun" ? 8795 : WORKER_PORT
+const W2_PORT = B1_PORT + 10
+const W1_URL = BACKEND === "bun" ? `http://127.0.0.1:${B1_PORT}` : WORKER_URL
 const W2_URL = `http://127.0.0.1:${W2_PORT}`
+const startBackend = (suiteDir, opts = {}) =>
+  BACKEND === "bun" ? startBunServer(suiteDir, { ...opts, port: opts.port ?? B1_PORT }) : startWorker(suiteDir, opts)
 
 const WATCHDOG_MS = 14 * 60 * 1000
 const watchdog = setTimeout(() => {
@@ -47,7 +57,7 @@ const check = (label, ok, detail) => {
   }
 }
 
-async function admin(method, path, body, workerUrl = WORKER_URL) {
+async function admin(method, path, body, workerUrl = W1_URL) {
   const r = await httpGet(`${workerUrl}${path}`, {
     method,
     headers: { "content-type": "application/json", authorization: `Bearer ${CREATE_TOKEN}` },
@@ -92,10 +102,10 @@ const urlFile = join(suiteDir, "share-url.txt")
 
 // Suite hermeticity: the repo-root openshare.local.json dev slot (prod URL
 // + real root token) sits in the package's config read chain and fills in
-// behind empty env vars. Env pins WORKER_URL at the local worker; options
+// behind empty env vars. Env pins W1_URL at the local worker; options
 // `createToken: ""` explicitly blanks the file-borne root token (options
 // outrank files), so enrollment is genuinely the plugin's own doing.
-const NEUTRAL_ROOT = { OPENSHARE_CREATE_TOKEN: "" }
+const NEUTRAL_ROOT = { OPENSHARE_CREATE_TOKEN: "", OPENSHARE_WORKER_URL: W1_URL }
 const opts = (workerUrl, extra = {}) => ({ createToken: "", servers: { [workerUrl]: { active: true, ...extra } } })
 
 const variant = (name, options) => ({ name, path: PKG, options })
@@ -107,7 +117,7 @@ let CODE
 
 try {
   llm = await startMockLLM()
-  worker = await startWorker(suiteDir, { configSuffix: "enroll" })
+  worker = await startBackend(suiteDir, { configSuffix: "enroll", name: "enroll-b1" })
   console.log("worker ready (private)")
 
   // a 5-activation invite code: enrollment + one re-enroll, then we
@@ -116,10 +126,10 @@ try {
   CODE = codeResp.json?.code
   check("P0 invite code minted", typeof CODE === "string" && CODE.startsWith("osc_"), JSON.stringify(codeResp.json))
 
-  const countUsers = async (w = WORKER_URL) => ((await admin("GET", "/api/admin/users", undefined, w)).json?.users ?? []).length
+  const countUsers = async (w = W1_URL) => ((await admin("GET", "/api/admin/users", undefined, w)).json?.users ?? []).length
 
   // ---- P1: first contact enrolls via code, share is owned --------------
-  let serve = await startServe(variant("enroll1", opts(WORKER_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
+  let serve = await startServe(variant("enroll1", opts(W1_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
   await createAndPrompt(serve, "enroll first contact")
   await waitFor(() => urlFileLines(urlFile).length >= 1, "P1 url file line", 45000)
   const users1 = (await admin("GET", "/api/admin/users")).json?.users ?? []
@@ -130,10 +140,10 @@ try {
 
   // ---- P2: token persisted — second process reuses, no re-enroll --------
   const savedCfg = join(suiteDir, "xdg", "opencode", "openshare.config.json")
-  const savedToken = existsSync(savedCfg) ? JSON.parse(readFileSync(savedCfg, "utf8")).servers?.[WORKER_URL]?.token : undefined
+  const savedToken = existsSync(savedCfg) ? JSON.parse(readFileSync(savedCfg, "utf8")).servers?.[W1_URL]?.token : undefined
   check("P2 token persisted to settings home", typeof savedToken === "string" && savedToken.startsWith("osk_"), String(savedToken))
   await stopServe(serve)
-  serve = await startServe(variant("enroll2", opts(WORKER_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
+  serve = await startServe(variant("enroll2", opts(W1_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
   await createAndPrompt(serve, "enroll token reuse")
   await waitFor(() => urlFileLines(urlFile).length >= 2, "P2 second share", 45000)
   check("P2 no re-enrollment", (await countUsers()) === 1)
@@ -146,7 +156,7 @@ try {
   check("P3 user token found", active.length === 1, JSON.stringify(tokens))
   await admin("DELETE", `/api/admin/tokens/${active[0]?.id}`)
   await stopServe(serve)
-  serve = await startServe(variant("enroll3", opts(WORKER_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
+  serve = await startServe(variant("enroll3", opts(W1_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
   await createAndPrompt(serve, "enroll after revoke")
   await waitFor(() => urlFileLines(urlFile).length >= 3, "P3 third share", 60000)
   const users3 = (await admin("GET", "/api/admin/users")).json?.users ?? []
@@ -161,7 +171,7 @@ try {
   const u2tok = tokens4.filter((t) => !t.revoked && t.userId !== U1)
   await admin("DELETE", `/api/admin/tokens/${u2tok[0]?.id}`)
   await stopServe(serve)
-  serve = await startServe(variant("enroll4", opts(WORKER_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
+  serve = await startServe(variant("enroll4", opts(W1_URL, { code: CODE })), suiteDir, projectDir, { ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
   await createAndPrompt(serve, "enroll blocked path")
   await sleep(12000) // give any (wrong) share time to appear
   const shares4 = (await admin("GET", "/api/admin/shares")).json?.shares ?? []
@@ -173,9 +183,9 @@ try {
 
   // ---- P5: public server — zero-config enrollment ------------------------
   console.log("starting public-mode worker…")
-  worker2 = await startWorker(suiteDir, { port: W2_PORT, configSuffix: "enroll-pub", vars: { AUTH_MODE: "public" } })
+  worker2 = await startBackend(suiteDir, { port: W2_PORT, configSuffix: "enroll-pub", name: "enroll-b2", authMode: "public", vars: { AUTH_MODE: "public" } })
   await stopServe(serve)
-  serve = await startServe(variant("enroll5", opts(W2_URL)), suiteDir, projectDir, { OPENSHARE_WORKER_URL: W2_URL, ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
+  serve = await startServe(variant("enroll5", opts(W2_URL)), suiteDir, projectDir, { OPENSHARE_W1_URL: W2_URL, ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
   await createAndPrompt(serve, "public enrollment")
   const users5 = (await admin("GET", "/api/admin/users", undefined, W2_URL)).json?.users ?? []
   check("P5 public enrollment created a user", users5.length === 1, JSON.stringify(users5))
@@ -192,8 +202,13 @@ try {
   try { worker?.kill() } catch {}
   try { worker2?.kill() } catch {}
   await sleep(1500)
-  killWranglerSuites(WORKER_PORT)
-  killWranglerSuites(W2_PORT)
+  if (BACKEND === "wrangler") {
+    killWranglerSuites(B1_PORT)
+    killWranglerSuites(W2_PORT)
+  } else {
+    killPortOwners(B1_PORT)
+    killPortOwners(W2_PORT)
+  }
   try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
 }
 

@@ -33,3 +33,6 @@ Thumbs.db
 
 # stray run logs
 share-plugin/*.out
+
+share-server/openshare.db
+share-server/openshare.db-*
