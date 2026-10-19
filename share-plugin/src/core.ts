@@ -548,10 +548,12 @@ export function createEngine(deps: EngineDeps): Engine {
       rev: st.ackedRev,
       url: `${cfg.workerUrl}/s/${st.shareId}`,
     }
-    if (mode === "manual") {
-      value.enabled = true
-      if (st.opts) value.opts = st.opts
-    }
+    // A binding in session metadata means opted-in — enabled: true in BOTH
+    // modes (live-caught: all-mode bindings without `enabled` made the TUI
+    // gate fall through to the consent dialog on an already-shared session;
+    // live is now uniformly `url && enabled !== false`).
+    value.enabled = true
+    if (mode === "manual" && st.opts) value.opts = st.opts
     st.binding = value as Binding
     st.wroteBinding = true
     await writeMetadata(st, value)

@@ -228,7 +228,7 @@ export async function runShareFlow(host: ShareHostApi, sessionID: string | undef
   }
   const root = await resolveRoot(host.client, sessionID)
   const existing = await readBinding(host.client, root)
-  if (existing?.url && existing.enabled) {
+  if (existing?.url && existing.enabled !== false) {
     // already sharing: copy the link
     await host.clipboard.write(existing.url)
     return { ok: true, message: `Share URL copied to clipboard: ${existing.url}`, url: existing.url }

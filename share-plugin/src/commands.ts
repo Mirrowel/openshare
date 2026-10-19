@@ -15,6 +15,7 @@
 
 import { CONSENT_KV_KEY, confirmShare, currentConfig, isConfigured, readBinding, resolveRoot, runShareFlow, runUnshareFlow } from "./share-flow.js"
 import { onboardingDialog, settingsDialog } from "./settings.js"
+import { dbgLog } from "./sidebar.js"
 import type { ShareHostApi, ShareHostLayerCommand } from "./tui-host.js"
 
 export const PALETTE_CATEGORY = "OpenShare"
@@ -77,9 +78,11 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
     title: "Share session (re:share)",
     desc: "Share this session via openshare; on a shared session: copy the link or stop sharing",
     slashName: "share",
+    slashAliases: ["reshare"],
     category: PALETTE_CATEGORY,
     group: PALETTE_CATEGORY,
     run: async () => {
+      dbgLog(`/share run: entered (sid=${sessionID() ?? "none"})`)
       host.ui.dialog.clear()
       const cfg = currentConfig()
       if (!isConfigured(cfg)) {
@@ -93,7 +96,11 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
       }
       const root = await resolveRoot(host.client, sid)
       const binding = await readBinding(host.client, root)
-      if (binding?.url && binding.enabled) {
+      dbgLog(`/share gate: sid=${sid} root=${root} binding=${binding ? `url=${!!binding.url} enabled=${String(binding.enabled)}` : "none"}`)
+      // live ⇔ url && enabled !== false (all-mode bindings carry
+      // enabled:true since the fix; legacy all-mode bindings without the
+      // field are live too — only an explicit false is dormant)
+      if (binding?.url && binding.enabled !== false) {
         showShareManager(host, binding.url, sessionID)
         return
       }

@@ -578,11 +578,9 @@ function createEngine(deps) {
       rev: st.ackedRev,
       url: `${cfg.workerUrl}/s/${st.shareId}`
     };
-    if (mode === "manual") {
-      value.enabled = true;
-      if (st.opts)
-        value.opts = st.opts;
-    }
+    value.enabled = true;
+    if (mode === "manual" && st.opts)
+      value.opts = st.opts;
     st.binding = value;
     st.wroteBinding = true;
     await writeMetadata(st, value);

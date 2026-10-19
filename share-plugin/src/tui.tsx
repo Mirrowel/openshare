@@ -11,6 +11,7 @@ import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClientApi } from "./core.js"
 import { registerCommands } from "./commands.js"
 import { createSidebarSlot, dbgLog, dbg } from "./sidebar.js"
+import { AlertDialog, ConfirmDialog, PromptDialog, SelectDialog } from "./dialogs.js"
 import type { ShareHostApi } from "./tui-host.js"
 import { createV2TuiSetup } from "./v2-tui.js"
 
@@ -26,10 +27,17 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
     ui: {
       toast: (input) => api.ui.toast(input),
       dialog: api.ui.dialog,
-      DialogSelect: (props) => api.ui.DialogSelect(props as never) as never,
-      DialogPrompt: (props) => api.ui.DialogPrompt(props as never) as never,
-      DialogConfirm: (props) => api.ui.DialogConfirm(props as never) as never,
-      DialogAlert: (props) => api.ui.DialogAlert(props as never) as never,
+      // CUSTOM interactive dialogs (family MenuDialog pattern: own
+      // priority-10000 key layer + mode push + input shield). The host's
+      // ui.DialogX components under plugin dialog.replace render but
+      // receive no keys on opencode 1.19.x (live-caught + pty-reproduced).
+      // These are component functions: flows invoke them inside their own
+      // dialog.replace(() => ...) render thunk (the host renders the thunk
+      // in a proper Solid root, so the hooks inside run with an owner).
+      DialogSelect: (props) => SelectDialog({ api, ...(props as object) } as never) as never,
+      DialogPrompt: (props) => PromptDialog({ api, ...(props as object) } as never) as never,
+      DialogConfirm: (props) => ConfirmDialog({ api, ...(props as object) } as never) as never,
+      DialogAlert: (props) => AlertDialog({ api, ...(props as object) } as never) as never,
     },
     keymap: {
       registerLayer(layer) {

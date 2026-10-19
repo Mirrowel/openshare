@@ -311,7 +311,9 @@ try {
     }, "S6: override share completes")
     const osession = await (await httpGet(`${serve3.base}/session/${osid}`)).json()
     const ob = osession?.metadata?.openshare
-    check("S6: all-mode binding has NO enabled flag", !!ob?.url && ob.enabled === undefined, JSON.stringify(ob))
+    // Since the live-caught consent-on-shared-session fix, bindings are
+    // enabled:true in BOTH modes (live <=> url && enabled !== false).
+    check("S6: all-mode binding carries enabled:true", !!ob?.url && ob.enabled === true, JSON.stringify(ob))
   } finally {
     await stopServe(serve3);
   }
