@@ -36,3 +36,13 @@ share-plugin/*.out
 
 share-server/openshare.db
 share-server/openshare.db-*
+
+# stray run outputs (recurrence hardening)
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+*~
+*.tsbuildinfo
+npm-debug.log*
