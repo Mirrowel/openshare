@@ -57,10 +57,12 @@ tag_points_at_head() {
 release_relevant_changes() {
   local previous_tag="$1"
   local changed_files
+  # paths are repo-root-relative (share-plugin/...), so run git from the
+  # monorepo root (PKG_DIR/..) even though the script cd'd into share-plugin
   if [ -n "$previous_tag" ]; then
-    changed_files="$(git diff --name-only "$previous_tag..HEAD")"
+    changed_files="$(git -C .. diff --name-only "$previous_tag..HEAD")"
   else
-    changed_files="$(git ls-tree -r --name-only HEAD)"
+    changed_files="$(git -C .. ls-tree -r --name-only HEAD)"
   fi
 
   printf '%s\n' "$changed_files" | grep -Eq '^(share-plugin/(src/|README\.md$|LICENSE$|openshare\.config\.json$|ci/openshare\.js$|package(-lock)?\.json$|tsconfig(\..*)?\.json$))'
