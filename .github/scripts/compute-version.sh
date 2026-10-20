@@ -65,7 +65,7 @@ release_relevant_changes() {
     changed_files="$(git -C .. ls-tree -r --name-only HEAD)"
   fi
 
-  printf '%s\n' "$changed_files" | grep -Eq '^(share-plugin/(src/|README\.md$|LICENSE$|openshare\.config\.json$|ci/openshare\.js$|package(-lock)?\.json$|tsconfig(\..*)?\.json$))'
+  printf '%s\n' "$changed_files" | grep -E '^(share-plugin/(src/|README\.md$|LICENSE$|openshare\.config\.json$|ci/openshare\.js$|package(-lock)?\.json$|tsconfig(\..*)?\.json$))' > /dev/null
 }
 
 conventional_bump_since() {
@@ -76,15 +76,15 @@ conventional_bump_since() {
   fi
   local log
   log="$(git log "$range" --format='%s%n%b%n---END---' 2>/dev/null || true)"
-  if printf '%s\n' "$log" | grep -Eq 'BREAKING CHANGE:|^[a-zA-Z]+(\([^)]*\))?!:'; then
+  if printf '%s\n' "$log" | grep -E 'BREAKING CHANGE:|^[a-zA-Z]+(\([^)]*\))?!:' > /dev/null; then
     echo major
     return
   fi
-  if printf '%s\n' "$log" | grep -Eq '^feat(\([^)]*\))?:'; then
+  if printf '%s\n' "$log" | grep -E '^feat(\([^)]*\))?:' > /dev/null; then
     echo minor
     return
   fi
-  if printf '%s\n' "$log" | grep -Eq '^(fix|perf)(\([^)]*\))?:'; then
+  if printf '%s\n' "$log" | grep -E '^(fix|perf)(\([^)]*\))?:' > /dev/null; then
     echo patch
     return
   fi
@@ -122,7 +122,7 @@ next_prerelease_number() {
 
 validate_stable_version() {
   local version="$1"
-  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  if ! printf '%s\n' "$version" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' > /dev/null; then
     echo "Expected a stable semver version, got: $version" >&2
     exit 1
   fi
