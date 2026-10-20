@@ -103,7 +103,7 @@ const scrollMemory = new Map<string, number>()
 
 // the product's own repo (fixed in source — the right header always
 // promotes Open(code)Share; flip on extraction)
-const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/Mirrobot-agent"
+const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/OpenShare"
 
 // Brand-aware mark: configured image or the vendored default
 function BrandMark(props: { branding: Branding; class?: string }) {

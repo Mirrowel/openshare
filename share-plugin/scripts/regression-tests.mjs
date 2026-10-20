@@ -203,7 +203,7 @@ try {
   try {
     llm?.close()
   } catch {}
-  killWranglerSuites()
+  if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
   killPortOwners(SERVE_PORT)
   killPortOwners(LLM_PORT)
 }

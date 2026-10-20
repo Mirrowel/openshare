@@ -7,6 +7,7 @@
 
 import { spawn, execSync } from "node:child_process"
 import { createServer } from "node:http"
+import net from "node:net"
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -14,9 +15,11 @@ import { fileURLToPath } from "node:url"
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 const ROOT = here("../") // share-plugin/
 
-const WORKER_PORT = 8789
-const LLM_PORT = 8791
-const SERVE_PORT = 8793
+// Ports are env-parameterized so the matrix driver can run independent
+// suites in PARALLEL (wave wall-clock = slowest suite, not the sum).
+const WORKER_PORT = Number(process.env.OPENSHARE_WORKER_PORT) > 0 ? Number(process.env.OPENSHARE_WORKER_PORT) : 8789
+const LLM_PORT = Number(process.env.OPENSHARE_LLM_PORT) > 0 ? Number(process.env.OPENSHARE_LLM_PORT) : 8791
+const SERVE_PORT = Number(process.env.OPENSHARE_SERVE_PORT) > 0 ? Number(process.env.OPENSHARE_SERVE_PORT) : 8793
 const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`
 const CREATE_TOKEN = "suite-create-token"
 const TIMEOUT_MS = 120000
@@ -34,6 +37,25 @@ const httpGet = async (url, init = {}) => {
   return fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 30000) })
 }
 
+/** Fast TCP probe (~1ms) — the gate for every sweep below. The unconditional
+ * PowerShell sweeps cost 1-3s per spawn and ran on every serve/worker start
+ * and stop; with ~40 processes per matrix run that was minutes of pure
+ * overhead (live-measured 2026-10-20: matrix 700s, target <=120s). */
+const isPortOpen = (port) =>
+  new Promise((resolve) => {
+    const socket = net.connect({ port, host: "127.0.0.1" })
+    socket.setTimeout(400)
+    socket.once("connect", () => {
+      socket.destroy()
+      resolve(true)
+    })
+    socket.once("error", () => resolve(false))
+    socket.once("timeout", () => {
+      socket.destroy()
+      resolve(false)
+    })
+  })
+
 function killPortOwners(port) {
   if (process.platform !== "win32") return
   try {
@@ -49,6 +71,13 @@ function killPortOwners(port) {
       } catch {}
     }
   } catch {}
+}
+
+/** Sweep only when the port is actually occupied. */
+async function sweepPortIfOccupied(port) {
+  if (!(await isPortOpen(port))) return
+  killWranglerSuites(port)
+  killPortOwners(port)
 }
 
 /** Kills leftover suite wrangler supervisors. A survived supervisor
@@ -84,7 +113,7 @@ async function waitFor(fn, label, timeout = TIMEOUT_MS) {
     } catch (error) {
       lastError = error
     }
-    await sleep(500)
+    await sleep(100)
   }
   throw new Error(`timeout waiting for ${label}${lastError ? ` (last: ${lastError.message})` : ""}`)
 }
@@ -139,7 +168,11 @@ function startMockLLM() {
           if (text.includes("FAIL_HARD")) marker = "FAIL_HARD"
         } catch {}
         if (marker === "FAIL_HARD") {
-          res.writeHead(500, { "content-type": "application/json" })
+          // 400, NOT 500: opencode retries 5xx with its own backoff
+          // (2+4+8+16+32s — the S10 probe burned 73s waiting it out);
+          // a 4xx is non-retryable, the prompt fails fast with
+          // finish:"error" — the exact terminal-failure path under test
+          res.writeHead(400, { "content-type": "application/json" })
           res.end(JSON.stringify({ error: { message: "suite: hard failure injected" } }))
           return
         }
@@ -178,9 +211,23 @@ function startMockLLM() {
 async function startWorker(suiteDir, opts = {}) {
   const port = Number(opts.port) > 0 ? Number(opts.port) : WORKER_PORT
   const url = `http://127.0.0.1:${port}`
+  // Matrix-driver reuse: the share-tolerant suites (regression/manual/
+  // tui-flow/v2/fanout) all use the default-port, no-suffix worker; one
+  // long-lived worker serves the whole run instead of ~5 spawns (~7s each).
+  if (process.env.OPENSHARE_TEST_WORKER_URL && !opts.vars && !opts.configSuffix && port === WORKER_PORT) {
+    const reused = process.env.OPENSHARE_TEST_WORKER_URL
+    await waitFor(async () => {
+      try {
+        return (await httpGet(`${reused}/health`)).ok
+      } catch {
+        return false
+      }
+    }, `reused worker ${reused} /health`, 90000)
+    return { kill: () => {}, output: () => "(reused matrix worker)", url: reused, port, reused: true }
+  }
   const extraVars = Object.entries(opts.vars ?? {}).flatMap(([k, v]) => ["--var", `${k}:${v}`])
   const attempt = async () => {
-    killWranglerSuites(port) // leftover supervisors respawn workerd forever; sweep first
+    await sweepPortIfOccupied(port) // leftover supervisors respawn workerd forever; sweep when occupied
     const assetsDir = join(suiteDir, "assets")
     mkdirSync(assetsDir, { recursive: true })
     writeFileSync(join(assetsDir, "index.html"), "<!doctype html><title>openshare suite stub</title>\n")
@@ -208,8 +255,8 @@ async function startWorker(suiteDir, opts = {}) {
         // finalize for S11/S12, low debounce floor so the suites' 300ms
         // cadence survives the server clamp
         "--var", "SOCKET_POLICY:turn",
-        "--var", "TURN_GRACE_MS:2000",
-        "--var", "FINALIZE_AFTER_MS:4000",
+        "--var", "TURN_GRACE_MS:1200",
+        "--var", "FINALIZE_AFTER_MS:2400",
         "--var", "DEBOUNCE_MIN_MS:100",
         ...extraVars],
       { cwd: join(dirname(ROOT), "share-worker") },
@@ -295,21 +342,12 @@ async function startBunServer(suiteDir, opts = {}) {
   return { kill, output: () => output, url, port }
 }
 
-/** Resolves when nothing listens on the port (or after timeout). */async function waitForPortFree(port, timeoutMs = 30000) {
+/** Resolves when nothing listens on the port (or after timeout). */
+async function waitForPortFree(port, timeoutMs = 30000) {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
-    let listening = false
-    try {
-      const out = execSync(
-        `@(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).Count`,
-        { shell: "powershell", timeout: 10000 },
-      )
-        .toString()
-        .trim()
-      listening = Number(out) > 0
-    } catch {}
-    if (!listening) return true
-    await sleep(500)
+    if (!(await isPortOpen(port))) return true
+    await sleep(100)
   }
   return false
 }
@@ -319,7 +357,6 @@ async function startBunServer(suiteDir, opts = {}) {
  * spawned `opencode serve --port N` then silently bumps to N+1 instead of
  * failing — which orphans every subsequent probe on N. A real bind probe
  * is the only reliable signal. */
-import net from "node:net"
 import { cpSync } from "node:fs"
 let startServeSeq = 0
 // opencode installs the config's provider npm packages into
@@ -340,7 +377,7 @@ async function waitForPortBindable(port, timeoutMs = 30000) {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     if (await portBindable(port)) return true
-    await sleep(500)
+    await sleep(100)
   }
   return false
 }
@@ -384,7 +421,7 @@ function openShareEnv(sandbox, extra = {}) {
 }
 
 async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
-  killPortOwners(SERVE_PORT)
+  await sweepPortIfOccupied(SERVE_PORT)
   const configPath = join(sandbox, "opencode.json")
   writeFileSync(configPath, opencodeConfig(variant, sandbox))
   // hermetic, in three dimensions (all three are required — learned the
@@ -463,8 +500,12 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
  * half-dead predecessor races its successor's session events). */
 async function stopServe(serve) {
   serve.kill()
-  await waitForPortBindable(SERVE_PORT, 30000)
-  await sleep(500)
+  const start = Date.now()
+  while (Date.now() - start < 30000) {
+    if (!(await isPortOpen(SERVE_PORT))) break
+    await sleep(100)
+  }
+  if (await isPortOpen(SERVE_PORT)) await sweepPortIfOccupied(SERVE_PORT)
 }
 
 // --- share data normalization ------------------------------------------------------

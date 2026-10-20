@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+      - alpha
+      - beta
+      - rc
+    paths:
+      - share-plugin/src/**
+      - share-plugin/README.md
+      - share-plugin/LICENSE
+      - share-plugin/openshare.config.json
+      - share-plugin/ci/openshare.js
+      - share-plugin/package.json
+      - share-plugin/package-lock.json
+      - share-plugin/tsconfig*.json
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        default: dev
+        options:
+          - latest
+          - dev
+          - alpha
+          - beta
+          - rc
+          - canary
+      target_version:
+        description: "Optional stable base version override, for example 0.3.3"
+        required: false
+        type: string
+        default: ""
+      version_bump:
+        description: "Override conventional-commit bump"
+        required: false
+        type: choice
+        default: auto
+        options:
+          - auto
+          - none
+          - patch
+          - minor
+          - major
+      force_release:
+        description: "Release even when stable auto-detection finds no releasable commits"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.channel || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: share-plugin
+
+jobs:
+  release:
+    name: Build, publish, and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: share-plugin/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Check release intent
+        run: npm run release:intent:check
+
+      - name: Compute release version
+        id: version
+        working-directory: ${{ github.workspace }}
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_CHANNEL: ${{ github.event.inputs.channel || '' }}
+          TARGET_VERSION: ${{ github.event.inputs.target_version || '' }}
+          VERSION_BUMP: ${{ github.event.inputs.version_bump || 'auto' }}
+          FORCE_RELEASE: ${{ github.event.inputs.force_release || 'false' }}
+          REQUIRE_RELEVANT_CHANGES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_release != 'true' && 'true' || 'false' }}
+        run: bash .github/scripts/compute-version.sh
+
+      - name: No release needed
+        if: steps.version.outputs.should_release != 'true'
+        run: echo "No releasable changes detected for stable channel."
+
+      - name: Apply computed package version
+        if: steps.version.outputs.should_release == 'true'
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Typecheck, build, and verify package contents
+        if: steps.version.outputs.should_release == 'true'
+        run: npm run ci:package
+
+      - name: Check npm version
+        if: steps.version.outputs.should_release == 'true'
+        id: npm-version
+        run: |
+          if npm view "$(node -p "require('./package.json').name")@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.version.outputs.should_release == 'true' && steps.npm-version.outputs.exists != 'true'
+        env:
+          # Trusted Publishing uses GitHub OIDC. Avoid setup-node token auth so
+          # npm does not try to publish with an absent/placeholder NODE_AUTH_TOKEN.
+          NODE_AUTH_TOKEN: ""
+        run: npm publish --provenance --access public --tag "${{ steps.version.outputs.npm_tag }}"
+
+      - name: Install git-cliff
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          API_RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/orhun/git-cliff/releases/latest)
+          LATEST_CLIFF_URL=$(echo "$API_RESPONSE" | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-gnu.tar.gz")) | .browser_download_url')
+          if [ -z "$LATEST_CLIFF_URL" ] || [ "$LATEST_CLIFF_URL" = "null" ]; then
+            echo "Could not find git-cliff release asset."
+            exit 1
+          fi
+          curl -L "$LATEST_CLIFF_URL" | tar xz
+          sudo mv git-cliff-*/git-cliff /usr/local/bin/
+
+      - name: Prepare git-cliff config
+        if: steps.version.outputs.should_release == 'true'
+        working-directory: ${{ github.workspace }}
+        run: sed -i "s|{{ repository_url }}|https://github.com/${GITHUB_REPOSITORY}|g" .github/cliff.toml
+
+      - name: Generate release notes
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
+          RELEASE_CHANNEL: ${{ steps.version.outputs.channel }}
+          NPM_TAG: ${{ steps.version.outputs.npm_tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: bash ../.github/scripts/generate-release-notes.sh
+
+      - name: Check GitHub release
+        if: steps.version.outputs.should_release == 'true'
+        id: github-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        if: steps.version.outputs.should_release == 'true' && steps.github-release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=""
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            FLAGS="--prerelease"
+          else
+            FLAGS="--latest"
+          fi
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file release-notes.md \
+            $FLAGS

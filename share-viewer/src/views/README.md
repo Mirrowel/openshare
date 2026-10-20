@@ -78,7 +78,7 @@ A view without visible settings access fails review.
 
 - Header: your design. Include: the deployment logo (`source.branding().logoUrl`,
   link `source.branding().linkUrl`), the openshare github mark (right
-  side, fixed: `<a href="https://github.com/Mirrowel/Mirrobot-agent">`
+  side, fixed: `<a href="https://github.com/Mirrowel/OpenShare">`
   with `<Icon name="github" size="small" />`), status
   (`source.status()`), the settings entry, and the session version with
   the opencode mark (`import { Mark } from "@opencode-ai/ui/logo"`).

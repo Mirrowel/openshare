@@ -118,7 +118,8 @@ stays all-mode.
 npm install
 npm run build         # tsc -> dist/ + bun bundle -> openshare.js
 npm run typecheck
-npm run test          # all suites (needs opencode + wrangler + network once)
+npm run test          # full matrix via the parallel driver (~4.5 min)
+npm run test:quick     # everyday gate (~90s): parity + manual core + TUI + v2 + auth
 ```
 
 Suites (shared machinery in `scripts/suite-lib.mjs`; every run is

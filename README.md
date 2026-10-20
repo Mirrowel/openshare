@@ -241,7 +241,8 @@ them apart. Ops notes (restart durability, reverse proxies, backups) in
 cd share-plugin
 npm install
 npm run build          # dist/ + the single-file openshare.js
-npm run test           # full matrix (real `opencode serve` + mock LLM + local wrangler dev)
+npm run test           # full matrix (real `opencode serve` + mock LLM + local wrangler dev) — ~4.5 min
+npm run test:quick     # everyday gate: parity + manual core + TUI + v2 + auth — ~90s
 npm run test:regression   # parity: legacy == single file == package
 npm run test:manual       # manual mode: dormancy, flag, backfill, unshare, re-share, auth opts
 npm run test:tui-flow     # share/unshare flows, config round-trip, connect flow, admin console
@@ -254,6 +255,8 @@ npm run test:cli          # real `opencode run` end-to-end (CI bundle + package)
 npm run test:server-auth
 npm run test:server-enroll
 ```
+
+The matrix driver (`scripts/run-matrix.mjs`) runs independent suites in two parallel waves on disjoint ports, shares one worker where suites allow it, and shards the manual suite into three concurrent processes (`manual-core` / `manual-allmode` / `manual-engine` via `OPENSHARE_MANUAL_SHARD`) — the wall clock is the slowest lane, not the sum. Remaining cost is opencode-inherent: every scenario uses real `opencode serve` instances and real prompt turn cycles by design.
 
 All suites run the real production path: a local `wrangler dev` worker (or the Bun server), a mock OpenAI-compatible provider so a real `opencode serve` runs a real prompt pipeline, and share data compared (normalized) across variants. Worker protocol details, reliability semantics, and the passive CI archive live in [`share-worker/README.md`](share-worker/README.md); the portable backend in [`share-server/README.md`](share-server/README.md).
 

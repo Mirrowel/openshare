@@ -18,7 +18,7 @@ import { useSessionSections, type ReasoningEntry, type SessionSection, type Tool
 import type { ViewEntry } from "./registry"
 import { visibleMessages } from "../fold"
 
-const OPENSHARE_REPO = "https://github.com/Mirrowel/Mirrobot-agent"
+const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the desk's file number: the wire copy this session was filed under
 const fileNo = (sessionID: string) =>

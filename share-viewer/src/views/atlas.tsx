@@ -218,7 +218,7 @@ function Masthead(props: HeaderProps) {
                 <span class="hidden truncate text-12-mono text-text-weaker md:inline max-w-48">{props.model}</span>
               </Show>
               <a
-                href="https://github.com/Mirrowel/Mirrobot-agent"
+                href="https://github.com/Mirrowel/OpenShare"
                 target="_blank"
                 rel="noreferrer"
                 title="Open(code)Share"

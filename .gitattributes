@@ -1,0 +1,7 @@
+# LF everywhere the CI runs it; the Windows dev box may check out CRLF
+# for local files, but workflow scripts and shell must stay LF in the repo.
+* text=auto
+*.sh text eol=lf
+*.mjs text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf

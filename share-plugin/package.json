@@ -64,6 +64,11 @@
     "build:tui": "bun scripts/build-tui.mjs",
     "build:standalone": "bun scripts/build-standalone.mjs",
     "typecheck": "tsc --noEmit",
+    "ci": "npm run release:intent:check && npm run ci:package",
+    "ci:package": "npm run typecheck && npm run build && npm run pack:dry-run",
+    "release:intent": "node scripts/set-release-intent.mjs",
+    "release:intent:check": "node scripts/check-release-intent.mjs",
+    "pack:dry-run": "node scripts/pack-dry-run.mjs",
     "test:regression": "node scripts/regression-tests.mjs",
     "prepublishOnly": "npm run typecheck && npm run build",
     "test:manual": "node scripts/manual-tests.mjs",
@@ -74,7 +79,8 @@
     "test:server-enroll": "node scripts/enroll-tests.mjs --backend bun",
     "test:enroll": "node scripts/enroll-tests.mjs",
     "test:fanout": "node scripts/fanout-tests.mjs",
-    "test": "npm run test:regression && npm run test:manual && npm run test:tui-flow && npm run test:v2 && npm run test:auth && npm run test:enroll && npm run test:fanout",
+    "test": "node scripts/run-matrix.mjs",
+    "test:quick": "node scripts/run-matrix.mjs manual-core regression-tests tui-flow-tests v2-mock-tests auth-tests",
     "test:cli": "node scripts/cli-test.mjs"
   },
   "devDependencies": {

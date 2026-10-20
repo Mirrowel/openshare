@@ -124,7 +124,7 @@ function CinemaHeader(props: HeaderProps) {
             <span class="hidden sm:inline">settings</span>
           </button>
           <a
-            href="https://github.com/Mirrowel/Mirrobot-agent"
+            href="https://github.com/Mirrowel/OpenShare"
             target="_blank"
             rel="noreferrer"
             class="text-icon-weaker-base hover:text-icon-strong-base"

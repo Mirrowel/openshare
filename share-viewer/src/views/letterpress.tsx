@@ -15,7 +15,7 @@ import { Mark } from "@opencode-ai/ui/logo"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Title } from "@solidjs/meta"
 
-const OPENSHARE_REPO = "https://github.com/Mirrowel/Mirrobot-agent"
+const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the text face and the display face: old-style serifs first, then broad
 // platform coverage so a Linux viewer still gets a real book

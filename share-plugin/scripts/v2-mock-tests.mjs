@@ -236,7 +236,7 @@ try {
   try {
     worker?.kill()
   } catch {}
-  killWranglerSuites()
+  if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
 }
 
 if (failures.length) {

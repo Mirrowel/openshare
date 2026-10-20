@@ -38,6 +38,7 @@ import {
   WORKER_PORT,
   SERVE_PORT,
   LLM_PORT,
+  CREATE_TOKEN,
   PROVIDER,
   bindingUrlOf,
 } from "./suite-lib.mjs"
@@ -53,10 +54,12 @@ const watchdog = setTimeout(() => {
 }, WATCHDOG_MS)
 
 const failures = []
+const T0 = Date.now()
 const check = (label, ok, detail) => {
-  if (ok) console.log(`PASS ${label}`)
+  const mark = `+${((Date.now() - T0) / 1000).toFixed(1)}s`
+  if (ok) console.log(`PASS ${label} [${mark}]`)
   else {
-    console.log(`FAIL ${label}${detail ? `: ${detail}` : ""}`)
+    console.log(`FAIL ${label}${detail ? `: ${detail}` : ""} [${mark}]`)
     failures.push(label)
   }
 }
@@ -133,6 +136,14 @@ try {
   worker = await startWorker(suiteDir)
   console.log("worker ready")
 
+  // Sharding: the matrix driver runs S1-S7 (core), S6+S8 (allmode) and
+  // S9-S12 (engine) as three PARALLEL processes — each with its own ports
+  // and sandbox — because this suite's serial chain was the matrix's
+  // wall-clock bottleneck (live-measured 2026-10-20).
+  const SHARD = process.env.OPENSHARE_MANUAL_SHARD ?? "all"
+  const shardRuns = (name) => SHARD === "all" || SHARD === name
+
+  if (shardRuns("core")) {
   // ---------------------------------------------------------------- setup
   const sandbox = join(suiteDir, "manual")
   const projectDir = join(sandbox, "project")
@@ -248,19 +259,17 @@ try {
     const a = JSON.stringify(normalizeShare(firstShareBody, sandbox))
     const b = JSON.stringify(normalizeShare(secondBody, sandbox))
     check("S4: re-share content == first share content", a === b, diffSummary(a, b))
-  } finally {
-    await stopServe(serve2);
-  }
 
-  // S7: per-session opts — read auth rides the create frame; the share
-  // must reject anonymous reads and accept the auth cookie
-  const serve4 = await startServe(variant, sandbox, projectDir)
-  try {
-    await patchMetadata(serve4, sid, {
+    // S7 (same serve — reuse beats a fresh spawn): per-session opts —
+    // read auth rides the create frame; the share must reject anonymous
+    // reads and accept the auth cookie. Uses a FRESH session: the opts ride
+    // the share CREATE frame, so the session must be unbound at flag time.
+    const s7sid = await createAndPrompt(serve2, "s7 read-auth session")
+    await patchMetadata(serve2, s7sid, {
       openshare: { enabled: true, opts: { authLogin: "suite-reader", authPassword: "suite-pass" } },
     })
     const authBinding = await waitFor(async () => {
-      const s = await (await httpGet(`${serve4.base}/session/${sid}`)).json()
+      const s = await (await httpGet(`${serve2.base}/session/${s7sid}`)).json()
       const b = s?.metadata?.openshare
       return bindingUrlOf(b) ? b : undefined
     }, "S7: share attached with auth opts")
@@ -285,9 +294,11 @@ try {
     const authed = await httpGet(`${WORKER_URL}/api/share/${authShareId}/data`, { headers: { cookie } })
     check("S7: authed read succeeds (200)", authed.status === 200, `got ${authed.status}`)
   } finally {
-    await stopServe(serve4);
+    await stopServe(serve2);
   }
+  } // end core shard
 
+  if (shardRuns("allmode")) {
   // S6: explicit shareMode override ("all") beats TUI presence
   const overrideSandbox = join(suiteDir, "override")
   const overrideProject = join(overrideSandbox, "project")
@@ -350,6 +361,8 @@ try {
   const preServe1 = await startServe(preVariant, preSandbox, preProject, {
     OPENSHARE_URL_FILE: preUrlFile,
     OPENSHARE_DEBOUNCE_MS: "300",
+    OPENSHARE_DEBUG_EVENTS: "1",
+    OPENSHARE_DEBUG_FILE: join(preSandbox, "pre-debug.json"),
   })
   let boundSid
   try {
@@ -361,24 +374,17 @@ try {
       const r = await httpGet(`${WORKER_URL}/api/share/${boundId}/data`)
       return r.ok && (await r.json()).status === "completed"
     }, "S8 setup: bound share completes")
-  } finally {
-    await stopServe(preServe1)
-  }
-  const preServe2 = await startServe(preVariant, preSandbox, preProject, {
-    OPENSHARE_URL_FILE: preUrlFile,
-    OPENSHARE_DEBOUNCE_MS: "300",
-    OPENSHARE_DEBUG_EVENTS: "1",
-    OPENSHARE_DEBUG_FILE: join(preSandbox, "pre-debug.json"),
-  })
-  try {
+    // NOTE: serve is deliberately NOT restarted between the bound-session
+    // setup and the dormancy/resume assertions below (restart-attach is
+    // S5's contract; merging the two serves saves a full spawn cycle)
     const urlCountBefore = ((await readUrlFile(preUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
     // resume the UNBOUND pre-existing session: prompt it — must NOT share
-    await promptSession(preServe2, preSid, "resume of an old unbound session")
-    await sleep(4000) // give any (wrong) share creation time to surface
-    const after = await (await httpGet(`${preServe2.base}/session/${preSid}`)).json()
+    await promptSession(preServe1, preSid, "resume of an old unbound session")
+    await sleep(1200) // give any (wrong) share creation time to surface (debounce 300ms)
+    const after = await (await httpGet(`${preServe1.base}/session/${preSid}`)).json()
     const dormantOk = !after?.metadata?.openshare
     if (!dormantOk) {
-      const lines = preServe2
+      const lines = preServe1
         .output()
         .split("\n")
         .filter((l) => l.includes("[openshare]"))
@@ -391,9 +397,9 @@ try {
 
     // explicit opt-in on the pre-existing session: flag -> gated share
     // WITH backfill (the history from before the flag must be on the page)
-    await patchMetadata(preServe2, preSid, { openshare: { enabled: true } })
+    await patchMetadata(preServe1, preSid, { openshare: { enabled: true } })
     const optIn = await waitFor(async () => {
-      const s = await (await httpGet(`${preServe2.base}/session/${preSid}`)).json()
+      const s = await (await httpGet(`${preServe1.base}/session/${preSid}`)).json()
       const b = s?.metadata?.openshare
       return bindingUrlOf(b) ? b : undefined
     }, "S8: flag-gated binding written")
@@ -409,9 +415,9 @@ try {
     check("S8: flag opt-in backfills history", true)
 
     // resume continuity in all-mode: the BOUND session keeps its share
-    await promptSession(preServe2, boundSid, "resume of an old bound session")
+    await promptSession(preServe1, boundSid, "resume of an old bound session")
     const reBound = await waitFor(async () => {
-      const s = await (await httpGet(`${preServe2.base}/session/${boundSid}`)).json()
+      const s = await (await httpGet(`${preServe1.base}/session/${boundSid}`)).json()
       const b = s?.metadata?.openshare
       return bindingUrlOf(b) ? b : undefined
     }, "S8: bound session re-attached")
@@ -423,9 +429,11 @@ try {
       `${reBoundUrl} in [${boundUrls.join(", ")}]`,
     )
   } finally {
-    await stopServe(preServe2)
+    await stopServe(preServe1)
   }
+  } // end allmode shard
 
+  if (shardRuns("engine")) {
   // S9: undo tombstones — revert marks (viewer hides), the NEXT prompt
   // hard-deletes the reverted range (message.removed / part.removed).
   // The share must PHYSICALLY drop those items: without tombstones the
@@ -723,7 +731,7 @@ try {
   // after FINALIZE_AFTER_MS (4s in the suite) the share settles "interrupted";
   // a completed share is never touched
   {
-    const ws = new WebSocket(`ws://127.0.0.1:8789/api/ws?token=suite-create-token`)
+    const ws = new WebSocket(`ws://127.0.0.1:${WORKER_PORT}/api/ws?token=${CREATE_TOKEN}`)
     const opened = await new Promise((resolve, reject) => {
       ws.addEventListener("open", () => resolve(), { once: true })
       ws.addEventListener("error", () => reject(new Error("S12 ws open failed")), { once: true })
@@ -746,6 +754,7 @@ try {
     // cleanup
     await httpGet(`${WORKER_URL}/api/share/${init.id}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: init.secret }) })
   }
+  } // end engine shard
 } catch (error) {
   console.error("SUITE ERROR:", error.message)
   console.error(error.stack?.split("\n").slice(0, 6).join("\n"))
@@ -757,7 +766,7 @@ try {
   try {
     llm?.close()
   } catch {}
-  killWranglerSuites()
+  if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
   killPortOwners(SERVE_PORT)
   killPortOwners(LLM_PORT)
 }

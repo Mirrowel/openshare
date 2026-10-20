@@ -125,7 +125,7 @@ function ArchiveLine(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) 
           </Show>
         </span>
         <a
-          href="https://github.com/Mirrowel/Mirrobot-agent"
+          href="https://github.com/Mirrowel/OpenShare"
           target="_blank"
           rel="noreferrer"
           class="text-icon-weaker-base hover:text-icon-strong-base"

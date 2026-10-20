@@ -151,7 +151,7 @@ function DraftingHeader(props: HeaderProps) {
         <span class="hidden sm:block h-4 w-px bg-border-weak-base shrink-0" />
         <h1 class="min-w-0 flex-1 truncate text-14-medium text-text-strong">{info()?.title ?? "session"}</h1>
         <a
-          href="https://github.com/Mirrowel/Mirrobot-agent"
+          href="https://github.com/Mirrowel/OpenShare"
           target="_blank"
           rel="noreferrer"
           class="shrink-0 text-icon-weaker-base hover:text-icon-strong-base"

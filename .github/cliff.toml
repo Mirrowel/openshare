@@ -1,0 +1,57 @@
+[changelog]
+header = """"""
+body = """
+{% if version -%}
+  {% if previous.version -%}
+    ## Changes in {{ version }}
+  {% else -%}
+    ## Initial Release
+  {% endif -%}
+{% else -%}
+  ## Recent Changes
+{% endif -%}
+
+{% if breaking_commits %}
+### Breaking Changes
+{% for commit in breaking_commits -%}
+- {{ commit.raw_message | split(pat="\n") | first | trim }} ([`{{ commit.id | truncate(length=7, end="") }}`]({{ repository_url }}/commit/{{ commit.id }})) by [[{{ commit.id }}|{{ commit.author.email }}|{{ commit.author.name }}]]
+{% endfor -%}
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits -%}
+- {{ commit.raw_message | split(pat="\n") | first | trim }} ([`{{ commit.id | truncate(length=7, end="") }}`]({{ repository_url }}/commit/{{ commit.id }})) by [[{{ commit.id }}|{{ commit.author.email }}|{{ commit.author.name }}]]
+{% endfor -%}
+{% endfor -%}
+"""
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+commit_preprocessors = [
+  { pattern = '\\((\\w+\\s)?#([0-9]+)\\)', replace = "([#${2}]({{ repository_url }}/issues/${2}))" },
+]
+commit_parsers = [
+  { message = "^Merge pull request", skip = true },
+  { message = "^Merge branch", skip = true },
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^ci", group = "CI" },
+  { message = "^build", group = "Build" },
+  { message = "^chore", group = "Maintenance" },
+  { message = ".*", group = "Other Changes" },
+]
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v*"
+skip_tags = ""
+ignore_tags = ""
+topo_order = false
+sort_commits = "newest"

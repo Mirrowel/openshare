@@ -1,0 +1,191 @@
+name: Cleanup Prereleases
+
+on:
+  delete:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: "Branch name whose prereleases should be cleaned up"
+        required: true
+        type: string
+        default: dev
+      keep_latest:
+        description: "Keep newest N matching GitHub prereleases/tags. 0 deletes all matches."
+        required: false
+        type: string
+        default: "0"
+      dry_run:
+        description: "Preview matches without deleting"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.event_name == 'workflow_dispatch' || github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    env:
+      PROTECTED_BRANCHES: "main,master"
+    steps:
+      - name: Determine cleanup config
+        id: config
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH_NAME="${{ github.event.inputs.branch_name }}"
+            KEEP_LATEST="${{ github.event.inputs.keep_latest }}"
+            DRY_RUN="${{ github.event.inputs.dry_run }}"
+          else
+            BRANCH_NAME="${{ github.event.ref }}"
+            KEEP_LATEST="0"
+            DRY_RUN="false"
+          fi
+
+          if [ -z "$BRANCH_NAME" ]; then
+            echo "branch_name is required" >&2
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$KEEP_LATEST" | grep -Eq '^[0-9]+$'; then
+            echo "keep_latest must be a non-negative integer, got: $KEEP_LATEST" >&2
+            exit 1
+          fi
+
+          is_protected="false"
+          IFS=',' read -ra protected <<< "$PROTECTED_BRANCHES"
+          for item in "${protected[@]}"; do
+            item="$(echo "$item" | xargs)"
+            if [ "$BRANCH_NAME" = "$item" ]; then
+              is_protected="true"
+            fi
+          done
+
+          if [ "$is_protected" = "true" ]; then
+            echo "Branch '$BRANCH_NAME' is protected and cannot be cleaned up." >&2
+            echo "Protected branches: $PROTECTED_BRANCHES" >&2
+            exit 1
+          fi
+
+          CHANNEL="$(printf '%s' "$BRANCH_NAME" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+          if [ -z "$CHANNEL" ]; then
+            CHANNEL="branch"
+          fi
+          if printf '%s\n' "$CHANNEL" | grep -Eq '^[0-9]+$'; then
+            CHANNEL="branch-$CHANNEL"
+          fi
+
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "keep_latest=$KEEP_LATEST" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+          echo "Branch: $BRANCH_NAME"
+          echo "Prerelease channel: $CHANNEL"
+          echo "Keep latest: $KEEP_LATEST"
+          echo "Dry run: $DRY_RUN"
+
+      - name: Find and delete matching prereleases
+        id: cleanup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ steps.config.outputs.channel }}
+          KEEP_LATEST: ${{ steps.config.outputs.keep_latest }}
+          DRY_RUN: ${{ steps.config.outputs.dry_run }}
+        run: |
+          MATCHES="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName,createdAt,isPrerelease \
+            --jq ". | sort_by(.createdAt) | reverse | .[] | select(.isPrerelease == true) | select(.tagName | test(\"^v[0-9]+[.][0-9]+[.][0-9]+-$CHANNEL[.][0-9]+$\")) | .tagName")"
+
+          if [ -z "$MATCHES" ]; then
+            echo "No matching prereleases found."
+            echo "matched_count=0" >> "$GITHUB_OUTPUT"
+            echo "deleted_count=0" >> "$GITHUB_OUTPUT"
+            echo "failed_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$KEEP_LATEST" -gt 0 ]; then
+            TO_DELETE="$(printf '%s\n' "$MATCHES" | tail -n +$((KEEP_LATEST + 1)))"
+          else
+            TO_DELETE="$MATCHES"
+          fi
+
+          MATCHED_COUNT="$(printf '%s\n' "$MATCHES" | grep -c .)"
+          DELETE_COUNT="$(printf '%s\n' "$TO_DELETE" | grep -c . || true)"
+
+          echo "Matched prereleases:"
+          printf '%s\n' "$MATCHES" | sed 's/^/  - /'
+          echo ""
+          echo "Keeping newest $KEEP_LATEST match(es)."
+
+          if [ -z "$TO_DELETE" ]; then
+            echo "No prereleases selected for deletion after retention."
+            echo "matched_count=$MATCHED_COUNT" >> "$GITHUB_OUTPUT"
+            echo "deleted_count=0" >> "$GITHUB_OUTPUT"
+            echo "failed_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run only. Would delete:"
+            printf '%s\n' "$TO_DELETE" | sed 's/^/  - /'
+            echo "matched_count=$MATCHED_COUNT" >> "$GITHUB_OUTPUT"
+            echo "deleted_count=0" >> "$GITHUB_OUTPUT"
+            echo "failed_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DELETED=0
+          FAILED=0
+          while read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Deleting GitHub prerelease and tag: $tag"
+            if gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes; then
+              DELETED=$((DELETED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+            sleep 0.5
+          done <<< "$TO_DELETE"
+
+          echo "matched_count=$MATCHED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "deleted_count=$DELETED" >> "$GITHUB_OUTPUT"
+          echo "failed_count=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "selected_count=$DELETE_COUNT" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAILED" -gt 0 ]; then
+            exit 1
+          fi
+
+      - name: Generate summary
+        shell: bash
+        env:
+          BRANCH_NAME: ${{ steps.config.outputs.branch_name }}
+          CHANNEL: ${{ steps.config.outputs.channel }}
+          KEEP_LATEST: ${{ steps.config.outputs.keep_latest }}
+          DRY_RUN: ${{ steps.config.outputs.dry_run }}
+          MATCHED_COUNT: ${{ steps.cleanup.outputs.matched_count }}
+          DELETED_COUNT: ${{ steps.cleanup.outputs.deleted_count }}
+          FAILED_COUNT: ${{ steps.cleanup.outputs.failed_count }}
+        run: |
+          {
+            echo "## Cleanup Summary"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Branch name | \`$BRANCH_NAME\` |"
+            echo "| Prerelease channel | \`$CHANNEL\` |"
+            echo "| Tag pattern | \`vX.Y.Z-$CHANNEL.N\` |"
+            echo "| Keep latest | \`$KEEP_LATEST\` |"
+            echo "| Dry run | \`$DRY_RUN\` |"
+            echo "| Matched | $MATCHED_COUNT |"
+            echo "| Deleted | $DELETED_COUNT |"
+            echo "| Failed | $FAILED_COUNT |"
+            echo
+            echo "npm versions are immutable and are not touched by this cleanup."
+          } >> "$GITHUB_STEP_SUMMARY"
