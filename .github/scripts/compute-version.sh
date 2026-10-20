@@ -3,8 +3,12 @@ set -euo pipefail
 
 # Lifted from agent-variants' release workflow (family pattern, kept
 # structurally aligned). OpenShare adaptation: the package lives in
-# share-plugin/ inside a monorepo, so this script runs with that directory
-# as cwd and the release-relevant path filter matches share-plugin/**.
+# share-plugin/ inside a monorepo — resolve it from the script location
+# (.github/scripts/ -> repo root -> share-plugin/) instead of assuming the
+# package sits at the repo root like agent-variants.
+
+PKG_DIR="$(cd "$(dirname "$0")/../.." && pwd)/share-plugin"
+cd "$PKG_DIR"
 
 semver_sort() {
   sort -V
