@@ -1,4 +1,4 @@
-// OpenShare share flows — host-agnostic logic behind /share, /unshare and
+// OpenShare share flows — host-agnostic logic behind /share and
 // the settings dialog's "this session" actions. Runs against the
 // ShareHostApi facade (tui-host.ts) and the shared config module, so the
 // same compiled code serves the v1 TUI and the v2 adapter.
@@ -9,7 +9,7 @@
 //             (with per-session opts when present) -> wait for the server
 //             plugin to publish the binding URL into session metadata
 //             (~seconds; worker-down surfaces as a timeout toast) -> copy.
-//  /unshare   resolve root -> confirm -> read binding -> clear flag ->
+//  stop-sharing   resolve root -> confirm -> read binding -> clear flag ->
 //             DELETE the share directly via the worker (belt and braces:
 //             works even if the server plugin never saw the flag event) ->
 //             the server-side flag-removal path cleans up on its own.

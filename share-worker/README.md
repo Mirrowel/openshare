@@ -7,6 +7,23 @@ model (session / message / part / session_diff / model / prefs items,
 keyed-merge last-write-wins, keys derived server-side) — live and
 archived sessions are the same bytes and render with the same viewer.
 
+## Deploy
+
+From the repo root (details and prerequisites: the [root README's Quick start](../README.md#quick-start)):
+
+```sh
+cd share-viewer && npm install && npm run build && cd ..   # the viewer ships as worker assets
+cd share-worker
+npx wrangler kv namespace create KV                        # YOUR namespace — replace the id in wrangler.toml
+npx wrangler secret put CREATE_TOKEN                       # root admin token (treat like a password)
+npx wrangler deploy
+curl -s https://<your-worker>.workers.dev/health           # {"status":"ok","policy":{...},"auth":{"mode":"private"}}
+```
+
+Vars (`AUTH_MODE`, `SOCKET_POLICY`, TTL caps, branding…) are `[vars]` in
+`wrangler.toml` — edit and redeploy. The portable Bun alternative lives
+in [`../share-server`](../share-server/README.md).
+
 ## Server policy (the worker owns the rules)
 
 The plugin clamps itself into these on connect (WS init ack + `/health`
@@ -32,9 +49,10 @@ vanished mid-live), `gone`.
   loaded like any opencode plugin)
 - Worker: `openshare-worker` (Cloudflare, free-tier friendly)
 
-The default look is the neutral upstream-derived page; deployments brand
-themselves via `BRAND_*` worker vars (this deploy ships the mirrobot
-example skin — swap the vars and the assets to make it yours).
+The default deploy is the **unbranded neutral skin**; deployments brand
+themselves via `BRAND_*` worker vars or the bundled
+`openshare.config.json` (e.g. a mirrobot-style look) — swap the vars and
+the assets to make it yours.
 
 ## Architecture
 
@@ -46,11 +64,10 @@ sockets sleep while idle (zero cost), outgoing pushes are free, incoming
 frames bill 20:1. A 10s-debounced batch costs a few request-equivalents
 per session; a watched page costs exactly one request to open.
 
-**Passive** — after a run, `export-session.py` (agent-side companion)
-exports the session tree (main + every subagent session in the db),
-normalizes to Data[], gzips and hybrid-encrypts it (MRB2:
-RSA-OAEP-wrapped AES-256-CBC) into an Actions artifact plus an
-encrypted meta blob for the run summary.
+**Passive** — after a run, [`tools/view-export.py`](../tools/README.md)
+(agent-side companion) renders any exported session tree (main + every
+subagent session) as the same viewer page locally — the durable CI
+artifact path, no server involved.
 
 ## Delivery reliability (no expensive pulls)
 
@@ -107,7 +124,7 @@ The gear in the header opens the settings panel — persisted in a
   `mirrobot` (the landing-page paper-terminal look, included by
   default), `midnight`, `sepia`, `nord`. Forced themes work via
   attribute-scoped token copies emitted by
-  `tools/share-viewer/scripts/build-themes.mjs` at build time.
+  `share-viewer/scripts/build-themes.mjs` at build time.
 - **Text size**: compact / normal / roomy (root font scale).
 - **Continuous mode**: render every prompt in one scroll instead of
   one-turn-at-a-time with the left selector — continuity reading.
@@ -270,14 +287,12 @@ per-server binding map `servers: {url: {id, secret, rev, url}}`
 removal deletes the share on every server. The key is stripped from all
 synced data (worker strips session metadata on read paths as well).
 
-## Local viewing (decrypt_share_link.py, agent-side)
+## Local viewing (agent-side)
 
-Paste the MRB2 meta blob / MRB1 history / `--file` an artifact:
-fetches via gh, decrypts, caches Data[] JSON, and serves the SAME
-viewer on localhost (7788-7790) while the tool is open. Offline
-minimal-template fallback for no-dist environments.
+`python tools/view-export.py` serves the same viewer on localhost with
+any exported session injected — see [`tools/README.md`](../tools/README.md).
 
-## Viewer (tools/share-viewer)
+## Viewer (share-viewer)
 
 The upstream share page vendored (session-ui + ui + core utils + sdk
 types; vite+solid+tailwind client-only build). Tailwind scan roots are

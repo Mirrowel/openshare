@@ -28,4 +28,4 @@ Options:
 | `--model-label T` | model label; `$Provider/$Model` placeholders, literal passes through, empty hides it | placeholder form |
 | `--db PATH` | opencode db override | auto-discovery |
 
-Requires Python 3 (stdlib only). The export JSON is converted to the share `Data[]` contract — the one shape the plugin streams, the worker stores, and the viewer renders — which is why the local page is pixel-identical to a live share.
+Requires Python 3.8+ (stdlib only) and a built viewer (`cd ../share-viewer && npm install && npm run build` — or point `--dist` at an existing build). The export JSON is converted to the share `Data[]` contract — the one shape the plugin streams, the worker stores, and the viewer renders — which is why the local page is pixel-identical to a live share.

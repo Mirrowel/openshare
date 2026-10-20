@@ -2,7 +2,7 @@
 
 // OpenShare TUI plugin entry (OpenCode v1).
 //
-// Registers the /share, /unshare (shadowing the deprecated opncd.ai
+// Registers the /share (toggle + manager, shadowing the deprecated opncd.ai
 // built-ins via a priority keymap layer) and /openshare commands, plus the
 // sidebar_title slot chip. The flows run against the ShareHostApi facade
 // (tui-host.ts); v2 hosts run the same flows through the v2-tui adapter.

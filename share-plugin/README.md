@@ -17,7 +17,14 @@ original (`reference/openshare.legacy.js`) on the full share lifecycle.
 
 ## Install
 
-Interactive (manual sharing, `/share` command, sidebar chip):
+From the registry (published; opencode resolves npm specs):
+
+```sh
+opencode plugin add @mirrowel/opencode-openshare        # server (opencode.json)
+opencode plugin add @mirrowel/opencode-openshare/tui    # TUI (tui.json) — flips to manual sharing
+```
+
+Or by hand in the config files:
 
 ```jsonc
 // opencode.json
@@ -26,17 +33,10 @@ Interactive (manual sharing, `/share` command, sidebar chip):
 { "plugin": ["@mirrowel/opencode-openshare/tui"] }
 ```
 
-CI (share everything, link to a file):
-
-```jsonc
-// OPENCODE_CONFIG one-file setup
-{
-  "plugin": ["/path/to/openshare.js"]
-  // + openshare.config.json next to the bundle (servers group or the
-  //   legacy env pair), OPENSHARE_URL_FILE collects each share URL
-  //   (also printed to stderr)
-}
-```
+From a local checkout (developing / tracking main): use the directory spec
+`"file:///…/openshare/share-plugin"` in both files (run `npm run build`
+first — `dist/` is not committed). The CI bundle needs no build at all —
+it is committed ready to use at [`ci/openshare.js`](ci/README.md).
 
 Then configure (`openshare.config.json` next to the package — see the
 [main README](../README.md#configuration) for all keys):
@@ -162,7 +162,9 @@ src/
   commands.ts      /share (toggle + fan-out manager + collision dialog) /openshare
   share-flow.ts    host-agnostic flows: flag, bindings v1/v2, enrollment,
                    rotate/disconnect, admin client, unshare multi-delete
-  settings.ts      settings dialog + servers section + admin console
+  settings.ts      grouped settings tree + servers section + admin console
+  dialogs.tsx      MenuDialog/InfoDialog/PromptDialog + the sizing core (75% budget)
+  ui-prefs.ts      menu size prefs (host kv store)
   sidebar.tsx      sidebar_title slot chip (v1, box-rooted)
   tui-host.ts      host facade interface
   v2-server.ts     v2 setup: event mapping + client adapter + v2->v1 conversion

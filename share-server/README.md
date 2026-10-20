@@ -12,22 +12,32 @@ protocol, same plugin, same auth model.
 # build the viewer once (or point VIEWER_DIR at an existing build)
 cd ../share-viewer && npm install && npm run build && cd ../share-server
 
+# sh:
 CREATE_TOKEN=<your-root-token> bun server.ts
+# PowerShell:
+#   $env:CREATE_TOKEN = "your-root-token"; bun server.ts
 # listening on http://0.0.0.0:8787
 ```
+
+You are the hoster of this server: the access codes users are asked for
+are ones **you** mint (admin console or `POST /api/admin/codes` with the
+root token). If you expose it beyond localhost, put TLS in front (any
+reverse proxy; see [Ops notes](#ops-notes)) and point the plugin at the
+https URL.
 
 Then point the plugin at it:
 
 ```jsonc
-// openshare.config.json
+// openshare.config.json  (you minted this code yourself — see above)
 {
   "servers": {
-    "https://share.example.com": { "code": "osc_… (ask the hoster)" }
+    "https://share.example.com": { "code": "osc_…" }
   }
 }
 ```
 
-or enroll from the TUI: `/openshare → Connect to a server`.
+or enroll from the TUI: `/share → Connect to a server` (paste the URL,
+then the code — you're both hoster and first user).
 
 ## Configuration (env)
 
@@ -54,14 +64,16 @@ per-token limits, root `CREATE_TOKEN` as the forever-admin bootstrap.
 
 Admin API: same `/api/admin/*` surface (users, tokens, codes, shares,
 reassign, purge) — drive it with curl or the plugin's TUI admin console
-(`/openshare → Admin console`).
+(`/openshare → Servers → <server> → Admin panel`).
 
 ## Docker
 
-```dockerfile
-# see Dockerfile; mount /data for the SQLite file and copy or mount the
-# viewer build, then:
-docker run -e CREATE_TOKEN=… -p 8787:8787 -v oshdata:/data openshare-server
+```sh
+# from the repo root — the image builds the viewer in (see Dockerfile)
+docker build -f share-server/Dockerfile -t openshare .
+
+docker run -e CREATE_TOKEN=… -p 8787:8787 -v oshdata:/data openshare
+# health: curl -s http://127.0.0.1:8787/health
 ```
 
 ## Parity

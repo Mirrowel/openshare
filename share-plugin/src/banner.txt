@@ -13,7 +13,7 @@
 //    lands in the log and optionally in `urlFile`).
 //  - Interactive opt-in: install the package's TUI part (tui.json) too —
 //    the server detects its presence and switches to manual mode
-//    (`/share`, `/unshare` in the TUI).
+//    (`/share` + `/openshare` in the TUI).
 //
 // Config: env (OPENSHARE_*) > openshare.config.json (next to this file)
 // > code defaults. Keys: workerUrl, createToken, debounceMs, modelLabel,

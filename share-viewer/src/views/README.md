@@ -94,8 +94,7 @@ A view without visible settings access fails review.
   no hero-metric templates, no identical card grids.
 - Motion only for state, 150–250 ms, ease-out.
 - Self-verify: `npm run build` must pass with your file in place
-  (it may fail on OTHER agents' concurrent files — a clean build of
-  YOUR file via `npx tsc --noEmit -p tsconfig.json` is the honest check;
-  report either way).
+  (it may fail on OTHER agents' concurrent files — `npm run build`
+  covering your file alone is the honest check; report either way).
 - Return: your view id, one-paragraph design statement, the file path,
   build status.
