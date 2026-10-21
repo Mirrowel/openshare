@@ -1,12 +1,13 @@
 /* Scan roots FIRST (the vendored ui entry declares source(none) on the
    utilities import, so these are the only scan roots): the app sources and
-   both vendored package trees. Paths resolve from this file. */
+   the vendored v2 package trees. Paths resolve from this file. */
 @source "./";
-@source "../vendor/session-ui/src";
-@source "../vendor/ui/src";
+@source "../vendor/session-ui-v2/src";
+@source "../vendor/ui-v2/src";
 
-@import "@opencode-ai/ui/styles/tailwind";
-@import "@opencode-ai/session-ui/styles";
+@import "@opencode/ui/styles/tailwind";
+@import "@opencode/session-ui/styles";
+@import "@opencode/ui/styles/tokens";
 
 /* Reasoning collapse: a left rule marking the full block + a clickable
    label row; default collapsed, content styling untouched. */

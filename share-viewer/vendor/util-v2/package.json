@@ -1,0 +1,10 @@
+{
+  "name": "@opencode/util",
+  "version": "2.0.18-vendor",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./path": "./src/path.ts",
+    "./encode": "./src/encode.ts"
+  }
+}

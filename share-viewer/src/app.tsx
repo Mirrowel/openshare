@@ -18,21 +18,21 @@
 // bottom), text size, default diff style, background-image toggle,
 // reasoning expand-all. Header extras: session search (Ctrl+K), copy
 // session as markdown, j/k prompt navigation.
-import { SessionTurn } from "@opencode-ai/session-ui/session-turn"
-import { SessionReview } from "@opencode-ai/session-ui/session-review"
-import { DataProvider } from "@opencode-ai/session-ui/context"
-import { FileComponentProvider } from "@opencode-ai/ui/context/file"
-import { WorkerPoolProvider } from "@opencode-ai/ui/context/worker-pool"
-import { getWorkerPools } from "@opencode-ai/session-ui/pierre/worker"
-import { MessageNav } from "@opencode-ai/session-ui/message-nav"
-import { FileSSR } from "@opencode-ai/session-ui/file-ssr"
-import { Logo, Mark } from "@opencode-ai/ui/logo"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
-import { Tabs } from "@opencode-ai/ui/tabs"
-import { iife } from "@opencode-ai/core/util/iife"
+import { SessionTimeline } from "@opencode/session-ui/timeline"
+import { SessionReview } from "@opencode/session-ui/session-review"
+import { DataProvider } from "@opencode/session-ui/context"
+import { DialogProvider } from "@opencode/ui/context/dialog"
+import { FileComponentProvider } from "@opencode/ui/context/file"
+import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
+import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
+import { MessageNav } from "@opencode/session-ui/message-nav"
+import { FileSSR } from "@opencode/session-ui/file-ssr"
+import { Logo, Mark } from "@opencode/ui/logo"
+import { ProviderIcon } from "@opencode/ui/provider-icon"
+import { Tabs } from "@opencode/ui/tabs"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
-import { Icon } from "@opencode-ai/ui/icon"
+import { Icon } from "@opencode/ui/icon"
 import { createEffect, createMemo, createSignal, ErrorBoundary, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
@@ -41,7 +41,6 @@ import { ReaderView } from "./reader"
 import { InfoPanel } from "./views/info-panel"
 import { findView, resolveSessionID } from "./views/registry"
 import { setVendoredData } from "./views/vendored-part"
-import { setToolGrouping } from "../vendor/session-ui/src/components/message-part"
 
 // full-page views (everything except classic/reader, which live in the
 // standard chrome) render INSTEAD of SessionView
@@ -95,11 +94,13 @@ function FullPageView(props: {
     </>
   )
 }
-import { children, visibleMessages, type ShareData } from "./fold"
+import { children, sessionStatus, visibleMessages, type ShareData } from "./fold"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
 
 // scroll memory for in-page session switching: restore on return
 const scrollMemory = new Map<string, number>()
+
+const iife = <T,>(fn: () => T): T => fn()
 
 // the product's own repo (fixed in source — the right header always
 // promotes Open(code)Share; flip on extraction)
@@ -201,6 +202,7 @@ function SessionView(props: {
   settings: OshSettings
   updateSettings: (patch: Partial<OshSettings>) => void
   search: string
+  onSearch: (v: string) => void
   sub: () => number | undefined
 }) {
   // resolve which session this page renders (main or subagent /N)
@@ -231,8 +233,16 @@ function SessionView(props: {
       </Show>
       <WorkerPoolProvider pools={getWorkerPools()}>
         <FileComponentProvider component={FileSSR}>
+          <DialogProvider>
           <DataProvider
-            data={props.data}
+            data={{
+              // wire data cast to the v2 summaries — the fold guarantees
+              // the fields the renderers actually read
+              session: props.data.session as any,
+              session_status: Object.fromEntries(props.data.session.map((s) => [s.id, sessionStatus(props.source.status())])),
+              session_diff: props.data.session_diff as any,
+              provider: props.data.provider,
+            }}
             directory={info().directory}
             sessionID={sessionID()}
             onSessionHref={(id) => subHref(props.source, id)}
@@ -251,14 +261,31 @@ function SessionView(props: {
             {iife(() => {
               const [store, setStore] = createStore({ messageId: undefined as string | undefined })
               const [diffStyle, setDiffStyle] = createSignal<"unified" | "split">(props.settings.diffStyle)
-              const messages = createMemo(() => visibleMessages(props.data, sessionID()).filter((m) => m.role === "user"))
-              const firstUserMessage = createMemo(() => messages().at(0))
-              const activeMessage = createMemo(() => messages().find((m) => m.id === store.messageId) ?? firstUserMessage())
+              const messages = createMemo(() => visibleMessages(props.data, sessionID()))
+              const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
+              const firstUserMessage = createMemo(() => userTurns().at(0))
+              const activeMessage = createMemo(() => userTurns().find((m: any) => m.id === store.messageId) ?? firstUserMessage())
               function setActiveMessage(message: any) {
                 setStore("messageId", message ? message.id : undefined)
               }
-              const provider = createMemo(() => (activeMessage()?.model as any)?.providerID)
-              const modelID = createMemo(() => (activeMessage()?.model as any)?.modelID)
+              // the model of the ACTIVE turn: user metadata first (stamped
+              // at ingestion), else the following assistant's model
+              const provider = createMemo(() => {
+                const meta = (activeMessage() as any)?.metadata?.model
+                if (meta?.providerID) return meta.providerID as string
+                const all = messages()
+                const idx = all.findIndex((m) => m.id === activeMessage()?.id)
+                for (let i = idx; i < all.length; i++) if ((all[i] as any)?.model?.providerID) return (all[i] as any).model.providerID
+                return undefined
+              })
+              const modelID = createMemo(() => {
+                const meta = (activeMessage() as any)?.metadata?.model
+                if (meta?.id) return meta.id as string
+                const all = messages()
+                const idx = all.findIndex((m) => m.id === activeMessage()?.id)
+                for (let i = idx; i < all.length; i++) if ((all[i] as any)?.model?.id) return (all[i] as any).model.id
+                return undefined
+              })
               const model = createMemo(() =>
                 props.data.model[sessionID()]?.find((m: any) => m.id === modelID()),
               )
@@ -268,6 +295,31 @@ function SessionView(props: {
                 return name ?? modelID()
               })
               const diffs = createMemo(() => props.data.session_diff[sessionID()] ?? [])
+              // review panel: files default-OPEN (v1 behavior), user-controlled after
+              const [reviewOpen, setReviewOpen] = createSignal<string[]>(diffs().map((d: any) => String(d.file ?? "")))
+
+              // the v2 timeline document: full session (continuous mode)
+              const document = createMemo(() => ({
+                sessionID: sessionID(),
+                messages: messages() as any,
+                status: sessionStatus(props.source.status()),
+                diffs: diffs() as any,
+              }))
+              // paged (classic) mode: one turn — the active user message
+              // through just before the next user message
+              const pagedDocument = createMemo(() => {
+                const all = messages()
+                const idx = all.findIndex((m) => m.id === activeMessage()?.id)
+                if (idx < 0) return { ...document(), messages: [] as any[] }
+                let end = all.length
+                for (let i = idx + 1; i < all.length; i++) {
+                  if ((all[i] as any)?.type === "user") {
+                    end = i
+                    break
+                  }
+                }
+                return { ...document(), messages: all.slice(idx, end) }
+              })
 
               const title = () => (
                 <div class="flex flex-col gap-4">
@@ -287,7 +339,7 @@ function SessionView(props: {
                     </Show>
                     <div class="pl-[2.5px] pr-2 flex items-center gap-1.75 bg-surface-strong shadow-xs-border-base w-fit">
                       <Mark class="shrink-0 w-3 my-0.5" />
-                      <div class="text-12-mono text-text-base">v{info().version}</div>
+                      <div class="text-12-mono text-text-base">v{String(info().version ?? "")}</div>
                     </div>
                     <div class="flex gap-4 items-center">
                       <div class="flex gap-2 items-center">
@@ -305,65 +357,32 @@ function SessionView(props: {
                 </div>
               )
 
-              const modelChanged = (message: any) => {
-                const list = messages()
-                const idx = list.findIndex((m) => m.id === message.id)
-                if (idx <= 0) return undefined
-                const prev = list[idx - 1]?.model as any
-                const cur = message.model as any
-                if (!cur) return undefined
-                if (prev?.providerID === cur.providerID && prev?.modelID === cur.modelID) return undefined
-                return `${cur.providerID ?? ""}/${cur.modelID ?? ""}`
-              }
+              // settings-filtered search: user-turn text (v2 messages carry
+              // it inline)
+              const filtered = createMemo(() => {
+                const q = props.search.trim().toLowerCase()
+                if (!q) return userTurns()
+                return userTurns().filter((m: any) => typeof m?.text === "string" && m.text.toLowerCase().includes(q))
+              })
+              const searching = createMemo(() => props.search.trim().length > 0)
+              const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
+              const timelineDoc = () => (searching() ? { ...document(), messages: messages().filter((m) => (m?.type === "user" ? filtered().some((u) => u.id === m.id) : true)) } : document())
 
+              // mobile (narrow) layout: paged timeline under the title
               const turns = () => (
                 <div class="relative mt-2 pb-8 min-w-0 w-full h-full overflow-y-auto no-scrollbar">
                   <div class="px-4 py-6">{title()}</div>
-                  <div class="flex flex-col gap-15 items-start justify-start mt-4">
-                    <For each={messages()}>
-                      {(message) => (
-                        <>
-                          <Show when={modelChanged(message)} keyed>
-                            {(label) => (
-                              <div class="px-4 self-start text-12-mono text-text-weaker border-l-2 border-border-weak-base pl-2 -mt-9">
-                                → {label}
-                              </div>
-                            )}
-                          </Show>
-                          <SessionTurn
-                            shellToolDefaultOpen={props.settings.toolOutput}
-                            editToolDefaultOpen={true}
-                            sessionID={sessionID()}
-                            messageID={message.id}
-                            classes={{
-                              root: "min-w-0 w-full relative",
-                              content: "flex flex-col justify-between !overflow-visible",
-                              container: "px-4",
-                            }}
-                          />
-                        </>
-                      )}
-                    </For>
-                  </div>
+                  <SessionTimeline
+                    document={pagedDocument()}
+                    reasoningMode={reasoningMode()}
+                    shellToolDefaultOpen={props.settings.toolOutput}
+                    editToolDefaultOpen={true}
+                  />
                   <div class="px-4 pt-20 pb-8 shrink-0">
                     <PageFooter branding={props.source.branding()} />
                   </div>
                 </div>
               )
-
-              // settings-filtered search: match user-turn text
-              const filtered = createMemo(() => {
-                const q = props.search.trim().toLowerCase()
-                if (!q) return messages()
-                return messages().filter((m) => {
-                  for (const p of props.data.part[m.id] ?? []) {
-                    const any = p as any
-                    if (typeof any.text === "string" && any.text.toLowerCase().includes(q)) return true
-                  }
-                  return false
-                })
-              })
-              const searching = createMemo(() => props.search.trim().length > 0)
 
               const wide = createMemo(() => diffs().length === 0)
 
@@ -417,72 +436,47 @@ function SessionView(props: {
                         "lg:flex": !wide(),
                       }}
                     >
-                      <div classList={{ "@container relative shrink-0 pt-14 flex flex-col gap-10 min-h-0 w-full": true }}>
+                      <div classList={{ "@container relative pt-14 flex flex-col gap-10 min-h-0 flex-1 basis-3/5 min-w-0": true }}>
                         <div classList={{ "w-full flex justify-start items-start min-w-0 px-6": true }}>
                           <div class={props.settings.centerContent ? "w-full max-w-[52rem] mx-auto" : "w-full"}>{title()}</div>
                         </div>
                         <div class="flex items-start justify-start h-full min-h-0 w-full">
-                          <Show when={!props.settings.continuous && messages().length > 1}>
+                          <Show when={!props.settings.continuous && userTurns().length > 1}>
                             <MessageNav
                               class="sticky top-0 shrink-0 py-2 pl-4"
-                              messages={messages()}
-                              current={activeMessage()}
-                              size="compact"
+                              messages={userTurns() as any}
+                              current={activeMessage() as any}
+                              size="normal"
                               onMessageSelect={setActiveMessage}
-                              getLabel={(message: any) =>
-                                props.data
-                                  .part[message.id]?.find((part: any) => part.type === "text")
-                                  ?.text.trim()
-                                  .split("\n")[0]
-                              }
+                              getLabel={(message: any) => (typeof message?.text === "string" ? message.text.trim().split("\n")[0] : undefined)}
                             />
                           </Show>
                           <Show
                             when={props.settings.continuous}
                             fallback={
-                              <SessionTurn
-                                sessionID={sessionID()}
-                                messageID={store.messageId ?? firstUserMessage()!.id!}
-                                classes={{
-                                  root: props.settings.centerContent ? "grow max-w-[52rem] mx-auto" : "grow",
-                                  content: "flex flex-col justify-between",
-                                  container: "w-full pb-20 px-6",
-                                }}
-                              >
-                                <div classList={{ "w-full flex items-center justify-center pb-8 shrink-0": true }}>
+                              <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
+                                <SessionTimeline
+                                  document={pagedDocument()}
+                                  reasoningMode={reasoningMode()}
+                                  shellToolDefaultOpen={props.settings.toolOutput}
+                                  editToolDefaultOpen={true}
+                                />
+                                <div class="px-6 pt-8 pb-8 shrink-0">
                                   <PageFooter branding={props.source.branding()} class="px-6" />
                                 </div>
-                              </SessionTurn>
+                              </div>
                             }
                           >
                             <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
-                              <div class="flex flex-col gap-15 items-start justify-start mt-2">
-                                <For each={searching() ? filtered() : messages()}>
-                                  {(message) => (
-                                    <>
-                                      <Show when={modelChanged(message)} keyed>
-                                        {(label) => (
-                                          <div class="px-6 self-start text-12-mono text-text-weaker border-l-2 border-border-weak-base pl-2 -mt-9">
-                                            → {label}
-                                          </div>
-                                        )}
-                                      </Show>
-                                      <SessionTurn
-                                        sessionID={sessionID()}
-                                        messageID={message.id}
-                                        classes={{
-                                          root: "min-w-0 w-full relative",
-                                          content: "flex flex-col justify-between !overflow-visible",
-                                          container: "w-full pb-20 px-6",
-                                        }}
-                                      />
-                                    </>
-                                  )}
-                                </For>
-                                <Show when={searching() && filtered().length === 0}>
-                                  <div class="px-6 text-12-regular text-text-weaker">no prompts match.</div>
-                                </Show>
-                              </div>
+                              <SessionTimeline
+                                document={timelineDoc()}
+                                reasoningMode={reasoningMode()}
+                                shellToolDefaultOpen={props.settings.toolOutput}
+                                editToolDefaultOpen={true}
+                              />
+                              <Show when={searching() && filtered().length === 0}>
+                                <div class="px-6 text-12-regular text-text-weaker">no prompts match.</div>
+                              </Show>
                               <div class="px-6 pt-16 pb-8 shrink-0">
                                 <PageFooter branding={props.source.branding()} />
                               </div>
@@ -491,9 +485,11 @@ function SessionView(props: {
                         </div>
                       </div>
                       <Show when={diffs().length > 0}>
-                        <div class="@container relative grow pt-14 flex-1 min-h-0 border-l border-border-weak-base">
+                        <div class="@container relative pt-14 flex-1 basis-2/5 min-w-0 min-h-0 border-l border-border-weak-base">
                           <SessionReview
-                            diffs={diffs()}
+                            diffs={diffs() as any}
+                            open={reviewOpen()}
+                            onOpenChange={setReviewOpen}
                             diffStyle={diffStyle()}
                             onDiffStyleChange={setDiffStyle}
                             classes={{ root: "pb-20", header: "px-6", container: "px-6" }}
@@ -518,7 +514,9 @@ function SessionView(props: {
                           <Tabs.Content value="review" class="!overflow-hidden hidden data-[selected]:block">
                             <div class="relative h-full pt-8 overflow-y-auto no-scrollbar">
                               <SessionReview
-                                diffs={diffs()}
+                                diffs={diffs() as any}
+                                open={reviewOpen()}
+                                onOpenChange={setReviewOpen}
                                 diffStyle={diffStyle()}
                                 onDiffStyleChange={setDiffStyle}
                                 classes={{ root: "pb-20", header: "px-4", container: "px-4" }}
@@ -540,7 +538,9 @@ function SessionView(props: {
                         sessionID={sessionID()}
                         source={props.source}
                         settings={props.settings}
+                        updateSettings={props.updateSettings}
                         search={props.search}
+                        onSearch={props.onSearch}
                       />
                     </Show>
                   </div>
@@ -548,6 +548,7 @@ function SessionView(props: {
               )
             })}
           </DataProvider>
+          </DialogProvider>
         </FileComponentProvider>
       </WorkerPoolProvider>
     </>
@@ -565,30 +566,51 @@ function subHref(source: ReturnType<typeof useShareSource>, childSessionID: stri
 // serialize the visible session to markdown (clipboard)
 async function copySessionMarkdown(data: ShareData, sessionID: string) {
   const info = data.session.find((s: any) => s.id === sessionID) as any
+  const modelLabel = data.model[sessionID]?.[0]?.name ?? data.model[sessionID]?.[0]?.id ?? ""
   const parts: string[] = [
     `# ${info?.title ?? sessionID}`,
     "",
-    `_model: ${sessionModelLabel(data, sessionID) || "?"} · v${info?.version ?? "?"} · ${info?.directory ?? ""}_`,
+    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"} · ${info?.directory ?? ""}_`,
     "",
   ]
+  const toolOutputText = (state: any): string => {
+    // our v1 normalization emits content[]; v2 hosts may emit output
+    for (const key of ["content", "output"]) {
+      const v = state?.[key]
+      if (typeof v === "string") return v
+      if (Array.isArray(v)) {
+        const text = v.map((c: any) => (typeof c === "string" ? c : c?.text ?? "")).join("")
+        if (text) return text
+      }
+    }
+    return ""
+  }
   for (const m of visibleMessages(data, sessionID)) {
-    const role = m.role === "user" ? "## user" : "## assistant"
-    parts.push(role, "")
-    for (const p of data.part[m.id] ?? []) {
-      const any = p as any
-      if (p.type === "text" && any.text) parts.push(any.text, "")
-      else if (p.type === "reasoning" && any.text) parts.push("<details><summary>thinking</summary>", "", any.text, "", "</details>", "")
-      else if (p.type === "tool") {
-        const st = any.state ?? {}
+    const msg = m as any
+    if (msg?.type === "user") {
+      if (msg.text) parts.push("## user", "", msg.text, "")
+      continue
+    }
+    if (msg?.type === "compaction") {
+      parts.push("> _compaction — session summarized_", "", String(msg.summary ?? ""), "")
+      continue
+    }
+    if (msg?.type !== "assistant") continue
+    parts.push("## assistant", "")
+    for (const c of msg.content ?? []) {
+      if (c?.type === "text" && c.text) parts.push(c.text, "")
+      else if (c?.type === "reasoning" && c.text) parts.push("<details><summary>thinking</summary>", "", c.text, "", "</details>", "")
+      else if (c?.type === "tool") {
+        const st = c.state ?? {}
         const input = st.input ?? {}
         const inv =
-          [input.query, input.command, input.prompt, input.pattern, input.filePath, input.description]
+          [input.query, input.command, input.prompt, input.pattern, input.path, input.description]
             .find((v: unknown) => typeof v === "string" && v.trim()) ??
-          (any.tool === "task" && Array.isArray(input.prompts) ? String(input.prompts[0] ?? "") : "")
-        let out = typeof st.output === "string" ? st.output : ""
-        if (any.tool === "task") out = ""
+          (c.name === "subagent" && Array.isArray(input.prompts) ? String(input.prompts[0] ?? "") : "")
+        let out = toolOutputText(st)
+        if (c.name === "subagent") out = ""
         if (out.length > 600) out = out.slice(0, 600) + "…"
-        parts.push(`> _tool: ${any.tool ?? "tool"}${inv ? ` — ${String(inv).slice(0, 120)}` : ""}_`, "")
+        parts.push(`> _tool: ${c.name ?? "tool"}${inv ? ` — ${String(inv).slice(0, 120)}` : ""}_`, "")
         if (out) parts.push("> ```", out.split("\n").map((l: string) => "> " + l).join("\n"), "> ```", "")
       }
     }
@@ -597,6 +619,43 @@ async function copySessionMarkdown(data: ShareData, sessionID: string) {
 }
 
 
+// minimal render path (?oshMinimal=1): providers + SessionTimeline only,
+// same live data source — bisects the v2 wiring from the full chrome
+function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
+  const d = props.source.data()
+  if (!d) return <NotFound status="no data" />
+  const sid = d.sessionID
+  const info = d.session.find((s) => s.id === sid)
+  return (
+    <WorkerPoolProvider pools={getWorkerPools()}>
+      <FileComponentProvider component={FileSSR}>
+        <DialogProvider>
+          <DataProvider
+            data={{
+              session: d.session as any,
+              session_status: Object.fromEntries(d.session.map((s) => [s.id, sessionStatus(props.source.status())])),
+              session_diff: d.session_diff as any,
+              provider: d.provider,
+            }}
+            directory={info?.directory}
+            sessionID={sid}
+          >
+            <SessionTimeline
+              document={{
+                sessionID: sid,
+                messages: visibleMessages(d, sid) as any,
+                status: sessionStatus(props.source.status()),
+                diffs: (d.session_diff[sid] ?? []) as any,
+              }}
+              reasoningMode="compact"
+            />
+          </DataProvider>
+        </DialogProvider>
+      </FileComponentProvider>
+    </WorkerPoolProvider>
+  )
+}
+
 export function App() {
   const source = useShareSource()
   const [sub, setSub] = createSignal<number | undefined>(source.sub)
@@ -604,17 +663,11 @@ export function App() {
   const [search, setSearch] = createSignal("")
 
   const updateSettings = (patch: Partial<OshSettings>) => {
-    if (patch.toolGrouping !== undefined) setToolGrouping(patch.toolGrouping)
     setSettings((prev) => {
       const next = { ...prev, ...patch }
       writeSettings(next)
       applySettings(next)
-      // reasoning toggle: DOM pass over already-rendered details
-      if (patch.reasoningOpen !== undefined) {
-        document.querySelectorAll("details.reasoning-collapse").forEach((d) => {
-          ;(d as HTMLDetailsElement).open = patch.reasoningOpen!
-        })
-      }
+      // reasoning toggle: the timeline re-renders from reasoningMode
       return next
     })
   }
@@ -651,10 +704,10 @@ export function App() {
     if (!d) return
     const sessionID = sub == null || sub() == null ? d.sessionID : undefined
     const sid = sessionID ?? d.sessionID
-    const msgs = visibleMessages(d, sid).filter((m) => m.role === "user")
+    const msgs = visibleMessages(d, sid).filter((m) => (m as any)?.type === "user")
     const current = msgs.findIndex((m) => location.hash.includes(m.id))
     const next = e.key === "j" ? Math.min(current + 1, msgs.length - 1) : Math.max(current - 1, 0)
-    msgs[next]?.id && document.querySelector(`[data-timeline-part-id="${msgs[next].id}"]`)?.scrollIntoView({ behavior: "smooth" })
+    msgs[next]?.id && document.querySelector(`[data-message-id="${msgs[next].id}"]`)?.scrollIntoView({ behavior: "smooth" })
   })
 
   // Ctrl+K opens the panel and focuses search
@@ -672,6 +725,10 @@ export function App() {
 
   return (
     <Show when={!source.needsAuth()} fallback={<LoginCard source={source} />}>
+      <Show when={new URLSearchParams(location.search).get("oshMinimal") === "1"}>
+        <MinimalTimeline source={source} />
+      </Show>
+      <Show when={new URLSearchParams(location.search).get("oshMinimal") !== "1"}>
       <ErrorBoundary
         fallback={(error) => {
           console.error(error)
@@ -696,12 +753,14 @@ export function App() {
             settings={settings()}
             updateSettings={updateSettings}
             search={search()}
+            onSearch={setSearch}
             sub={sub}
           />
           </Show>
         </Show>
       </ErrorBoundary>
       <InfoPanel data={source.data()} sessionID={source.data().sessionID} source={source} />
+      </Show>
     </Show>
   )
 }

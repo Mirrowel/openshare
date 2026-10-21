@@ -280,11 +280,24 @@ export function normalizeV1Message(
   return undefined
 }
 
-/** v1 session diff (FileDiff.Info[]) → v2 FileDiffInfo[] — the shapes are
- * structurally compatible; this drops entries with no file/patch. */
+/** v1 session diff (FileDiff.Info[]) → v2 FileDiffInfo[]: the v2 shape
+ * REQUIRES numeric additions/deletions (renderers read them unguarded) —
+ * compute from the patch when the host didn't provide counts. */
 export function normalizeV1Diff(diff: unknown): unknown {
-  if (Array.isArray(diff)) return diff.filter((d) => d && typeof d === "object")
-  return diff
+  if (!Array.isArray(diff)) return diff
+  return diff.map((d) => {
+    if (!d || typeof d !== "object") return d
+    const r = d as Record<string, unknown>
+    if (typeof r.additions === "number" && typeof r.deletions === "number") return r
+    const patch = typeof r.patch === "string" ? r.patch : ""
+    let additions = 0
+    let deletions = 0
+    for (const line of patch.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions++
+      else if (line.startsWith("-") && !line.startsWith("---")) deletions++
+    }
+    return { ...r, additions: typeof r.additions === "number" ? r.additions : additions, deletions: typeof r.deletions === "number" ? r.deletions : deletions }
+  })
 }
 
 /** v1 hosts paginate messages with an opaque cursor: base64url of

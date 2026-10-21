@@ -1,11 +1,11 @@
-// Shared session-data model for views. Turns the raw fold output into
+// Shared session-data model for views. Turns the folded v2 messages into
 // prompt-anchored sections so every view starts from the same shape:
-// sections[i] = one user prompt + the assistant parts that answered it.
+// sections[i] = one user prompt + the assistant content that answered it.
 import { createMemo, type Accessor } from "solid-js"
 import type { ShareData } from "../fold"
 import { visibleMessages } from "../fold"
 
-export type AnyPart = { type: string; text?: string; tool?: string; state?: any; [k: string]: any }
+export type AnyPart = { type: string; text?: string; name?: string; state?: any; [k: string]: any }
 
 export type ToolEntry = {
   kind: "tool"
@@ -13,9 +13,10 @@ export type ToolEntry = {
   title: string
   output?: string
   input?: Record<string, unknown>
+  // the v2 content block (type:"tool") — carries name/state/time
   part: AnyPart
-  // the owning assistant message (the vendored Part renderer wants it)
-  message?: any
+  state?: any
+  status?: string
   // the vendored per-tool rule (edit/write/patch open naturally unless
   // deletion-only); the toolOutput toggle adds the rest on top
   defaultOpen?: boolean
@@ -23,14 +24,14 @@ export type ToolEntry = {
 
 export type ReasoningEntry = { kind: "reasoning"; text: string; part: AnyPart }
 
-// a completion text part, positioned in the sequence where it occurred
+// a completion text block, positioned in the sequence where it occurred
 export type TextEntry = { kind: "text"; text: string; part: AnyPart }
 
 export type SessionSection = {
   id: string
   index: number
   prompt: string
-  model?: { providerID?: string; modelID?: string }
+  model?: { providerID?: string; id?: string }
   tools: ToolEntry[]
   reasoning: ReasoningEntry[]
   response: string
@@ -48,49 +49,55 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
     const msgs = visibleMessages(data, sessionID)
     const out: SessionSection[] = []
     let current: SessionSection | undefined
-    for (const m of msgs) {
-      if (m.role === "user") {
-        const parts = (data.part[m.id] ?? []) as AnyPart[]
-        const prompt = (parts.find((p) => p.type === "text") as AnyPart | undefined)?.text?.trim() ?? ""
+    for (const m of msgs as any[]) {
+      if (m?.type === "user") {
         current = {
           id: m.id,
           index: out.length,
-          prompt,
-          model: (m as any).model,
+          prompt: typeof m.text === "string" ? m.text.trim() : "",
+          model: m.metadata?.model,
           tools: [],
           reasoning: [],
           response: "",
           ordered: [],
-          mode: capitalize((m as any).agent),
-          at: (m as any).time?.created,
+          mode: capitalize(m.metadata?.agent),
+          at: m.time?.created,
         }
         out.push(current)
         continue
       }
-      if (!current) continue
-      for (const p of (data.part[m.id] ?? []) as AnyPart[]) {
-        if (p.type === "text") {
-          current.response += (current.response ? "\n\n" : "") + (p.text ?? "")
-          current.ordered.push({ kind: "text", text: p.text ?? "", part: p })
-        }
-        else if (p.type === "tool") {
-          // the task tool's output is the subagent's final response -
+      if (m?.type === "compaction") {
+        // a compaction boundary inside the timeline: surface it as its own
+        // mini-section so views can mark it
+        if (!current) continue
+        current.ordered.push({ kind: "text", text: `— session compacted —\n\n${m.summary ?? ""}`, part: m })
+        continue
+      }
+      if (m?.type !== "assistant" || !current) continue
+      for (const c of m.content ?? []) {
+        if (c?.type === "text") {
+          current.response += (current.response ? "\n\n" : "") + (c.text ?? "")
+          current.ordered.push({ kind: "text", text: c.text ?? "", part: c })
+        } else if (c?.type === "tool") {
+          // the subagent tool's output is the child's final response -
           // redundant in the share, never shown (even with the toggle on)
-          const isTask = (p.tool ?? "") === "task"
+          const isTask = (c.name ?? "") === "subagent"
+          const state = c.state ?? {}
           const entry: ToolEntry = {
             kind: "tool",
-            tool: p.tool ?? "tool",
-            title: String(p.state?.title ?? p.tool ?? "tool"),
-            output: isTask ? undefined : toolOutputText(p),
-            input: p.state?.input,
-            part: p,
-            message: m,
+            tool: c.name ?? "tool",
+            title: String(state.input?.description ?? state.title ?? c.name ?? "tool"),
+            output: isTask ? undefined : toolOutputText(state),
+            input: normalizeInput(state.input),
+            part: c,
+            state,
+            status: state.status,
           }
           entry.defaultOpen = isTask ? false : toolDefaultOpen(entry)
           current.tools.push(entry)
           current.ordered.push(entry)
-        } else if (p.type === "reasoning") {
-          const entry: ReasoningEntry = { kind: "reasoning", text: p.text ?? "", part: p }
+        } else if (c?.type === "reasoning") {
+          const entry: ReasoningEntry = { kind: "reasoning", text: c.text ?? "", part: c }
           current.reasoning.push(entry)
           current.ordered.push(entry)
         }
@@ -100,15 +107,29 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
   })
 }
 
-export function toolOutputText(part: AnyPart): string | undefined {
-  const out = part.state?.output ?? part.state?.metadata
-  if (out == null) return undefined
-  if (typeof out === "string") return out.trim() || undefined
-  try {
-    return JSON.stringify(out, null, 2)
-  } catch {
-    return String(out)
+function normalizeInput(input: unknown): Record<string, unknown> {
+  if (input && typeof input === "object" && !Array.isArray(input)) return input as Record<string, unknown>
+  return {}
+}
+
+export function toolOutputText(state: any): string | undefined {
+  // our v1 normalization emits content[]; v2 hosts may emit output
+  for (const key of ["content", "output"]) {
+    const out = state?.[key]
+    if (out == null) continue
+    if (typeof out === "string") return out.trim() || undefined
+    if (Array.isArray(out)) {
+      const text = out.map((c: any) => (typeof c === "string" ? c : c?.text ?? "")).join("").trim()
+      if (text) return text
+      continue
+    }
+    try {
+      return JSON.stringify(out, null, 2)
+    } catch {
+      return String(out)
+    }
   }
+  return undefined
 }
 
 // The invocation label the classic view shows: "Called `tool` <query part>"
@@ -116,18 +137,12 @@ export function toolCallLabel(entry: ToolEntry): string {
   return toolInvocation(entry) || entry.tool
 }
 
-// What the agent actually asked the tool to do. The synced title is often
-// empty (ctx_search) or a bare path; the tool's input arguments carry the
-// real query. Known argument keys first, then the first string value.
+// What the agent actually asked the tool to do. Known argument keys
+// first, then the first string value.
 export function toolInvocation(entry: ToolEntry): string {
-  const t = (entry.title ?? "").trim()
-  if (t && t !== entry.tool) {
-    const colon = t.indexOf(":")
-    return (colon > 0 ? t.slice(colon + 1) : t).trim()
-  }
-  const input = entry.input as Record<string, unknown> | undefined
+  const input = entry.input
   if (input && typeof input === "object") {
-    for (const key of ["query", "command", "description", "prompt", "pattern", "q", "search", "filePath", "path", "file", "url", "content"]) {
+    for (const key of ["query", "command", "description", "prompt", "pattern", "q", "search", "path", "file", "url", "content"]) {
       const v = input[key]
       if (typeof v === "string" && v.trim()) return clip(v.trim())
     }
@@ -138,19 +153,14 @@ export function toolInvocation(entry: ToolEntry): string {
   return ""
 }
 
-// The vendored per-tool default-open rule (partDefaultOpen): the
-// edit/write/patch family opens naturally unless the change is
-// deletion-only; bash/shell follow a flag; everything else stays
-// collapsed until clicked. Views use this instead of a blanket toggle.
+// The per-tool default-open rule: the edit/write/patch family opens
+// naturally unless the change is deletion-only; shell follows a flag;
+// everything else stays collapsed until clicked.
 const EDIT_FAMILY = new Set(["edit", "write", "patch", "apply_patch"])
 function deletionOnly(meta: any): boolean {
   const files = meta?.files
   if (Array.isArray(files) && files.length > 0) {
     return files.every((f: any) => !!f && typeof f === "object" && "type" in f && f.type === "delete")
-  }
-  const fd = meta?.filediff
-  if (fd && typeof fd === "object" && "additions" in fd && "deletions" in fd) {
-    return fd.additions === 0 && typeof fd.deletions === "number" && fd.deletions > 0
   }
   return false
 }
@@ -159,7 +169,7 @@ export function toolDefaultOpen(entry: ToolEntry, shell = false, edit = true): b
   if (entry.tool === "bash" || entry.tool === "shell") return shell
   if (EDIT_FAMILY.has(entry.tool)) {
     if (!edit) return false
-    return !deletionOnly(entry.part?.state?.metadata)
+    return !deletionOnly(entry.state?.metadata)
   }
   return false
 }
@@ -219,17 +229,16 @@ export function sessionUsage(data: ShareData, sessionID: string): SessionUsage {
     if (s?.time?.created) first = Math.min(first, s.time.created)
     if (s?.time?.completed || s?.time?.updated) last = Math.max(last, s.time.completed ?? s.time.updated ?? 0)
   }
-  for (const m of visibleMessages(data, sessionID)) {
-    const info = m as any
-    if (info.time?.created) {
-      first = Math.min(first, info.time.created)
-      last = Math.max(last, info.time.created)
+  for (const m of visibleMessages(data, sessionID) as any[]) {
+    if (m.time?.created) {
+      first = Math.min(first, m.time.created)
+      last = Math.max(last, m.time.created)
     }
-    if (info.time?.completed) last = Math.max(last, info.time.completed)
-    if (m.role === "user") u.prompts++
-    if (m.role === "assistant") {
+    if (m.time?.completed) last = Math.max(last, m.time.completed)
+    if (m?.type === "user") u.prompts++
+    if (m?.type === "assistant") {
       u.responses++
-      const t = info.tokens
+      const t = m.tokens
       if (t) {
         u.tokensIn += t.input ?? 0
         u.tokensOut += t.output ?? 0
@@ -238,15 +247,10 @@ export function sessionUsage(data: ShareData, sessionID: string): SessionUsage {
         u.cacheWrite += t.cache?.write ?? 0
         u.tokensTotal += t.total ?? 0
       }
-      u.cost += Number(info.cost ?? 0)
-    }
-  }
-  for (const sid2 of [sessionID]) {
-    for (const [, parts] of Object.entries(data.part as Record<string, AnyPart[]>)) {
-      for (const p of parts as AnyPart[]) {
-        if (p.sessionID !== sid2) continue
-        if (p.type === "tool") u.toolCalls++
-        if (p.type === "reasoning") u.reasoningBlocks++
+      u.cost += Number(m.cost ?? 0)
+      for (const c of m.content ?? []) {
+        if (c?.type === "tool") u.toolCalls++
+        if (c?.type === "reasoning") u.reasoningBlocks++
       }
     }
   }

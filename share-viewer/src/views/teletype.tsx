@@ -9,9 +9,9 @@
 // rows, reasoning blocks and prose lives in the teletype section of
 // skins.css).
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
+import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { SettingsBody, restoreSettingsScroll, saveSettingsScroll } from "../settings-panel"
 import { useSessionSections, type ReasoningEntry, type SessionSection, type ToolEntry } from "./session-data"
@@ -344,8 +344,8 @@ function wireKicker(tool: ToolEntry): Kicker {
 function correspondent(section: SessionSection): string | undefined {
   const m = section.model
   if (!m) return undefined
-  if (m.providerID && m.modelID) return `${m.providerID}/${m.modelID}`
-  return m.modelID ?? m.providerID
+  if (m.providerID && m.id) return `${m.providerID}/${m.id}`
+  return m.id ?? m.providerID
 }
 
 // one dispatch: a ruled frame closed with the wire's end mark (also the

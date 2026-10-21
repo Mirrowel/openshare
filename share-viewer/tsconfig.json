@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "strict": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "types": ["vite/client"],
+    "paths": {
+      "@opencode/session-ui/*": ["./vendor/session-ui-v2/src/*"],
+      "@opencode/ui/*": ["./vendor/ui-v2/src/*"],
+      "@opencode/client/promise": ["./vendor/client-v2/promise/index.ts"],
+      "@opencode/util/*": ["./vendor/util-v2/src/*"]
+    }
+  },
+  "include": ["src", "vendor/session-ui-v2/src", "vendor/ui-v2/src", "vendor/client-v2", "vendor/util-v2/src", "scripts"]
+}

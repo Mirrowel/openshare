@@ -5,8 +5,8 @@
 // design tokens only, soft curves, generous air.
 import { Show, createSignal } from "solid-js"
 import { DateTime } from "luxon"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { saveSettingsScroll, restoreSettingsScroll, SettingsBody } from "../settings-panel"
 import type { ViewEntry } from "./registry"

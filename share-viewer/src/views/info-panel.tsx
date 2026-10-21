@@ -3,7 +3,7 @@
 // app level so it works in every view (classic included); the panel is a
 // right-hand slide-over.
 import { createSignal, For, Show } from "solid-js"
-import { Icon } from "@opencode-ai/ui/icon"
+import { Icon } from "@opencode/ui/icon"
 import type { ShareData } from "../fold"
 import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-data"
 
@@ -19,7 +19,7 @@ function Row(props: { label: string; value: string | number }) {
   )
 }
 
-function Group(props: { label: string; children: React.ReactNode }) {
+function Group(props: { label: string; children: any }) {
   return (
     <div class="flex flex-col pt-3 border-t border-border-weak-base first:border-none first:pt-0">
       <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase pb-1">{props.label}</div>

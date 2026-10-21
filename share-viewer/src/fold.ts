@@ -1,44 +1,77 @@
-import type { Message, Model, Part, Session, SessionStatus, SnapshotFileDiff } from "@opencode-ai/sdk/v2"
+// Fold: contract-v2 share items → the viewer's data model.
+//
+// Items arrive from the data source (live worker or embedded snapshot):
+//   session      {id, title?, time, parentID?, ...}
+//   message      sessionID-stamped envelope around a v2 session message
+//                (user / assistant / compaction / notices — content
+//                embedded; the OpenShare transcript contract)
+//   session_diff FileDiffInfo[]
+//   model        [{id, providerID, name?}] per session
+//   prefs        viewer preferences
+import type { SessionStatus } from "@opencode/client/promise"
+
+export type V2Message = Record<string, any>
+
+export type SessionLite = {
+  id: string
+  parentID?: string
+  title?: string
+  time?: { created?: number; updated?: number }
+  directory?: string
+  revert?: { messageID?: string }
+  [k: string]: unknown
+}
+
+export type FileDiffInfo = Record<string, any>
+
+/** v2 renderers read additions/deletions unguarded — guarantee the counts
+ * (compute from the patch when absent) so no share can crash the page. */
+function normalizeDiff(d: any) {
+  if (!d || typeof d !== "object") return d
+  if (typeof d.additions === "number" && typeof d.deletions === "number") return d
+  const patch = typeof d.patch === "string" ? d.patch : ""
+  let additions = 0
+  let deletions = 0
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions++
+    else if (line.startsWith("-") && !line.startsWith("---")) deletions++
+  }
+  return { ...d, additions: typeof d.additions === "number" ? d.additions : additions, deletions: typeof d.deletions === "number" ? d.deletions : deletions }
+}
+
+export type ProviderCatalog = {
+  all: Map<string, { models: Record<string, { name: string }> }>
+  default: Record<string, string>
+  connected: string[]
+}
 
 export type ShareData = {
-  sessionID: string
   shareID: string
-  session: Session[]
-  session_diff: { [sessionID: string]: SnapshotFileDiff[] }
-  session_status: { [sessionID: string]: SessionStatus }
-  message: { [sessionID: string]: Message[] }
-  part: { [messageID: string]: Part[] }
-  model: { [sessionID: string]: Model[] }
+  sessionID: string
+  session: SessionLite[]
+  message: { [sessionID: string]: V2Message[] }
+  session_diff: { [sessionID: string]: FileDiffInfo[] }
+  model: { [sessionID: string]: Array<{ id: string; providerID: string; name?: string }> }
+  provider: ProviderCatalog
+  status: string
 }
 
 export type SubSession = {
   index: number
   sessionID: string
-  session: Session
+  session: SessionLite
 }
 
-// Port of the enterprise share page fold ([shareID].tsx getData) — pure,
-// runs client-side on the worker snapshot Data[] items.
-//
-// Mirrobot extensions over upstream:
-//  - model items carry their own sessionID (multi-session shares: each
-//    subagent turn keeps its own model label)
-//  - "prefs" items carry sender-side display preferences
-//  - children(): subagent sessions (parentID set), ordered by FIRST TASK
-//    APPEARANCE in the parent timeline (deterministic reading order)
-//  - the reverted range is hidden at RENDER time via session.info.revert
-//    (opencode publishes the marker; we mirror its semantics: everything
-//    from revert.messageID onward is not shown while the marker is set)
-export function fold(items: { type: string; data?: any; sessionID?: string }[], sessionID: string, shareID: string): ShareData {
+export function fold(items: { type: string; data?: any; sessionID?: string }[], sessionID: string, shareID: string, status = "live"): ShareData {
   const result: ShareData = {
-    sessionID,
     shareID,
+    sessionID,
     session: [],
-    session_diff: { [sessionID]: [] },
-    session_status: { [sessionID]: { type: "idle" } },
     message: {},
-    part: {},
+    session_diff: {},
     model: {},
+    provider: { all: new Map(), default: {}, connected: [] },
+    status,
   }
   for (const item of items) {
     switch (item.type) {
@@ -46,22 +79,34 @@ export function fold(items: { type: string; data?: any; sessionID?: string }[], 
         result.session.push(item.data)
         break
       case "session_diff":
-        result.session_diff[item.sessionID ?? sessionID] = item.data
+        result.session_diff[item.sessionID ?? sessionID] = Array.isArray(item.data) ? item.data.map(normalizeDiff) : []
         break
-      case "message":
-        result.message[item.data.sessionID] = result.message[item.data.sessionID] ?? []
-        result.message[item.data.sessionID].push(item.data)
+      case "message": {
+        const sid = item.sessionID ?? (item.data?.sessionID as string | undefined) ?? sessionID
+        ;(result.message[sid] ??= []).push(item.data)
         break
-      case "part":
-        result.part[item.data.messageID] = result.part[item.data.messageID] ?? []
-        result.part[item.data.messageID].push(item.data)
+      }
+      case "model": {
+        const sid = item.sessionID ?? sessionID
+        const list = Array.isArray(item.data) ? item.data : []
+        result.model[sid] = list
+        for (const m of list) {
+          if (!m?.id || !m?.providerID) continue
+          const entry = result.provider.all.get(m.providerID) ?? { models: {} }
+          entry.models[m.id] = { name: typeof m.name === "string" && m.name ? m.name : m.id }
+          result.provider.all.set(m.providerID, entry)
+        }
         break
-      case "model":
-        result.model[item.sessionID ?? sessionID] = item.data
-        break
+      }
     }
   }
   return result
+}
+
+/** Share status → the v2 session status union: a live share may still
+ * grow (busy shows the progress affordances); settled shares idle. */
+export function sessionStatus(shareStatus: string): SessionStatus {
+  return shareStatus === "live" ? { type: "busy" } : { type: "idle" }
 }
 
 export function readPrefs(items: { type: string; data?: any }[]): { openTasksInNewTab?: boolean } {
@@ -71,26 +116,35 @@ export function readPrefs(items: { type: string; data?: any }[]): { openTasksInN
   return {}
 }
 
-// Subagent sessions bound to the main session, in task-appearance order.
+/** Messages of one session in timeline order, with opencode's undo
+ * semantics applied (session.revert hides everything from the marker on;
+ * the hard delete + tombstones follow on the next prompt). */
+export function visibleMessages(data: ShareData, sessionID: string): V2Message[] {
+  const msgs = [...(data.message[sessionID] ?? [])].sort((a, b) => (a?.time?.created ?? 0) - (b?.time?.created ?? 0))
+  const info = data.session.find((s) => s.id === sessionID)
+  const rev = info?.revert
+  if (!rev?.messageID) return msgs
+  const idx = msgs.findIndex((m) => m?.id === rev.messageID)
+  return idx < 0 ? msgs : msgs.slice(0, idx)
+}
+
+/** Subagent sessions bound to the main session, in task-appearance order
+ * (subagent tool content carries metadata.sessionID). */
 export function children(data: ShareData): SubSession[] {
-  const byId = new Map<string, Session>()
+  const byId = new Map<string, SessionLite>()
   for (const s of data.session) if (s.id) byId.set(s.id, s)
   const order: string[] = []
   const seen = new Set<string>()
-  const msgs = data.message[data.sessionID] ?? []
-  // task parts live in the main timeline; their metadata.sessionId pins the child
-  for (const m of msgs) {
-    for (const p of data.part[m.id] ?? []) {
-      const any = p as any
-      const child = any?.state?.metadata?.sessionId ?? any?.metadata?.sessionId
+  for (const m of data.message[data.sessionID] ?? []) {
+    for (const c of m?.content ?? []) {
+      if (c?.type !== "tool") continue
+      const child = c?.state?.metadata?.sessionID ?? c?.state?.metadata?.sessionId ?? c?.metadata?.sessionID
       if (typeof child === "string" && byId.has(child) && byId.get(child)!.parentID === data.sessionID && !seen.has(child)) {
         seen.add(child)
         order.push(child)
       }
     }
   }
-  // sessions never referenced by a task part (still streaming, edge cases):
-  // append by creation time
   for (const s of byId.values()) {
     if (s.parentID === data.sessionID && !seen.has(s.id)) {
       seen.add(s.id)
@@ -98,15 +152,4 @@ export function children(data: ShareData): SubSession[] {
     }
   }
   return order.map((sid, i) => ({ index: i + 1, sessionID: sid, session: byId.get(sid)! }))
-}
-
-// While session.info.revert is set, everything from revert.messageID
-// onward is hidden (opencode undo semantics).
-export function visibleMessages(data: ShareData, sessionID: string): Message[] {
-  const msgs = [...(data.message[sessionID] ?? [])].sort((a, b) => a.time.created - b.time.created)
-  const info = data.session.find((s) => s.id === sessionID) as any
-  const rev = info?.revert
-  if (!rev?.messageID) return msgs
-  const idx = msgs.findIndex((m) => m.id === rev.messageID)
-  return idx < 0 ? msgs : msgs.slice(0, idx)
 }

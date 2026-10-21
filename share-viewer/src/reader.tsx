@@ -5,9 +5,9 @@ import { BaseSessionView } from "./views/base-view"
 import type { Skin, SkinWrappers } from "./views/base-view"
 import type { ViewEntry } from "./views/registry"
 import { MetaLine } from "./views/meta-line"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
+import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { sessionModelLabel } from "./views/session-data"
 
 function promptTitle(s: { prompt: string }) {

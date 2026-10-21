@@ -6,7 +6,7 @@ import { sessionModelLabel, type SessionSection } from "./session-data"
 export function MetaLine(props: { section: SessionSection; data: ShareData; class?: string }) {
   const modelShort = () => {
     const m = props.section.model
-    if (m?.modelID) return m.modelID
+    if (m?.id) return m.id
     const full = sessionModelLabel(props.data, (props.section as any).id)
     return full.includes("/") ? full.split("/").slice(1).join("/") : full
   }

@@ -244,8 +244,11 @@ type ItemEntry = { key: string; item: Record<string, unknown> }
 function itemFor(type: string, data: unknown, sessionID: string): ItemEntry | undefined {
   if (type === "model") return { key: `model/${sessionID}`, item: { type, sessionID, data } }
   if (type === "prefs") return { key: "prefs", item: { type, data } }
-  if (type === "session") return { key: `session/${(data as SessionInfo)?.id ?? ""}`, item: { type, data } }
-  if (type === "message") return { key: `message/${(data as MessageInfo)?.id ?? ""}`, item: { type, data } }
+  if (type === "session") return { key: `session/${(data as SessionInfo)?.id ?? ""}`, item: { type, sessionID, data } }
+  // v2 messages carry no sessionID inside data (v1 infos did); the item
+  // envelope stamps it so multi-session folds (parent + subagents) can
+  // group without guessing
+  if (type === "message") return { key: `message/${(data as MessageInfo)?.id ?? ""}`, item: { type, sessionID, data } }
   if (type === "session_diff") return { key: `session_diff/${sessionID}`, item: { type, sessionID, data } }
   return undefined
 }

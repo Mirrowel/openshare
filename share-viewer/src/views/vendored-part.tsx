@@ -1,18 +1,20 @@
 // The classic tool presentation, reusable by every view: renders a synced
-// tool part through the vendored Part component (BasicTool rows, diff
-// accordions, todo checklists, expandable outputs, the per-tool open rule).
-import { Part } from "../../vendor/session-ui/src/components/message-part"
-import { DataProvider } from "@opencode-ai/session-ui/context"
-import { FileComponentProvider } from "@opencode-ai/ui/context/file"
-import { WorkerPoolProvider } from "@opencode-ai/ui/context/worker-pool"
-import { FileSSR } from "@opencode-ai/session-ui/file-ssr"
+// tool content block through the vendored v2 ToolDisplay (BasicTool rows,
+// diff accordions, expandable outputs, the per-tool open rule).
+import { ToolDisplay } from "../../vendor/session-ui-v2/src/tools/tool-renderer"
+import { DataProvider } from "@opencode/session-ui/context"
+import { DialogProvider } from "@opencode/ui/context/dialog"
+import { FileComponentProvider } from "@opencode/ui/context/file"
+import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
+import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
+import { FileSSR } from "@opencode/session-ui/file-ssr"
+import { sessionStatus, type ShareData } from "../fold"
 import type { OshSettings } from "../settings"
-import type { ShareData } from "../fold"
 import type { ToolEntry } from "./session-data"
 
 // the page's share data + subagent navigation, set once per view mount
 // (avoids plumbing it through every ordered-entry component). The nav
-// bundle is what makes task rows clickable: the vendored task renderer
+// bundle is what makes subagent rows clickable: the vendored renderer
 // links through data.sessionHref and clicks through data.navigateToSession
 export type VendoredNav = {
   sessionHref: (id: string) => string | undefined
@@ -27,24 +29,32 @@ export function setVendoredData(d: ShareData | undefined, nav?: VendoredNav) {
 
 export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; data?: ShareData }) {
   const data = () => props.data ?? currentData
-  const info = () =>
-    (data()?.session as any[] | undefined)?.find((s) => s.id === props.entry.part?.sessionID) ?? {}
   return (
     <DataProvider
-      data={data() ?? ({ session: [], message: {}, part: {}, model: {}, file: {}, agent: {} } as any)}
-      directory={info()?.directory}
-      sessionID={props.entry.part?.sessionID}
+      data={{
+        session: (data()?.session ?? []) as any,
+        session_status: Object.fromEntries((data()?.session ?? []).map((s) => [s.id, sessionStatus(data()?.status ?? "live")])),
+        session_diff: (data()?.session_diff ?? {}) as any,
+        provider: data()?.provider ?? { all: new Map(), default: {}, connected: [] },
+      }}
+      directory={undefined}
       onSessionHref={currentNav?.sessionHref}
       onNavigateToSession={currentNav?.navigateToSession}
     >
-      <WorkerPoolProvider pools={[]}>
+      <WorkerPoolProvider pools={getWorkerPools()}>
         <FileComponentProvider component={FileSSR as any}>
-          <Part
-            part={props.entry.part as any}
-            message={props.entry.message as any}
-            // the per-tool natural-open rule + the toggle on top
-            defaultOpen={props.entry.defaultOpen || props.settings.toolOutput || undefined}
-          />
+          <DialogProvider>
+            <ToolDisplay
+              id={String(props.entry.part?.id ?? props.entry.tool)}
+              tool={props.entry.tool}
+              input={(props.entry.state?.input ?? {}) as Record<string, unknown>}
+              metadata={(props.entry.state?.metadata ?? {}) as Record<string, unknown>}
+              output={props.entry.output ?? ""}
+              status={props.entry.status}
+              // the per-tool natural-open rule + the toggle on top
+              defaultOpen={props.entry.defaultOpen || props.settings.toolOutput || undefined}
+            />
+          </DialogProvider>
         </FileComponentProvider>
       </WorkerPoolProvider>
     </DataProvider>

@@ -11,15 +11,15 @@
 //    itself from the shared section model, skin wrappers around each
 //    element kind (current experimental views map here)
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
-import { Markdown } from "../../vendor/session-ui/src/components/markdown"
+import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
 import { useSessionSections, type SessionSection, type ToolEntry, type ReasoningEntry, type TextEntry } from "./session-data"
 import type { ViewProps } from "./registry"
 import type { OshSettings } from "../settings"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
+import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { sessionModelLabel } from "./session-data"
 
 // ---------------------------------------------------------------- skin ----
@@ -82,7 +82,7 @@ export function DefaultHeader(props: ViewProps & { model: string; status: string
       <div class="flex items-center gap-3">
         <span class="flex items-center gap-1.5 text-12-mono text-text-weaker">
           <Mark class="w-3" />
-          <span>v{props.source.data().session.find((s: any) => s.id === props.sessionID)?.version ?? "?"}</span>
+          <span>v{String(props.source.data().session.find((s: any) => s.id === props.sessionID)?.version ?? "?")}</span>
         </span>
         <Show when={props.model}>
           <span class="text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>

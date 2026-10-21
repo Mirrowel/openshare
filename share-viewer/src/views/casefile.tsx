@@ -8,8 +8,8 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { SettingsBody } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 import type { SessionSection } from "./session-data"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 
@@ -19,8 +19,8 @@ const fileNo = (sessionID: string) =>
   (sessionID.replace(/^ses_/, "").slice(0, 8) || "00000000").toUpperCase()
 
 function modelLabel(s: SessionSection) {
-  if (s.model?.providerID && s.model?.modelID) return `${s.model.providerID}/${s.model.modelID}`
-  return s.model?.modelID ?? ""
+  if (s.model?.providerID && s.model?.id) return `${s.model.providerID}/${s.model.id}`
+  return s.model?.id ?? ""
 }
 
 function filedLine(s: SessionSection) {

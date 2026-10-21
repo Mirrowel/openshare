@@ -12,8 +12,8 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { SettingsBody, saveSettingsScroll, restoreSettingsScroll } from "../settings-panel"
 import { useSessionSections, type SessionSection } from "./session-data"
 import type { ViewEntry } from "./registry"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 
@@ -216,7 +216,7 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
               <Show when={open()}>
                 <div
                   class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                  onScroll={saveSettingsScroll}
+                  onScroll={saveSettingsScroll as any}
                   ref={restoreSettingsScroll}
                 >
                   <SettingsBody
@@ -397,11 +397,11 @@ function PromptWrapComp(p: { section: SessionSection; children: JSX.Element }) {
   }
   const modelChip = () => {
     const m = p.section.model
-    if (!m?.modelID) return undefined
+    if (!m?.id) return undefined
     const prev = sharedSections()[p.section.index - 1]?.model
-    if (p.section.index > 0 && prev?.providerID === m.providerID && prev?.modelID === m.modelID)
+    if (p.section.index > 0 && prev?.providerID === m.providerID && prev?.id === m.id)
       return undefined
-    return `${m.providerID ?? ""}/${m.modelID}`
+    return `${m.providerID ?? ""}/${m.id}`
   }
   return (
     <div class={COLS}>

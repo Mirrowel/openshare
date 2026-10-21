@@ -10,8 +10,8 @@
 // and decorates.
 import { For, Show, createSignal, type JSX } from "solid-js"
 import { Title } from "@solidjs/meta"
-import { Icon } from "@opencode-ai/ui/icon"
-import { Mark } from "@opencode-ai/ui/logo"
+import { Icon } from "@opencode/ui/icon"
+import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import type { ViewEntry } from "./registry"

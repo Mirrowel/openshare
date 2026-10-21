@@ -7,7 +7,7 @@
 // settings change can rebuild the header subtree (live-caught) and the
 // panel must persist through it.
 import { createSignal, For, Show } from "solid-js"
-import { Icon } from "@opencode-ai/ui/icon"
+import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import type { OshSettings } from "./settings"
 import type { Branding } from "./data-source"
@@ -266,12 +266,6 @@ export function SettingsBody(props: {
             on={props.settings.toolOutput}
             onChange={() => props.update({ toolOutput: !props.settings.toolOutput })}
           />
-          <Switch
-            label="Group read/search tools"
-            hint="classic Explored bundle (off: every tool is its own row)"
-            on={props.settings.toolGrouping}
-            onChange={() => props.update({ toolGrouping: !props.settings.toolGrouping })}
-          />
           <Show when={props.branding.backgroundUrl}>
             <Switch
               label="Background image"
@@ -318,7 +312,7 @@ export function SettingsPanel(props: {
       </button>
       <Show when={panelOpen()}>
         <div class="absolute top-9 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-          onScroll={saveSettingsScroll}
+          onScroll={saveSettingsScroll as any}
           ref={restoreSettingsScroll}>
           <div class="flex items-center justify-between pb-1">
             <div class="text-14-medium text-text-strong">Settings</div>

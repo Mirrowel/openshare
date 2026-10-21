@@ -78,13 +78,12 @@ export function useShareSource(): Source {
       const next = new Map(prev)
       for (const it of incoming ?? []) {
         const key = it.type === "session" ? `session/${it.data?.id ?? ""}`
-          : it.type === "message" ? `message/${it.data?.id ?? ""}`
-          : it.type === "part" ? `part/${it.data?.messageID ?? ""}/${it.data?.id ?? ""}`
+          : it.type === "message" ? `message/${it.sessionID ?? it.data?.sessionID ?? ""}/${it.data?.id ?? ""}`
           : it.type === "model" ? `model/${it.sessionID ?? ""}`
           : it.type === "prefs" ? "prefs"
           : it.type === "session_diff" ? `session_diff/${it.sessionID ?? ""}`
           : null
-        // tombstones (opencode undo → removed message/part): same key
+        // tombstones (opencode undo → removed message): same key
         // derivation as the upsert, opposite effect
         if (key) it.del ? next.delete(key) : next.set(key, it)
       }
@@ -101,7 +100,7 @@ export function useShareSource(): Source {
       mode: "local",
       shareID,
       sub,
-      data: () => fold(all(), sessionID(), shareID),
+      data: () => fold(all(), sessionID(), shareID, status()),
       ready: () => all().some((i) => i.type === "session"),
       status,
       rev,
@@ -134,7 +133,9 @@ function liveSource(ctx: any): Source {
   const wire = () => {
     if (needsAuth()) return
     try {
-      ws = new WebSocket(`wss://${location.host}/api/share/${shareID}/ws`)
+      // local http workers (bun server, wrangler dev) speak plain ws://
+      const proto = location.protocol === "https:" ? "wss" : "ws"
+      ws = new WebSocket(`${proto}://${location.host}/api/share/${shareID}/ws`)
     } catch {
       startPolling()
       return
@@ -239,7 +240,7 @@ function liveSource(ctx: any): Source {
     mode: "live" as const,
     shareID,
     sub,
-    data: () => fold(all(), ctx.sessionID(), shareID),
+    data: () => fold(all(), ctx.sessionID(), shareID, status()),
     ready: () => all().some((i: any) => i.type === "session"),
     status,
     rev,
