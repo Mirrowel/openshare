@@ -326,7 +326,7 @@ const viewers = new Map<string, Set<Bun.WebSocket>>()
 function broadcast(shareId: string, frame: unknown) {
   const set = viewers.get(shareId)
   if (!set) return
-  const s = JSON.stringify(frame)
+  const s = JSON.stringify({ v: 2, ...(frame as Record<string, unknown>) })
   for (const ws of set) try { ws.send(s) } catch {}
 }
 
@@ -411,7 +411,7 @@ async function httpHandler(req: Request): Promise<Response> {
     if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, id)))) {
       return json(401, { authRequired: true })
     }
-    return json(200, { data: redactItems(shareData(share)), status: share.status, rev: share.rev })
+    return json(200, { v: 2, data: redactItems(shareData(share)), status: share.status, rev: share.rev })
   }
   if (req.method === "DELETE" && op === "") {
     const body = await bodyJson(req)
@@ -831,7 +831,7 @@ const server = Bun.serve<WsData>({
         set.add(ws)
         const share = q.share(ws.data.shareId)
         if (share) {
-          try { ws.send(JSON.stringify({ op: "frame", status: share.status, rev: share.rev, items: redactItems(shareData(share)) })) } catch {}
+          try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: redactItems(shareData(share)) })) } catch {}
         }
       }
     },

@@ -45,6 +45,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
+import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -148,6 +149,10 @@ type SessionState = {
   /** any remote completed a handshake — used to detect LATER creates
    * (fan-out adds, post-mismatch recreates) which need a history backfill */
   everConnected: boolean
+  /** contract v2 merge state: v1 hosts stream parts separately; the v2
+   * item embeds content, so the engine holds the assembled view per
+   * message and re-emits the normalized whole on every update */
+  merged: Map<string, { info?: Record<string, unknown>; parts: Map<string, Record<string, unknown>> }>
 }
 
 type Message = { info?: Record<string, unknown>; parts?: Record<string, unknown>[] }
@@ -241,8 +246,6 @@ function itemFor(type: string, data: unknown, sessionID: string): ItemEntry | un
   if (type === "prefs") return { key: "prefs", item: { type, data } }
   if (type === "session") return { key: `session/${(data as SessionInfo)?.id ?? ""}`, item: { type, data } }
   if (type === "message") return { key: `message/${(data as MessageInfo)?.id ?? ""}`, item: { type, data } }
-  if (type === "part")
-    return { key: `part/${(data as PartInfo)?.messageID ?? ""}/${(data as PartInfo)?.id ?? ""}`, item: { type, data } }
   if (type === "session_diff") return { key: `session_diff/${sessionID}`, item: { type, sessionID, data } }
   return undefined
 }
@@ -527,6 +530,7 @@ export function createEngine(deps: EngineDeps): Engine {
     activated: false,
     wroteBinding: false,
     everConnected: false,
+    merged: new Map(),
   })
 
   const refreshConfig = () => {
@@ -1442,6 +1446,76 @@ export function createEngine(deps: EngineDeps): Engine {
     scheduleFlush(st)
   }
 
+  // ---- contract v2 message assembly --------------------------------------
+  // v1 hosts stream parts as separate events; the v2 item embeds content.
+  // The engine keeps the assembled view per message and re-emits the
+  // normalized whole (the keyed queue dedupes across a debounce window,
+  // so intermediate re-emissions collapse).
+
+  const mergeEntry = (st: SessionState, messageID: string) => {
+    let e = st.merged.get(messageID)
+    if (!e) {
+      e = { parts: new Map() }
+      st.merged.set(messageID, e)
+    }
+    return e
+  }
+
+  /** (Re-)emit the v2 message item for a merged v1 message. */
+  const emitMerged = (st: SessionState, sid: string, messageID: string) => {
+    const e = st.merged.get(messageID)
+    if (!e?.info) return // parts arriving before their message: wait
+    const res = normalizeV1Message(e.info, [...e.parts.values()])
+    if (!res) return
+    if ("refill" in res) {
+      // v1 compaction summary assistant → rewrite the parent compaction
+      // message with the summary text; the summary message itself is not
+      // emitted as its own item
+      const parent = st.merged.get(res.refill)
+      if (parent?.info) {
+        const compaction = normalizeV1Message(parent.info, [...parent.parts.values()])
+        if (compaction && "message" in compaction) {
+          const msg = compaction.message as Record<string, unknown>
+          msg.summary = res.summary
+          enqueue(st, itemFor("message", msg, sid))
+        }
+      }
+      return
+    }
+    enqueue(st, itemFor("message", res.message, sid))
+  }
+
+  /** message.updated / part.updated ingestion for v1 hosts; v2 hosts call
+   * with v2-native messages (pass-through, no merge). */
+  const ingestMessageInfo = (st: SessionState, sid: string, info: Record<string, unknown>) => {
+    if (isV2NativeMessage(info)) {
+      enqueue(st, itemFor("message", info, sid))
+      return
+    }
+    if (typeof info?.id !== "string") return
+    const e = mergeEntry(st, info.id)
+    e.info = info
+    emitMerged(st, sid, info.id)
+  }
+
+  const ingestPart = (st: SessionState, sid: string, part: Record<string, unknown>) => {
+    if (typeof part?.id !== "string" || typeof part.messageID !== "string") return
+    const e = mergeEntry(st, part.messageID)
+    e.parts.set(part.id, part)
+    emitMerged(st, sid, part.messageID)
+  }
+
+  const dropMergedMessage = (st: SessionState, messageID: string) => {
+    st.merged.delete(messageID)
+  }
+
+  const dropMergedPart = (st: SessionState, sid: string, messageID: string, partID: string) => {
+    const e = st.merged.get(messageID)
+    if (!e) return
+    e.parts.delete(partID)
+    if (e.info) emitMerged(st, sid, messageID)
+  }
+
   const remove = (st: SessionState) => {
     st.closed = true
     st.activated = false
@@ -1539,9 +1613,16 @@ export function createEngine(deps: EngineDeps): Engine {
       out.push(...(result as Message[]))
       if (result.length < PAGE_SIZE) break
       const last = result[result.length - 1] as Message
-      const nextBefore =
-        typeof last?.info?.id === "string" ? (last.info.id as string) : typeof (last as unknown as { id?: string })?.id === "string" ? ((last as unknown as { id: string }).id as string) : undefined
-      if (!nextBefore || nextBefore === before) break
+      const lastInfo = (last?.info ?? last) as Record<string, unknown> | undefined
+      const lastID = typeof lastInfo?.id === "string" ? lastInfo.id : undefined
+      // `before` is an OPAQUE cursor: base64url({id, time}) of the page
+      // tail (message-v2.ts codec). A bare message id 400s on hosts with
+      // cursor pagination — every v1 backfill silently truncated to one
+      // 100-message page (live-caught).
+      const lastTime = (lastInfo?.time as Record<string, unknown> | undefined)?.created
+      if (!lastID || typeof lastTime !== "number") break
+      const nextBefore = cursorFor(lastID, lastTime)
+      if (nextBefore === before) break
       before = nextBefore
     }
     return out
@@ -1554,22 +1635,25 @@ export function createEngine(deps: EngineDeps): Engine {
     const messages = await fetchMessages(client, sid)
     let modelSeen = false
     for (const message of messages) {
-      const m = (message.info ?? message) as MessageInfo
+      const m = ((message.info ?? message) as MessageInfo) as Record<string, unknown> | undefined
       if (!m || typeof m.id !== "string") continue
-      enqueue(st, itemFor("message", m, sid))
-      if (m.role === "user" && m.model) {
-        modelSeen = true
-        const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model)
-        enqueue(
-          st,
-          itemFor("model", [{ id: m.model.modelID, providerID: m.model.providerID, name: label }], sid),
-        )
-      }
-      for (const part of message.parts ?? []) {
-        const p = part as PartInfo
+      // seed the merge state, then emit the assembled v2 message
+      const e = mergeEntry(st, m.id)
+      e.info = m
+      for (const rawPart of (message.parts ?? []) as Array<Record<string, unknown>>) {
+        const p = rawPart as PartInfo
         if (!p || typeof p.id !== "string" || typeof p.messageID !== "string") continue
         if (p.state?.status === "error") st.badSignal = true
-        enqueue(st, itemFor("part", p, sid))
+        e.parts.set(p.id, p as Record<string, unknown>)
+      }
+      emitMerged(st, sid, m.id)
+      if (m.role === "user" && m.model) {
+        modelSeen = true
+        const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model as SessionModel)
+        enqueue(
+          st,
+          itemFor("model", [{ id: (m.model as SessionModel).modelID, providerID: (m.model as SessionModel).providerID, name: label }], sid),
+        )
       }
     }
     if (!modelSeen && sessionInfoValue?.model) {
@@ -1868,19 +1952,20 @@ export function createEngine(deps: EngineDeps): Engine {
           // opencode undo: revert() only marks the session (the viewer
           // hides the range); the NEXT prompt hard-deletes the reverted
           // messages/parts via cleanup() and publishes these events.
-          // The worker's store is upsert-only, so without an explicit
-          // tombstone the deleted items live forever and reappear the
-          // moment the revert marker clears (live-caught in production).
+          // A message tombstone removes the whole v2 message (content is
+          // embedded); a part removal re-emits the merged message minus
+          // the part.
           const st = stFor(sid)
           if (!st || !st.activated || st.closed) return
           const messageID = p.messageID as string | undefined
           if (!messageID) return
           if (t === "message.removed") {
+            dropMergedMessage(st, messageID)
             enqueue(st, { key: `message/${messageID}`, item: { type: "message", del: true, data: { id: messageID } } })
           } else {
             const partID = p.partID as string | undefined
             if (!partID) return
-            enqueue(st, { key: `part/${messageID}/${partID}`, item: { type: "part", del: true, data: { id: partID, messageID } } })
+            dropMergedPart(st, sid, messageID, partID)
           }
         } else if (t === "message.updated") {
           // resumed sessions may emit the user message BEFORE any session.*
@@ -1933,7 +2018,7 @@ export function createEngine(deps: EngineDeps): Engine {
             }
           }
           if (!st || !st.activated || st.closed) return
-          enqueue(st, itemFor("message", p.info, sid))
+          ingestMessageInfo(st, sid, p.info as Record<string, unknown>)
           const info = p.info as MessageInfo
           if (info?.role === "user" && info?.model) {
             const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, info.model)
@@ -1942,8 +2027,9 @@ export function createEngine(deps: EngineDeps): Engine {
           // an assistant message that DIED (finish:"error") — e.g. all
           // retries exhausted — surfaces as a 200 response with an errored
           // message, NOT as session.error (live-caught in the suite); the
-          // share must still say error
-          if (info?.role === "assistant" && (info as { finish?: string }).finish === "error") {
+          // share must still say error. Works for v2-native messages too
+          // (finish lives on the message itself).
+          if ((info as { finish?: string; role?: string })?.finish === "error") {
             st.badSignal = true
           }
         } else if (t === "message.part.updated") {
@@ -1951,11 +2037,11 @@ export function createEngine(deps: EngineDeps): Engine {
           if (!st || !st.activated || st.closed) return
           const part = p.part as PartInfo
           if (part?.state?.status === "error") st.badSignal = true
-          enqueue(st, itemFor("part", part, sid))
+          ingestPart(st, sid, part as Record<string, unknown>)
         } else if (t === "session.diff") {
           const st = stFor(sid)
           if (!st || !st.activated || st.closed) return
-          enqueue(st, itemFor("session_diff", p.diff, sid))
+          enqueue(st, itemFor("session_diff", normalizeV1Diff(p.diff), sid))
         } else if (t === "session.deleted") {
           // a CHILD session ending (task done, gc) must NEVER take the
           // parent's share down with it — the page keeps the subagent's

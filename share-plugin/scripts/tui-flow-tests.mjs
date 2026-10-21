@@ -239,8 +239,8 @@ try {
       const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
       if (!r.ok) throw new Error(`${r.status}`)
       const parsed = await r.json()
-      const types = (parsed.data ?? []).map((i) => i.type)
-      return parsed.status === "completed" && types.includes("part") && types.includes("model") ? parsed : undefined
+      const hasContent = (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0)
+      return parsed.status === "completed" && hasContent && (parsed.data ?? []).some((i) => i.type === "model") ? parsed : undefined
     }, "F1: share data backfilled")
     check("F1: worker carries the backfilled share", !!body)
 

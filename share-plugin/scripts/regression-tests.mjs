@@ -93,7 +93,10 @@ async function runVariant(variant, suiteDir) {
       const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
       if (!r.ok) throw new Error(`data fetch ${r.status}`)
       const parsed = await r.json()
-      if (parsed.status === "completed" && (parsed.data ?? []).some((i) => i.type === "part")) return parsed
+      const hasContent = (parsed.data ?? []).some(
+        (i) => i.type === "message" && i.data?.type === "assistant" && Array.isArray(i.data?.content) && i.data.content.length > 0,
+      )
+      if (parsed.status === "completed" && hasContent) return parsed
       return undefined
     }, `[${variant.name}] share completed`)
 
@@ -135,7 +138,10 @@ try {
   console.log("worker ready")
 
   const variants = [
-    { name: "legacy", path: join(ROOT, "reference", "openshare.legacy.js") },
+    // the frozen v1 legacy emitter (reference/openshare.legacy.js) is
+    // RETIRED from parity: contract v2 moved the standalone+package to
+    // the v2 content model; the legacy file stays in-repo as the v1
+    // port-fidelity reference only
     { name: "standalone", path: join(ROOT, "ci", "openshare.js") },
     { name: "package", path: join(ROOT, "dist", "server.js") },
     // the owner's install mode: the package DIRECTORY via file:// URL —
@@ -165,7 +171,7 @@ try {
     const types = result.normalized.items.map((i) => i.type)
     check(`${result.name}: session item`, types.includes("session"))
     check(`${result.name}: user+assistant messages`, types.filter((t) => t === "message").length >= 2)
-    check(`${result.name}: text part`, types.includes("part"))
+    check(`${result.name}: assistant content embedded`, result.normalized.items.some((i) => i.type === "message" && Array.isArray(i?.data?.content)))
     check(`${result.name}: model item`, types.includes("model"))
     check(`${result.name}: prefs item`, types.includes("prefs"))
     check(`${result.name}: status completed`, result.normalized.status === "completed", `got ${result.normalized.status}`)
@@ -188,11 +194,9 @@ try {
     }
     return JSON.stringify(sort(value))
   }
-  const [legacy, standalone, pkg] = results.map((r) => stable(r.normalized))
-  check("parity: standalone == legacy", standalone === legacy, diffSummary(legacy, standalone))
-  check("parity: package == legacy", pkg === legacy, diffSummary(legacy, pkg))
-  const dirResult = results[3] ? stable(results[3].normalized) : ""
-  check("parity: package-dir (file:// URL) == legacy", dirResult === legacy, diffSummary(legacy, dirResult))
+  const [standalone, pkg, pkgDir] = results.map((r) => stable(r.normalized))
+  check("parity: package == standalone", pkg === standalone, diffSummary(standalone, pkg))
+  check("parity: package-dir (file:// URL) == standalone", pkgDir === standalone, diffSummary(standalone, pkgDir))
 } catch (error) {
   console.error("SUITE ERROR:", error.message)
   failures.push(`suite-error: ${error.message}`)

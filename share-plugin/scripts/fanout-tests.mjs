@@ -140,12 +140,12 @@ try {
   const body1 = await waitFor(async () => {
     const parsed = await shareBody(WORKER_URL, id1)
     const types = (parsed?.data ?? []).map((i) => i.type)
-    return parsed?.status === "completed" && types.includes("part") ? parsed : undefined
+    return parsed?.status === "completed" && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
   }, "F1: server1 share complete")
   const body2 = await waitFor(async () => {
     const parsed = await shareBody(W2_URL, id2)
     const types = (parsed?.data ?? []).map((i) => i.type)
-    return parsed?.status === "completed" && types.includes("part") ? parsed : undefined
+    return parsed?.status === "completed" && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
   }, "F1: server2 share complete")
   check("F1: both shares carry identical content", JSON.stringify(body1.data.map((i) => i.type)) === JSON.stringify(body2.data.map((i) => i.type)), `${body1.data.length} vs ${body2.data.length}`)
 

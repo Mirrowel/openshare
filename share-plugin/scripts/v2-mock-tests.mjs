@@ -88,6 +88,19 @@ function makeMockV2Host() {
     ],
   })
 
+  // v2 compaction is a first-class message — must pass through verbatim
+  // (the old v1 converter silently dropped type:"compaction")
+  const MSG_COMPACTION = "msg_v2mock_compaction"
+  const compactionMessage = () => ({
+    id: MSG_COMPACTION,
+    type: "compaction",
+    status: "completed",
+    reason: "auto",
+    summary: "v2 mock checkpoint: the session was compacted",
+    recent: "",
+    time: { created: now() - 30000 },
+  })
+
   const event = (type, data) => ({ id: `evt_${type}_${now()}`, created: now(), type, durable: { aggregateID: SID, seq: 1, version: 1 }, data: { sessionID: SID, ...data } })
 
   const scripted = [] // {delayMs, event | () => event}
@@ -135,7 +148,7 @@ function makeMockV2Host() {
     },
   }
 
-  return { SID, MSG_USER, MSG_ASSISTANT, store, sessionInfo, userMessage, assistantMessage, event, script, context }
+  return { SID, MSG_USER, MSG_ASSISTANT, MSG_COMPACTION, store, sessionInfo, userMessage, assistantMessage, compactionMessage, event, script, context }
 }
 
 // --- run --------------------------------------------------------------------------
@@ -170,9 +183,14 @@ try {
     mock.store.sessions.get(mock.SID).metadata = { ...flagMetadata }
     return mock.event("session.metadata.updated", { metadata: flagMetadata })
   })
+  mock.script(400, async () => {
+    // compaction lands mid-stream: native v2 compaction message + event
+    mock.store.messages.get(mock.SID).push(mock.compactionMessage())
+    return mock.event("session.compaction.ended", { summary: "v2 mock checkpoint: the session was compacted" })
+  })
   mock.script(400, mock.event("session.step.started"))
   mock.script(600, async () => {
-    mock.store.messages.set(mock.SID, [mock.userMessage(), mock.assistantMessage("grown text")])
+    mock.store.messages.set(mock.SID, [mock.userMessage(), mock.assistantMessage("grown text"), mock.compactionMessage()])
     return mock.event("session.text.ended")
   })
   mock.script(600, mock.event("session.step.ended"))
@@ -193,18 +211,32 @@ try {
     if (!r.ok) throw new Error(`${r.status}`)
     const parsed = await r.json()
     const types = (parsed.data ?? []).map((i) => i.type)
-    const hasPart = types.includes("part")
-    return hasPart && types.includes("message") && types.includes("session") ? parsed : undefined
-  }, "V1: backfilled share with converted items")
+    const hasContent = (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content))
+    return hasContent && types.includes("message") && types.includes("session") ? parsed : undefined
+  }, "V1: backfilled share with v2 messages")
 
   const items = body.data
   const messages = items.filter((i) => i.type === "message")
-  const parts = items.filter((i) => i.type === "part")
-  check("V1: user message converted", messages.some((m) => m.data?.role === "user" && m.data?.text === "v2 mock prompt"))
-  check("V1: assistant message converted", messages.some((m) => m.data?.role === "assistant" && m.data?.model?.providerID === "mockv2"))
-  check("V1: text part converted", parts.some((p) => p.data?.type === "text" && p.data?.text === "initial partial"))
-  const toolPart = parts.find((p) => p.data?.type === "tool")
-  check("V1: tool part converted with state", toolPart?.data?.tool === "read" && toolPart?.data?.state?.status === "completed" && toolPart?.data?.state?.output === "file body", JSON.stringify(toolPart?.data?.state))
+  check("V1: envelope version is v2", body.v === 2, JSON.stringify({ v: body.v }))
+  // user text passes through verbatim (the old converter emitted
+  // parts:[] — v2 prompts were invisible on shares)
+  check("V1: user message text passed through", messages.some((m) => m.data?.type === "user" && m.data?.text === "v2 mock prompt"), JSON.stringify(messages.map((m) => m.data?.type)))
+  check("V1: assistant message passed through", messages.some((m) => m.data?.type === "assistant" && m.data?.model?.providerID === "mockv2"))
+  const assistant = messages.find((m) => m.data?.type === "assistant")
+  const contentText = (assistant?.data?.content ?? []).find((c) => c?.type === "text")
+  const contentTool = (assistant?.data?.content ?? []).find((c) => c?.type === "tool")
+  check("V1: assistant content embedded", contentText?.text === "initial partial", JSON.stringify(contentText))
+  check("V1: tool content embedded with state", contentTool?.name === "read" && contentTool?.state?.status === "completed", JSON.stringify(contentTool?.state))
+  // live compaction: the compaction.ended event triggers a re-sync that
+  // must carry the native compaction message (refresh lands after the
+  // flag-time backfill)
+  const compactionArrived = await waitFor(async () => {
+    const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+    if (!r.ok) return false
+    const parsed = await r.json()
+    return (parsed.data ?? []).some((m) => m.type === "message" && m.data?.type === "compaction" && m.data?.status === "completed" && String(m.data?.summary ?? "").includes("v2 mock checkpoint")) ? parsed : false
+  }, "V1: compaction message passed through")
+  check("V1: compaction message passed through", !!compactionArrived, "no compaction message on the share")
   check("V1: model item present (session model fallback)", items.some((i) => i.type === "model"))
 
   // live content: grown text lands via the debounced re-sync
@@ -212,7 +244,7 @@ try {
     const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
     if (!r.ok) return false
     const parsed = await r.json()
-    return (parsed.data ?? []).some((p) => p.type === "part" && p.data?.text === "grown text")
+    return (parsed.data ?? []).some((m) => m.type === "message" && (m.data?.content ?? []).some((c) => c?.type === "text" && c?.text === "grown text"))
   }, "V2: streamed text lands in the share")
 
   // idle -> completed

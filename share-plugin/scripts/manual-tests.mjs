@@ -194,11 +194,14 @@ try {
       if (!r.ok) throw new Error(`data fetch ${r.status}`)
       const parsed = await r.json()
       const types = (parsed.data ?? []).map((i) => i.type)
+      const assistantWithContent = (parsed.data ?? []).some(
+        (i) => i.type === "message" && i.data?.type === "assistant" && Array.isArray(i.data?.content) && i.data.content.length > 0,
+      )
       const ready =
         parsed.status === "completed" &&
         types.includes("session") &&
         types.filter((t) => t === "message").length >= 2 &&
-        types.includes("part") &&
+        assistantWithContent &&
         types.includes("model") &&
         types.includes("prefs") &&
         types.includes("session_diff")
@@ -206,6 +209,24 @@ try {
     }, "S2: backfilled share complete")
     console.log(`  activated share ${shareId} (backfilled ${firstShareBody.data.length} items)`)
     check("S2: backfill complete", true)
+
+    // cursor-pagination proof against the REAL host handler: v1.x rejects
+    // a bare message id in `before` with 400 (the old silent-truncation
+    // bug); our base64url({id,time}) cursor must be accepted
+    {
+      const msgs = await (await httpGet(`${serve.base}/session/${sid}/message`)).json()
+      const flat = (msgs ?? []).map((m) => m.info ?? m)
+      const last = flat.at(-1)
+      if (last?.id && typeof last?.time?.created === "number") {
+        const cursor = Buffer.from(JSON.stringify({ id: last.id, time: last.time.created })).toString("base64url")
+        const paged = await httpGet(`${serve.base}/session/${sid}/message?limit=1&before=${encodeURIComponent(cursor)}`)
+        check("S2: backfill cursor accepted by host (no 400)", paged.status === 200, `status=${paged.status}`)
+        const bare = await httpGet(`${serve.base}/session/${sid}/message?limit=1&before=${encodeURIComponent(last.id)}`)
+        check("S2: bare message id rejected (cursor is required)", bare.status === 400, `status=${bare.status}`)
+      } else {
+        check("S2: cursor probe fixture available", false, "no message with time.created")
+      }
+    }
 
     // redaction under manual mode too
     const leaked = (firstShareBody.data ?? []).filter((i) => i.data?.metadata && "openshare" in i.data.metadata)
@@ -251,8 +272,10 @@ try {
       const r = await httpGet(`${WORKER_URL}/api/share/${newShareId}/data`)
       if (!r.ok) throw new Error(`data fetch ${r.status}`)
       const parsed = await r.json()
-      const types = (parsed.data ?? []).map((i) => i.type)
-      return parsed.status === "completed" && types.includes("part") ? parsed : undefined
+      const hasContent = (parsed.data ?? []).some(
+        (i) => i.type === "message" && i.data?.type === "assistant" && Array.isArray(i.data?.content) && i.data.content.length > 0,
+      )
+      return parsed.status === "completed" && hasContent ? parsed : undefined
     }, "S4: re-share backfilled")
 
     // backfill parity: the re-share carries the same content as the first
@@ -483,11 +506,13 @@ try {
       await promptSession(s9Serve, s9sid, "after undo")
       const purged = await waitForShareData(s9id, (parsed) => {
         const msgs = parsed.data.filter((i) => i.type === "message")
-        const newUsers = msgs.filter((i) => i.data.role === "user" && !beforeIds.includes(i.data.id))
+        const newUsers = msgs.filter((i) => i.data.type === "user" && !beforeIds.includes(i.data.id))
         return newUsers.length ? parsed : undefined
       }, "S9: new turn visible (tombstones settled)")
       const afterIds = purged.data.filter((i) => i.type === "message").map((i) => i.data.id)
-      const afterParts = purged.data.filter((i) => i.type === "part").map((i) => i.data.messageID)
+      // content is embedded in v2 messages: a purged message takes its
+      // whole content with it; nothing may carry a removed message's id
+      const afterItems = purged.data.filter((i) => i.type === "message")
       // the removed range: everything from the revert point onward
       const removedIds = flat.slice(flat.findIndex((m) => m.id === turn2User)).map((m) => m.id)
       check(
@@ -496,9 +521,9 @@ try {
         `messages still present: ${JSON.stringify(afterIds)}`,
       )
       check(
-        "S9: reverted turn's parts purged",
-        !afterParts.some((mid) => removedIds.includes(mid)),
-        `parts of removed messages still present`,
+        "S9: reverted turn's embedded content purged",
+        !afterItems.some((i) => removedIds.includes(i.data.id)),
+        `messages of the removed turn still present: ${JSON.stringify(afterItems.filter((i) => removedIds.includes(i.data.id)).map((i) => i.data.id))}`,
       )
       const sessionAfter = purged.data.find((i) => i.type === "session")
       check("S9: revert marker cleared after re-prompt", !sessionAfter?.data?.revert)
@@ -524,7 +549,7 @@ try {
       await promptSession(s9Serve, s9sid, "after multi undo")
       const purged2 = await waitForShareData(s9id, (parsed) => {
         const msgs = parsed.data.filter((i) => i.type === "message").map((i) => i.data.id)
-        const newUsers = parsed.data.filter((i) => i.type === "message" && i.data.role === "user" && !rangeIds.includes(i.data.id) && !beforeIds.includes(i.data.id))
+        const newUsers = parsed.data.filter((i) => i.type === "message" && i.data.type === "user" && !rangeIds.includes(i.data.id) && !beforeIds.includes(i.data.id))
         return newUsers.length && !msgs.some((id) => rangeIds.includes(id)) ? parsed : undefined
       }, "S9: multi-undo range purged (both turns)")
       const finalIds = purged2.data.filter((i) => i.type === "message").map((i) => i.data.id)
@@ -565,8 +590,12 @@ try {
       // wait for the assistant response to land, then check the status is
       // still live well inside the 8s window
       await waitForShareData(stid, (parsed) => {
-        const parts = parsed.data.filter((i) => i.type === "part")
-        return parts.length >= 2 ? parsed : undefined
+        // v2 drops step-start/finish parts: the signal is a non-empty
+        // assistant text entry (v1 counted >=2 part items incl. steps)
+        const hasResponse = (parsed.data ?? []).some(
+          (i) => i.type === "message" && i.data?.type === "assistant" && (i.data?.content ?? []).some((c) => c?.type === "text" && c?.text),
+        )
+        return hasResponse ? parsed : undefined
       }, "S10: response parts synced")
       await sleep(1500)
       const mid = await (await httpGet(`${WORKER_URL}/api/share/${stid}/data`)).json()
@@ -682,7 +711,7 @@ try {
         const latId = latUrl.split("/").pop()
         const t0 = Date.now()
         await waitForShareData(latId, (parsed) => {
-          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.role === "user")
+          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.type === "user")
           return msgs.length ? parsed : undefined
         }, "S10: turn-end content visible")
         const latency = Date.now() - t0
@@ -714,9 +743,8 @@ try {
       // next turn: reconnect on demand, content + live status must return
       await promptSession(s11Serve, sid, "turn two after drop")
       const revived = await waitForShareData(id, (parsed) => {
-        // v1.18 message info carries no .text (it lives in parts); count
-        // user messages: turn two means a SECOND user message
-        const users = parsed.data.filter((i) => i.type === "message" && i.data?.role === "user")
+        // v2 messages: turn two means a SECOND user message
+        const users = parsed.data.filter((i) => i.type === "message" && i.data?.type === "user")
         return users.length >= 2 ? parsed : undefined
       }, "S11: post-drop turn content landed (reconnect)")
       check("S11: post-drop turn content landed", !!revived)

@@ -74,114 +74,10 @@ type V2Context = {
   signal?: AbortSignal
 }
 
-// --- v2 message -> v1 items ---------------------------------------------------
-
-function toolContentText(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => {
-        if (typeof item === "string") return item
-        if (item && typeof item === "object") {
-          const record = item as Record<string, unknown>
-          if (typeof record.text === "string") return record.text
-        }
-        return ""
-      })
-      .join("")
-  }
-  return ""
-}
-
-function convertToolState(state: unknown): Record<string, unknown> {
-  if (!state || typeof state !== "object") return { status: "pending" }
-  const record = state as Record<string, unknown>
-  const status = String(record.status ?? "pending")
-  const mapped: Record<string, unknown> = {}
-  if (status === "streaming" || status === "running") mapped.status = "running"
-  else if (status === "completed") mapped.status = "completed"
-  else if (status === "failed" || status === "error") mapped.status = "error"
-  else mapped.status = "pending"
-  if (record.input !== undefined) mapped.input = record.input
-  if (record.output !== undefined) mapped.output = toolContentText(record.output)
-  if (record.error !== undefined) mapped.error = record.error
-  if (record.time !== undefined) mapped.time = record.time
-  return mapped
-}
-
-/** v2 flat message -> { info, parts } in the v1 shapes the viewer speaks. */
-export function convertV2Message(message: V2Message, sessionID: string): { info: MessageInfo; parts: PartInfo[] } | undefined {
-  if (!message || typeof message.id !== "string") return undefined
-  const base = {
-    id: message.id,
-    sessionID,
-  }
-  if (message.type === "user") {
-    return {
-      info: {
-        ...base,
-        role: "user",
-        time: { created: message.time?.created ?? 0 },
-        text: message.text ?? "",
-      },
-      parts: [],
-    }
-  }
-  if (message.type === "assistant") {
-    const parts: PartInfo[] = []
-    const content = Array.isArray(message.content) ? message.content : []
-    content.forEach((block, index) => {
-      const record = block as Record<string, unknown>
-      const kind = String(record.type ?? "")
-      if (kind === "text") {
-        parts.push({
-          id: `${message.id}_t${index}`,
-          messageID: message.id,
-          sessionID,
-          type: "text",
-          text: String(record.text ?? ""),
-          synthetic: false,
-          time: { start: message.time?.created ?? 0, end: message.time?.completed ?? 0 },
-        })
-      } else if (kind === "reasoning") {
-        parts.push({
-          id: `${message.id}_r${index}`,
-          messageID: message.id,
-          sessionID,
-          type: "reasoning",
-          text: String(record.text ?? ""),
-          synthetic: false,
-          time: { start: message.time?.created ?? 0, end: message.time?.completed ?? 0 },
-        })
-      } else if (kind === "tool") {
-        parts.push({
-          id: String(record.id ?? `${message.id}_tool${index}`),
-          messageID: message.id,
-          sessionID,
-          type: "tool",
-          tool: String(record.name ?? "unknown"),
-          state: convertToolState(record.state),
-          synthetic: false,
-        })
-      }
-    })
-    return {
-      info: {
-        ...base,
-        role: "assistant",
-        agent: message.agent,
-        model: message.model
-          ? { providerID: message.model.providerID, modelID: message.model.modelID ?? message.model.id }
-          : undefined,
-        time: { created: message.time?.created ?? 0, completed: message.time?.completed ?? 0 },
-      },
-      parts,
-    }
-  }
-  return undefined
-}
-
 // --- v2 client -> engine ClientApi ---------------------------------------------
+// Contract v2: messages pass through VERBATIM as v2 session messages (the
+// engine's ingestion detects v2-native shapes and enqueues them directly —
+// no v1 conversion, no dropped compaction, no dropped user text).
 
 function adaptSessionClient(session: V2SessionClient | undefined, message: V2MessageClient | undefined, directory: string | undefined): ClientApi | undefined {
   if (!session) return undefined
@@ -203,7 +99,7 @@ function adaptSessionClient(session: V2SessionClient | undefined, message: V2Mes
 
   const listMessages = async (sessionID: string) => {
     if (!message) return []
-    const out: Array<{ info: MessageInfo; parts: PartInfo[] }> = []
+    const out: Array<{ info: unknown; parts: unknown[] }> = []
     let cursor: string | undefined
     for (let page = 0; page < 50; page++) {
       const res = (await message.list({ sessionID, limit: 100, cursor })) as
@@ -212,8 +108,9 @@ function adaptSessionClient(session: V2SessionClient | undefined, message: V2Mes
       const data = res?.data
       if (!Array.isArray(data)) break
       for (const raw of data) {
-        const converted = convertV2Message(raw, sessionID)
-        if (converted) out.push(converted)
+        if (raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string") {
+          out.push({ info: raw, parts: [] })
+        }
       }
       const next = res?.cursor?.next ?? undefined
       if (!next || data.length === 0) break

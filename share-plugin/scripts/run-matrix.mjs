@@ -36,8 +36,11 @@ const waves = [
     suite("enroll-tests", 8810, false),
     suite("fanout-tests", 8830, false),
   ],
-  // wave 2 — auth + parity + TUI + v2 + big-session
-  [suite("auth-tests", 8850, false), suite("regression-tests", 8870, true), suite("tui-flow-tests", 8890, true), suite("v2-mock-tests", 8910, true), suite("big-tests", 8930, true)],
+  // wave 2 — auth + parity + TUI + v2
+  // big-tests keeps its OWN worker (3000-item syncs would monopolize the
+  // shared wrangler isolate and stall every reuse suite's handshakes —
+  // live-caught in the first post-v2 matrix run)
+  [suite("auth-tests", 8850, false), suite("regression-tests", 8870, true), suite("tui-flow-tests", 8890, true), suite("v2-mock-tests", 8910, true), suite("big-tests", 8930, false)],
 ]
 
 const requested = process.argv.slice(2)

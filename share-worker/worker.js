@@ -743,8 +743,8 @@ export class ShareDO {
     const rev = meta.rev ?? 0
     if (this._cache && this._cache.rev === rev && this._cache.status === meta.status) return this._cache
     const items = redactItems(await this.loadItems())
-    const frameStr = JSON.stringify({ op: "frame", status: meta.status, rev, items })
-    const dataStr = JSON.stringify({ data: items, status: meta.status, rev })
+    const frameStr = JSON.stringify({ v: 2, op: "frame", status: meta.status, rev, items })
+    const dataStr = JSON.stringify({ v: 2, data: items, status: meta.status, rev })
     if (frameStr.length <= MAX_CACHE_JSON) {
       this._cache = { rev, status: meta.status, frameStr, dataStr }
       return this._cache
@@ -1125,7 +1125,7 @@ export class ShareDO {
 
   async broadcast(frame) {
     for (const ws of this.state.getWebSockets("viewer")) {
-      try { ws.send(JSON.stringify(frame)) } catch {}
+      try { ws.send(JSON.stringify({ v: 2, ...frame })) } catch {}
     }
   }
 

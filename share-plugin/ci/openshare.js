@@ -346,6 +346,194 @@ function resolveShareMode(cfg, input) {
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
+
+// src/contract.ts
+function isV2NativeMessage(x) {
+  if (!x || typeof x !== "object")
+    return false;
+  const r = x;
+  return typeof r.type === "string" && r.type !== "" && r.role === undefined && typeof r.id === "string";
+}
+var TOOL_NAME_MAP = {
+  bash: "shell",
+  task: "subagent"
+};
+var INPUT_KEY_MAP = {
+  filePath: "path"
+};
+function normalizeToolInput(input, title) {
+  const out = {};
+  for (const [k, v] of Object.entries(input ?? {}))
+    out[INPUT_KEY_MAP[k] ?? k] = v;
+  if (title && out.description === undefined)
+    out.description = title;
+  return out;
+}
+function normalizeToolMetadata(meta) {
+  const out = {};
+  for (const [k, v] of Object.entries(meta ?? {})) {
+    if (k === "filediff")
+      out.files = [v];
+    else if (k === "sessionId")
+      out.sessionID = v;
+    else
+      out[k] = v;
+  }
+  return out;
+}
+function toolContent(output) {
+  const text = typeof output === "string" ? output : "";
+  return [{ type: "text", text: text || " " }];
+}
+function normalizeToolState(state) {
+  const status = String(state?.status ?? "pending");
+  if (status === "pending") {
+    return { status: "streaming", input: typeof state.raw === "string" ? state.raw : JSON.stringify(state.input ?? {}) };
+  }
+  if (status === "running") {
+    return { status: "running", input: normalizeToolInput(state.input ?? {}, state.title), metadata: normalizeToolMetadata(state.metadata) };
+  }
+  if (status === "completed") {
+    return { status: "completed", input: normalizeToolInput(state.input ?? {}, state.title), content: toolContent(state.output), metadata: normalizeToolMetadata(state.metadata) };
+  }
+  return {
+    status: "error",
+    input: normalizeToolInput(state.input ?? {}),
+    error: { type: "unknown", message: typeof state.error === "string" ? state.error : "tool failed" },
+    metadata: normalizeToolMetadata(state.metadata)
+  };
+}
+function normalizeFilePart(p) {
+  const url = typeof p.url === "string" ? p.url : "";
+  if (!url)
+    return;
+  const inline = url.startsWith("data:");
+  const comma = url.indexOf(",");
+  return {
+    data: inline ? url.slice(comma + 1) : url,
+    mime: typeof p.mime === "string" ? p.mime : "application/octet-stream",
+    source: inline ? { type: "inline" } : { type: "uri", uri: url },
+    ...typeof p.filename === "string" ? { name: p.filename } : {}
+  };
+}
+function normalizeV1Message(info, parts) {
+  if (!info || typeof info.id !== "string")
+    return;
+  const id = info.id;
+  const created = info.time?.created ?? 0;
+  if (info.role === "user") {
+    const compaction = parts.find((p) => p?.type === "compaction");
+    if (compaction) {
+      const message2 = {
+        id,
+        type: "compaction",
+        status: "completed",
+        reason: compaction.auto === false ? "manual" : "auto",
+        summary: "",
+        recent: "",
+        time: { created }
+      };
+      return { message: message2 };
+    }
+    const text = parts.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join(`
+`);
+    const files = parts.filter((p) => p?.type === "file").map(normalizeFilePart).filter((f) => f !== undefined);
+    const agents = parts.filter((p) => p?.type === "agent").map((p) => ({ name: String(p.name ?? "") })).filter((a) => a.name);
+    const model = info.model;
+    const message = {
+      id,
+      type: "user",
+      time: { created },
+      text,
+      ...files.length ? { files } : {},
+      ...agents.length ? { agents } : {},
+      metadata: {
+        ...info.agent !== undefined ? { agent: String(info.agent) } : {},
+        ...model ? { model: { id: String(model.modelID ?? ""), providerID: String(model.providerID ?? "") } } : {}
+      }
+    };
+    return { message };
+  }
+  if (info.role === "assistant") {
+    const time = info.time;
+    if (info.summary === true && info.mode === "compaction") {
+      const summary = parts.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join(`
+`);
+      return { refill: String(info.parentID ?? ""), summary };
+    }
+    const content = [];
+    let cost = typeof info.cost === "number" ? info.cost : 0;
+    let tokens;
+    let retry;
+    for (const p of parts) {
+      switch (p?.type) {
+        case "text":
+          content.push({ type: "text", text: String(p.text ?? "") });
+          break;
+        case "reasoning": {
+          const rt = p.time;
+          content.push({ type: "reasoning", text: String(p.text ?? ""), time: { created: rt?.start ?? undefined, completed: rt?.end ?? undefined } });
+          break;
+        }
+        case "tool": {
+          const st = p.state;
+          const tt = st?.time ?? {};
+          content.push({
+            type: "tool",
+            id: String(p.id ?? ""),
+            name: TOOL_NAME_MAP[String(p.tool ?? "unknown")] ?? String(p.tool ?? "unknown"),
+            state: normalizeToolState(st ?? {}),
+            time: { created: tt.start ?? undefined, completed: tt.end ?? undefined }
+          });
+          break;
+        }
+        case "retry": {
+          const err = p.error;
+          retry = {
+            attempt: Number(p.attempt ?? 0),
+            at: p.time?.created ?? 0,
+            error: { type: "unknown", message: String(err?.message ?? err?.name ?? "retry") }
+          };
+          break;
+        }
+        case "step-finish": {
+          if (typeof p.cost === "number")
+            cost += p.cost;
+          if (p.tokens && typeof p.tokens === "object")
+            tokens = p.tokens;
+          break;
+        }
+      }
+    }
+    const finish = typeof info.finish === "string" ? info.finish : undefined;
+    const errObj = info.error;
+    const message = {
+      id,
+      type: "assistant",
+      agent: String(info.agent ?? "build"),
+      model: { id: String(info.modelID ?? ""), providerID: String(info.providerID ?? "") },
+      time: { created, streamed: time?.started ?? undefined, completed: time?.completed ?? undefined },
+      content,
+      cost,
+      ...tokens ? { tokens } : {},
+      ...finish ? { finish } : {},
+      ...errObj ? { error: { type: String(errObj.name ?? "UnknownError"), message: String(errObj.message ?? "turn failed") } } : {},
+      ...retry ? { retry } : {}
+    };
+    return { message };
+  }
+  return;
+}
+function normalizeV1Diff(diff) {
+  if (Array.isArray(diff))
+    return diff.filter((d) => d && typeof d === "object");
+  return diff;
+}
+function cursorFor(id, time) {
+  return Buffer.from(JSON.stringify({ id, time })).toString("base64url");
+}
+
+// src/core.ts
 var DEFAULT_POLICY = {
   mode: "persistent",
   turnGraceMs: 120000,
@@ -384,8 +572,6 @@ function itemFor(type, data, sessionID) {
     return { key: `session/${data?.id ?? ""}`, item: { type, data } };
   if (type === "message")
     return { key: `message/${data?.id ?? ""}`, item: { type, data } };
-  if (type === "part")
-    return { key: `part/${data?.messageID ?? ""}/${data?.id ?? ""}`, item: { type, data } };
   if (type === "session_diff")
     return { key: `session_diff/${sessionID}`, item: { type, sessionID, data } };
   return;
@@ -637,7 +823,8 @@ function createEngine(deps) {
     opts: undefined,
     activated: false,
     wroteBinding: false,
-    everConnected: false
+    everConnected: false,
+    merged: new Map
   });
   const refreshConfig = () => {
     const next = loadConfig(deps.pluginDir, deps.options);
@@ -1417,6 +1604,64 @@ function createEngine(deps) {
     ensureConnected(st);
     scheduleFlush(st);
   };
+  const mergeEntry = (st, messageID) => {
+    let e = st.merged.get(messageID);
+    if (!e) {
+      e = { parts: new Map };
+      st.merged.set(messageID, e);
+    }
+    return e;
+  };
+  const emitMerged = (st, sid, messageID) => {
+    const e = st.merged.get(messageID);
+    if (!e?.info)
+      return;
+    const res = normalizeV1Message(e.info, [...e.parts.values()]);
+    if (!res)
+      return;
+    if ("refill" in res) {
+      const parent = st.merged.get(res.refill);
+      if (parent?.info) {
+        const compaction = normalizeV1Message(parent.info, [...parent.parts.values()]);
+        if (compaction && "message" in compaction) {
+          const msg = compaction.message;
+          msg.summary = res.summary;
+          enqueue(st, itemFor("message", msg, sid));
+        }
+      }
+      return;
+    }
+    enqueue(st, itemFor("message", res.message, sid));
+  };
+  const ingestMessageInfo = (st, sid, info) => {
+    if (isV2NativeMessage(info)) {
+      enqueue(st, itemFor("message", info, sid));
+      return;
+    }
+    if (typeof info?.id !== "string")
+      return;
+    const e = mergeEntry(st, info.id);
+    e.info = info;
+    emitMerged(st, sid, info.id);
+  };
+  const ingestPart = (st, sid, part) => {
+    if (typeof part?.id !== "string" || typeof part.messageID !== "string")
+      return;
+    const e = mergeEntry(st, part.messageID);
+    e.parts.set(part.id, part);
+    emitMerged(st, sid, part.messageID);
+  };
+  const dropMergedMessage = (st, messageID) => {
+    st.merged.delete(messageID);
+  };
+  const dropMergedPart = (st, sid, messageID, partID) => {
+    const e = st.merged.get(messageID);
+    if (!e)
+      return;
+    e.parts.delete(partID);
+    if (e.info)
+      emitMerged(st, sid, messageID);
+  };
   const remove = (st) => {
     st.closed = true;
     st.activated = false;
@@ -1508,8 +1753,13 @@ function createEngine(deps) {
       if (result.length < PAGE_SIZE)
         break;
       const last = result[result.length - 1];
-      const nextBefore = typeof last?.info?.id === "string" ? last.info.id : typeof last?.id === "string" ? last.id : undefined;
-      if (!nextBefore || nextBefore === before)
+      const lastInfo = last?.info ?? last;
+      const lastID = typeof lastInfo?.id === "string" ? lastInfo.id : undefined;
+      const lastTime = lastInfo?.time?.created;
+      if (!lastID || typeof lastTime !== "number")
+        break;
+      const nextBefore = cursorFor(lastID, lastTime);
+      if (nextBefore === before)
         break;
       before = nextBefore;
     }
@@ -1525,19 +1775,21 @@ function createEngine(deps) {
       const m = message.info ?? message;
       if (!m || typeof m.id !== "string")
         continue;
-      enqueue(st, itemFor("message", m, sid));
-      if (m.role === "user" && m.model) {
-        modelSeen = true;
-        const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model);
-        enqueue(st, itemFor("model", [{ id: m.model.modelID, providerID: m.model.providerID, name: label }], sid));
-      }
-      for (const part of message.parts ?? []) {
-        const p = part;
+      const e = mergeEntry(st, m.id);
+      e.info = m;
+      for (const rawPart of message.parts ?? []) {
+        const p = rawPart;
         if (!p || typeof p.id !== "string" || typeof p.messageID !== "string")
           continue;
         if (p.state?.status === "error")
           st.badSignal = true;
-        enqueue(st, itemFor("part", p, sid));
+        e.parts.set(p.id, p);
+      }
+      emitMerged(st, sid, m.id);
+      if (m.role === "user" && m.model) {
+        modelSeen = true;
+        const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model);
+        enqueue(st, itemFor("model", [{ id: m.model.modelID, providerID: m.model.providerID, name: label }], sid));
       }
     }
     if (!modelSeen && sessionInfoValue?.model) {
@@ -1792,12 +2044,13 @@ function createEngine(deps) {
           if (!messageID)
             return;
           if (t === "message.removed") {
+            dropMergedMessage(st, messageID);
             enqueue(st, { key: `message/${messageID}`, item: { type: "message", del: true, data: { id: messageID } } });
           } else {
             const partID = p.partID;
             if (!partID)
               return;
-            enqueue(st, { key: `part/${messageID}/${partID}`, item: { type: "part", del: true, data: { id: partID, messageID } } });
+            dropMergedPart(st, sid, messageID, partID);
           }
         } else if (t === "message.updated") {
           const main = childToParent.get(sid) ?? sid;
@@ -1838,13 +2091,13 @@ function createEngine(deps) {
           }
           if (!st || !st.activated || st.closed)
             return;
-          enqueue(st, itemFor("message", p.info, sid));
+          ingestMessageInfo(st, sid, p.info);
           const info = p.info;
           if (info?.role === "user" && info?.model) {
             const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, info.model);
             enqueue(st, itemFor("model", [{ id: info.model.modelID, providerID: info.model.providerID, name: label }], sid));
           }
-          if (info?.role === "assistant" && info.finish === "error") {
+          if (info?.finish === "error") {
             st.badSignal = true;
           }
         } else if (t === "message.part.updated") {
@@ -1854,12 +2107,12 @@ function createEngine(deps) {
           const part = p.part;
           if (part?.state?.status === "error")
             st.badSignal = true;
-          enqueue(st, itemFor("part", part, sid));
+          ingestPart(st, sid, part);
         } else if (t === "session.diff") {
           const st = stFor(sid);
           if (!st || !st.activated || st.closed)
             return;
-          enqueue(st, itemFor("session_diff", p.diff, sid));
+          enqueue(st, itemFor("session_diff", normalizeV1Diff(p.diff), sid));
         } else if (t === "session.deleted") {
           const isChild = childToParent.has(sid);
           if (isChild) {
@@ -1923,116 +2176,6 @@ function createEngine(deps) {
 // src/v2-server.ts
 import { existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
-function toolContentText(content) {
-  if (typeof content === "string")
-    return content;
-  if (Array.isArray(content)) {
-    return content.map((item) => {
-      if (typeof item === "string")
-        return item;
-      if (item && typeof item === "object") {
-        const record = item;
-        if (typeof record.text === "string")
-          return record.text;
-      }
-      return "";
-    }).join("");
-  }
-  return "";
-}
-function convertToolState(state) {
-  if (!state || typeof state !== "object")
-    return { status: "pending" };
-  const record = state;
-  const status = String(record.status ?? "pending");
-  const mapped = {};
-  if (status === "streaming" || status === "running")
-    mapped.status = "running";
-  else if (status === "completed")
-    mapped.status = "completed";
-  else if (status === "failed" || status === "error")
-    mapped.status = "error";
-  else
-    mapped.status = "pending";
-  if (record.input !== undefined)
-    mapped.input = record.input;
-  if (record.output !== undefined)
-    mapped.output = toolContentText(record.output);
-  if (record.error !== undefined)
-    mapped.error = record.error;
-  if (record.time !== undefined)
-    mapped.time = record.time;
-  return mapped;
-}
-function convertV2Message(message, sessionID) {
-  if (!message || typeof message.id !== "string")
-    return;
-  const base = {
-    id: message.id,
-    sessionID
-  };
-  if (message.type === "user") {
-    return {
-      info: {
-        ...base,
-        role: "user",
-        time: { created: message.time?.created ?? 0 },
-        text: message.text ?? ""
-      },
-      parts: []
-    };
-  }
-  if (message.type === "assistant") {
-    const parts = [];
-    const content = Array.isArray(message.content) ? message.content : [];
-    content.forEach((block, index) => {
-      const record = block;
-      const kind = String(record.type ?? "");
-      if (kind === "text") {
-        parts.push({
-          id: `${message.id}_t${index}`,
-          messageID: message.id,
-          sessionID,
-          type: "text",
-          text: String(record.text ?? ""),
-          synthetic: false,
-          time: { start: message.time?.created ?? 0, end: message.time?.completed ?? 0 }
-        });
-      } else if (kind === "reasoning") {
-        parts.push({
-          id: `${message.id}_r${index}`,
-          messageID: message.id,
-          sessionID,
-          type: "reasoning",
-          text: String(record.text ?? ""),
-          synthetic: false,
-          time: { start: message.time?.created ?? 0, end: message.time?.completed ?? 0 }
-        });
-      } else if (kind === "tool") {
-        parts.push({
-          id: String(record.id ?? `${message.id}_tool${index}`),
-          messageID: message.id,
-          sessionID,
-          type: "tool",
-          tool: String(record.name ?? "unknown"),
-          state: convertToolState(record.state),
-          synthetic: false
-        });
-      }
-    });
-    return {
-      info: {
-        ...base,
-        role: "assistant",
-        agent: message.agent,
-        model: message.model ? { providerID: message.model.providerID, modelID: message.model.modelID ?? message.model.id } : undefined,
-        time: { created: message.time?.created ?? 0, completed: message.time?.completed ?? 0 }
-      },
-      parts
-    };
-  }
-  return;
-}
 function adaptSessionClient(session, message, directory) {
   if (!session)
     return;
@@ -2063,9 +2206,9 @@ function adaptSessionClient(session, message, directory) {
       if (!Array.isArray(data))
         break;
       for (const raw of data) {
-        const converted = convertV2Message(raw, sessionID);
-        if (converted)
-          out.push(converted);
+        if (raw && typeof raw === "object" && typeof raw.id === "string") {
+          out.push({ info: raw, parts: [] });
+        }
       }
       const next = res?.cursor?.next ?? undefined;
       if (!next || data.length === 0)

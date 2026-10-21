@@ -132,7 +132,7 @@ try {
     if (!r.ok) throw new Error(`${r.status}`)
     const parsed = await r.json()
     const types = (parsed.data ?? []).map((i) => i.type)
-    return parsed.status === "completed" && types.includes("session") && types.includes("message") && types.includes("part") ? parsed : undefined
+    return parsed.status === "completed" && types.includes("session") && types.includes("message") && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
   }, "CLI: share data complete")
   console.log(`  items: ${(body.data ?? []).map((i) => i.type).join(",")}`)
   check("CLI: share complete on the worker", true)
@@ -251,7 +251,7 @@ try {
     if (!r.ok) throw new Error(`${r.status}`)
     const parsed = await r.json()
     const types = (parsed.data ?? []).map((i) => i.type)
-    return parsed.status === "completed" && types.includes("session") && types.includes("message") && types.includes("part") ? parsed : undefined
+    return parsed.status === "completed" && types.includes("session") && types.includes("message") && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
   }, "single-file: share data complete")
   console.log(`  share: ${ciShareId}  items: ${(ciBody.data ?? []).map((i) => i.type).join(",")}`)
   check("single-file: share complete on the worker", true)
