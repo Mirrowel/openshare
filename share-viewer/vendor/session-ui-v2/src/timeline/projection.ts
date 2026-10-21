@@ -16,6 +16,9 @@ import {
   currentToolHasLoadedFiles,
 } from "../message/current-tool-state"
 import { TimelineRow, type PartGroup, type PartRef, type TimelineRowMap } from "./timeline-row"
+
+// openshare module: segment marker
+let openshareSegmentStart = false
 import { timelineCategory, timelineNoticeRequired, type TimelineDetail } from "./detail"
 
 export { TimelineRow, type PartGroup, type PartRef, type TimelineRowMap }
@@ -497,13 +500,7 @@ export namespace Timeline {
               userMessageID: turnID,
               group,
               previousAssistantPart: assistantGroupIndex > 0,
-              spacing: assistantGroupIndex > 0
-                ? detail
-                  ? "content"
-                  : previousAssistantTool && tool
-                    ? "tool"
-                    : "content"
-                : undefined,
+              spacing: assistantGroupIndex > 0 ? (previousAssistantTool && tool ? "tool" : "content") : undefined,
             }),
           )
           assistantGroupIndex += 1
@@ -511,25 +508,12 @@ export namespace Timeline {
         })
       }
 
-      // openshare fork: grouping per assistant message - one response's
-      // badge must never absorb another response's tools
-      const appendSegments = (items: typeof refs) => {
-        let start = 0
-        while (start < items.length) {
-          const messageID = items[start]!.messageID
-          let end = start
-          while (end < items.length && items[end]!.messageID === messageID) end += 1
-          appendGroups(items.slice(start, end))
-          start = end
-        }
-      }
-
-      appendSegments(before)
+      appendGroups(before)
 
       if (interruptedAt >= 0) {
         if (!compaction && detail?.notices.placement !== "hidden")
           rows.push(new TimelineRow.TurnDivider({ userMessageID: turnID }))
-        appendSegments(after)
+        appendGroups(after)
       }
 
       if (messages.at(-1) !== lastAssistant) return

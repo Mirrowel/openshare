@@ -49,7 +49,7 @@ export namespace TimelineRow {
     userMessageID: string
     group: PartGroup
     previousAssistantPart: boolean
-    spacing?: "tool" | "content"
+    spacing?: "tool" | "content" | "message" /* openshare fork: message spacing */
   }> {}
 
   export class Thinking extends Data.TaggedClass("Thinking")<{
@@ -115,7 +115,7 @@ export type TimelineRowMap = {
     userMessageID: string
     group: PartGroup
     previousAssistantPart: boolean
-    spacing?: "tool" | "content"
+    spacing?: "tool" | "content" | "message" /* openshare fork: message spacing */
   }
   Thinking: { userMessageID: string; ref: PartRef }
   Retry: { userMessageID: string }

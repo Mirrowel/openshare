@@ -148,7 +148,7 @@ html[data-osh-read-text="large"] .osh-content {
    empty chevron and took the reasoning rows with it (live-caught).
    The vendored collapsible marks its open state with a bare `n` attribute
    (Kobalte), so `:not([n])` is the collapsed state. */
-html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"],
+html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"]:not([data-keep]),
 html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"],
 html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"],
 html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"] {
@@ -292,4 +292,21 @@ html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-
 [data-slot="osh-tool-file"] {
   color: var(--text-strong);
   font-size: 13px;
+}
+/* reasoning: the label is a marker, the faint italic body is the content -
+   neither should read like a tool call or the completion */
+[data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"],
+[data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"] {
+  color: var(--syntax-keyword, var(--text-base));
+  font-style: normal;
+}
+[data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-subtitle"],
+[data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-subtitle"] {
+  color: var(--text-weaker);
+}
+
+/* tool info off: file cards keep the file NAME (with its meta), never the
+   long directory - the expanded body repeats the full title anyway */
+html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
+  display: none;
 }

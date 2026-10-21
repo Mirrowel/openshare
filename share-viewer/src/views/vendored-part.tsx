@@ -5,6 +5,7 @@ import { ToolDisplay } from "@opencode/session-ui/tools/tool-renderer"
 // our renderers override read/edit/write/patch/grep/glob/list/todowrite
 // AFTER the kit registered its own (last registration wins)
 import "../tool-overrides"
+import { setSubagentData } from "../subagent-map"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
@@ -40,7 +41,7 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
         session_diff: (data()?.session_diff ?? {}) as any,
         provider: data()?.provider ?? { all: new Map(), default: {}, connected: [] },
       }}
-      directory={undefined}
+      directory={(data()?.session.find((s: any) => s.id === props.entry.part?.sessionID) as any)?.directory}
       onSessionHref={currentNav?.sessionHref}
       onNavigateToSession={currentNav?.navigateToSession}
     >

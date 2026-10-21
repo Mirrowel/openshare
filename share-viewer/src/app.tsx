@@ -96,6 +96,7 @@ function FullPageView(props: {
   )
 }
 import { children, sessionStatus, visibleMessages, type ShareData } from "./fold"
+import { setSubagentData } from "./subagent-map"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
 
 // scroll memory for in-page session switching: restore on return
@@ -211,6 +212,8 @@ function SessionView(props: {
   sub: () => number | undefined
 }) {
   // resolve which session this page renders (main or subagent /N)
+  createEffect(() => setSubagentData(props.data))
+
   const target = createMemo(() => {
     const data = props.data
     const subs = children(data)

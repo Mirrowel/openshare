@@ -83,7 +83,17 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       s = next
     }
 
-    if (!s.includes("openshare fork: grouping per assistant message")) {
+    // module-scope marker so the spacing expression inside appendGroups can
+    // see whether the NEXT row starts a new assistant message
+    if (!s.includes("openshare module: segment marker")) {
+      patch(
+        /(^import \{ TimelineRow[^\r\n]*\r?\n)/m,
+        "$1\n// openshare module: segment marker\nlet openshareSegmentStart = false\n",
+        "segment marker",
+      )
+    }
+
+    if (!s.includes("openshareSegmentStart")) {
       patch(
         /( {6}appendGroups\(before\)\r?\n)/,
         [
@@ -95,12 +105,14 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
           "          const messageID = items[start]!.messageID",
           "          let end = start",
           "          while (end < items.length && items[end]!.messageID === messageID) end += 1",
+          "          openshareSegmentStart = start > 0",
           "          appendGroups(items.slice(start, end))",
           "          start = end",
           "        }",
           "      }",
           "",
           "      appendSegments(before)",
+          "      openshareSegmentStart = false",
           "",
         ].join("\n"),
         "appendGroups(before)",
@@ -109,13 +121,13 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       patch(
         /spacing: assistantGroupIndex > 0 \? \(previousAssistantTool && tool \? "tool" : "content"\) : undefined,/,
         [
-          "spacing: assistantGroupIndex > 0",
-          "                ? detail",
-          '                  ? "content"',
-          "                  : previousAssistantTool && tool",
-          '                    ? "tool"',
-          '                    : "content"',
-          "                : undefined,",
+          "spacing: (() => {",
+          "                  const messageStart = openshareSegmentStart",
+          "                  openshareSegmentStart = false",
+          "                  if (messageStart) return \"message\"",
+          "                  if (assistantGroupIndex === 0) return undefined",
+          "                  return detail ? \"content\" : previousAssistantTool && tool ? \"tool\" : \"content\"",
+          "                })() as \"tool\" | \"content\" | \"message\" | undefined,",
         ].join("\n"),
         "assistant spacing",
       )
@@ -249,15 +261,67 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 // vendor fork: tighter rhythm between tool calls in one response
 // (v1 was a 12px flex gap; upstream's 16px reads loose in a share page)
 {
+// vendor fork: the generic fallback (mcp tools, plugin tools like ctx_*)
+// showed only "Called <tool>" and its input summary - the OUTPUT was dropped,
+// so those calls were unreadable on a share page.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/basic-tool.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: generic tools show output")) {
+      let before = s
+      s = s.replace(/export function GenericTool\(props: \{[^}]*\}\) \{/, (m) =>
+        m.replace(
+          "input?: Record<string, unknown>",
+          "input?: Record<string, unknown>\n  /** openshare fork: generic tools show output */\n  output?: string\n  metadata?: Record<string, unknown>",
+        ),
+      )
+      if (s === before) throw new Error("vendor-v2: GenericTool signature anchor missing")
+      before = s
+      s = s.replace(/(\r?\n      hideDetails=\{props\.hideDetails\}\r?\n    \/>\r?\n  \)\r?\n\})/, `
+      hideDetails={props.hideDetails}
+    >
+      <Show when={typeof props.output === "string" && props.output}>
+        <pre data-component="tool-output" data-scrollable tabIndex={0} class="osh-pre">
+          {props.output}
+        </pre>
+      </Show>
+    </BasicTool>
+  )
+}`)
+      if (s === before) throw new Error("vendor-v2: GenericTool body anchor missing")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: the row spacing union gains "message" - the break between two
+// assistant messages inside one turn (v1 separated responses; so do we).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/timeline/timeline-row.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: message spacing")) {
+      const before = s
+      s = s
+        .split('spacing?: "tool" | "content"')
+        .join('spacing?: "tool" | "content" | "message" /* openshare fork: message spacing */')
+      if (s === before) throw new Error("vendor-v2: spacing type anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8")
-    if (!s.includes("pt-[0.7rem]")) {
+    if (!s.includes("pt-[0.45rem]")) {
       const before = s
       s = s.replace(
         / {8}"pt-4": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "content",/,
-        `        // openshare fork: tighter rhythm between tool calls in one response
-        "pt-[0.7rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",`,
+        `        // openshare fork: tighter rhythm inside one response, a clear break
+        // between responses (v1 separated turns, we separate messages)
+        "pt-[0.45rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
+        "pt-5": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",`,
       )
       if (s === before) throw new Error("vendor-v2: row spacing anchor missing - upstream drifted")
       writeFileSync(p, s)

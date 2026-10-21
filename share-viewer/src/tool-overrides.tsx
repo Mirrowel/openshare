@@ -11,11 +11,14 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, Show, type JSX } from "solid-js"
+import { createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
+import { subagentInfo } from "./subagent-map"
+
+const capitalize = (value: string) => (value ? value[0]!.toUpperCase() + value.slice(1) : "")
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
@@ -24,6 +27,14 @@ const dirname = (path: string) => {
   return clean.slice(0, -1).join("/")
 }
 const countLines = (text: string) => (text ? text.split("\n").length : 0)
+
+/** v1 read rows said which slice of the file they took ("from 284"). */
+function readRange(props: ToolProps, lines: number): string {
+  const input = props.input as any
+  const offset = typeof input.offset === "number" ? input.offset : undefined
+  const from = typeof offset === "number" ? offset + 1 : undefined
+  return from ? `${lines} lines from ${from}` : `${lines} lines`
+}
 
 function counts(props: ToolProps) {
   const files = (props.metadata as any)?.files
@@ -44,6 +55,16 @@ function ChangeCounts(props: { adds: number; dels: number }) {
   )
 }
 
+
+
+/** Split diff when the viewport is wide enough to show two columns. */
+const diffLayout = () => {
+  const [split, setSplit] = createSignal(window.innerWidth >= 1100)
+  window.addEventListener("resize", () => setSplit(window.innerWidth >= 1100), { passive: true })
+  onCleanup(() => setSplit(false as never))
+  return split
+}
+const wideEnough = diffLayout()
 
 /** One header for every file tool: label, directory, filename, meta. */
 function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
@@ -69,8 +90,15 @@ function errorText(props: ToolProps): string {
 }
 
 /** Shared body frame: tools indent under their trigger. */
-function FileBody(props: { children: JSX.Element }) {
-  return <div data-component="osh-file-body">{props.children}</div>
+function FileBody(props: { title?: string; children: JSX.Element }) {
+  return (
+    <div data-component="osh-file-body">
+      <Show when={props.title}>
+        <div data-slot="osh-file-title">{props.title}</div>
+      </Show>
+      {props.children}
+    </div>
+  )
 }
 /** `read`: the v1 behaviour - show the file body when there is one.
  * Prefers metadata.preview, else the tool's text output (our contract
@@ -96,7 +124,11 @@ const ReadTool = (props: ToolProps) => {
           <FileHeader
             label="Read"
             path={path()}
-            meta={<Show when={lines() > 1}><span data-slot="basic-tool-tool-arg">{lines()} lines</span></Show>}
+            meta={
+              <Show when={lines() > 1}>
+                <span data-slot="osh-tool-meta">{readRange(props, lines())}</span>
+              </Show>
+            }
           />
         )}
       >
@@ -104,7 +136,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody>
+          <FileBody title={path()}>
             <Dynamic
               component={fileComponent as any}
               mode="text"
@@ -162,12 +194,13 @@ const EditTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody>
+          <FileBody title={path()}>
             <div data-component="edit-content">
               <Dynamic
                 component={fileComponent as any}
                 mode="diff"
                 virtualize={false}
+                diffStyle={wideEnough() ? "split" : "unified"}
                 before={{ name: path(), contents: oldText() }}
                 after={{ name: path(), contents: newText() }}
                 onRendered={() => props.onContentRendered?.()}
@@ -198,7 +231,7 @@ const WriteTool = (props: ToolProps) => {
           <FileHeader
             label="Write"
             path={path()}
-            meta={<Show when={lines() > 0}><span data-slot="basic-tool-tool-arg">{lines()} lines</span></Show>}
+            meta={<Show when={lines() > 0}><span data-slot="osh-tool-meta">{lines()} lines</span></Show>}
           />
         )}
       >
@@ -206,7 +239,7 @@ const WriteTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody>
+          <FileBody title={path()}>
             <Dynamic
               component={fileComponent as any}
               mode="text"
@@ -232,7 +265,13 @@ const TextResultTool =
       if (typeof input.path === "string") return [input.path]
       return []
     })
-    const body = createMemo(() => str(props.output))
+    const body = createMemo(() =>
+      str(props.output)
+        .replace(/\r\n/g, "\n")
+        // result groups arrived separated by blank lines; the rail already
+        // provides the rhythm, so drop the doubling
+        .replace(/\n{2,}/g, "\n"),
+    )
     return (
       <BasicTool
         {...props}
@@ -258,7 +297,16 @@ const TodoTool = (props: ToolProps) => {
       icon="bullet-list"
       hasContent={todos().length > 0}
       defer
-      trigger={{ title: "Todos", subtitle: `${todos().filter((t: any) => t?.status === "completed").length}/${todos().length} done` }}
+      trigger={() => (
+          <div data-slot="basic-tool-tool-info-structured">
+            <div data-slot="basic-tool-tool-info-main">
+              <span data-slot="basic-tool-tool-title">Todos</span>
+              <span data-slot="osh-tool-meta">
+                {todos().filter((t: any) => t?.status === "completed").length}/{todos().length} done
+              </span>
+            </div>
+          </div>
+        )}
     >
       <div class="flex flex-col gap-1 py-1">
         {todos().map((todo: any) => (
@@ -274,6 +322,43 @@ const TodoTool = (props: ToolProps) => {
   )
 }
 
+
+/** `subagent` / `task`: v1 showed the child's own agent name (Explore),
+ * not a generic "Agent" - the child session's assistant message carries it. */
+const SubagentTool = (props: ToolProps) => {
+  const id = () => str((props.metadata as any)?.sessionID) || str((props.metadata as any)?.sessionId)
+  const info = () => subagentInfo(id())
+  const agent = () => capitalize(info()?.agent ?? "")
+  const label = () => agent() || "Agent"
+  const description = () => str((props.input as any).description) || info()?.title || ""
+  const body = () => str(props.output)
+  const failure = () => errorText(props)
+  return (
+    <div data-component="osh-subagent-tool">
+      <BasicTool
+        {...props}
+        icon="mcp"
+        hasContent={!!body() || !!failure()}
+        defer
+        trigger={() => (
+          <div data-slot="basic-tool-tool-info-structured">
+            <div data-slot="basic-tool-tool-info-main">
+              <span data-slot="basic-tool-tool-title">{label()}</span>
+              <Show when={description()}>
+                <span data-slot="osh-tool-meta">{description()}</span>
+              </Show>
+            </div>
+          </div>
+        )}
+      >
+        <Show when={!failure()} fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}>
+          <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+        </Show>
+      </BasicTool>
+    </div>
+  )
+}
+
 ToolRegistry.register({ name: "read", render: ReadTool })
 ToolRegistry.register({ name: "edit", render: EditTool })
 ToolRegistry.register({ name: "write", render: WriteTool })
@@ -282,3 +367,5 @@ ToolRegistry.register({ name: "grep", render: TextResultTool("Grep", "magnifying
 ToolRegistry.register({ name: "glob", render: TextResultTool("Glob", "magnifying-glass-menu") })
 ToolRegistry.register({ name: "list", render: TextResultTool("List", "bullet-list") })
 ToolRegistry.register({ name: "todowrite", render: TodoTool })
+ToolRegistry.register({ name: "subagent", render: SubagentTool })
+ToolRegistry.register({ name: "task", render: SubagentTool })

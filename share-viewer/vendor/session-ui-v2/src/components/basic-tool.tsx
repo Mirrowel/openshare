@@ -400,6 +400,9 @@ export function GenericTool(props: {
   status?: string
   hideDetails?: boolean
   input?: Record<string, unknown>
+  /** openshare fork: generic tools show output */
+  output?: string
+  metadata?: Record<string, unknown>
 }) {
   const i18n = useI18n()
 
@@ -413,6 +416,12 @@ export function GenericTool(props: {
         args: args(props.input),
       }}
       hideDetails={props.hideDetails}
-    />
+    >
+      <Show when={typeof props.output === "string" && props.output}>
+        <pre data-component="tool-output" data-scrollable tabIndex={0} class="osh-pre">
+          {props.output}
+        </pre>
+      </Show>
+    </BasicTool>
   )
 }
