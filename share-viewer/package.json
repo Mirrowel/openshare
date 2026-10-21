@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "vendor": "node scripts/vendor-v2.mjs && bun install",
     "build": "vite build && node scripts/build-themes.mjs",
     "typecheck": "bunx tsc --noEmit",
     "dev": "vite"
@@ -13,7 +14,7 @@
     "@opencode/session-ui": "file:vendor/session-ui-v2",
     "@opencode/ui": "file:vendor/ui-v2",
     "@opencode/util": "file:vendor/util-v2",
-    "@pierre/diffs": "1.2.10",
+    "@pierre/diffs": "1.5.1",
     "@shikijs/stream": "4.4.3",
     "@shikijs/transformers": "3.9.2",
     "@solid-primitives/bounds": "0.1.3",

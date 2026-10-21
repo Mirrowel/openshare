@@ -306,13 +306,20 @@ function SessionView(props: {
               // Always passed so ungrouped rows keep content spacing.
               const timelineDetail = createMemo(() => {
                 const grouped = props.settings.toolGrouping !== false
+                // v1 scope = only reads/searches collapse; everything else
+                // keeps its own row with its own output
+                const context = props.settings.toolGroupingScope !== "all"
+                const details = props.settings.toolOutput ? "expanded" : "collapsed"
                 return {
-                  shell: { placement: grouped ? "grouped" : "separate", details: "collapsed" },
-                  edit: { placement: grouped ? "grouped" : "separate", details: "collapsed" },
-                  thinking: { placement: "separate", details: "collapsed" },
-                  subagents: { placement: grouped ? "grouped" : "separate" },
+                  shell: { placement: grouped && !context ? "grouped" : "separate", details },
+                  edit: { placement: grouped && !context ? "grouped" : "separate", details },
+                  thinking: { placement: "separate", details: props.settings.reasoningOpen ? "expanded" : "collapsed" },
+                  subagents: { placement: grouped && !context ? "grouped" : "separate" },
                   notices: { placement: "separate" },
-                  tools: { placement: grouped ? "grouped" : "separate" },
+                  tools: {
+                    placement: grouped ? "grouped" : "separate",
+                    ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}),
+                  },
                 } as any
               })
               // review panel: files default-OPEN (v1 behavior), user-controlled after
@@ -390,7 +397,7 @@ function SessionView(props: {
 
               // mobile (narrow) layout: paged timeline under the title
               const turns = () => (
-                <div class="relative mt-2 pb-8 min-w-0 w-full h-full overflow-y-auto no-scrollbar">
+                <div data-transcript-scroll class="relative mt-2 pb-8 min-w-0 w-full h-full overflow-y-auto no-scrollbar">
                   <div class="px-4 py-6">{title()}</div>
                   <SessionTimeline
                     document={pagedDocument()}
@@ -435,7 +442,7 @@ function SessionView(props: {
                       >
                         <Icon name="copy" size="small" />
                       </button>
-                      <a href={OPENSHARE_REPO_URL} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base" title="Open(code)Share">
+                      <a href={OPENSHARE_REPO_URL} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
                         <Icon name="github" size="small" />
                       </a>
                       <SettingsPanel
@@ -475,14 +482,14 @@ function SessionView(props: {
                               // the title scrolls away with the transcript
                               // and the footer is the last thing in the
                               // session, never pinned or clipped
-                              <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
+                              <div data-transcript-scroll class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
                                 <div class="px-6 pt-6">{title()}</div>
                                 <SessionTimeline
                                   document={pagedDocument()}
                                   reasoningMode={reasoningMode()}
                                   shellToolDefaultOpen={props.settings.toolOutput}
                                   editToolDefaultOpen={true}
-                                  detail={timelineDetail()}
+                                  timelineDetail={timelineDetail()}
                                 />
                                 <div class="px-6 pt-8 pb-8">
                                   <PageFooter branding={props.source.branding()} class="px-6" />
@@ -497,7 +504,7 @@ function SessionView(props: {
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={props.settings.toolOutput}
                                 editToolDefaultOpen={true}
-                                detail={timelineDetail() as any}
+                                timelineDetail={timelineDetail() as any}
                                 header={<div class="px-6 pt-6">{title()}</div>}
                                 footer={
                                   <div class="px-6 pt-8 pb-8">
@@ -541,7 +548,7 @@ function SessionView(props: {
                             {turns()}
                           </Tabs.Content>
                           <Tabs.Content value="review" class="!overflow-hidden hidden data-[selected]:block">
-                            <div class="relative h-full pt-8 overflow-y-auto no-scrollbar">
+                            <div data-transcript-scroll class="relative h-full pt-8 overflow-y-auto no-scrollbar">
                               <SessionReview
                                 diffs={diffs() as any}
                                 open={reviewOpen()}
@@ -699,13 +706,37 @@ export function App() {
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
   const [search, setSearch] = createSignal("")
 
+  // the reader's transcript offset, tracked from real scroll events so a
+  // settings-driven reflow can put them back exactly where they were
+  let lastTranscriptOffset: number | undefined
+  const trackTranscriptScroll = (event: Event) => {
+    const el = event.target
+    if (!(el instanceof HTMLElement) || el.dataset.transcriptScroll === undefined) return
+    lastTranscriptOffset = el.scrollTop
+  }
+  document.addEventListener("scroll", trackTranscriptScroll, true)
+
   const updateSettings = (patch: Partial<OshSettings>) => {
+    // Settings can reflow the transcript (grouping, details, view): classic
+    // reset to the top and continuous clamped to the end when the rows were
+    // rebuilt (probed on the live build). Remember the offset from real
+    // scroll events and reapply it to whatever scroller exists afterwards -
+    // by selector, because the element itself can be replaced.
+    const restore = () => {
+      const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
+      if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
+    }
     setSettings((prev) => {
       const next = { ...prev, ...patch }
       writeSettings(next)
       applySettings(next)
       // reasoning toggle: the timeline re-renders from reasoningMode
       return next
+    })
+    requestAnimationFrame(() => {
+      restore()
+      requestAnimationFrame(restore)
+      setTimeout(restore, 120)
     })
   }
 

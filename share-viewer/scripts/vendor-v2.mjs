@@ -43,114 +43,209 @@ const copyTree = (from, to) => {
   walk(".")
 }
 
+// dependency versions are taken from the beta package itself, resolving
+// `catalog:` entries through its workspace catalog (see betaDeps below)
+const betaRoot = JSON.parse(readFileSync(join(SRC, "package.json"), "utf8"))
+const betaCatalog = betaRoot.workspaces?.catalog ?? betaRoot.catalog ?? {}
+const betaDeps = (pkg) => {
+  const source = JSON.parse(readFileSync(join(SRC, "packages", pkg, "package.json"), "utf8"))
+  return Object.fromEntries(
+    Object.entries(source.dependencies ?? {}).map(([name, version]) => [
+      name,
+      version === "catalog:" ? (betaCatalog[name] ?? version) : version,
+    ]),
+  )
+}
+
 // --- session-ui ---
 copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/src"))
 // (the ./tools/tool-renderer export is added in the package.json written below)
-// vendor fork: projection.ts groups per ASSISTANT MESSAGE (one response),
-// never across responses, and our explicit detail forces content spacing.
-// Re-applied after copyTree; fails loudly if upstream anchors drift.
+// vendor fork: projection.ts groups per ASSISTANT MESSAGE (one response) and
+// our explicit detail forces content spacing.
+//
+// SURGICAL on purpose: upstream's appendAssistantSegment keeps growing
+// (thoughtOnly guard, live Thinking row, Retry/Error notices). Replacing the
+// whole function dropped those silently when the beta moved from
+// v2.0.0-607 to v2.0.0-1105, so we only insert a per-message splitter and
+// redirect the two call sites. Re-applied after copyTree; fails loudly if
+// upstream anchors drift.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/projection.ts")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8")
     const fail = (what) => {
-      throw new Error(`vendor-v2: projection fork anchor missing (${what}) — upstream drifted`)
+      throw new Error(`vendor-v2: projection fork anchor missing (${what}) - upstream drifted`)
     }
-    if (!s.includes("openshare fork: grouping is PER ASSISTANT MESSAGE")) {
-      // CRLF-tolerant anchors: the vendored tree is checked out with CRLF
-      // on Windows, so literal "\n" markers never match
-      const startMatch = / {4}const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{/.exec(s)
-      const start = startMatch ? startMatch.index : -1
-      const endRe = /appendGroups\(after\)\r?\n {6}\}/
-      const endMatch = start >= 0 ? endRe.exec(s.slice(start)) : null
-      if (start < 0 || !endMatch) fail("appendAssistantSegment")
-      const end = start + endMatch.index
-      const replacement = `    // openshare fork: grouping is PER ASSISTANT MESSAGE (one response).
-    const appendAssistantSegment = (messages: SessionMessageAssistant[]) => {
-      const segments = messages.map((message, messageIndex) => ({
-        messageIndex,
-        refs: contentEntries(message)
-          .filter(
-            (entry) =>
-              isRenderable(entry.content, showReasoning, detail) && !(thinking && entry.content === lastContent),
-          )
-          .map((entry) => ({ messageID: message.id, messageIndex, partID: entry.id, content: entry.content })),
-      }))
-      const interruptedAt = messages.findIndex((message) => isInterrupted(message.error))
-      const appendGroups = (items: { messageID: string; partID: string; content: Content }[]) => {
-        let offset = 0
-        groupContent(items, shellToolDefaultOpen, editToolDefaultOpen, detail).forEach((group) => {
-          const tool = group.type !== "part" || items[offset]?.content.type !== "text"
-          offset += group.type === "part" ? 1 : group.refs.length
-          rows.push(
-            new TimelineRow.AssistantPart({
-              userMessageID: turnID,
-              group,
-              previousAssistantPart: assistantGroupIndex > 0,
-              spacing:
-                assistantGroupIndex > 0
-                  ? detail
-                    ? "content"
-                    : previousAssistantTool && tool
-                      ? "tool"
-                      : "content"
-                  : undefined,
-            }),
-          )
-          assistantGroupIndex += 1
-          previousAssistantTool = tool
-        })
-      }
-      const appendSegmentGroups = (selected: typeof segments) => {
-        for (const segment of selected) appendGroups(segment.refs)
-      }
+    const nl = s.includes("\r\n") ? "\r\n" : "\n"
+    const patch = (from, to, what) => {
+      const next = s.replace(from, to)
+      if (next === s) fail(what)
+      s = next
+    }
 
-      appendSegmentGroups(segments.filter((segment) => interruptedAt < 0 || segment.messageIndex <= interruptedAt))
-      if (interruptedAt >= 0) {
-        if (!compaction && detail?.notices.placement !== "hidden")
-          rows.push(new TimelineRow.TurnDivider({ userMessageID: turnID }))
-        appendSegmentGroups(segments.filter((segment) => segment.messageIndex > interruptedAt))
-      }`
-      s = s.slice(0, start) + (s.includes("\r\n") ? replacement.replace(/\n/g, "\r\n") : replacement) + s.slice(end + endMatch[0].length)
-      s = s.replace(
-        / {6}previous\.userMessageID === current\.userMessageID\r?\n {4}\) \{/,
-        `      previous.userMessageID === current.userMessageID &&
-      // openshare fork: never merge groups across assistant messages
-      previous.group.refs.at(-1)?.messageID === current.group.refs[0]?.messageID
-    ) {`,
+    if (!s.includes("openshare fork: grouping per assistant message")) {
+      patch(
+        /( {6}appendGroups\(before\)\r?\n)/,
+        [
+          "      // openshare fork: grouping per assistant message - one response's",
+          "      // badge must never absorb another response's tools",
+          "      const appendSegments = (items: typeof refs) => {",
+          "        let start = 0",
+          "        while (start < items.length) {",
+          "          const messageID = items[start]!.messageID",
+          "          let end = start",
+          "          while (end < items.length && items[end]!.messageID === messageID) end += 1",
+          "          appendGroups(items.slice(start, end))",
+          "          start = end",
+          "        }",
+          "      }",
+          "",
+          "      appendSegments(before)",
+          "",
+        ].join("\n"),
+        "appendGroups(before)",
       )
-      if (!s.includes("never merge groups across assistant messages")) fail("groupMessages guard")
+      patch(/ {6}appendGroups\(after\)/, "      appendSegments(after)", "appendGroups(after)")
+      patch(
+        /spacing: assistantGroupIndex > 0 \? \(previousAssistantTool && tool \? "tool" : "content"\) : undefined,/,
+        [
+          "spacing: assistantGroupIndex > 0",
+          "                ? detail",
+          '                  ? "content"',
+          "                  : previousAssistantTool && tool",
+          '                    ? "tool"',
+          '                    : "content"',
+          "                : undefined,",
+        ].join("\n"),
+        "assistant spacing",
+      )
+    }
+
+    if (!s.includes("never merge groups across assistant messages")) {
+      patch(
+        / {6}previous\.userMessageID === current\.userMessageID\r?\n {4}\) \{/,
+        [
+          "      previous.userMessageID === current.userMessageID &&",
+          "      // openshare fork: never merge groups across assistant messages",
+          "      previous.group.refs.at(-1)?.messageID === current.group.refs[0]?.messageID",
+          "    ) {",
+        ].join("\n"),
+        "groupMessages guard",
+      )
+    }
+
+    if (!s.includes("a category may refine grouping")) {
+      patch(
+        /( {4}const category = timelineCategory\(content\)!\r?\n)(\r?\n)?( {4}if \(detail\[category\]\.placement === "grouped"\) return "context")/,
+        [
+          "    const category = timelineCategory(content)!",
+          '    if (detail[category].placement === "grouped") {',
+          "      // openshare fork: a category may refine grouping to specific tools",
+          "      // (v1 scope grouped reads/searches only; shell/edit kept their rows)",
+          "      const only = (detail[category] as { only?: readonly string[] }).only",
+          '      if (!only || only.includes(content.name)) return "context"',
+          "    }",
+        ].join("\n"),
+        "toolGroupType grouping refinement",
+      )
+    }
+
+    // 5) with an explicit detail, a read is never a top-level "read" group:
+    //    grouping off must give every read its own expandable row
+    if (!s.includes("never a top-level read group")) {
+      patch(
+        /( {4}if \(currentToolGroupedRead\(content\)\) return "read")/,
+        `    // openshare fork: with an explicit detail, never a top-level read group
+    if (!detail && currentToolGroupedRead(content)) return "read"`,
+        "read group gate",
+      )
+    }
+
+    // 6) file edits are ordinary rows too: the "file" group renderer
+    //    (CurrentFileToolGroup) bypasses ToolRegistry, so our edit/write
+    //    card never ran. Let them fall through to ToolDisplay.
+    if (!s.includes("never a top-level file group")) {
+      patch(
+        /( {4}if \(content\.name === "patch" \|\| content\.name === "edit" \|\| content\.name === "write"\) return "file")/,
+        `    // openshare fork: never a top-level file group (our edit/write card owns it)`,
+        "file group gate",
+      )
+    }
+
+    // 7) todos are part of a shared session: the app hides them because it
+    //    renders a todo dock, a share page has nowhere else to put them
+    if (!s.includes("openshare fork: todos are renderable")) {
+      patch(
+        /( {2}if \(content\.name === "todowrite"\) return false\r?\n)/,
+        `  // openshare fork: todos are renderable in a share page\n`,
+        "todowrite renderable",
+      )
+    }
+
+    if (nl === "\r\n") s = s.replace(/\r?\n/g, "\r\n")
+    writeFileSync(p, s)
+  }
+}
+
+// The `timelineDetail` prop we used to fork into session-timeline.tsx is
+// upstream's own API as of v2.0.0-1105 (it forwards it to both the
+// projection and the row renderer) - no patch needed.
+
+// vendor fork: todo lists belong in the transcript on a share page. The app
+// hides them (it renders a todo dock instead), but ToolDisplay returns null
+// BEFORE consulting the registry, so no override can ever see them.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: todos render in the transcript")) {
+      const before = s
+      s = s.replace(
+        /  if \(props\.tool === "todowrite"\) return null/,
+        '  // openshare fork: todos render in the transcript (the app hides them here)',
+      )
+      if (s === before) throw new Error("vendor-v2: todowrite anchor missing - upstream drifted")
       writeFileSync(p, s)
     }
   }
 }
 
-// vendor fork: session-timeline.tsx gained a `detail` prop (timeline
-// grouping placements) that upstream doesn't have. Re-apply it after
-// copyTree by patching the two anchors — regenerate and this still works.
+// vendor fork: reads keep their own renderer so their output can expand.
+// Upstream (fresh) routes every `read` inside a context group into
+// CurrentReadToolGroup, whose expanded state only lists filenames; and a
+// detail-less read becomes a top-level "read" group. Our share pages want
+// the file body available, so: reads use the ordinary ToolDisplay row
+// (which our viewer overrides), inside groups and outside them.
 {
-  const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline.tsx")
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8")
-    if (!s.includes("timelineDetail")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+    if (!s.includes("openshare fork: reads stay ordinary rows")) {
       const before = s
       s = s.replace(
-        /import \{ createReactiveTimelineProjection, TimelineRow, type ReasoningMode \} from "\.\/projection"/,
-        '$&\nimport type { TimelineDetail } from "./detail"',
+        / {26}when=\{!currentToolGroupedRead\(tool\(\)\)\}/,
+        `                          when={true /* openshare fork: reads stay ordinary rows so their output can expand */}`,
       )
+      if (s === before) throw new Error("vendor-v2: context read-group anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: tighter rhythm between tool calls in one response
+// (v1 was a 12px flex gap; upstream's 16px reads loose in a share page)
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("pt-[0.7rem]")) {
+      const before = s
       s = s.replace(
-        /  editToolDefaultOpen\?: boolean\r?\n  class\?: string/,
-        "  editToolDefaultOpen?: boolean\n  /** fork: explicit detail (grouping placements) - undefined = kit default */\n  detail?: TimelineDetail\n  class?: string",
+        / {8}"pt-4": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "content",/,
+        `        // openshare fork: tighter rhythm between tool calls in one response
+        "pt-[0.7rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",`,
       )
-      s = s.replace(
-        / {4}editToolDefaultOpen: \(\) => props\.editToolDefaultOpen \?\? false,\r?\n {2}\}\)\r?\n {0,2}const \[toolOpen/,
-        "    editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,\n    timelineDetail: () => props.detail,\n  })\n  const [toolOpen",
-      )
-      if (s === before || !s.includes("timelineDetail") || !s.includes("detail?: TimelineDetail"))
-        throw new Error("vendor-v2: session-timeline fork anchors missing — upstream drifted")
-      // keep the file's newline style (regex replacements above used \n)
-      if (nl === "\r\n") s = s.replace(/\r?\n/g, "\r\n")
+      if (s === before) throw new Error("vendor-v2: row spacing anchor missing - upstream drifted")
       writeFileSync(p, s)
     }
   }
@@ -209,27 +304,15 @@ writeFileSync(
         "./v2/*.css": "./src/v2/components/*.css",
         "./v2/*": "./src/v2/components/*.tsx",
       },
+      // dependency versions come from the BETA, with `catalog:` entries
+      // resolved through its workspace catalog. Hardcoding them went stale
+      // the moment the beta moved (v2.0.0-607 -> -1105 bumped
+      // @pierre/diffs to 1.5.1, whose generics the new sources require).
       dependencies: {
-        "@kobalte/core": "0.13.13",
+        ...betaDeps("session-ui"),
         "@opencode/client": "file:../client-v2",
         "@opencode/ui": "file:../ui-v2",
         "@opencode/util": "file:../util-v2",
-        "@pierre/diffs": "1.2.10",
-        "@shikijs/stream": "4.4.3",
-        "@solid-primitives/event-listener": "2.4.6",
-        "@solid-primitives/media": "2.3.6",
-        "@solid-primitives/resize-observer": "2.2.0",
-        "@solidjs/meta": "0.29.4",
-        "diff": "8.0.4",
-        "dompurify": "3.4.14",
-        "effect": "4.0.0-rc.112",
-        "marked": "18.0.11",
-        "mermaid": "11.17.2",
-        "motion": "12.34.5",
-        "remend": "1.3.1",
-        "shiki": "4.4.3",
-        "solid-js": "1.9.15",
-        "strip-ansi": "7.1.2",
       },
     },
     null,
@@ -256,14 +339,9 @@ copyTree(join(SRC, "packages/ui/src"), join(ROOT, "vendor/ui-v2/src"))
         sideEffects: srcPkg.sideEffects ?? ["**/*.css"],
         exports: { ...srcPkg.exports, "./logo": "./src/components/logo.tsx", "./provider-icon": "./src/components/provider-icon.tsx" },
         dependencies: {
-          "@kobalte/core": "0.13.13",
-          "@pierre/diffs": "1.2.10",
-          "@solid-primitives/media": "2.3.6",
-          "@solid-primitives/resize-observer": "2.2.0",
-          "@solid-primitives/event-listener": "2.4.6",
-          "marked": "18.0.11",
-          "motion": "12.34.5",
-          "solid-js": "1.9.15",
+          // same rule as session-ui: take the beta's versions (catalog
+          // resolved) so the two packages never disagree on @pierre/diffs
+          ...betaDeps("ui"),
           "tw-animate-css": "1.4.0",
         },
       },

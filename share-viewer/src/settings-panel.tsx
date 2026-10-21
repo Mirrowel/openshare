@@ -266,12 +266,47 @@ export function SettingsBody(props: {
             on={props.settings.toolOutput}
             onChange={() => props.update({ toolOutput: !props.settings.toolOutput })}
           />
-          <Switch
-            label="Tool grouping"
-            hint="collapse a response's tool calls into summary rows"
-            on={props.settings.toolGrouping}
-            onChange={() => props.update({ toolGrouping: !props.settings.toolGrouping })}
-          />
+          {/* grouping only applies to the classic timeline; views have
+              their own composition */}
+          <Show when={props.settings.view === "classic"}>
+            <Switch
+              label="Group tool calls"
+              hint="collapse a response's tool calls into summary rows"
+              on={props.settings.toolGrouping}
+              onChange={() => props.update({ toolGrouping: !props.settings.toolGrouping })}
+            />
+            <Show when={props.settings.toolGrouping}>
+              <div class="pl-3 pb-1.5">
+                <div class="text-12-regular text-text-weaker pb-1">Group</div>
+                <Segmented
+                  value={props.settings.toolGroupingScope}
+                  options={[
+                    { id: "context" as const, label: "reads & searches" },
+                    { id: "all" as const, label: "all calls" },
+                  ]}
+                  onChange={(toolGroupingScope) => props.update({ toolGroupingScope })}
+                />
+                <div class="text-11-regular text-text-weaker pt-1">
+                  reads &amp; searches matches the original scope: shell, edits and agents stay their own rows
+                </div>
+              </div>
+            </Show>
+          </Show>
+          {/* grove owns its own composition: reasoning sits with the tools
+              on the left by default; this flips it to the reading column */}
+          <Show when={props.settings.view === "grove"}>
+            <div class="pl-3 pb-1.5">
+              <div class="text-12-regular text-text-weaker pb-1">Thinking</div>
+              <Segmented
+                value={props.settings.groveThinking}
+                options={[
+                  { id: "left" as const, label: "left, with tools" },
+                  { id: "right" as const, label: "right, with prompts" },
+                ]}
+                onChange={(groveThinking) => props.update({ groveThinking })}
+              />
+            </div>
+          </Show>
           <Show when={props.branding.backgroundUrl}>
             <Switch
               label="Background image"

@@ -18,13 +18,17 @@ function groupOptions<T>(options: T[], groupBy?: (x: T) => string): { category: 
   if (!groupBy) {
     return [{ category: "", options }]
   }
+
   const map = new Map<string, T[]>()
+
   for (const opt of options) {
     const key = groupBy(opt)
     const arr = map.get(key)
+
     if (arr) arr.push(opt)
     else map.set(key, [opt])
   }
+
   return [...map.entries()].map(([category, opts]) => ({ category, options: opts }))
 }
 
@@ -111,11 +115,15 @@ export function Select<T>(props: SelectProps<T>) {
 
   const move = (item: T | undefined) => {
     if (!local.onHighlight) return
+
     if (!item) {
       stop()
+
       return
     }
+
     const key = keyFor(item)
+
     if (state.key === key) return
     state.cleanup?.()
     state.cleanup = local.onHighlight(item)
@@ -179,6 +187,7 @@ export function Select<T>(props: SelectProps<T>) {
       }}
       onOpenChange={(open) => {
         local.onOpenChange?.(open)
+
         if (!open) stop()
       }}
     >
@@ -201,7 +210,9 @@ export function Select<T>(props: SelectProps<T>) {
           <Value<T> data-slot="select-v2-value-text" class={local.valueClass}>
             {(st) => {
               const selected = st.selectedOption()
+
               if (local.label && selected != null) return local.label(selected)
+
               return selected != null ? (selected as string) : ""
             }}
           </Value>

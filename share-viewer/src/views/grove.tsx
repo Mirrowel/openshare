@@ -208,9 +208,15 @@ export const groveSkin: Skin = {
       </div>
     ),
 
-    // a quiet dashed layer beneath the bloom - tools live left of the
-    // trunk, reasoning stays in the reading column with the stock label
-    ReasoningWrap: (p) => <div class="grove-undergrowth grove-right">{p.children}</div>,
+    // a quiet dashed layer beneath the bloom - with the tools by default
+    // (the grove reading order: thinking + tool calls left, prompt and
+    // completion right); the grove-only setting can move it to the
+    // reading column instead
+    ReasoningWrap: (p) => (
+      <div classList={{ "grove-undergrowth": true, "grove-right": p.settings.groveThinking === "right", "grove-left": p.settings.groveThinking !== "right" }}>
+        {p.children}
+      </div>
+    ),
 
     // a bloom: the response opens off the stem in a soft petal of surface
     ResponseWrap: (p) => (

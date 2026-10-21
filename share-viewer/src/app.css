@@ -142,9 +142,98 @@ html[data-osh-read-text="large"] .osh-content {
   cursor: default;
 }
 
-/* classic view: toolInfo off hides the vendored invocation title + args
-   (subtitle/paths stay); the output behavior itself is the vendored
-   per-tool rule driven by shellToolDefaultOpen/editToolDefaultOpen */
+/* classic view: Tool info off hides the vendored invocation title + args.
+   NOTE: dataset.oshToolInfo produces data-osh-tool-info (the DOMStringMap
+   inserts a hyphen per camel hump) - the hyphenless selector never
+   matched, on either branch. Both spellings are kept for safety. */
+html[data-osh-tool-info="off"] [data-slot="basic-tool-tool-info-structured"],
 html[data-osh-toolinfo="off"] [data-slot="basic-tool-tool-info-structured"] {
   display: none;
+}
+
+/* --- v1 reading layer -------------------------------------------------
+   The v2 kit dropped the legacy override block the old viewer relied on
+   (body:not([data-new-layout])): titles/args moved to the --v2-* grey
+   ramp and the type scale shrank. Map the v2 text/surface tokens back to
+   our own tokens inside the transcript so the session reads like v1. */
+[data-timeline-row],
+.osh-content {
+  --v2-text-text-base: var(--text-strong);
+  --v2-text-text-muted: var(--text-base);
+  --v2-text-text-faint: var(--text-weaker);
+  --v2-background-bg-layer-01: var(--surface-base);
+  --v2-background-bg-layer-02: var(--surface-raised-base);
+}
+
+/* v1 tool row type scale (14px / 150%) */
+[data-timeline-row] [data-component="tool-trigger"],
+[data-timeline-row] [data-component="tool-trigger"] [data-slot^="basic-tool"],
+[data-timeline-row] [data-component="tool-trigger"] [data-slot^="context-tool"] {
+  font-size: 14px;
+  line-height: var(--line-height-large, 1.5);
+}
+
+/* task/subagent cards carried a visible border in v1 */
+[data-timeline-row] [data-component="task-tool-card"] {
+  border: 1px solid var(--border-weak-base);
+}
+
+/* tool output blocks keep v1 breathing room below */
+[data-component="tool-output"] {
+  margin-bottom: 24px;
+}
+
+/* markdown prose: v1 kept body text at --text-strong, headings small */
+[data-timeline-row] [data-component="markdown"] {
+  color: var(--text-strong);
+}
+[data-timeline-row] [data-component="markdown"] :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--text-strong);
+}
+[data-timeline-row] [data-component="markdown"] :is(strong, b) {
+  color: var(--text-strong);
+}
+[data-timeline-row] [data-component="markdown"] code {
+  color: var(--syntax-string);
+  background: none;
+}
+
+/* --- scroll behaviour -------------------------------------------------
+   We already virtualize, so the kit's content-visibility (which leaves
+   reserved-but-unpainted blocks while scrolling - the "pop-in") is pure
+   downside inside the timeline. And a tool output that is scrolled to its
+   end must not hand the wheel to the page. */
+[data-timeline-row] [data-component="tool-trigger"],
+[data-timeline-row] [data-component="assistant-message"],
+[data-timeline-row] [data-component="file"] {
+  content-visibility: visible;
+}
+[data-timeline-row] [data-scrollable],
+[data-timeline-row] [data-component="tool-output"],
+[data-timeline-row] [data-slot="bash-scroll"],
+[data-timeline-row] [data-component="edit-content"] {
+  overscroll-behavior: contain;
+}
+
+/* --- our tool renderers ---------------------------------------------- */
+.osh-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-base);
+  border: 1px solid var(--border-weaker-base);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+[data-slot="osh-tool-dir"] {
+  color: var(--text-weaker);
+  font-size: 13px;
+}
+[data-slot="osh-tool-file"] {
+  color: var(--text-strong);
+  font-size: 13px;
 }

@@ -22,13 +22,42 @@ const ESTIMATE = 90
 
 const measurementCache = new Map<string, number>()
 
+// Exact restore across remounts/settings changes: tanstack snapshots the
+// measured rows, and replaying the snapshot plus the scroll offset makes the
+// layout identical to what the reader left. Without this a settings change
+// re-measured rows, the total height shrank under the scroll position and the
+// page appeared to jump (probed and confirmed on the live build).
+type RowSnapshot = { index: number; key: string; start: number; size: number }
+type Snapshot = { items: RowSnapshot[]; offset: number }
+const snapshotMemory = new Map<string, Snapshot>()
+const snapshotKey = (sessionKey: string) => `osh:vrows:${sessionKey}`
+function readSnapshot(sessionKey: string): Snapshot | undefined {
+  const memory = snapshotMemory.get(sessionKey)
+  if (memory) return memory
+  try {
+    const raw = sessionStorage.getItem(snapshotKey(sessionKey))
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw) as Snapshot
+    snapshotMemory.set(sessionKey, parsed)
+    return parsed
+  } catch {
+    return undefined
+  }
+}
+function writeSnapshot(sessionKey: string, snapshot: Snapshot) {
+  snapshotMemory.set(sessionKey, snapshot)
+  try {
+    sessionStorage.setItem(snapshotKey(sessionKey), JSON.stringify(snapshot))
+  } catch {}
+}
+
 export function VirtualTimeline(props: {
   doc: SessionDocument
   sessionKey: string
   reasoningMode?: ReasoningMode
   shellToolDefaultOpen?: boolean
   editToolDefaultOpen?: boolean
-  detail?: TimelineDetail
+  timelineDetail?: TimelineDetail
   presentation?: Record<string, SessionUserPresentation | undefined>
   header?: JSX.Element
   footer?: JSX.Element
@@ -40,7 +69,7 @@ export function VirtualTimeline(props: {
     reasoningMode: () => props.reasoningMode ?? "compact",
     shellToolDefaultOpen: () => props.shellToolDefaultOpen ?? false,
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
-    timelineDetail: () => props.detail,
+    timelineDetail: props.timelineDetail && (() => props.timelineDetail!),
   })
   const [toolOpen, setToolOpen] = createStore<Record<string, boolean | undefined>>({})
   const renderer = createSessionTimelineRowRenderer({
@@ -55,12 +84,24 @@ export function VirtualTimeline(props: {
       value: (key) => toolOpen[key],
       set: (key, open) => setToolOpen(key, open),
     },
+    // drives per-row default-open (Tool outputs / Expanded reasoning)
+    timelineDetail: props.timelineDetail && (() => props.timelineDetail!),
   })
 
   let scrollElement: HTMLDivElement | undefined
   const [pinned, setPinned] = createSignal(true)
   const rows = projection.rows
   const rowKeys = createMemo(() => (rows() ?? []).map(TimelineRow.key))
+
+  const restored = readSnapshot(props.sessionKey)
+  const initialMeasurementsCache = restored?.items.map((item) => ({
+    index: item.index,
+    key: item.key,
+    start: item.start,
+    size: item.size,
+    end: item.start + item.size,
+    lane: 0,
+  }))
 
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     get count() {
@@ -70,7 +111,12 @@ export function VirtualTimeline(props: {
     estimateSize: (index: number) => measurementCache.get(rowKeys()[index]) ?? ESTIMATE,
     overscan: 24,
     getItemKey: (index: number) => rowKeys()[index] ?? `row:${index}`,
+    initialMeasurementsCache,
   })
+  // keep the reader's anchor when a row above the viewport is re-measured
+  // (the option is a Virtualizer field, not an option in this version)
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    item.start < (instance.scrollOffset ?? 0)
 
   // measure through tanstack's own measureElement (it owns the resize
   // observer and writes real heights back per index). The old hand-rolled
@@ -87,20 +133,45 @@ export function VirtualTimeline(props: {
     if (!el) return
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON
     if (atEnd !== pinned()) setPinned(atEnd)
+    saveSnapshot()
   }
 
-  // follow new content while pinned
+  // debounced snapshot of measured rows + offset (restores exact layout)
+  let saveTimer: ReturnType<typeof setTimeout> | undefined
+  const saveSnapshot = () => {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      const el = scrollElement
+      if (!el) return
+      writeSnapshot(props.sessionKey, {
+        items: virtualizer.takeSnapshot() as Snapshot["items"],
+        offset: el.scrollTop,
+      })
+    }, 200)
+  }
+
+  // follow new content while pinned, but never on the first run when a
+  // restored offset exists (that would snap a returning reader to the end)
+  let lastCount = 0
   createEffect(() => {
     const count = rowKeys().length
-    if (pinned() && count > 0 && scrollElement) {
-      queueMicrotask(() => {
-        const el = scrollElement
-        if (el) el.scrollTop = el.scrollHeight
-      })
-    }
+    const grew = count > lastCount
+    const first = lastCount === 0
+    lastCount = count
+    if (first && restored) return
+    if (!grew || !pinned() || count === 0 || !scrollElement) return
+    queueMicrotask(() => {
+      const el = scrollElement
+      if (el) el.scrollTop = el.scrollHeight
+    })
   })
 
   onCleanup(() => {
+    if (saveTimer) clearTimeout(saveTimer)
+    const el = scrollElement
+    if (el && el.scrollHeight > 0) {
+      writeSnapshot(props.sessionKey, { items: virtualizer.takeSnapshot() as Snapshot["items"], offset: el.scrollTop })
+    }
     if (measurementCache.size > 4000) measurementCache.clear()
   })
 
@@ -110,8 +181,15 @@ export function VirtualTimeline(props: {
       class={props.class}
       ref={(el) => {
         scrollElement = el
+        if (!el || !restored?.offset) return
+        // replay the saved position once the snapshot's heights are in place
+        queueMicrotask(() => {
+          el.scrollTop = restored.offset
+          setPinned(el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON)
+        })
       }}
       onScroll={onScroll}
+      data-transcript-scroll
       style={{ "overflow-y": "auto", "min-height": "0" }}
     >
       {/* header/footer live in the scroll flow (normal flow, not absolute):

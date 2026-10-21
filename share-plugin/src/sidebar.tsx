@@ -28,12 +28,6 @@ import type { JSX } from "@opentui/solid"
 import { bindingsOf, bindingOf, verifyShare } from "./share-flow.js"
 import type { TuiPluginApi, TuiSlotContext } from "@opencode-ai/plugin/tui"
 import type { Session } from "@opencode-ai/sdk/v2"
-import { appendFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-
-const DBG_FILE = join(tmpdir(), "openshare-tui-debug.log")
-
 /** value -> `kind:preview` so the log shows TYPES (the crash was a type bug) */
 export function dbg(v: unknown, depth = 0): string {
   const t = typeof v
@@ -69,13 +63,9 @@ function dbgEl(el: unknown, depth = 0): string {
   }
 }
 
-export function dbgLog(line: string): void {
-  try {
-    appendFileSync(DBG_FILE, `${new Date().toISOString()} ${line}\n`)
-  } catch {}
-}
-
-let renderSeq = 0
+/** no-op: the TUI debug log file was a crash-hunt aid and must not write
+ * to temp any more (owner request 2026-10-21) */
+export function dbgLog(_line: string): void {}
 
 /** Share liveness cache for the chip: a binding can claim "shared" long
  * after the page died server-side (purge/TTL/delete with no event ever
@@ -102,13 +92,10 @@ type SidebarTitleProps = {
 }
 
 export function createSidebarSlot(api: TuiPluginApi, opts?: { onShareCommand?: () => void }) {
-  dbgLog(`createSidebarSlot called; api.state=${!!api.state} api.theme=${!!api.theme} api.version=${dbg(api.app?.version)}`)
   return {
     slots: {
       sidebar_title: (ctx: TuiSlotContext, props: SidebarTitleProps): JSX.Element => {
-        const seq = ++renderSeq
         try {
-          dbgLog(`render#${seq} ctx=${dbg(ctx)} props=${dbg(props)}`)
           const sid = typeof props?.session_id === "string" ? props.session_id : ""
           const title = String(props?.title ?? "") || "Session"
           const session = sid ? api.state.session.get(sid) : undefined
@@ -122,9 +109,7 @@ export function createSidebarSlot(api: TuiPluginApi, opts?: { onShareCommand?: (
           const anyGone = verdicts.some((v) => v?.status === "gone")
           const multi = liveCount > 1 ? `·${liveCount} ` : ""
           const theme = ctx?.theme?.current ?? api.theme.current
-          dbgLog(
-            `render#${seq} sid=${dbg(sid)} title=${dbg(title)} session=${session ? "found" : "MISSING"} binding=${binding ? `id=${dbg(binding.id)} enabled=${dbg(binding.enabled)}` : "none"} status=${dbg(status)} theme=${dbg(theme)}`,
-          )
+
           // chip on its own line under the title (takes the blank line that
           // separated the title block from the context blocks); clicking it
           // copies the share link — proven pattern: onMouseDown on a box.
@@ -175,10 +160,8 @@ export function createSidebarSlot(api: TuiPluginApi, opts?: { onShareCommand?: (
               ) : null}
             </box>
           )
-          dbgLog(`render#${seq} RETURNS ${dbgEl(el)}`)
           return el
         } catch (error) {
-          dbgLog(`render#${seq} THREW ${(error as Error)?.stack ?? dbg(error)} — rethrowing`)
           throw error
         }
       },

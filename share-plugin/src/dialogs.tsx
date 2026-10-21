@@ -576,6 +576,32 @@ export function MenuDialog<Value>(props: {
   )
 }
 
+/** Guard against stacked plugin dialogs. `dialog.replace` is documented as
+ * an atomic swap, but on some host builds a second replace while a dialog is
+ * still pending leaves BOTH renderers mounted - the reader sees two menus
+ * with two highlighted rows and keys go to a stale layer ("/share does
+ * nothing"). Cancelling the pending dialog and clearing before the next
+ * replace keeps exactly one dialog alive. The normal single-dialog path is
+ * untouched, so the esc-to-parent flicker fix stays intact. */
+let pendingDialog: (() => void) | undefined
+function claimDialog(api: TuiPluginApi): () => void {
+  if (pendingDialog) {
+    try {
+      pendingDialog()
+    } catch {}
+    try {
+      api.ui.dialog.clear()
+    } catch {}
+  }
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    if (pendingDialog === release) pendingDialog = undefined
+  }
+  pendingDialog = release
+  return release
+}
 /** showMenuOnce, family discipline with the flicker fix (2026-10-19):
  * done() does NOT clear the host stack — the next dialog's replace() is an
  * atomic swap, so clearing first paints one empty frame (the esc-to-parent
@@ -584,9 +610,11 @@ export function MenuDialog<Value>(props: {
 export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; options: MenuOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined> {
   return new Promise((resolve) => {
     let settled = false
+    const release = claimDialog(api)
     const done = (value: Value | undefined, _clear = false) => {
       if (settled) return
       settled = true
+      release()
       dbgLog(`menu(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
       resolve(value)
     }
@@ -610,9 +638,11 @@ export type DialogAction = { title: string; value: string; key?: string; danger?
 export function showInfoDialog(api: TuiPluginApi, props: { title: string; message: string; actions?: DialogAction[] }): Promise<string | undefined> {
   return new Promise((resolve) => {
     let settled = false
+    const release = claimDialog(api)
     const done = (value: string | undefined) => {
       if (settled) return
       settled = true
+      release()
       resolve(value)
     }
     api.ui.dialog.replace(
@@ -799,9 +829,11 @@ export function PromptDialog(props: {
 export function showPromptOnce(api: TuiPluginApi, props: { title: string; placeholder?: string; value?: string }): Promise<string | undefined> {
   return new Promise((resolve) => {
     let settled = false
+    const release = claimDialog(api)
     const done = (value: string | undefined, _clear = false) => {
       if (settled) return
       settled = true
+      release()
       dbgLog(`prompt(${props.title}) -> ${value === undefined ? "cancel" : `len=${value.length}`}`)
       resolve(value)
     }
@@ -829,9 +861,11 @@ export type SizePickerResult = { width: DialogWidth; heightPercent: number }
 export function showSizePickerOnce(api: TuiPluginApi, current: SizePickerResult): Promise<SizePickerResult | undefined> {
   return new Promise((resolve) => {
     let settled = false
+    const release = claimDialog(api)
     const done = (value: SizePickerResult | undefined) => {
       if (settled) return
       settled = true
+      release()
       resolve(value)
     }
     api.ui.dialog.replace(

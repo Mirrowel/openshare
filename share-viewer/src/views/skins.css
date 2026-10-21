@@ -874,7 +874,14 @@
        two sides (a root's result and the next right-side thinking) */
     row-gap: 0.75rem;
   }
-  [data-view="grove"] .grove-root {
+  /* the entries wrapper must not become a grid item: it would swallow
+     every entry into one cell and collapse the two-column split (this is
+     what broke grove after the shared base gained a wrapper) */
+  [data-view="grove"] .osh-entries {
+    display: contents;
+  }
+  [data-view="grove"] .grove-root,
+  [data-view="grove"] .grove-left {
     grid-column: 1;
   }
   [data-view="grove"] .grove-right {

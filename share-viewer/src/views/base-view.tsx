@@ -24,11 +24,11 @@ import { sessionModelLabel } from "./session-data"
 
 // ---------------------------------------------------------------- skin ----
 export type SkinWrappers = {
-  TurnWrap?: Component<{ section: SessionSection; index: number; children: JSX.Element }>
-  PromptWrap?: Component<{ section: SessionSection; children: JSX.Element }>
-  ToolWrap?: Component<{ entry: ToolEntry; index: number; children: JSX.Element }>
-  ReasoningWrap?: Component<{ entry: ReasoningEntry; children: JSX.Element }>
-  ResponseWrap?: Component<{ text: string; children: JSX.Element }>
+  TurnWrap?: Component<{ section: SessionSection; index: number; settings: OshSettings; children: JSX.Element }>
+  PromptWrap?: Component<{ section: SessionSection; settings: OshSettings; children: JSX.Element }>
+  ToolWrap?: Component<{ entry: ToolEntry; index: number; settings: OshSettings; children: JSX.Element }>
+  ReasoningWrap?: Component<{ entry: ReasoningEntry; settings: OshSettings; children: JSX.Element }>
+  ResponseWrap?: Component<{ text: string; settings: OshSettings; children: JSX.Element }>
   Header?: Component<ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean }>
   Footer?: Component<ViewProps>
   Nav?: Component<{
@@ -157,20 +157,22 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   }
 
   const TurnBody = (p: { section: SessionSection; index: number }) => (
-    <w.TurnWrap section={p.section} index={p.index}>
-      <w.PromptWrap section={p.section}>
+    <w.TurnWrap section={p.section} index={p.index} settings={props.settings}>
+      <w.PromptWrap section={p.section} settings={props.settings}>
         <div class="py-2">
           <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{p.section.prompt}</p>
           <MetaLine section={p.section} data={props.data} />
         </div>
       </w.PromptWrap>
-      <div class="flex flex-col gap-3 pt-1">
+      {/* entry rhythm: -50% vs the old gap-3 (12px). Grove turns this
+          wrapper into `display: contents` so its 2-column grid takes over. */}
+      <div class="osh-entries flex flex-col gap-1.5 pt-1">
         <For each={p.section.ordered}>
           {(e) => (
             <Show
               when={e.kind !== "reasoning"}
               fallback={
-                <w.ReasoningWrap entry={e as ReasoningEntry}>
+                <w.ReasoningWrap entry={e as ReasoningEntry} settings={props.settings}>
                   <ReasoningBlock text={(e as ReasoningEntry).text} settings={props.settings} />
                 </w.ReasoningWrap>
               }
@@ -178,14 +180,14 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               <Show
                 when={e.kind !== "text"}
                 fallback={
-                  <w.ResponseWrap text={(e as TextEntry).text}>
+                  <w.ResponseWrap text={(e as TextEntry).text} settings={props.settings}>
                     <div class="text-14-regular text-text-base osh-content">
                       <Markdown text={(e as TextEntry).text} />
                     </div>
                   </w.ResponseWrap>
                 }
               >
-                <w.ToolWrap entry={e as ToolEntry} index={p.section.ordered.slice(0, p.section.ordered.indexOf(e)).filter((x) => x.kind === "tool").length}>
+                <w.ToolWrap entry={e as ToolEntry} index={p.section.ordered.slice(0, p.section.ordered.indexOf(e)).filter((x) => x.kind === "tool").length} settings={props.settings}>
                   <VendoredPart entry={e as ToolEntry} settings={props.settings} />
                 </w.ToolWrap>
               </Show>

@@ -2,6 +2,9 @@
 // tool content block through the vendored v2 ToolDisplay (BasicTool rows,
 // diff accordions, expandable outputs, the per-tool open rule).
 import { ToolDisplay } from "@opencode/session-ui/tools/tool-renderer"
+// our renderers override read/edit/write/patch/grep/glob/list/todowrite
+// AFTER the kit registered its own (last registration wins)
+import "../tool-overrides"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"

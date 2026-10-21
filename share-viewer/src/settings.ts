@@ -14,6 +14,10 @@ export type OshSettings = {
   toolInfo: boolean
   toolOutput: boolean
   toolGrouping: boolean
+  /** what grouping covers: v1 scope (reads/searches only) or every tool */
+  toolGroupingScope: "context" | "all"
+  /** grove only: keep reasoning on the left (with tools) or move it right */
+  groveThinking: "left" | "right"
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -30,6 +34,8 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   toolInfo: true,
   toolOutput: false,
   toolGrouping: true,
+  toolGroupingScope: "context",
+  groveThinking: "left",
 }
 
 const COOKIE = "osh_settings"
