@@ -109,7 +109,7 @@ export function VirtualTimeline(props: {
     },
     getScrollElement: () => scrollElement ?? null,
     estimateSize: (index: number) => measurementCache.get(rowKeys()[index]) ?? ESTIMATE,
-    overscan: 24,
+    overscan: 40,
     getItemKey: (index: number) => rowKeys()[index] ?? `row:${index}`,
     initialMeasurementsCache,
   })

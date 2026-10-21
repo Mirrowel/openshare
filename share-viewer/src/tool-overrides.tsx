@@ -11,7 +11,7 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, Show } from "solid-js"
+import { createMemo, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
@@ -44,43 +44,88 @@ function ChangeCounts(props: { adds: number; dels: number }) {
   )
 }
 
+
+/** One header for every file tool: label, directory, filename, meta. */
+function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
+  return (
+    <div data-slot="basic-tool-tool-info-structured">
+      <div data-slot="basic-tool-tool-info-main">
+        <span data-slot="basic-tool-tool-title">{props.label}</span>
+        <Show when={dirname(props.path)}>
+          <span data-slot="osh-tool-dir">{dirname(props.path)}/</span>
+        </Show>
+        <span data-slot="osh-tool-file">{basename(props.path)}</span>
+        {props.meta}
+      </div>
+    </div>
+  )
+}
+
+/** Failed tools must say why - several kit rows drop state.error. */
+function errorText(props: ToolProps): string {
+  const explicit = str((props as any).error)
+  if (explicit) return explicit
+  return props.status === "error" ? str(props.output) : ""
+}
+
+/** Shared body frame: tools indent under their trigger. */
+function FileBody(props: { children: JSX.Element }) {
+  return <div data-component="osh-file-body">{props.children}</div>
+}
 /** `read`: the v1 behaviour - show the file body when there is one.
  * Prefers metadata.preview, else the tool's text output (our contract
  * puts the v1 `state.output` into content[0].text). */
+/** `read`: the file body, in the same card as write and edit. */
 const ReadTool = (props: ToolProps) => {
+  const fileComponent = useFileComponent()
   const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
   const preview = createMemo(() => {
     const meta = (props.metadata as any) ?? {}
-    const fromMeta = str(meta.preview)
-    if (fromMeta) return fromMeta
-    return str(props.output)
+    return str(meta.preview) || str(props.output)
   })
+  const failure = createMemo(() => errorText(props))
   const lines = createMemo(() => countLines(preview()))
   return (
     <div data-component="osh-read-tool">
       <BasicTool
         {...props}
         icon="glasses"
-        hasContent={!!preview()}
+        hasContent={!!preview() || !!failure()}
         defer
-        trigger={{
-          title: "Read",
-          subtitle: path() ? basename(path()) : "",
-          args: lines() > 1 ? [`${lines()} lines`] : [],
-        }}
+        trigger={() => (
+          <FileHeader
+            label="Read"
+            path={path()}
+            meta={<Show when={lines() > 1}><span data-slot="basic-tool-tool-arg">{lines()} lines</span></Show>}
+          />
+        )}
       >
-        <pre data-component="osh-pre" class="osh-pre">{preview()}</pre>
+        <Show
+          when={!failure()}
+          fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
+        >
+          <FileBody>
+            <Dynamic
+              component={fileComponent as any}
+              mode="text"
+              file={{ name: path(), contents: preview() }}
+              overflow="scroll"
+              onRendered={() => props.onContentRendered?.()}
+            />
+          </FileBody>
+        </Show>
       </BasicTool>
     </div>
   )
 }
-
 /** `edit`: annotation ABOVE the diff, compact when collapsed, diff below. */
+/** `edit` / `patch`: header first (label, path, +added/-removed), diff below. */
 const EditTool = (props: ToolProps) => {
   const fileComponent = useFileComponent()
   const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
   const oldText = createMemo(() => str((props.input as any).oldString))
   const newText = createMemo(() => str((props.input as any).newString))
+  const failure = createMemo(() => errorText(props))
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -99,70 +144,82 @@ const EditTool = (props: ToolProps) => {
       <BasicTool
         {...props}
         icon="code-lines"
-        hasContent={!!path()}
+        hasContent={!!path() || !!failure()}
         defer
-        trigger={(open) => (
-          <div data-slot="basic-tool-tool-info-structured">
-            <div data-slot="basic-tool-tool-info-main">
-              <span data-slot="basic-tool-tool-title">Edit</span>
-              <Show when={dirname(path())}>
-                <span data-slot="osh-tool-dir">{dirname(path())}/</span>
-              </Show>
-              <span data-slot="osh-tool-file">{basename(path())}</span>
-              <Show when={!open() && (stats().adds || stats().dels)}>
+        trigger={() => (
+          <FileHeader
+            label={props.tool === "patch" ? "Patch" : "Edit"}
+            path={path()}
+            meta={
+              <Show when={stats().adds || stats().dels}>
                 <ChangeCounts adds={stats().adds} dels={stats().dels} />
               </Show>
-            </div>
-          </div>
+            }
+          />
         )}
       >
-        <div data-component="edit-content">
-          <Dynamic
-            component={fileComponent as any}
-            mode="diff"
-            virtualize={false}
-            before={{ name: path(), contents: oldText() }}
-            after={{ name: path(), contents: newText() }}
-            onRendered={() => props.onContentRendered?.()}
-          />
-        </div>
+        <Show
+          when={!failure()}
+          fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
+        >
+          <FileBody>
+            <div data-component="edit-content">
+              <Dynamic
+                component={fileComponent as any}
+                mode="diff"
+                virtualize={false}
+                before={{ name: path(), contents: oldText() }}
+                after={{ name: path(), contents: newText() }}
+                onRendered={() => props.onContentRendered?.()}
+              />
+            </div>
+          </FileBody>
+        </Show>
       </BasicTool>
     </div>
   )
 }
-
 /** `write`: same header discipline as edit, body is the written file. */
+/** `write`: same card as read/edit, body is the written file. */
 const WriteTool = (props: ToolProps) => {
   const fileComponent = useFileComponent()
   const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
   const content = createMemo(() => str((props.input as any).content))
+  const failure = createMemo(() => errorText(props))
+  const lines = createMemo(() => countLines(content()))
   return (
     <div data-component="osh-write-tool">
       <BasicTool
         {...props}
         icon="code-lines"
-        hasContent={!!path() && !!content()}
+        hasContent={!!path() && (!!content() || !!failure())}
         defer
-        trigger={{
-          title: "Write",
-          subtitle: path() ? basename(path()) : "",
-          args: content() ? [`${countLines(content())} lines`] : [],
-        }}
-      >
-        <div data-component="write-content">
-          <Dynamic
-            component={fileComponent as any}
-            mode="text"
-            file={{ name: path(), contents: content() }}
-            overflow="scroll"
-            onRendered={() => props.onContentRendered?.()}
+        trigger={() => (
+          <FileHeader
+            label="Write"
+            path={path()}
+            meta={<Show when={lines() > 0}><span data-slot="basic-tool-tool-arg">{lines()} lines</span></Show>}
           />
-        </div>
+        )}
+      >
+        <Show
+          when={!failure()}
+          fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
+        >
+          <FileBody>
+            <Dynamic
+              component={fileComponent as any}
+              mode="text"
+              file={{ name: path(), contents: content() }}
+              overflow="scroll"
+              onRendered={() => props.onContentRendered?.()}
+            />
+          </FileBody>
+        </Show>
       </BasicTool>
     </div>
   )
 }
-
 /** Text-result tools: raw output in a preformatted surface, never
  * markdown (markdown turned each result line into a paragraph, which is
  * where the blank-line inflation came from). */

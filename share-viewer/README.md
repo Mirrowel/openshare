@@ -40,38 +40,6 @@ WebSocket call the origin and fail unless you wire a live worker in
 
 Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../share-viewer/dist` as assets. Rebuild after changing viewer code, then deploy.
 
-## Legacy viewer (v1) for side-by-side comparison
-
-The deployment can carry BOTH viewer generations over the same share data:
-
-| URL | Viewer |
-| --- | --- |
-| `/s/<id>` | current viewer (v2 kit) |
-| `/v1/#/s/<id>` | the pre-migration viewer (v1 kit) |
-
-`npm run build:all` builds v2 and then pulls the legacy viewer straight out of
-git (`git archive origin/master:share-viewer` → `.legacy-src/`), patches it for
-the `/v1/` mount, builds it with its own vite pipeline and copies the output to
-`dist/v1/`. No branches to switch, no second deployment: `wrangler deploy`
-ships both. `npm run build:legacy` does just the legacy half.
-
-Two things the script handles that are easy to miss:
-
-- **The contract adapter.** The share format is the v2 envelope (a message
-  carries its content embedded); the legacy viewer renders the old v1 model
-  (message + separate parts, assistant turns bound by `parentID`). The script
-  injects `src/legacy-adapter.ts` into the exported tree and normalizes items
-  before the fold, including assigning assistant messages to their user turn by
-  timestamp because items arrive in storage-key order, not chronological order.
-- **Hash routes.** The legacy build is mounted under `/v1/` with
-  `location.hash` routing, so every file it needs - including the module
-  workers shiki uses - is a plain static asset served by the assets layer. That
-  keeps module-worker loading identical to v2 and needs no rewrite rules.
-
-Legacy assets are self-contained (the shiki worker is built with
-`inlineDynamicImports`), which makes `dist/v1` large but independent of
-relative chunk URLs inside a worker scope.
-
 ## Layout
 
 | File | Role |

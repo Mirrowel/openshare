@@ -142,12 +142,16 @@ html[data-osh-read-text="large"] .osh-content {
   cursor: default;
 }
 
-/* classic view: Tool info off hides the vendored invocation title + args.
-   NOTE: dataset.oshToolInfo produces data-osh-tool-info (the DOMStringMap
-   inserts a hyphen per camel hump) - the hyphenless selector never
-   matched, on either branch. Both spellings are kept for safety. */
-html[data-osh-tool-info="off"] [data-slot="basic-tool-tool-info-structured"],
-html[data-osh-toolinfo="off"] [data-slot="basic-tool-tool-info-structured"] {
+/* classic view: Tool info off keeps the CALL (icon + tool name) and hides
+   only what comes after it - the subtitle/arguments - until the row is
+   expanded. Hiding the whole info block made every tool disappear into an
+   empty chevron and took the reasoning rows with it (live-caught).
+   The vendored collapsible marks its open state with a bare `n` attribute
+   (Kobalte), so `:not([n])` is the collapsed state. */
+html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"],
+html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"],
+html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"],
+html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"] {
   display: none;
 }
 
@@ -200,19 +204,66 @@ html[data-osh-toolinfo="off"] [data-slot="basic-tool-tool-info-structured"] {
 
 /* --- scroll behaviour -------------------------------------------------
    We already virtualize, so the kit's content-visibility (which leaves
-   reserved-but-unpainted blocks while scrolling - the "pop-in") is pure
-   downside inside the timeline. And a tool output that is scrolled to its
-   end must not hand the wheel to the page. */
+   reserved-but-unpainted blocks while scrolling - the "pop-in" and the
+   flicker on output blocks) is pure downside inside the transcript.
+   NOTE: the virtualized rows carry data-row-key (not data-timeline-row),
+   so both wrappers must be covered or continuous mode keeps flickering. */
 [data-timeline-row] [data-component="tool-trigger"],
 [data-timeline-row] [data-component="assistant-message"],
-[data-timeline-row] [data-component="file"] {
+[data-timeline-row] [data-component="file"],
+[data-timeline-row] [data-component="reasoning-part"],
+[data-row-key] [data-component="tool-trigger"],
+[data-row-key] [data-component="assistant-message"],
+[data-row-key] [data-component="file"],
+[data-row-key] [data-component="reasoning-part"],
+[data-row-key] [data-component="edit-content"],
+[data-row-key] [data-component="tool-output"] {
   content-visibility: visible;
 }
 [data-timeline-row] [data-scrollable],
 [data-timeline-row] [data-component="tool-output"],
 [data-timeline-row] [data-slot="bash-scroll"],
-[data-timeline-row] [data-component="edit-content"] {
+[data-timeline-row] [data-component="edit-content"],
+[data-row-key] [data-scrollable],
+[data-row-key] [data-component="tool-output"],
+[data-row-key] [data-slot="bash-scroll"],
+[data-row-key] [data-component="edit-content"] {
   overscroll-behavior: contain;
+}
+
+/* --- reading rhythm ---------------------------------------------------
+   Flat left-aligned everything is what made v2 read as one grey block:
+   prose sits on the margin, tool calls step in behind a quiet rail, and
+   reasoning is deliberately quieter than the assistant's own answer. */
+[data-timeline-row] [data-component="tool-trigger"],
+[data-row-key] [data-component="tool-trigger"] {
+  padding-left: 10px;
+  border-left: 2px solid var(--border-weaker-base);
+}
+
+[data-timeline-row] [data-component="reasoning-part"],
+[data-row-key] [data-component="reasoning-part"] {
+  color: var(--text-weaker);
+  padding-left: 10px;
+  border-left: 2px dashed var(--border-weaker-base);
+}
+[data-timeline-row] [data-component="reasoning-part"] [data-component="markdown"],
+[data-row-key] [data-component="reasoning-part"] [data-component="markdown"] {
+  font-size: 13px;
+  color: var(--text-weaker);
+  font-style: italic;
+}
+[data-timeline-row] [data-component="reasoning-part"] [data-component="markdown"] :is(strong, b, code),
+[data-row-key] [data-component="reasoning-part"] [data-component="markdown"] :is(strong, b, code) {
+  color: var(--text-weaker);
+}
+
+/* tool bodies line up under their trigger, inside the same rail */
+[data-row-key] [data-component="edit-content"],
+[data-row-key] [data-component="tool-output"],
+[data-row-key] [data-component="write-content"],
+[data-row-key] [data-component="osh-file-body"] {
+  margin-left: 12px;
 }
 
 /* --- our tool renderers ---------------------------------------------- */
@@ -228,6 +279,11 @@ html[data-osh-toolinfo="off"] [data-slot="basic-tool-tool-info-structured"] {
   max-height: 32rem;
   overflow: auto;
   overscroll-behavior: contain;
+}
+.osh-pre-error {
+  color: var(--syntax-diff-delete);
+  border-color: var(--syntax-diff-delete);
+  background: transparent;
 }
 [data-slot="osh-tool-dir"] {
   color: var(--text-weaker);
