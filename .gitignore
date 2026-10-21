@@ -45,3 +45,7 @@ share-server/openshare.db-*
 *~
 *.tsbuildinfo
 npm-debug.log*
+
+# legacy viewer build cache (git archive export)
+share-viewer/.legacy-src/
+share-viewer/.legacy-src.tar

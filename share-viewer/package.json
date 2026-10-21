@@ -5,6 +5,8 @@
   "scripts": {
     "vendor": "node scripts/vendor-v2.mjs && bun install",
     "build": "vite build && node scripts/build-themes.mjs",
+    "build:legacy": "node scripts/build-legacy.mjs",
+    "build:all": "npm run build && npm run build:legacy",
     "typecheck": "bunx tsc --noEmit",
     "dev": "vite"
   },

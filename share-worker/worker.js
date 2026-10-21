@@ -79,6 +79,16 @@ export default {
       if (path === "/health")
         return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env), auth: { mode: authMode(env) } })
 
+      // ---- legacy viewer ------------------------------------------------
+      // A deployment can carry two viewers over the same share data: the
+      // current one at /s/<id> and the v1 one under /v1/ (see
+      // share-viewer/scripts/build-legacy.mjs). The legacy build uses HASH
+      // routes (/v1/#/s/<id>), so its files - including the module workers
+      // it needs - are plain static assets and are served by the assets
+      // layer directly. Nothing to route here; only the bare prefix gets a
+      // trailing slash so /v1 resolves to the directory index.
+      if (path === "/v1") return Response.redirect(url.origin + "/v1/", 308)
+
       // ---- identity -------------------------------------------------------
       // Enrollment + self-service. The heavy lifting lives in the AuthDO
       // (single writer for users/tokens/codes); the router only checks
