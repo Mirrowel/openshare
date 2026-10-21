@@ -38,6 +38,7 @@ import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
+import { VirtualTimeline } from "./timeline-v2"
 import { InfoPanel } from "./views/info-panel"
 import { findView, resolveSessionID } from "./views/registry"
 import { setVendoredData } from "./views/vendored-part"
@@ -467,17 +468,19 @@ function SessionView(props: {
                               </div>
                             }
                           >
-                            <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
-                              <SessionTimeline
-                                document={timelineDoc()}
-                                reasoningMode={reasoningMode()}
+                            <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col"}>
+                              <VirtualTimeline
+                                doc={timelineDoc() as any}
+                                sessionKey={props.source.shareID + ":" + sessionID()}
+                                reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={props.settings.toolOutput}
                                 editToolDefaultOpen={true}
+                                class="grow min-h-0 w-full"
                               />
                               <Show when={searching() && filtered().length === 0}>
                                 <div class="px-6 text-12-regular text-text-weaker">no prompts match.</div>
                               </Show>
-                              <div class="px-6 pt-16 pb-8 shrink-0">
+                              <div class="px-6 pt-8 pb-8 shrink-0">
                                 <PageFooter branding={props.source.branding()} />
                               </div>
                             </div>
@@ -640,15 +643,23 @@ function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
             directory={info?.directory}
             sessionID={sid}
           >
-            <SessionTimeline
-              document={{
-                sessionID: sid,
-                messages: visibleMessages(d, sid) as any,
-                status: sessionStatus(props.source.status()),
-                diffs: (d.session_diff[sid] ?? []) as any,
-              }}
-              reasoningMode="compact"
-            />
+            <Show when={new URLSearchParams(location.search).get("oshVirtual") === "1"} fallback={
+              <SessionTimeline
+                document={{
+                  sessionID: sid,
+                  messages: visibleMessages(d, sid) as any,
+                  status: sessionStatus(props.source.status()),
+                  diffs: (d.session_diff[sid] ?? []) as any,
+                }}
+                reasoningMode="compact"
+              />
+            }>
+              <VirtualTimeline
+                doc={{ sessionID: sid, messages: visibleMessages(d, sid) as any, status: sessionStatus(props.source.status()), diffs: (d.session_diff[sid] ?? []) as any }}
+                sessionKey={"minimal:" + sid}
+                class="h-screen w-full"
+              />
+            </Show>
           </DataProvider>
         </DialogProvider>
       </FileComponentProvider>
@@ -745,7 +756,35 @@ export function App() {
         }}
       >
         <Show when={source.ready()} fallback={<NotFound status={source.status()} />}>
-          <FullPageView source={source} settings={settings()} updateSettings={updateSettings} search={search()} onSearch={setSearch} sub={sub} />
+          <WorkerPoolProvider pools={getWorkerPools()}>
+            <FileComponentProvider component={FileSSR}>
+              <DialogProvider>
+                <DataProvider
+                  data={{
+                    session: (source.data()?.session ?? []) as any,
+                    session_status: Object.fromEntries((source.data()?.session ?? []).map((s) => [s.id, sessionStatus(source.status())])),
+                    session_diff: (source.data()?.session_diff ?? {}) as any,
+                    provider: (source.data()?.provider ?? { all: {}, default: {}, connected: {} }) as any,
+                  }}
+                  sessionID={source.data()?.sessionID ?? ""}
+                  directory={source.data()?.session?.find((s: any) => s.id === source.data()?.sessionID)?.directory ?? ""}
+                  onSessionHref={(id) => subHref(source, id)}
+                  onNavigateToSession={(id) => {
+                    const href = subHref(source, id)
+                    if (!href) return
+                    if (source.prefs().openTasksInNewTab !== false) window.open(href, "_blank")
+                    else {
+                      scrollMemory.set(location.pathname, window.scrollY)
+                      window.history.pushState({}, "", href)
+                      window.dispatchEvent(new PopStateEvent("popstate"))
+                    }
+                  }}
+                >
+                  <FullPageView source={source} settings={settings()} updateSettings={updateSettings} search={search()} onSearch={setSearch} sub={sub} />
+                </DataProvider>
+              </DialogProvider>
+            </FileComponentProvider>
+          </WorkerPoolProvider>
           <Show when={settings().view === "classic" || settings().view === "reader"}>
           <SessionView
             data={source.data()!}

@@ -46,6 +46,16 @@ const copyTree = (from, to) => {
 // --- session-ui ---
 copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/src"))
 {
+  // extra export used by our viewer (ToolDisplay for the custom views);
+  // upstream doesn't export the tool renderer, we do — keep on regeneration
+  const p = join(ROOT, "vendor/session-ui-v2/package.json")
+  if (existsSync(p)) {
+    const pkg = JSON.parse(readFileSync(p, "utf8"))
+    pkg.exports["./tools/tool-renderer"] = "./src/tools/tool-renderer.tsx"
+    writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n")
+  }
+}
+{
   // upstream beta type bugs (narrowed unions) — suppress typechecking for
   // these files rather than forking them
   const suppress = ["session-ui-v2/src/tools/shell-output.ts", "ui-v2/src/forms/select/select.tsx"]

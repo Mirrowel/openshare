@@ -1,7 +1,7 @@
 // The classic tool presentation, reusable by every view: renders a synced
 // tool content block through the vendored v2 ToolDisplay (BasicTool rows,
 // diff accordions, expandable outputs, the per-tool open rule).
-import { ToolDisplay } from "../../vendor/session-ui-v2/src/tools/tool-renderer"
+import { ToolDisplay } from "@opencode/session-ui/tools/tool-renderer"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
