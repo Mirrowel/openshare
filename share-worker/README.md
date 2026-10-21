@@ -2,10 +2,18 @@
 
 Self-hosted session sharing for opencode. Upstream discontinued share
 links (opncd.ai); this replaces the whole chain with infrastructure you
-own. One data contract everywhere: the upstream share `Data[]` snapshot
-model (session / message / part / session_diff / model / prefs items,
-keyed-merge last-write-wins, keys derived server-side) — live and
-archived sessions are the same bytes and render with the same viewer.
+own. One data contract everywhere: the OpenShare envelope `v: 2`
+(session / message / session_diff / model / prefs items — messages carry
+their content embedded (opencode v2 session shapes), keyed-merge
+last-write-wins, keys derived server-side) — live and archived sessions
+are the same bytes and render with the same viewer.
+
+Storage scales with session size: each item lives under its own DO
+storage key (`item/<key>`), tombstones cascade to their parts' shards,
+and `/data` plus the WS first frame are rendered once per revision into
+an isolate-memory cache. A viewer that just loaded `/data` may open the
+WS with `?since=<rev>` — when the rev is unchanged the worker answers
+with an empty frame instead of re-sending the full item set.
 
 ## Deploy
 

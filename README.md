@@ -249,7 +249,8 @@ Full semantics: [share-worker/README — Identity & enrollment](share-worker/REA
 
 Each share serves a self-contained page at `<worker>/s/<id>` (and `/s/<id>/<sub>` for a subagent's sub-page — task rows link there, new-tab behavior configurable). The page is static asset hosting that ships with the backend — you build it once at deploy (or use the Docker image, which builds it in).
 
-- **Live updates** — the page attaches over WebSocket and merges frames client-side (keyed, idempotent; message/part tombstones remove undone work the same way opencode does). If the socket drops, it falls back to 5-second polling and re-attaches automatically — a refresh is never required.
+- **Live updates** — the page attaches over WebSocket and merges frames client-side (keyed, idempotent; message tombstones remove undone work the same way opencode does). If the socket drops, it falls back to 5-second polling and re-attaches automatically — a refresh is never required. The WS opens with a `since` rev handshake, so a fresh page load transfers the item set exactly once.
+- **Big sessions** — the viewer is built on the opencode v2 component kit (session-ui + ui, vendored) and the continuous mode uses a virtualized timeline: rows render as you scroll, so a multi-thousand-message share costs the same DOM as a small one. Paged mode renders one turn at a time.
 - **Status badges** — `live`, `completed`, `error`, `interrupted` (plugin vanished without goodbye — finalized server-side after the grace window), `gone` (deleted or TTL-expired; the final frame says so).
 - **Multi-session shares** — a share that carries subagent sessions lists them; each opens its own sub-page with the parent linked back. Folded undone turns stay folded (the revert pointer is honored), diffs render unified or split.
 - **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer renders a login form, exchanges it for a 7-day cookie, and locks out after repeated failures (429). The gate never grants write access.
@@ -318,7 +319,7 @@ Values apply per share creation — the file is read on every activation. `share
 
 ## How your data is handled
 
-- **What leaves your machine**: the session transcript you chose to share — session info, messages, parts (text, tool calls and outputs), model/prefs items. The plugin strips its own binding (including the share secret) from everything it syncs; the server strips session metadata on all read paths.
+- **What leaves your machine**: the session transcript you chose to share — session info, messages (text, reasoning, tool calls and outputs embedded per message, opencode v2 session shapes), model/prefs items. The plugin strips its own binding (including the share secret) from everything it syncs; the server strips session metadata on all read paths. The share format is the OpenShare envelope (`v: 2`): item types the viewer renders are `session`, `message` (content-embedded), `model`, `prefs`, and `session_diff`; unknown item types degrade to notices in the viewer.
 - **The share URL is a credential.** Anyone holding it can read the whole conversation unless you enable the read gate (read auth is **off by default** — turn it on for anything sensitive). Write access is separate: it needs the server-side token or per-share secret.
 - **Retention**: shares live for their TTL (default **90 days**, capped by the server), then the sweeper deletes them. Deleting a share (unshare, purge) removes the data; "leave as-is" keeps a frozen snapshot until its TTL.
 - **Where it lives**: your backend — Cloudflare (DO storage + KV) or your own server (one SQLite file). No third party, no analytics, no telemetry from this repo's code.

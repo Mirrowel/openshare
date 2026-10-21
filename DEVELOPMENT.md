@@ -45,6 +45,7 @@ enforce it: the same auth/enroll suites run against both backends).
 | auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign — 48 checks, CF + Bun |
 | enroll | plugin enrollment lifecycle vs a real worker (private + public) |
 | fanout | dual workers, mid-session join backfill, opt-outs, collisions |
+| big (×backends) | scale: ~3k items incl. MB-size parts through sharded storage — full `/data`, zero stuck revs |
 | cli / npm-e2e (on demand) | real `opencode run` with the CI bundle / package; the published npm package by registry spec (`node scripts/npm-e2e.mjs` — no npm alias by design: on-demand only) |
 
 Note what CI actually gates: the GitHub workflow runs typecheck + build + pack dry-run (`npm run ci`) — **no test suites run there** (they need opencode + wrangler + port access). The matrix is a local-before-commit obligation.
@@ -57,6 +58,15 @@ Suite rules of the road (all learned from live failures):
 - Wrangler supervisors survive tree-kills and respawn workerd — kill by command line, then sweep the port.
 - Two wrangler instances share `.wrangler/state` unless `--persist-to` isolates them.
 - Real-inference checks are on-demand scripts, never part of the default matrix.
+
+## Viewer v2 kit + visual verification
+
+`share-viewer` renders on the vendored **opencode v2 component kit** (`vendor/session-ui-v2`, `vendor/ui-v2`, `vendor/client-v2`, `vendor/util-v2`). Regenerate deterministically from the beta checkout with `node scripts/vendor-v2.mjs` (provenance in `vendor/V2-SOURCE.txt`); the script also re-applies the two upstream beta type suppressions and the `./tools/tool-renderer` export. Two hard rules learned live:
+
+- **Import vendored code by package specifier only** (`@opencode/session-ui/...`) — a relative path into `vendor/` creates a second module id (bun `file:` symlinks), which means two `createContext` instances and "context must be used within a provider" at runtime.
+- The viewer has its own typecheck gate (`npm run typecheck` in `share-viewer`, via `bunx tsc`) — run it after every viewer change; it caught a missing import the browser only surfaced as an undefined-symbol crash.
+
+Visual verification rig: `share-viewer` build served by a throwaway wrangler, a rich contract-v2 fixture share, then playwright-core over real Edge — screenshots + console-error capture for classic/continuous/reader, a 2000-message scale check (virtualized continuous mode must keep ~40 rows in the DOM), and a views sweep across all ten custom views. The rig lives outside the repo; rebuild it from this description when needed. Continuous mode rides `src/timeline-v2.tsx` (lean port of the v2 app virtualizer: measured rows, per-key measurement cache, pinned-to-end anchoring).
 
 ## Release workflow
 

@@ -135,7 +135,11 @@ function liveSource(ctx: any): Source {
     try {
       // local http workers (bun server, wrangler dev) speak plain ws://
       const proto = location.protocol === "https:" ? "wss" : "ws"
-      ws = new WebSocket(`${proto}://${location.host}/api/share/${shareID}/ws`)
+      // `since`: we already hold /data at rev — the worker answers with an
+      // empty frame when nothing changed instead of the full first frame
+      const r = typeof rev === "function" ? rev() : 0
+      const since = Number.isFinite(r) && r > 0 ? `?since=${r}` : ""
+      ws = new WebSocket(`${proto}://${location.host}/api/share/${shareID}/ws${since}`)
     } catch {
       startPolling()
       return

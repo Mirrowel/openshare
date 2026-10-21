@@ -782,6 +782,15 @@ export function createEngine(deps: EngineDeps): Engine {
       logError("spool save failed", (e as Error)?.message || e)
     }
   }
+  // hot path: appending one pending frame must not re-serialize the whole
+  // queue (O(n^2) during backfill bursts) — append the line instead
+  const spoolAppend = (st: SessionState, r: RemoteState, f: { items: unknown[]; status: string }) => {
+    try {
+      appendFileSync(queuePath(st, r.url), JSON.stringify(f) + "\n")
+    } catch (e) {
+      logError("spool append failed", (e as Error)?.message || e)
+    }
+  }
   const spoolLoad = (st: SessionState, r: RemoteState) => {
     try {
       const meta = JSON.parse(readFileSync(metaPath(st, r.url), "utf8"))
@@ -792,10 +801,18 @@ export function createEngine(deps: EngineDeps): Engine {
         r.ackedRev = meta.ackedRev ?? 0
       }
       if (existsSync(queuePath(st, r.url))) {
-        r.pending = readFileSync(queuePath(st, r.url), "utf8")
-          .split("\n")
-          .filter((l) => l.trim())
-          .map((l) => JSON.parse(l))
+        // append-only spool: a crash mid-append can tear the LAST line —
+        // keep the valid prefix instead of dropping the whole queue
+        r.pending = []
+        for (const line of readFileSync(queuePath(st, r.url), "utf8").split("\n")) {
+          if (!line.trim()) continue
+          try {
+            r.pending.push(JSON.parse(line))
+          } catch {
+            log(`spool load: dropped torn tail line for ${st.sid.slice(0, 18)}`)
+            break
+          }
+        }
       }
     } catch {
       r.pending = []
@@ -1379,7 +1396,7 @@ export function createEngine(deps: EngineDeps): Engine {
       // sync dies as "unknown op" (live-caught: post-drop reconnects
       // lost whole turns). The init-ok handler flushes pending itself.
       r.pending.push(f)
-      spoolSave(st, r)
+      spoolAppend(st, r, f)
       if (r.ws && !r.wsReady) continue
       if (r.wsReady) {
         sendSync(r, f)
@@ -1599,7 +1616,7 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const query = () => (deps.directory ? { directory: deps.directory } : {})
 
-  async function fetchMessages(client: ClientApi, sid: string): Promise<Message[]> {
+  async function fetchMessages(client: ClientApi, sid: string, onPage?: (page: Message[]) => void): Promise<Message[]> {
     if (typeof client.session.messages !== "function") return []
     const out: Message[] = []
     let before: string | undefined
@@ -1614,6 +1631,14 @@ export function createEngine(deps: EngineDeps): Engine {
       )
       if (!Array.isArray(result) || result.length === 0) break
       out.push(...(result as Message[]))
+      // stream pages as they arrive: enqueue (and the rate-limited flush)
+      // starts with page 1 while later pages are still loading — a huge
+      // session backfills progressively instead of after a full collect
+      if (onPage) {
+        try {
+          onPage(result as Message[])
+        } catch {}
+      }
       if (result.length < PAGE_SIZE) break
       const last = result[result.length - 1] as Message
       const lastInfo = (last?.info ?? last) as Record<string, unknown> | undefined
@@ -1635,30 +1660,32 @@ export function createEngine(deps: EngineDeps): Engine {
     const sessionInfoValue = info ?? (await sessionInfo(client, sid))
     if (sessionInfoValue) enqueue(st, itemFor("session", redact(sessionInfoValue), sid))
 
-    const messages = await fetchMessages(client, sid)
     let modelSeen = false
-    for (const message of messages) {
-      const m = ((message.info ?? message) as MessageInfo) as Record<string, unknown> | undefined
-      if (!m || typeof m.id !== "string") continue
-      // seed the merge state, then emit the assembled v2 message
-      const e = mergeEntry(st, m.id)
-      e.info = m
-      for (const rawPart of (message.parts ?? []) as Array<Record<string, unknown>>) {
-        const p = rawPart as PartInfo
-        if (!p || typeof p.id !== "string" || typeof p.messageID !== "string") continue
-        if (p.state?.status === "error") st.badSignal = true
-        e.parts.set(p.id, p as Record<string, unknown>)
-      }
-      emitMerged(st, sid, m.id)
-      if (m.role === "user" && m.model) {
-        modelSeen = true
-        const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model as SessionModel)
-        enqueue(
-          st,
-          itemFor("model", [{ id: (m.model as SessionModel).modelID, providerID: (m.model as SessionModel).providerID, name: label }], sid),
-        )
+    const consume = (messages: Message[]) => {
+      for (const message of messages) {
+        const m = ((message.info ?? message) as MessageInfo) as Record<string, unknown> | undefined
+        if (!m || typeof m.id !== "string") continue
+        // seed the merge state, then emit the assembled v2 message
+        const e = mergeEntry(st, m.id)
+        e.info = m
+        for (const rawPart of (message.parts ?? []) as Array<Record<string, unknown>>) {
+          const p = rawPart as PartInfo
+          if (!p || typeof p.id !== "string" || typeof p.messageID !== "string") continue
+          if (p.state?.status === "error") st.badSignal = true
+          e.parts.set(p.id, p as Record<string, unknown>)
+        }
+        emitMerged(st, sid, m.id)
+        if (m.role === "user" && m.model) {
+          modelSeen = true
+          const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model as SessionModel)
+          enqueue(
+            st,
+            itemFor("model", [{ id: (m.model as SessionModel).modelID, providerID: (m.model as SessionModel).providerID, name: label }], sid),
+          )
+        }
       }
     }
+    const messages = await fetchMessages(client, sid, (page) => consume(page))
     if (!modelSeen && sessionInfoValue?.model) {
       // hosts whose user messages carry no model (v2): label from the
       // session's own model

@@ -525,9 +525,26 @@ function normalizeV1Message(info, parts) {
   return;
 }
 function normalizeV1Diff(diff) {
-  if (Array.isArray(diff))
-    return diff.filter((d) => d && typeof d === "object");
-  return diff;
+  if (!Array.isArray(diff))
+    return diff;
+  return diff.map((d) => {
+    if (!d || typeof d !== "object")
+      return d;
+    const r = d;
+    if (typeof r.additions === "number" && typeof r.deletions === "number")
+      return r;
+    const patch = typeof r.patch === "string" ? r.patch : "";
+    let additions = 0;
+    let deletions = 0;
+    for (const line of patch.split(`
+`)) {
+      if (line.startsWith("+") && !line.startsWith("+++"))
+        additions++;
+      else if (line.startsWith("-") && !line.startsWith("---"))
+        deletions++;
+    }
+    return { ...r, additions: typeof r.additions === "number" ? r.additions : additions, deletions: typeof r.deletions === "number" ? r.deletions : deletions };
+  });
 }
 function cursorFor(id, time) {
   return Buffer.from(JSON.stringify({ id, time })).toString("base64url");
@@ -569,9 +586,9 @@ function itemFor(type, data, sessionID) {
   if (type === "prefs")
     return { key: "prefs", item: { type, data } };
   if (type === "session")
-    return { key: `session/${data?.id ?? ""}`, item: { type, data } };
+    return { key: `session/${data?.id ?? ""}`, item: { type, sessionID, data } };
   if (type === "message")
-    return { key: `message/${data?.id ?? ""}`, item: { type, data } };
+    return { key: `message/${data?.id ?? ""}`, item: { type, sessionID, data } };
   if (type === "session_diff")
     return { key: `session_diff/${sessionID}`, item: { type, sessionID, data } };
   return;
@@ -1036,6 +1053,14 @@ function createEngine(deps) {
       logError("spool save failed", e?.message || e);
     }
   };
+  const spoolAppend = (st, r, f) => {
+    try {
+      appendFileSync(queuePath(st, r.url), JSON.stringify(f) + `
+`);
+    } catch (e) {
+      logError("spool append failed", e?.message || e);
+    }
+  };
   const spoolLoad = (st, r) => {
     try {
       const meta = JSON.parse(readFileSync2(metaPath(st, r.url), "utf8"));
@@ -1045,8 +1070,18 @@ function createEngine(deps) {
         r.ackedRev = meta.ackedRev ?? 0;
       }
       if (existsSync2(queuePath(st, r.url))) {
-        r.pending = readFileSync2(queuePath(st, r.url), "utf8").split(`
-`).filter((l) => l.trim()).map((l) => JSON.parse(l));
+        r.pending = [];
+        for (const line of readFileSync2(queuePath(st, r.url), "utf8").split(`
+`)) {
+          if (!line.trim())
+            continue;
+          try {
+            r.pending.push(JSON.parse(line));
+          } catch {
+            log(`spool load: dropped torn tail line for ${st.sid.slice(0, 18)}`);
+            break;
+          }
+        }
       }
     } catch {
       r.pending = [];
@@ -1540,7 +1575,7 @@ function createEngine(deps) {
     let httpWork;
     for (const r of st.remotes.values()) {
       r.pending.push(f);
-      spoolSave(st, r);
+      spoolAppend(st, r, f);
       if (r.ws && !r.wsReady)
         continue;
       if (r.wsReady) {
@@ -1734,7 +1769,7 @@ function createEngine(deps) {
   const PAGE_SIZE = 100;
   const MAX_PAGES = 50;
   const query = () => deps.directory ? { directory: deps.directory } : {};
-  async function fetchMessages(client, sid) {
+  async function fetchMessages(client, sid, onPage) {
     if (typeof client.session.messages !== "function")
       return [];
     const out = [];
@@ -1750,6 +1785,11 @@ function createEngine(deps) {
       if (!Array.isArray(result) || result.length === 0)
         break;
       out.push(...result);
+      if (onPage) {
+        try {
+          onPage(result);
+        } catch {}
+      }
       if (result.length < PAGE_SIZE)
         break;
       const last = result[result.length - 1];
@@ -1769,29 +1809,31 @@ function createEngine(deps) {
     const sessionInfoValue = info ?? await sessionInfo(client, sid);
     if (sessionInfoValue)
       enqueue(st, itemFor("session", redact(sessionInfoValue), sid));
-    const messages = await fetchMessages(client, sid);
     let modelSeen = false;
-    for (const message of messages) {
-      const m = message.info ?? message;
-      if (!m || typeof m.id !== "string")
-        continue;
-      const e = mergeEntry(st, m.id);
-      e.info = m;
-      for (const rawPart of message.parts ?? []) {
-        const p = rawPart;
-        if (!p || typeof p.id !== "string" || typeof p.messageID !== "string")
+    const consume = (messages2) => {
+      for (const message of messages2) {
+        const m = message.info ?? message;
+        if (!m || typeof m.id !== "string")
           continue;
-        if (p.state?.status === "error")
-          st.badSignal = true;
-        e.parts.set(p.id, p);
+        const e = mergeEntry(st, m.id);
+        e.info = m;
+        for (const rawPart of message.parts ?? []) {
+          const p = rawPart;
+          if (!p || typeof p.id !== "string" || typeof p.messageID !== "string")
+            continue;
+          if (p.state?.status === "error")
+            st.badSignal = true;
+          e.parts.set(p.id, p);
+        }
+        emitMerged(st, sid, m.id);
+        if (m.role === "user" && m.model) {
+          modelSeen = true;
+          const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model);
+          enqueue(st, itemFor("model", [{ id: m.model.modelID, providerID: m.model.providerID, name: label }], sid));
+        }
       }
-      emitMerged(st, sid, m.id);
-      if (m.role === "user" && m.model) {
-        modelSeen = true;
-        const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, m.model);
-        enqueue(st, itemFor("model", [{ id: m.model.modelID, providerID: m.model.providerID, name: label }], sid));
-      }
-    }
+    };
+    const messages = await fetchMessages(client, sid, (page) => consume(page));
     if (!modelSeen && sessionInfoValue?.model) {
       const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, sessionInfoValue.model);
       enqueue(st, itemFor("model", [{ id: sessionInfoValue.model.modelID, providerID: sessionInfoValue.model.providerID, name: label }], sid));

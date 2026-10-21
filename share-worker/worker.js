@@ -597,7 +597,8 @@ export class ControlDO {
             secret: this.attachSecret,
             rev: body.rev,
             status: body.status,
-            data: body.data,
+            // no `data` payload: the only ControlDO client is the plugin,
+            // which backfills from the host and ignores attach data
             policy: resolvePolicy(this.env),
           })
         }
@@ -771,7 +772,16 @@ export class ShareDO {
       const pair = new WebSocketPair()
       this.state.acceptWebSocket(pair[1], ["viewer"])
       try {
-        pair[1].send((await this.renderCache(meta)).frameStr)
+        // `since` handshake: a viewer that just loaded /data at rev N
+        // doesn't need the full first frame again — an empty frame with
+        // the rev/status keeps it in sync until the next broadcast
+        const since = Number(url.searchParams.get("since") ?? "")
+        const meta2 = meta
+        if (Number.isFinite(since) && since === (meta2.rev ?? 0)) {
+          pair[1].send(JSON.stringify({ op: "frame", rev: meta2.rev, status: meta2.status, items: [] }))
+        } else {
+          pair[1].send((await this.renderCache(meta)).frameStr)
+        }
       } catch {}
       return new Response(null, { status: 101, webSocket: pair[0] })
     }
