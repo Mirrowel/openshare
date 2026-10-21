@@ -315,19 +315,19 @@ export namespace Timeline {
     let previousAssistantTool = false
     // An assistant message can produce several rows because its content parts are
     // rendered separately. Notices end a segment so none of those rows cross it.
+    // openshare fork: grouping is PER ASSISTANT MESSAGE (one response).
     const appendAssistantSegment = (messages: SessionMessageAssistant[]) => {
-      const refs = messages.flatMap((message, messageIndex) =>
-        contentEntries(message)
+      const segments = messages.map((message, messageIndex) => ({
+        messageIndex,
+        refs: contentEntries(message)
           .filter(
             (entry) =>
               isRenderable(entry.content, showReasoning, detail) && !(thinking && entry.content === lastContent),
           )
           .map((entry) => ({ messageID: message.id, messageIndex, partID: entry.id, content: entry.content })),
-      )
+      }))
       const interruptedAt = messages.findIndex((message) => isInterrupted(message.error))
-      const before = interruptedAt < 0 ? refs : refs.filter((ref) => ref.messageIndex <= interruptedAt)
-      const after = interruptedAt < 0 ? [] : refs.filter((ref) => ref.messageIndex > interruptedAt)
-      const appendGroups = (items: typeof refs) => {
+      const appendGroups = (items: { messageID: string; partID: string; content: Content }[]) => {
         let offset = 0
         groupContent(items, shellToolDefaultOpen, editToolDefaultOpen, detail).forEach((group) => {
           const tool = group.type !== "part" || items[offset]?.content.type !== "text"
@@ -337,19 +337,29 @@ export namespace Timeline {
               userMessageID: turnID,
               group,
               previousAssistantPart: assistantGroupIndex > 0,
-              spacing: assistantGroupIndex > 0 ? (previousAssistantTool && tool ? "tool" : "content") : undefined,
+              spacing:
+                assistantGroupIndex > 0
+                  ? detail
+                    ? "content"
+                    : previousAssistantTool && tool
+                      ? "tool"
+                      : "content"
+                  : undefined,
             }),
           )
           assistantGroupIndex += 1
           previousAssistantTool = tool
         })
       }
+      const appendSegmentGroups = (selected: typeof segments) => {
+        for (const segment of selected) appendGroups(segment.refs)
+      }
 
-      appendGroups(before)
+      appendSegmentGroups(segments.filter((segment) => interruptedAt < 0 || segment.messageIndex <= interruptedAt))
       if (interruptedAt >= 0) {
         if (!compaction && detail?.notices.placement !== "hidden")
           rows.push(new TimelineRow.TurnDivider({ userMessageID: turnID }))
-        appendGroups(after)
+        appendSegmentGroups(segments.filter((segment) => segment.messageIndex > interruptedAt))
       }
 
       if (messages.at(-1) !== lastAssistant) return
@@ -438,7 +448,9 @@ function groupMessages(rows: TimelineRow.TimelineRow[], detail: TimelineDetail, 
       previous.group.type === "context" &&
       current._tag === "AssistantPart" &&
       current.group.type === "context" &&
-      previous.userMessageID === current.userMessageID
+      previous.userMessageID === current.userMessageID &&
+      // openshare fork: never merge groups across assistant messages
+      previous.group.refs.at(-1)?.messageID === current.group.refs[0]?.messageID
     ) {
       result[result.length - 1] = new TimelineRow.AssistantPart({
         ...previous,

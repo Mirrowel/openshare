@@ -103,7 +103,7 @@ export function DefaultFooter(props: ViewProps) {
 
 export function ReasoningBlock(props: { text: string; settings: OshSettings }) {
   return (
-    <details class="reasoning-collapse group my-1" open={props.settings.reasoningOpen || undefined}>
+    <details class="reasoning-collapse group" open={props.settings.reasoningOpen || undefined}>
       <summary class="flex items-center gap-2 cursor-pointer list-none select-none py-1">
         <span class="flex items-center gap-1.5 text-12-medium text-text-weaker group-hover:text-text-base transition-colors duration-150">
           <Icon name="brain" size="small" />
@@ -164,33 +164,35 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
           <MetaLine section={p.section} data={props.data} />
         </div>
       </w.PromptWrap>
-      <For each={p.section.ordered}>
-        {(e) => (
-          <Show
-            when={e.kind !== "reasoning"}
-            fallback={
-              <w.ReasoningWrap entry={e as ReasoningEntry}>
-                <ReasoningBlock text={(e as ReasoningEntry).text} settings={props.settings} />
-              </w.ReasoningWrap>
-            }
-          >
+      <div class="flex flex-col gap-3 pt-1">
+        <For each={p.section.ordered}>
+          {(e) => (
             <Show
-              when={e.kind !== "text"}
+              when={e.kind !== "reasoning"}
               fallback={
-                <w.ResponseWrap text={(e as TextEntry).text}>
-                  <div class="text-14-regular text-text-base my-2 osh-content">
-                    <Markdown text={(e as TextEntry).text} />
-                  </div>
-                </w.ResponseWrap>
+                <w.ReasoningWrap entry={e as ReasoningEntry}>
+                  <ReasoningBlock text={(e as ReasoningEntry).text} settings={props.settings} />
+                </w.ReasoningWrap>
               }
             >
-              <w.ToolWrap entry={e as ToolEntry} index={p.section.ordered.slice(0, p.section.ordered.indexOf(e)).filter((x) => x.kind === "tool").length}>
-                <VendoredPart entry={e as ToolEntry} settings={props.settings} />
-              </w.ToolWrap>
+              <Show
+                when={e.kind !== "text"}
+                fallback={
+                  <w.ResponseWrap text={(e as TextEntry).text}>
+                    <div class="text-14-regular text-text-base osh-content">
+                      <Markdown text={(e as TextEntry).text} />
+                    </div>
+                  </w.ResponseWrap>
+                }
+              >
+                <w.ToolWrap entry={e as ToolEntry} index={p.section.ordered.slice(0, p.section.ordered.indexOf(e)).filter((x) => x.kind === "tool").length}>
+                  <VendoredPart entry={e as ToolEntry} settings={props.settings} />
+                </w.ToolWrap>
+              </Show>
             </Show>
-          </Show>
-        )}
-      </For>
+          )}
+        </For>
+      </div>
     </w.TurnWrap>
   )
 

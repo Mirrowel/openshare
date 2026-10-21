@@ -45,16 +45,86 @@ const copyTree = (from, to) => {
 
 // --- session-ui ---
 copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/src"))
+// (the ./tools/tool-renderer export is added in the package.json written below)
+// vendor fork: projection.ts groups per ASSISTANT MESSAGE (one response),
+// never across responses, and our explicit detail forces content spacing.
+// Re-applied after copyTree; fails loudly if upstream anchors drift.
 {
-  // extra export used by our viewer (ToolDisplay for the custom views);
-  // upstream doesn't export the tool renderer, we do — keep on regeneration
-  const p = join(ROOT, "vendor/session-ui-v2/package.json")
+  const p = join(ROOT, "vendor/session-ui-v2/src/timeline/projection.ts")
   if (existsSync(p)) {
-    const pkg = JSON.parse(readFileSync(p, "utf8"))
-    pkg.exports["./tools/tool-renderer"] = "./src/tools/tool-renderer.tsx"
-    writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n")
+    let s = readFileSync(p, "utf8")
+    const fail = (what) => {
+      throw new Error(`vendor-v2: projection fork anchor missing (${what}) — upstream drifted`)
+    }
+    if (!s.includes("openshare fork: grouping is PER ASSISTANT MESSAGE")) {
+      // CRLF-tolerant anchors: the vendored tree is checked out with CRLF
+      // on Windows, so literal "\n" markers never match
+      const startMatch = / {4}const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{/.exec(s)
+      const start = startMatch ? startMatch.index : -1
+      const endRe = /appendGroups\(after\)\r?\n {6}\}/
+      const endMatch = start >= 0 ? endRe.exec(s.slice(start)) : null
+      if (start < 0 || !endMatch) fail("appendAssistantSegment")
+      const end = start + endMatch.index
+      const replacement = `    // openshare fork: grouping is PER ASSISTANT MESSAGE (one response).
+    const appendAssistantSegment = (messages: SessionMessageAssistant[]) => {
+      const segments = messages.map((message, messageIndex) => ({
+        messageIndex,
+        refs: contentEntries(message)
+          .filter(
+            (entry) =>
+              isRenderable(entry.content, showReasoning, detail) && !(thinking && entry.content === lastContent),
+          )
+          .map((entry) => ({ messageID: message.id, messageIndex, partID: entry.id, content: entry.content })),
+      }))
+      const interruptedAt = messages.findIndex((message) => isInterrupted(message.error))
+      const appendGroups = (items: { messageID: string; partID: string; content: Content }[]) => {
+        let offset = 0
+        groupContent(items, shellToolDefaultOpen, editToolDefaultOpen, detail).forEach((group) => {
+          const tool = group.type !== "part" || items[offset]?.content.type !== "text"
+          offset += group.type === "part" ? 1 : group.refs.length
+          rows.push(
+            new TimelineRow.AssistantPart({
+              userMessageID: turnID,
+              group,
+              previousAssistantPart: assistantGroupIndex > 0,
+              spacing:
+                assistantGroupIndex > 0
+                  ? detail
+                    ? "content"
+                    : previousAssistantTool && tool
+                      ? "tool"
+                      : "content"
+                  : undefined,
+            }),
+          )
+          assistantGroupIndex += 1
+          previousAssistantTool = tool
+        })
+      }
+      const appendSegmentGroups = (selected: typeof segments) => {
+        for (const segment of selected) appendGroups(segment.refs)
+      }
+
+      appendSegmentGroups(segments.filter((segment) => interruptedAt < 0 || segment.messageIndex <= interruptedAt))
+      if (interruptedAt >= 0) {
+        if (!compaction && detail?.notices.placement !== "hidden")
+          rows.push(new TimelineRow.TurnDivider({ userMessageID: turnID }))
+        appendSegmentGroups(segments.filter((segment) => segment.messageIndex > interruptedAt))
+      }`
+      s = s.slice(0, start) + (s.includes("\r\n") ? replacement.replace(/\n/g, "\r\n") : replacement) + s.slice(end + endMatch[0].length)
+      s = s.replace(
+        / {6}previous\.userMessageID === current\.userMessageID\r?\n {4}\) \{/,
+        `      previous.userMessageID === current.userMessageID &&
+      // openshare fork: never merge groups across assistant messages
+      previous.group.refs.at(-1)?.messageID === current.group.refs[0]?.messageID
+    ) {`,
+      )
+      if (!s.includes("never merge groups across assistant messages")) fail("groupMessages guard")
+      writeFileSync(p, s)
+    }
   }
 }
+
 // vendor fork: session-timeline.tsx gained a `detail` prop (timeline
 // grouping placements) that upstream doesn't have. Re-apply it after
 // copyTree by patching the two anchors — regenerate and this still works.
@@ -63,33 +133,26 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8")
     if (!s.includes("timelineDetail")) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const before = s
       s = s.replace(
-        'import { createReactiveTimelineProjection, TimelineRow, type ReasoningMode } from "./projection"',
-        'import { createReactiveTimelineProjection, TimelineRow, type ReasoningMode } from "./projection"\nimport type { TimelineDetail } from "./detail"',
+        /import \{ createReactiveTimelineProjection, TimelineRow, type ReasoningMode \} from "\.\/projection"/,
+        '$&\nimport type { TimelineDetail } from "./detail"',
       )
       s = s.replace(
-        '  editToolDefaultOpen?: boolean\n  class?: string',
-        '  editToolDefaultOpen?: boolean\n  /** fork: explicit detail (grouping placements) — undefined = kit default */\n  detail?: TimelineDetail\n  class?: string',
+        /  editToolDefaultOpen\?: boolean\r?\n  class\?: string/,
+        "  editToolDefaultOpen?: boolean\n  /** fork: explicit detail (grouping placements) - undefined = kit default */\n  detail?: TimelineDetail\n  class?: string",
       )
       s = s.replace(
-        '    editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,\n  })',
-        '    editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,\n    timelineDetail: () => props.detail,\n  })',
+        / {4}editToolDefaultOpen: \(\) => props\.editToolDefaultOpen \?\? false,\r?\n {2}\}\)\r?\n {0,2}const \[toolOpen/,
+        "    editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,\n    timelineDetail: () => props.detail,\n  })\n  const [toolOpen",
       )
+      if (s === before || !s.includes("timelineDetail") || !s.includes("detail?: TimelineDetail"))
+        throw new Error("vendor-v2: session-timeline fork anchors missing — upstream drifted")
+      // keep the file's newline style (regex replacements above used \n)
+      if (nl === "\r\n") s = s.replace(/\r?\n/g, "\r\n")
       writeFileSync(p, s)
     }
-  }
-}
-{
-  // upstream beta type bugs (narrowed unions) — suppress typechecking for
-  // these files rather than forking them
-  const suppress = ["session-ui-v2/src/tools/shell-output.ts", "ui-v2/src/forms/select/select.tsx"]
-  const notes = {
-    "session-ui-v2/src/tools/shell-output.ts": "string|object union narrowed as object-only",
-    "ui-v2/src/forms/select/select.tsx": "onCleanup(void|fn) union",
-  }
-  for (const rel of suppress) {
-    const p = join(ROOT, "vendor", rel)
-    if (existsSync(p)) writeFileSync(p, `// @ts-nocheck — upstream beta type bug: ${notes[rel]}\n` + readFileSync(p, "utf8"))
   }
 }
 writeFileSync(
@@ -125,6 +188,9 @@ writeFileSync(
         "./session-review": "./src/components/session-review.tsx",
         "./session-retry": "./src/components/session-retry.tsx",
         "./tool-count-label": "./src/components/tool-count-label.tsx",
+        // our viewer imports ToolDisplay for the custom views; upstream
+        // does not export the tool renderer
+        "./tools/tool-renderer": "./src/tools/tool-renderer.tsx",
         "./tool-count-summary": "./src/components/tool-count-summary.tsx",
         "./tool-error-card": "./src/components/tool-error-card.tsx",
         "./tool-status-title": "./src/components/tool-status-title.tsx",
@@ -256,5 +322,19 @@ writeFileSync(
   ),
 )
 
+writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), `vendored from ${SRC}\ngit: ${rev} (${describe})\ndate: ${new Date().toISOString()}\n`)
+{
+  // upstream beta type bugs (narrowed unions) — suppress typechecking for
+  // these files rather than forking them
+  const suppress = ["session-ui-v2/src/tools/shell-output.ts", "ui-v2/src/forms/select/select.tsx"]
+  const notes = {
+    "session-ui-v2/src/tools/shell-output.ts": "string|object union narrowed as object-only",
+    "ui-v2/src/forms/select/select.tsx": "onCleanup(void|fn) union",
+  }
+  for (const rel of suppress) {
+    const p = join(ROOT, "vendor", rel)
+    if (existsSync(p)) writeFileSync(p, `// @ts-nocheck — upstream beta type bug: ${notes[rel]}\n` + readFileSync(p, "utf8"))
+  }
+}
 writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), `vendored from ${SRC}\ngit: ${rev} (${describe})\ndate: ${new Date().toISOString()}\n`)
 console.log("vendor complete")

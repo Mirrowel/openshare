@@ -300,21 +300,21 @@ function SessionView(props: {
                 return name ?? modelID()
               })
               const diffs = createMemo(() => props.data.session_diff[sessionID()] ?? [])
-              // grouping OFF = every tool call its own row: the "separate"
-              // placements for tool-ish categories (default ON keeps the
-              // kit's compact preset: grouped summary rows per response)
-              const timelineDetail = createMemo(() =>
-                props.settings.toolGrouping === false
-                  ? ({
-                      shell: { placement: "separate", details: "collapsed" },
-                      edit: { placement: "separate", details: "collapsed" },
-                      thinking: { placement: "grouped", details: "collapsed" },
-                      subagents: { placement: "separate" },
-                      notices: { placement: "grouped" },
-                      tools: { placement: "separate" },
-                    } as any)
-                  : undefined,
-              )
+              // Grouping is PER RESPONSE (one assistant message = one
+              // response) and never merges thinking: each reasoning part is
+              // its own "Thought" row. OFF = every tool call its own row.
+              // Always passed so ungrouped rows keep content spacing.
+              const timelineDetail = createMemo(() => {
+                const grouped = props.settings.toolGrouping !== false
+                return {
+                  shell: { placement: grouped ? "grouped" : "separate", details: "collapsed" },
+                  edit: { placement: grouped ? "grouped" : "separate", details: "collapsed" },
+                  thinking: { placement: "separate", details: "collapsed" },
+                  subagents: { placement: grouped ? "grouped" : "separate" },
+                  notices: { placement: "separate" },
+                  tools: { placement: grouped ? "grouped" : "separate" },
+                } as any
+              })
               // review panel: files default-OPEN (v1 behavior), user-controlled after
               const [reviewOpen, setReviewOpen] = createSignal<string[]>(diffs().map((d: any) => String(d.file ?? "")))
 
@@ -456,10 +456,7 @@ function SessionView(props: {
                         "lg:flex": !wide(),
                       }}
                     >
-                      <div classList={{ "@container relative pt-14 flex flex-col gap-10 min-h-0 flex-1 basis-3/5 min-w-0": true }}>
-                        <div classList={{ "w-full flex justify-start items-start min-w-0 px-6": true }}>
-                          <div class={props.settings.centerContent ? "w-full max-w-[52rem] mx-auto" : "w-full"}>{title()}</div>
-                        </div>
+                      <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
                         <div class="flex items-start justify-start h-full min-h-0 w-full">
                           <Show when={!props.settings.continuous && userTurns().length > 1}>
                             <MessageNav
@@ -474,7 +471,12 @@ function SessionView(props: {
                           <Show
                             when={props.settings.continuous}
                             fallback={
+                              // header/footer live INSIDE the scroll flow:
+                              // the title scrolls away with the transcript
+                              // and the footer is the last thing in the
+                              // session, never pinned or clipped
                               <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
+                                <div class="px-6 pt-6">{title()}</div>
                                 <SessionTimeline
                                   document={pagedDocument()}
                                   reasoningMode={reasoningMode()}
@@ -482,7 +484,7 @@ function SessionView(props: {
                                   editToolDefaultOpen={true}
                                   detail={timelineDetail()}
                                 />
-                                <div class="px-6 pt-8 pb-8 shrink-0">
+                                <div class="px-6 pt-8 pb-8">
                                   <PageFooter branding={props.source.branding()} class="px-6" />
                                 </div>
                               </div>
@@ -496,20 +498,23 @@ function SessionView(props: {
                                 shellToolDefaultOpen={props.settings.toolOutput}
                                 editToolDefaultOpen={true}
                                 detail={timelineDetail() as any}
+                                header={<div class="px-6 pt-6">{title()}</div>}
+                                footer={
+                                  <div class="px-6 pt-8 pb-8">
+                                    <Show when={searching() && filtered().length === 0}>
+                                      <div class="text-12-regular text-text-weaker">no prompts match.</div>
+                                    </Show>
+                                    <PageFooter branding={props.source.branding()} />
+                                  </div>
+                                }
                                 class="grow min-h-0 w-full"
                               />
-                              <Show when={searching() && filtered().length === 0}>
-                                <div class="px-6 text-12-regular text-text-weaker">no prompts match.</div>
-                              </Show>
-                              <div class="px-6 pt-8 pb-8 shrink-0">
-                                <PageFooter branding={props.source.branding()} />
-                              </div>
                             </div>
                           </Show>
                         </div>
                       </div>
                       <Show when={diffs().length > 0}>
-                        <div class="@container relative pt-14 flex-1 basis-2/5 min-w-0 min-h-0 border-l border-border-weak-base">
+                        <div class="@container relative pt-6 flex-1 basis-2/5 min-w-0 min-h-0 border-l border-border-weak-base">
                           <SessionReview
                             diffs={diffs() as any}
                             open={reviewOpen()}

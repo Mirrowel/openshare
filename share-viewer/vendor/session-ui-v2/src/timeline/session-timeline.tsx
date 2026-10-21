@@ -3,8 +3,8 @@ import { createStore } from "solid-js/store"
 import type { SessionDocument } from "../document"
 import type { SessionUserActions } from "../actions"
 import { createReactiveTimelineProjection, TimelineRow, type ReasoningMode } from "./projection"
-import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "./session-timeline-row"
 import type { TimelineDetail } from "./detail"
+import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "./session-timeline-row"
 
 export type { SessionUserPresentation } from "./session-timeline-row"
 
@@ -15,7 +15,7 @@ export type SessionTimelineProps = {
   reasoningMode?: ReasoningMode
   shellToolDefaultOpen?: boolean
   editToolDefaultOpen?: boolean
-  /** fork: explicit detail (grouping placements) — undefined = kit default */
+  /** fork: explicit detail (grouping placements) - undefined = kit default */
   detail?: TimelineDetail
   class?: string
 }

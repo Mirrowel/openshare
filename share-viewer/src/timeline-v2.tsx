@@ -8,7 +8,7 @@
 // Drives the vendored session-ui projection + row renderer, so rendering
 // is identical to the non-virtualized timeline.
 import { createVirtualizer } from "@tanstack/solid-virtual"
-import { createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
@@ -30,6 +30,8 @@ export function VirtualTimeline(props: {
   editToolDefaultOpen?: boolean
   detail?: TimelineDetail
   presentation?: Record<string, SessionUserPresentation | undefined>
+  header?: JSX.Element
+  footer?: JSX.Element
   class?: string
 }): JSX.Element {
   const projection = createReactiveTimelineProjection({
@@ -70,26 +72,14 @@ export function VirtualTimeline(props: {
     getItemKey: (index: number) => rowKeys()[index] ?? `row:${index}`,
   })
 
-  // measure continuously: expanded tool outputs / markdown / async workers
-  // change row heights AFTER first paint — a one-shot rAF measure goes
-  // stale and the next row clips. One shared observer pool, keyed rows.
-  const observers = new Map<string, ResizeObserver>()
-  const measure = (el: HTMLDivElement) => {
-    const key = el.dataset.rowKey
-    if (!key) return
-    const check = () => {
-      const h = el.getBoundingClientRect().height
-      if (h > 0 && Math.abs((measurementCache.get(key) ?? 0) - h) > 1) {
-        measurementCache.set(key, h)
-        virtualizer.measure()
-      }
-    }
-    observers.get(key)?.disconnect()
-    const ro = new ResizeObserver(() => check())
-    ro.observe(el)
-    observers.set(key, ro)
-    check()
-  }
+  // measure through tanstack's own measureElement (it owns the resize
+  // observer and writes real heights back per index). The old hand-rolled
+  // rAF/ResizeObserver + measure() path left rows placed by the estimate,
+  // which showed up as a uniform ~46px gap between rows in continuous mode
+  // only (classic boxes are adjacent) — live-caught 2026-10-21.
+  onCleanup(() => {
+    if (measurementCache.size > 4000) measurementCache.clear()
+  })
 
   // pin state: at end → pinned (follows new content); nudge up → unpinned
   const onScroll = () => {
@@ -111,8 +101,6 @@ export function VirtualTimeline(props: {
   })
 
   onCleanup(() => {
-    for (const ro of observers.values()) ro.disconnect()
-    observers.clear()
     if (measurementCache.size > 4000) measurementCache.clear()
   })
 
@@ -124,8 +112,12 @@ export function VirtualTimeline(props: {
         scrollElement = el
       }}
       onScroll={onScroll}
-      style={{ "overflow-y": "auto", "min-height": "0", contain: "strict" }}
+      style={{ "overflow-y": "auto", "min-height": "0" }}
     >
+      {/* header/footer live in the scroll flow (normal flow, not absolute):
+          the title scrolls away with the transcript and the footer is the
+          last thing in the session — never pinned */}
+      <Show when={props.header}>{props.header}</Show>
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}>
         {items.map((item) => {
           const row = projection.rowByKey().get(String(item.key))
@@ -133,7 +125,17 @@ export function VirtualTimeline(props: {
           return (
             <div
               data-row-key={item.key}
-              ref={measure}
+              data-index={item.index}
+              ref={(el) => {
+                // tanstack's measureElement early-returns when the index is
+                // outside the computed range, and at ref time (DOM creation)
+                // the range is not computed yet — so nothing was ever
+                // measured and every row sat on the 90px estimate
+                // (live-caught: uniform ~46px gaps in continuous mode).
+                // Defer the first measure; the virtualizer's observer takes
+                // over from there.
+                if (el) requestAnimationFrame(() => virtualizer.measureElement(el))
+              }}
               style={{
                 position: "absolute",
                 top: "0",
@@ -147,6 +149,7 @@ export function VirtualTimeline(props: {
           )
         })}
       </div>
+      <Show when={props.footer}>{props.footer}</Show>
     </div>
   )
 }
