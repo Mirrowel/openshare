@@ -8,14 +8,16 @@ protocol, same plugin, same auth model.
 
 ## Quick start
 
+From the repo root:
+
 ```sh
 # build the viewer once (or point VIEWER_DIR at an existing build)
-cd ../share-viewer && npm install && npm run build && cd ../share-server
+cd share-viewer && npm install && npm run build && cd ../share-server
 
 # sh:
-CREATE_TOKEN=<your-root-token> bun server.ts
+CREATE_TOKEN=root-secret bun server.ts
 # PowerShell:
-#   $env:CREATE_TOKEN = "your-root-token"; bun server.ts
+#   $env:CREATE_TOKEN = "root-secret"; bun server.ts
 # listening on http://0.0.0.0:8787
 ```
 
@@ -69,10 +71,10 @@ reassign, purge) — drive it with curl or the plugin's TUI admin console
 ## Docker
 
 ```sh
-# from the repo root — the image builds the viewer in (see Dockerfile)
+# from the repo root — multi-stage image, viewer built in (see Dockerfile)
 docker build -f share-server/Dockerfile -t openshare .
 
-docker run -e CREATE_TOKEN=… -p 8787:8787 -v oshdata:/data openshare
+docker run -e CREATE_TOKEN=root-secret -p 8787:8787 -v oshdata:/data openshare
 # health: curl -s http://127.0.0.1:8787/health
 ```
 

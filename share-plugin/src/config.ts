@@ -413,10 +413,16 @@ function specPath(spec: string): string | undefined {
   }
 }
 
-/** Does this plugin spec (tui.json entry) point at the openshare package? */
+/** Does this plugin spec (tui.json entry) point at the openshare package?
+ * Accepts the bare npm name, name@version, and the /tui (or any) subpath
+ * form — older docs shipped the subpath spec and presence detection must
+ * never silently miss it (all-mode would keep auto-sharing while the user
+ * believes they installed manual mode — live-caught in review). */
 export function isOpenShareSpec(spec: unknown): spec is string {
   if (typeof spec !== "string" || spec.length === 0) return false
-  if (spec === NPM_NAME || spec.startsWith(`${NPM_NAME}@`)) return true
+  if (spec === NPM_NAME) return true
+  // name@version, name/tui, name@version/tui
+  if (spec.startsWith(`${NPM_NAME}@`) || spec.startsWith(`${NPM_NAME}/`)) return true
   const path = specPath(spec)
   if (path) {
     if (path.endsWith("/opencode-openshare") || path.endsWith("/share-plugin")) return true

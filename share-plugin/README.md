@@ -9,7 +9,7 @@ OpenCode v1 and v2, self-hosted on your own worker.
 |---|---|---|
 | `dist/server.js` | package server entry (opencode.json `plugin` array) | all, unless the TUI is registered |
 | `dist/tui.js` | package TUI entry (tui.json `plugin` array) | its presence flips the server to manual |
-| `openshare.js` | single-file, zero-dependency bundle of the same engine (built by `npm run build`) | always all — the CI bundle |
+| `ci/openshare.js` | single-file, zero-dependency bundle of the same engine (committed; rebuilt by `npm run build`) | always all — the CI bundle |
 
 All three are behavior-identical where they overlap — `npm run
 test:regression` proves the single file and the package match the frozen
@@ -17,36 +17,29 @@ original (`reference/openshare.legacy.js`) on the full share lifecycle.
 
 ## Install
 
-From the registry (published; opencode resolves npm specs):
-
-```sh
-opencode plugin add @mirrowel/opencode-openshare        # server (opencode.json)
-opencode plugin add @mirrowel/opencode-openshare/tui    # TUI (tui.json) — flips to manual sharing
-```
-
-Or by hand in the config files:
+From the registry (published). **v1 hosts** — the bare package name in
+BOTH config files (no `/tui` suffix; opencode resolves the entrypoints
+itself):
 
 ```jsonc
 // opencode.json
 { "plugin": ["@mirrowel/opencode-openshare"] }
 // tui.json (global ~/.config/opencode/tui.json or project)
-{ "plugin": ["@mirrowel/opencode-openshare/tui"] }
+{ "plugin": ["@mirrowel/opencode-openshare"] }
 ```
 
-From a local checkout (developing / tracking main): use the directory spec
-`"file:///…/openshare/share-plugin"` in both files (run `npm run build`
-first — `dist/` is not committed). The CI bundle needs no build at all —
-it is committed ready to use at [`ci/openshare.js`](ci/README.md).
+**v2 hosts** — the CLI writes the config for you:
 
-Then configure (`openshare.config.json` next to the package — see the
-[main README](../README.md#configuration) for all keys):
-
-```jsonc
-{ "workerUrl": "https://your-worker.workers.dev", "createToken": "…" }
+```sh
+opencode plugin add @mirrowel/opencode-openshare
 ```
 
-Or the multi-server form (canonical; `workerUrl`/`createToken` above is
-the single-server shorthand):
+Restart opencode; `/share` and `/openshare` appear in the TUI.
+
+Then configure. For an npm install the durable config file is the
+**settings home** (`~/.config/opencode/openshare.config.json` — also
+what `/openshare` writes); "next to the package" only applies to file
+installs (the CI bundle):
 
 ```jsonc
 {
@@ -56,6 +49,15 @@ the single-server shorthand):
   }
 }
 ```
+
+`workerUrl`/`createToken` is the legacy single-server shorthand for the
+same thing — the `servers` form above is canonical.
+
+From a local checkout (developing / tracking main): use the directory
+spec `"file:///…/openshare/share-plugin"` in both config files (run
+`npm run build` first — `dist/` is not committed). The CI bundle needs
+no build at all: [`ci/openshare.js`](ci/README.md), committed ready to
+use.
 
 **With no token the plugin enrolls itself** on first contact: public
 servers (hoster set `AUTH_MODE=public`) take anyone; private ones need
@@ -116,16 +118,15 @@ stays all-mode.
 
 ```bash
 npm install
-npm run build         # tsc -> dist/ + bun bundle -> openshare.js
+npm run build         # tsc -> dist/ + bun bundle -> ci/openshare.js (Bun on PATH)
 npm run typecheck
 npm run test          # full matrix via the parallel driver (~4.5 min)
 npm run test:quick     # everyday gate (~90s): parity + manual core + TUI + v2 + auth
 ```
 
 Suites (shared machinery in `scripts/suite-lib.mjs`; every run is
-watchdogged, port-swept, and drives the real production path — local
-`wrangler dev` worker + real `opencode serve` with a mock OpenAI-compatible
-provider):
+watchdogged, port-swept, and drives real `opencode serve` instances with
+a mock OpenAI-compatible provider — except where noted):
 
 - `test:regression` — parity of legacy / single-file / package across the
   full lifecycle (create → prompt → completed → delete → 404).
@@ -134,18 +135,21 @@ provider):
   gates, undo tombstones, completed debounce, turn-mode drops.
 - `test:tui-flow` — share/unshare flows, config round-trip, connect
   flow (enroll + persist + rotate), admin console round-trip.
-- `test:v2` — the v2 adapter against a scripted mock v2 host (event
+- `test:v2` — the v2 adapter against a **scripted mock v2 host** (event
   classification, message conversion, live re-sync, delete).
-- `test:auth` — server identity contract: enrollment, code burn, rotate,
-  freeze (secret dead too), limits, reassign, public mode (48 checks).
+- `test:auth` — the **server identity contract** exercised over HTTP/WS
+  (no opencode instance): enrollment, code burn, rotate, freeze (secret
+  dead too), limits, reassign, public mode (48 checks).
 - `test:enroll` — the plugin's enrollment lifecycle end to end (code
   enroll, token persistence across processes, revoke → re-enroll,
   blocked path, public zero-config).
 - `test:fanout` — multi-server: v2 bindings, content parity across
   servers, mid-session join with full-history backfill, per-session
   opt-outs.
-- `test:cli` — real `opencode run` end-to-end (single file + package +
-  silenced outputs), on-demand only (uses the default model).
+- `test:cli` — real `opencode run` end to end (single file + package +
+  silenced outputs; mock provider, sandboxed XDG homes) — on demand.
+- `node scripts/npm-e2e.mjs` — the **published** npm package installed
+  by registry spec, end to end — on demand.
 - `test:server-auth` / `test:server-enroll` — the SAME auth/enroll
   suites against the portable Bun backend (`../share-server`): the
   two-backends-one-protocol parity guarantee.

@@ -1,5 +1,10 @@
 {
-  "$comment": "Open(code)Share CI bundle config. This file sits NEXT TO openshare.js and is read at load; OPENSHARE_* env vars always win (the CI way). The single-file bundle ALWAYS shares all sessions.",
+  "$comment": "Open(code)Share CI bundle config. This file sits NEXT TO openshare.js and is read at load; OPENSHARE_* env vars always win (the CI way). The single-file bundle ALWAYS shares all sessions. Prefer the servers form below (workerUrl/createToken is the legacy single-server shorthand). Empty string means unset. urlFile/announceStderr control the two URL outputs; 'none' disables the file.",
+  "servers": {
+    "https://your-worker.workers.dev": { "token": "" }
+  },
   "workerUrl": "",
-  "createToken": ""
+  "createToken": "",
+  "urlFile": "",
+  "announceStderr": true
 }

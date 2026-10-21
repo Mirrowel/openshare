@@ -45,7 +45,9 @@ enforce it: the same auth/enroll suites run against both backends).
 | auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign — 48 checks, CF + Bun |
 | enroll | plugin enrollment lifecycle vs a real worker (private + public) |
 | fanout | dual workers, mid-session join backfill, opt-outs, collisions |
-| cli / npm-e2e (on demand) | real `opencode run` with the CI bundle / package; the published npm package by registry spec |
+| cli / npm-e2e (on demand) | real `opencode run` with the CI bundle / package; the published npm package by registry spec (`node scripts/npm-e2e.mjs` — no npm alias by design: on-demand only) |
+
+Note what CI actually gates: the GitHub workflow runs typecheck + build + pack dry-run (`npm run ci`) — **no test suites run there** (they need opencode + wrangler + port access). The matrix is a local-before-commit obligation.
 
 Suite rules of the road (all learned from live failures):
 
@@ -61,7 +63,7 @@ Suite rules of the road (all learned from live failures):
 Lifted from the family (agent-variants/config-studio), adapted to the monorepo (the package lives in `share-plugin/`):
 
 - Conventional commits drive semver (`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:`/`!` → major) — `.github/scripts/compute-version.sh`.
-- Channels: `master` → `latest`; `dev`/`alpha`/`beta`/`rc` branches → `0.x.y-<channel>.N` prereleases under the matching npm tag.
+- Channels: `master` → `latest`; `dev`/`alpha`/`beta`/`rc`/`canary` branches → `0.x.y-<channel>.N` prereleases under the matching npm tag (`main` maps to `latest` too).
 - `share-plugin/.release.json` pins the next intended version (`npm run release:intent -- patch|minor|major`); CI refuses drift.
 - Publishing uses npm trusted publishing (GitHub OIDC) — no tokens stored. First publish was bootstrapped manually; everything after goes through the workflow.
 - Release notes: git-cliff (`.github/cliff.toml`) grouped by commit type.
@@ -75,28 +77,23 @@ Gotchas already paid for:
 
 ## Server policy internals
 
-The worker resolves and delivers the connection policy (`/health` + the WS init ack); the plugin clamps itself into it. Defaults:
-
-| Var | Default | Meaning |
-|---|---|---|
-| `SOCKET_POLICY` | `auto` | `auto`: workers.dev/Cloudflare runtime → `persistent` (WS hibernation makes idle sockets free); anything else → `turn`. |
-| `TURN_GRACE_MS` | `120000` | after a turn settles, how long the socket stays warm for an immediate next turn |
-| `IDLE_DROP_MS` | `600000` | no-idle-signal fallback drop |
-| `FINALIZE_AFTER_MS` | `300000` | plugin gone without goodbye → share settles to `interrupted` |
-| `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` | `1000` / `60000` | the client sync-interval clamp window |
-| `COMPLETED_DELAY_MAX_MS` | `60000` | the client completed-delay clamp |
+The worker resolves and delivers the connection policy (`/health` + the WS init ack); the plugin clamps itself into it. The canonical var table (`SOCKET_POLICY`, `TURN_GRACE_MS`, `IDLE_DROP_MS`, `FINALIZE_AFTER_MS`, the debounce/completed clamp window) lives in [`share-worker/README.md`](share-worker/README.md#server-policy).
 
 Per-turn sequence in `turn` mode: prompt → connect/warm → stream → idle → content flushes immediately (status stays `live`) → `completedDelayMs` → completed/error flush → `TURN_GRACE_MS` grace (busy inside keeps the socket) → clean drop; the next event reconnects with spool replay.
 
 ## Host-integration notes (v1/v2)
 
-- Plugin loading: server plugins from `opencode.json` layers, TUI plugins from `tui.json` layers — that split **is** the share-mode switch (presence detection scans tui.json layers; no selfwiring).
+- Plugin loading: server plugins from `opencode.json` layers, TUI plugins from `tui.json` layers — that split **is** the share-mode switch (presence detection scans tui.json layers; no selfwiring). In `opencode run` sandboxes, plugins load via `OPENCODE_CONFIG`; a redirected `XDG_CONFIG_HOME` alone silently loads NO plugins.
 - The package exposes dual entries: `{ id, server, setup }` and `{ id, tui, setup }`; v2 hosts load `./server`'s `default.setup` with the v2 context and auto-discover `./tui` via the `oc-plugin` field in package.json.
 - v1 public session PATCH accepts `title`/`metadata`/…; the share binding lives in `metadata.openshare` (binding v2: a `servers` map; legacy flat bindings migrate at read).
 - The 1.19.x plugin API imports the **v2 SDK** (`@opencode-ai/sdk/v2`) — client calls are flat-args and the path param is `sessionID` (see `src/v2-tui.ts`).
+- v1 SDK client calls are hey-api shaped (`{path: {id}}` / `{path, body}`) and error envelopes don't throw — check `.error` or you fail silently (live-caught as literal `%7Bid%7D` URLs). The client can hit a foreign server when something else squats the target port — degrade loudly, the spool covers.
+- v1 empirical event facts (1.18.x): `message.info.parentID` = the replied-to message; only session `info.parentID` marks subagent children. Task parts carry `state.metadata.sessionId` (the child session). Resumed sessions may emit the user message BEFORE any `session.*` event — unknown sids are treated as main (children announce first).
+- v2 CLI: `opencode plugin add/remove/list/update` exist on v2 hosts; v1 hosts have only the positional `opencode plugin <module>` (writes opencode.json, not tui.json) — docs therefore teach config-file edits for v1 and the commands for v2.
 - TUI dialogs/menus must be built with the **Bun solid transform** (`scripts/build-tui.mjs`) — plain tsc output loses the reactive compilation (`_$effect` blocks) and rows stop tracking state.
 - The host dialog panel renders plugin content with its own padding — borderless family-style frames avoid the dead strip above a border.
 - Upstream's ShareNext/opncd.ai remnants (`session.share`, the built-in `/share`) are the deprecated mechanism this project replaces; our `/share` shadows it by keymap priority.
+- The v2 adapter (`src/v2-server.ts`) maps fine-grained `session.*` domain events onto the engine via a debounced re-sync through the client and converts v2 flat messages to the v1 message+parts Data[] contract; verified against a scripted mock v2 host (`test:v2`) — a live beta run remains the sign-off step.
 
 ## Engine behaviors worth knowing before touching core.ts
 

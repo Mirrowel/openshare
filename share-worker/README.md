@@ -17,18 +17,16 @@ cd share-worker
 npx wrangler kv namespace create KV                        # YOUR namespace — replace the id in wrangler.toml
 npx wrangler secret put CREATE_TOKEN                       # root admin token (treat like a password)
 npx wrangler deploy
-curl -s https://<your-worker>.workers.dev/health           # {"status":"ok","policy":{...},"auth":{"mode":"private"}}
+curl -s https://<your-worker>.workers.dev/health           # {"ok":true,"service":"openshare","policy":{...},"auth":{"mode":"private"}}
 ```
 
 Vars (`AUTH_MODE`, `SOCKET_POLICY`, TTL caps, branding…) are `[vars]` in
 `wrangler.toml` — edit and redeploy. The portable Bun alternative lives
 in [`../share-server`](../share-server/README.md).
 
-## Server policy (the worker owns the rules)
+## Server policy
 
-The plugin clamps itself into these on connect (WS init ack + `/health`
-both carry the resolved policy). All are `[vars]` in `wrangler.toml`
-with code defaults:
+The worker owns the connection rules; the plugin clamps itself into these on connect (WS init ack + `/health` both carry the resolved policy). All are `[vars]` in `wrangler.toml` with code defaults:
 
 | Var | Default | Meaning |
 |---|---|---|
@@ -45,8 +43,8 @@ vanished mid-live), `gone`.
 
 - Title: **Open(code)Share** · tagline: *re:share — session sharing, back
   for opencode*
-- Package/plugin: `openshare` (`openshare.js` + `openshare.config.json`,
-  loaded like any opencode plugin)
+- Package/plugin: `@mirrowel/opencode-openshare` (package; the CI single
+  file `ci/openshare.js` + `openshare.config.json`)
 - Worker: `openshare-worker` (Cloudflare, free-tier friendly)
 
 The default deploy is the **unbranded neutral skin**; deployments brand
@@ -95,9 +93,11 @@ after any part error or retry). The next busy flips live again — old
 open pages wake in place via their hibernating socket. Viewer header
 shows a colored dot (green/blue/red).
 
-**Undo needs no protocol**: opencode publishes `info.revert` on the
-session item; the viewer hides everything from that message while the
-marker is set.
+**Undo**: opencode publishes `info.revert` on the session item while a
+revert marker is set (the viewer folds from it); the NEXT prompt then
+hard-deletes the reverted range — the plugin emits **tombstones**
+(`del: true` frames) so the share physically drops those items. See
+[Worker API](#worker-api) for the tombstone wire form.
 
 ## Branding
 
@@ -257,27 +257,19 @@ title/version/model.
   deletes shares idle beyond their own ttlDays (create-time override,
   capped at MAX_TTL_DAYS).
 
-Deploy: `npx wrangler deploy` (secret CREATE_TOKEN; KV SHARE_INDEX;
-assets = ../share-viewer/dist).
-
-## Plugin config (`openshare.config.json`)
+## Plugin config
 
 The plugin lives in `share-plugin/` (see its README). Three artifacts:
-`openshare.js` (single file, always share-all — the CI bundle),
+`ci/openshare.js` (single file, always share-all — the CI bundle),
 `dist/server.js` (package server; share-all unless the TUI is
 registered), `dist/tui.js` (package TUI; its presence flips the server
 to manual mode with per-session opt-in via `/share`).
 
-Priority `OPENSHARE_*` env > plugin options > file > code defaults.
-Keys: servers (multi-server memberships: url → `{token?, code?, label?,
-active?, adminToken?}`; every active entry shares new sessions — fan-out
-— and tokenless entries self-enroll as described above), workerUrl +
-createToken (legacy single-server shorthand), shareMode ("all"/"manual";
-default = TUI presence), debounceMs (10000), completedDelayMs (5000),
-modelLabel ("$Provider/$Model"; literal text as-is; "" hides), ttlDays
-(90), openTasksInNewTab (true), authLogin/authPassword (""), spoolDir,
-urlFile (all-mode only; "none" disables), announceStderr (true). Full
-table: the root README's Configuration section.
+The full config contract (precedence chain, every key, env vars,
+recipes) is documented once, in the [root README's Configuration
+section](../README.md#configuration). Short version: `OPENSHARE_*` env
+beats files; the `servers` group is the canonical multi-server form;
+`workerUrl`/`createToken` is the legacy single-server shorthand.
 
 Manual mode stores the opt-in in session metadata
 (`metadata.openshare = { v: 2, enabled: true, opts? }`; per-session
@@ -301,27 +293,5 @@ src/app.css) — without them, vendor-only utilities silently never
 generate. Branding swaps at runtime: logo/wordmark images, header link,
 page title, favicon, accent. Default = neutral upstream look.
 
-## v1-plugin facts baked in (empirical, 1.18.31)
-
-- Plugins load in `opencode run` via OPENCODE_CONFIG; a redirected
-  XDG_CONFIG_HOME sandbox silently loads NO plugins.
-- SDK client calls are hey-api shaped: `{path: {id}}` / `{path, body}`
-  — and error envelopes don't throw (check `.error` or you fail
-  silently; live-caught as literal `%7Bid%7D` URLs).
-- The client can hit a foreign server when something else listens on
-  Server.url's port — degrade loudly, spool covers.
-- `message.info.parentID` = the replied-to message; only session
-  `info.parentID` marks subagent children.
-- Task parts carry `state.metadata.sessionId` (the child session).
-- Resumed sessions may emit the user message BEFORE any session.* event
-  — unknown sids are treated as main (children announce first).
-
-## v2 port posture
-
-DONE for the plugin: `share-plugin/src/v2-server.ts` maps the v2 event
-model (fine-grained session.* domain events -> debounced re-sync through
-the client) and converts v2 flat messages to the v1 message+parts Data[]
-contract; `v2-tui.ts` runs the same flows on the v2 TUI (dialog bridge +
-reactive keymap layer). Verified against a scripted mock v2 host; run
-live on a beta build to sign off. The worker/viewer/crypto are
-version-agnostic (Data[]).
+Host-integration empirical notes (v1 event shapes, client quirks, the
+v2 adapter posture) moved to [`../DEVELOPMENT.md`](../DEVELOPMENT.md#host-integration-notes-v1v2).

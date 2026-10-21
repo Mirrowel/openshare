@@ -13,6 +13,7 @@ export type OshSettings = {
   centerContent: boolean
   toolInfo: boolean
   toolOutput: boolean
+  toolGrouping: boolean
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {

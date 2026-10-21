@@ -291,6 +291,26 @@ try {
     const candidates = (await import(distUrl("config.js"))).writeCandidates(cfgDir)
     check("F5: writeCandidates lists global + existing adjacent only", candidates[0].path === expectedHome && candidates.some((c) => c.path === join(cfgDir, "openshare.config.json")) && !candidates.some((c) => c.path === explicitPath), candidates.map((c) => c.path).join(" | "))
 
+    // F5b: TUI-presence detection accepts every documented spec form.
+    // The docs once shipped the /tui subpath while detection matched only
+    // the bare name — presence silently failed and all-mode kept
+    // auto-sharing while the user believed they were in manual mode
+    // (review-caught 2026-10-20). Lock every form: bare, @version,
+    // subpath, @version+subpath — and a lookalike stays negative.
+    const isOpenShareSpec = (await import(distUrl("config.js"))).isOpenShareSpec
+    const specs = [
+      ["@mirrowel/opencode-openshare", true],
+      ["@mirrowel/opencode-openshare@0.1.0", true],
+      ["@mirrowel/opencode-openshare/tui", true],
+      ["@mirrowel/opencode-openshare@0.1.0/tui", true],
+      ["file:///C:/dir/share-plugin", true],
+      ["@mirrowel/opencode-openshare-fork", false],
+      ["@other/openshare", false],
+    ]
+    for (const [spec, expected] of specs) {
+      check(`F5b: presence detection ${expected ? "accepts" : "rejects"} ${spec}`, isOpenShareSpec(spec) === expected)
+    }
+
     // F6: connect flow — the /share first-run path against the real
     // worker: prompt URL, probe (private), prompt code, enroll, persist
     // token as the active server; rotate afterwards revokes the old token

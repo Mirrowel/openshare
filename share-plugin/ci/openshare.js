@@ -16,9 +16,12 @@
 //    (`/share` + `/openshare` in the TUI).
 //
 // Config: env (OPENSHARE_*) > openshare.config.json (next to this file)
-// > code defaults. Keys: workerUrl, createToken, debounceMs, modelLabel,
-// ttlDays, openTasksInNewTab, authLogin, authPassword, spoolDir, urlFile,
-// shareMode ("all" | "manual"; default = TUI presence).
+// > code defaults. Keys: servers (multi-server: url -> {token, code,
+// label, active, adminToken}), workerUrl, createToken (legacy pair),
+// shareMode ("all" | "manual"; default = TUI presence), debounceMs,
+// completedDelayMs, modelLabel, ttlDays, openTasksInNewTab,
+// authLogin, authPassword, spoolDir, urlFile ("none" = off),
+// announceStderr.
 //
 // src/config.ts
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -245,7 +248,9 @@ function specPath(spec) {
 function isOpenShareSpec(spec) {
   if (typeof spec !== "string" || spec.length === 0)
     return false;
-  if (spec === NPM_NAME || spec.startsWith(`${NPM_NAME}@`))
+  if (spec === NPM_NAME)
+    return true;
+  if (spec.startsWith(`${NPM_NAME}@`) || spec.startsWith(`${NPM_NAME}/`))
     return true;
   const path = specPath(spec);
   if (path) {
