@@ -4,6 +4,7 @@ import type { SessionDocument } from "../document"
 import type { SessionUserActions } from "../actions"
 import { createReactiveTimelineProjection, TimelineRow, type ReasoningMode } from "./projection"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "./session-timeline-row"
+import type { TimelineDetail } from "./detail"
 
 export type { SessionUserPresentation } from "./session-timeline-row"
 
@@ -14,6 +15,8 @@ export type SessionTimelineProps = {
   reasoningMode?: ReasoningMode
   shellToolDefaultOpen?: boolean
   editToolDefaultOpen?: boolean
+  /** fork: explicit detail (grouping placements) — undefined = kit default */
+  detail?: TimelineDetail
   class?: string
 }
 
@@ -24,6 +27,7 @@ export function SessionTimeline(props: SessionTimelineProps) {
     reasoningMode: () => props.reasoningMode ?? "compact",
     shellToolDefaultOpen: () => props.shellToolDefaultOpen ?? false,
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
+    timelineDetail: () => props.detail,
   })
   const [toolOpen, setToolOpen] = createStore<Record<string, boolean | undefined>>({})
   const renderer = createSessionTimelineRowRenderer({

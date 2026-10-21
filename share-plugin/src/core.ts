@@ -45,7 +45,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
-import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, normalizeV1Diff, normalizeV1Message } from "./contract.js"
+import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -1991,7 +1991,7 @@ export function createEngine(deps: EngineDeps): Engine {
           if (!messageID) return
           if (t === "message.removed") {
             dropMergedMessage(st, messageID)
-            enqueue(st, { key: `message/${messageID}`, item: { type: "message", del: true, data: { id: messageID } } })
+            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(st.sid, messageID) })
           } else {
             const partID = p.partID as string | undefined
             if (!partID) return

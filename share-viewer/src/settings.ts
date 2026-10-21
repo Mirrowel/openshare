@@ -13,6 +13,7 @@ export type OshSettings = {
   centerContent: boolean
   toolInfo: boolean
   toolOutput: boolean
+  toolGrouping: boolean
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -28,6 +29,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   centerContent: false,
   toolInfo: true,
   toolOutput: false,
+  toolGrouping: true,
 }
 
 const COOKIE = "osh_settings"
@@ -51,10 +53,46 @@ export function writeSettings(s: OshSettings) {
 }
 
 // Apply to <html>: theme attribute + scale attributes. Called pre-paint.
+//
+// Theming rides TWO attributes:
+//   data-color-scheme  — the v2 kit's own switch (all --v2-* tokens,
+//                        light-dark() colors, app-icon variants)
+//   data-osh-theme     — our chrome + premade overrides (build-themes
+//                        emits :root[data-osh-theme=…] blocks)
+// system resolves through matchMedia and re-resolves on OS change.
+const PREMADE_BASE: Record<string, "light" | "dark"> = {
+  light: "light",
+  dark: "dark",
+  mirrobot: "dark",
+  midnight: "dark",
+  sepia: "light",
+  nord: "light",
+}
+let systemHooked = false
+function resolvedScheme(theme: string): "light" | "dark" {
+  if (theme === "system")
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+  return PREMADE_BASE[theme] ?? "light"
+}
+function applyScheme(html: HTMLElement, theme: string) {
+  const scheme = resolvedScheme(theme)
+  html.dataset.colorScheme = scheme
+  // the kit's app-icon + theme context read this dataset
+  html.dataset.ln = scheme
+}
 export function applySettings(s: OshSettings) {
   const html = document.documentElement
   if (s.theme === "system") delete html.dataset.oshTheme
   else html.dataset.oshTheme = s.theme
+  applyScheme(html, s.theme)
+  if (!systemHooked) {
+    systemHooked = true
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      // re-resolve only while following the system
+      const cur = readSettings()
+      if (cur.theme === "system") applyScheme(document.documentElement, "system")
+    })
+  }
   // interface scale (root font — rem paddings scale with it)
   html.dataset.oshText =
     s.textSize === "compact" ? "compact" : s.textSize === "roomy" ? "roomy" : "normal"
@@ -66,6 +104,9 @@ export function applySettings(s: OshSettings) {
   // rule still governs what shows naturally - see toolDefaultOpen)
   html.dataset.oshToolInfo = s.toolInfo ? "on" : "off"
   html.dataset.oshToolOutput = s.toolOutput ? "on" : "off"
+  // tool-call grouping (summary rows). Default ON; off = every call its
+  // own row through the v2 timeline detail placements
+  html.dataset.oshToolGrouping = s.toolGrouping === false ? "off" : "on"
 }
 
 export const TEXT_SIZES: Record<string, string> = {

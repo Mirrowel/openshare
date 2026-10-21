@@ -12,6 +12,7 @@ import { createEffect, createMemo, createSignal, onCleanup, type JSX } from "sol
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
+import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "@opencode/session-ui/timeline/row"
 import type { SessionDocument } from "@opencode/session-ui/document"
 
@@ -27,6 +28,7 @@ export function VirtualTimeline(props: {
   reasoningMode?: ReasoningMode
   shellToolDefaultOpen?: boolean
   editToolDefaultOpen?: boolean
+  detail?: TimelineDetail
   presentation?: Record<string, SessionUserPresentation | undefined>
   class?: string
 }): JSX.Element {
@@ -36,6 +38,7 @@ export function VirtualTimeline(props: {
     reasoningMode: () => props.reasoningMode ?? "compact",
     shellToolDefaultOpen: () => props.shellToolDefaultOpen ?? false,
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
+    timelineDetail: () => props.detail,
   })
   const [toolOpen, setToolOpen] = createStore<Record<string, boolean | undefined>>({})
   const renderer = createSessionTimelineRowRenderer({
@@ -67,17 +70,25 @@ export function VirtualTimeline(props: {
     getItemKey: (index: number) => rowKeys()[index] ?? `row:${index}`,
   })
 
-  // measure after paint; cache per row key (survives reorders)
+  // measure continuously: expanded tool outputs / markdown / async workers
+  // change row heights AFTER first paint — a one-shot rAF measure goes
+  // stale and the next row clips. One shared observer pool, keyed rows.
+  const observers = new Map<string, ResizeObserver>()
   const measure = (el: HTMLDivElement) => {
     const key = el.dataset.rowKey
     if (!key) return
-    requestAnimationFrame(() => {
+    const check = () => {
       const h = el.getBoundingClientRect().height
       if (h > 0 && Math.abs((measurementCache.get(key) ?? 0) - h) > 1) {
         measurementCache.set(key, h)
         virtualizer.measure()
       }
-    })
+    }
+    observers.get(key)?.disconnect()
+    const ro = new ResizeObserver(() => check())
+    ro.observe(el)
+    observers.set(key, ro)
+    check()
   }
 
   // pin state: at end → pinned (follows new content); nudge up → unpinned
@@ -100,6 +111,8 @@ export function VirtualTimeline(props: {
   })
 
   onCleanup(() => {
+    for (const ro of observers.values()) ro.disconnect()
+    observers.clear()
     if (measurementCache.size > 4000) measurementCache.clear()
   })
 

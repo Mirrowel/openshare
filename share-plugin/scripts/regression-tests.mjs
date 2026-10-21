@@ -22,7 +22,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import {
   sleep,
   waitFor,
@@ -211,6 +211,25 @@ try {
   killPortOwners(SERVE_PORT)
   killPortOwners(LLM_PORT)
 }
+
+// contract shape gate (pure): the tombstone item must carry sessionID —
+// viewers key messages as message/<sessionID>/<id>; an unstamped del
+// misses the key and undone turns resurrect on the live page
+try {
+  const { messageTombstone } = await import(
+    pathToFileURL(join(here(".."), "dist", "contract.js")).href
+  )
+  const t = messageTombstone("ses_shape", "msg_x")
+  const ok =
+    t.del === true && t.type === "message" && !!t.sessionID &&
+    `message/${t.sessionID}/${t.data.id}` === "message/ses_shape/msg_x"
+  console.log(`${ok ? "PASS" : "FAIL"} contract: tombstone keys like the viewer derives it`)
+  if (!ok) failures.push("contract: tombstone shape")
+} catch (e) {
+  console.log("FAIL contract: messageTombstone importable from dist:", String(e.message || e))
+  failures.push("contract: messageTombstone import")
+}
+
 
 if (failures.length) {
   console.error(`\n${failures.length} failure(s) — suite FAILED`)

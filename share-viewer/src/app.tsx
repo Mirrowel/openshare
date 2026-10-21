@@ -130,7 +130,11 @@ export function PageFooter(props: { branding: Branding; class?: string }) {
               <span class="text-text-strong">{props.branding.name}</span>
               <span class="text-text-weaker"> · </span>
             </Show>
-            <span>Open(code)Share</span>
+            <span>Open</span>
+            <span class="text-text-weaker">(</span>
+            <span>code</span>
+            <span class="text-text-weaker">)</span>
+            <span>Share</span>
           </div>
         }
       >
@@ -296,6 +300,21 @@ function SessionView(props: {
                 return name ?? modelID()
               })
               const diffs = createMemo(() => props.data.session_diff[sessionID()] ?? [])
+              // grouping OFF = every tool call its own row: the "separate"
+              // placements for tool-ish categories (default ON keeps the
+              // kit's compact preset: grouped summary rows per response)
+              const timelineDetail = createMemo(() =>
+                props.settings.toolGrouping === false
+                  ? ({
+                      shell: { placement: "separate", details: "collapsed" },
+                      edit: { placement: "separate", details: "collapsed" },
+                      thinking: { placement: "grouped", details: "collapsed" },
+                      subagents: { placement: "separate" },
+                      notices: { placement: "grouped" },
+                      tools: { placement: "separate" },
+                    } as any)
+                  : undefined,
+              )
               // review panel: files default-OPEN (v1 behavior), user-controlled after
               const [reviewOpen, setReviewOpen] = createSignal<string[]>(diffs().map((d: any) => String(d.file ?? "")))
 
@@ -461,6 +480,7 @@ function SessionView(props: {
                                   reasoningMode={reasoningMode()}
                                   shellToolDefaultOpen={props.settings.toolOutput}
                                   editToolDefaultOpen={true}
+                                  detail={timelineDetail()}
                                 />
                                 <div class="px-6 pt-8 pb-8 shrink-0">
                                   <PageFooter branding={props.source.branding()} class="px-6" />
@@ -475,6 +495,7 @@ function SessionView(props: {
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={props.settings.toolOutput}
                                 editToolDefaultOpen={true}
+                                detail={timelineDetail() as any}
                                 class="grow min-h-0 w-full"
                               />
                               <Show when={searching() && filtered().length === 0}>

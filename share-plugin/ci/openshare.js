@@ -348,6 +348,9 @@ import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as r
 import { join as join2 } from "node:path";
 
 // src/contract.ts
+function messageTombstone(sessionID, messageID) {
+  return { type: "message", del: true, sessionID, data: { id: messageID } };
+}
 function isV2NativeMessage(x) {
   if (!x || typeof x !== "object")
     return false;
@@ -2087,7 +2090,7 @@ function createEngine(deps) {
             return;
           if (t === "message.removed") {
             dropMergedMessage(st, messageID);
-            enqueue(st, { key: `message/${messageID}`, item: { type: "message", del: true, data: { id: messageID } } });
+            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(st.sid, messageID) });
           } else {
             const partID = p.partID;
             if (!partID)

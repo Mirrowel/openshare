@@ -266,6 +266,12 @@ export function SettingsBody(props: {
             on={props.settings.toolOutput}
             onChange={() => props.update({ toolOutput: !props.settings.toolOutput })}
           />
+          <Switch
+            label="Tool grouping"
+            hint="collapse a response's tool calls into summary rows"
+            on={props.settings.toolGrouping}
+            onChange={() => props.update({ toolGrouping: !props.settings.toolGrouping })}
+          />
           <Show when={props.branding.backgroundUrl}>
             <Switch
               label="Background image"

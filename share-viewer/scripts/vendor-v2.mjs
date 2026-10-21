@@ -55,6 +55,30 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
     writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n")
   }
 }
+// vendor fork: session-timeline.tsx gained a `detail` prop (timeline
+// grouping placements) that upstream doesn't have. Re-apply it after
+// copyTree by patching the two anchors — regenerate and this still works.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("timelineDetail")) {
+      s = s.replace(
+        'import { createReactiveTimelineProjection, TimelineRow, type ReasoningMode } from "./projection"',
+        'import { createReactiveTimelineProjection, TimelineRow, type ReasoningMode } from "./projection"\nimport type { TimelineDetail } from "./detail"',
+      )
+      s = s.replace(
+        '  editToolDefaultOpen?: boolean\n  class?: string',
+        '  editToolDefaultOpen?: boolean\n  /** fork: explicit detail (grouping placements) — undefined = kit default */\n  detail?: TimelineDetail\n  class?: string',
+      )
+      s = s.replace(
+        '    editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,\n  })',
+        '    editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,\n    timelineDetail: () => props.detail,\n  })',
+      )
+      writeFileSync(p, s)
+    }
+  }
+}
 {
   // upstream beta type bugs (narrowed unions) — suppress typechecking for
   // these files rather than forking them

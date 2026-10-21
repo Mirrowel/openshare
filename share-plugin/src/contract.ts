@@ -20,6 +20,14 @@
 
 export const CONTRACT_VERSION = 2
 
+/** Message tombstone item. sessionID MUST ride along: viewers key
+ * messages as message/<sessionID>/<id> — an unstamped del misses the
+ * key and undone turns resurrect on the live page (live-caught
+ * 2026-10-21, refresh-correct because the worker keys differently). */
+export function messageTombstone(sessionID: string, messageID: string) {
+  return { type: "message", del: true, sessionID, data: { id: messageID } } as const
+}
+
 // --- v2 content shapes (loose on purpose: the viewer's vendored v2
 // session-ui validates what it renders; we only guarantee field names) ---
 
