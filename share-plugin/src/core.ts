@@ -830,14 +830,35 @@ export function createEngine(deps: EngineDeps): Engine {
     return true
   }
 
-  /** Sync frames are chunked (~1MB WS cap on CF; a 5000-message backfill
-   * must ride several frames — worker apply is keyed-idempotent, chunks
-   * just bump rev). Status rides each chunk; last write wins. */
-  const SYNC_CHUNK = 200
+  /** Sync frames are chunked by BOTH item count and serialized bytes.
+   * Count-only chunking could pack 200 large tool outputs into a frame
+   * that exceeds the server's WS receive cap (CF 32 MiB, Bun 16 MB
+   * default) and die wholesale. Budget keeps every frame cheap to apply
+   * and rebroadcast; worker apply is keyed-idempotent, so chunks just
+   * bump rev. An item larger than the whole budget rides alone in its
+   * own frame (the worker fits oversize items to its storage cap).
+   * Status rides each chunk; last write wins. */
+  const chunkItems = (items: unknown[], maxItems: number, maxBytes: number): unknown[][] => {
+    const chunks: unknown[][] = []
+    let cur: unknown[] = []
+    let curBytes = 0
+    for (const it of items) {
+      const n = (JSON.stringify(it) ?? "null").length
+      if (cur.length && (cur.length >= maxItems || curBytes + n > maxBytes)) {
+        chunks.push(cur)
+        cur = []
+        curBytes = 0
+      }
+      cur.push(it)
+      curBytes += n
+    }
+    if (cur.length) chunks.push(cur)
+    return chunks
+  }
   const sendSync = (r: RemoteState, f: { items: unknown[]; status: string }) => {
     if (!f.items.length) return wsSend(r, { op: "sync", items: [], status: f.status })
-    for (let i = 0; i < f.items.length; i += SYNC_CHUNK) {
-      wsSend(r, { op: "sync", items: f.items.slice(i, i + SYNC_CHUNK), status: f.status })
+    for (const chunk of chunkItems(f.items, 200, 512 * 1024)) {
+      wsSend(r, { op: "sync", items: chunk, status: f.status })
     }
     return true
   }
@@ -1377,18 +1398,23 @@ export function createEngine(deps: EngineDeps): Engine {
       if (f.status) status = f.status
     }
     const cred = credOf(r.url)
-    const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(cred.credential ? { authorization: `Bearer ${cred.credential}` } : {}) },
-      body: JSON.stringify({ secret: r.secret ?? "", data: items, status }),
-      signal: AbortSignal.timeout(15000),
-    }).catch(() => null)
-    if (res && res.ok) {
+    // chunked like WS frames: one unbounded body is a whole-backlog
+    // bomb after a mid-backfill socket drop (backfill = full history).
+    // Failure stops the loop with pending intact — replaying already-
+    // applied chunks is idempotent.
+    for (const chunk of chunkItems(items, 500, 4 * 1024 * 1024)) {
+      const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(cred.credential ? { authorization: `Bearer ${cred.credential}` } : {}) },
+        body: JSON.stringify({ secret: r.secret ?? "", data: chunk, status }),
+        signal: AbortSignal.timeout(15000),
+      }).catch(() => null)
+      if (!res || !res.ok) return
       const body = (await res.json().catch(() => ({}))) as { rev?: number }
       r.ackedRev = body.rev ?? r.ackedRev
-      r.pending = []
-      spoolSave(st, r)
     }
+    r.pending = []
+    spoolSave(st, r)
   }
 
   const scheduleFlush = (st: SessionState) => {

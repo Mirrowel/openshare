@@ -651,11 +651,105 @@ export class ControlDO {
 
 // ---------------------------------------------------------------------------
 // ShareDO — one per share: items, rev, status, auth, viewer sockets.
+//
+// Item storage is sharded: one storage key per item ("i:<itemKey>", e.g.
+// "i:part/msg_x/prt_y"). The original single-blob layout ("items" key)
+// hard-capped a share at 2 MB total (SQLite-backed DO value limit) and
+// rewrote the whole map on every 200-item frame — big sessions could
+// never persist and failed into reconnect loops. Shares written by the
+// old layout migrate lazily on first touch. Each item is additionally
+// fitted to ~1.5 MB (largest text fields clipped with a visible marker)
+// so no single item can wedge the shard write. The full-share render for
+// /data and the WS first frame is cached per rev in isolate memory —
+// built once per revision while viewers keep loading it, dropped on any
+// apply, no cost on the plugin sync path.
 // ---------------------------------------------------------------------------
+const MAX_ITEM_JSON = 1_500_000
+const MAX_CACHE_JSON = 25_000_000
+
+// Clip the largest string fields (deep) until the item fits the shard cap.
+// The share is a view artifact, not a source of truth — a visible
+// truncation marker beats a dead share. Falls back to a stub if the
+// structure refuses to fit (in practice unreachable: halving ≥1024-char
+// strings converges).
+function fitItem(it) {
+  let s = JSON.stringify(it)
+  if (s.length <= MAX_ITEM_JSON) return it
+  const clone = structuredClone(it)
+  const clips = []
+  const walk = (obj) => {
+    if (!obj || typeof obj !== "object") return
+    if (Array.isArray(obj)) { for (const v of obj) walk(v); return }
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string" && v.length > 1024) clips.push({ obj, key: k, len: v.length })
+      else if (v && typeof v === "object") walk(v)
+    }
+  }
+  walk(clone)
+  clips.sort((a, b) => b.len - a.len)
+  for (let round = 0; round < 4 && JSON.stringify(clone).length > MAX_ITEM_JSON; round++) {
+    for (const c of clips) {
+      c.obj[c.key] = c.obj[c.key].slice(0, Math.max(1024, Math.floor(c.obj[c.key].length / 2))) + "\n…[openshare: field truncated for share]"
+      if (JSON.stringify(clone).length <= MAX_ITEM_JSON) break
+    }
+  }
+  if (JSON.stringify(clone).length > MAX_ITEM_JSON) {
+    return { type: it.type, sessionID: it.sessionID, data: { id: it.data?.id }, _oshDropped: "oversize" }
+  }
+  clone._oshTruncated = true
+  return clone
+}
+
 export class ShareDO {
   constructor(state, env) {
     this.state = state
     this.env = env
+    this._cache = null // { rev, status, frameStr, dataStr } — per-isolate, per-rev
+  }
+
+  async listPrefix(prefix) {
+    const out = []
+    let cursor
+    do {
+      const page = await this.state.storage.list({ prefix, cursor })
+      for (const [, v] of page) out.push(v)
+      // pagination metadata is listComplete in the workers types; some
+      // builds expose snake_case — accept both so big lists never
+      // silently truncate at the 128-key page boundary
+      const complete = page.listComplete ?? page.list_complete
+      cursor = complete ? undefined : page.cursor
+    } while (cursor)
+    return out
+  }
+
+  // All items in storage, migrating a legacy single-blob share on first
+  // touch. DO requests are serialized by input gates, so the read-shard-
+  // write-delete migration can't interleave with a concurrent apply.
+  async loadItems() {
+    const legacy = await this.state.storage.get("items")
+    if (legacy !== undefined) {
+      const map = new Map()
+      for (const [k, v] of Object.entries(legacy)) map.set("i:" + k, v)
+      await putBatched(this.state.storage, map)
+      await this.state.storage.delete("items")
+      this._cache = null
+    }
+    return this.listPrefix("i:")
+  }
+
+  // Per-rev render cache for viewer loads. Both payload shapes build once
+  // per revision; oversized shares (>25 MB) skip caching and re-render.
+  async renderCache(meta) {
+    const rev = meta.rev ?? 0
+    if (this._cache && this._cache.rev === rev && this._cache.status === meta.status) return this._cache
+    const items = redactItems(await this.loadItems())
+    const frameStr = JSON.stringify({ op: "frame", status: meta.status, rev, items })
+    const dataStr = JSON.stringify({ data: items, status: meta.status, rev })
+    if (frameStr.length <= MAX_CACHE_JSON) {
+      this._cache = { rev, status: meta.status, frameStr, dataStr }
+      return this._cache
+    }
+    return { rev, status: meta.status, frameStr, dataStr }
   }
 
   async fetch(req) {
@@ -676,9 +770,8 @@ export class ShareDO {
       }
       const pair = new WebSocketPair()
       this.state.acceptWebSocket(pair[1], ["viewer"])
-      const items = (await this.state.storage.get("items")) ?? {}
       try {
-        pair[1].send(JSON.stringify({ op: "frame", status: meta.status, rev: meta.rev ?? 0, items: redactItems(Object.values(items)) }))
+        pair[1].send((await this.renderCache(meta)).frameStr)
       } catch {}
       return new Response(null, { status: 101, webSocket: pair[0] })
     }
@@ -704,7 +797,6 @@ export class ShareDO {
         tokens: [],
         attempts: { ips: {}, total: 0, lockUntil: 0 },
       })
-      await this.state.storage.put("items", {})
       try {
         await this.env.SHARE_INDEX.put(`share:${body.id}`, JSON.stringify({ createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null }))
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
@@ -759,13 +851,13 @@ export class ShareDO {
         await this.state.storage.put("meta", meta)
       }
 
-      const items = (await this.state.storage.get("items")) ?? {}
+      const items = await this.loadItems()
       return json(200, {
         ok: true,
         rev: meta.rev ?? 0,
         status: meta.status,
         sessionID: meta.sessionID,
-        data: redactItems(Object.values(items)),
+        data: redactItems(items),
       })
     }
 
@@ -830,8 +922,7 @@ export class ShareDO {
       if (meta.auth && !(await this.validToken(url.searchParams.get("token") ?? ""))) {
         return json(401, { authRequired: true })
       }
-      const items = (await this.state.storage.get("items")) ?? {}
-      return json(200, { data: redactItems(Object.values(items)), status: meta.status, rev: meta.rev ?? 0 })
+      return new Response((await this.renderCache(meta)).dataStr, { status: 200, headers: { "content-type": "application/json" } })
     }
 
     if (path === "/meta" && req.method === "GET") {
@@ -979,35 +1070,55 @@ export class ShareDO {
     if (!meta) return [404, { ok: false, error: "share not found" }]
     const gate = this.writeGate(meta, body)
     if (gate) return [gate === "frozen" ? 403 : 403, { ok: false, error: gate }]
-    const items = (await this.state.storage.get("items")) ?? {}
-    const batch = []
-    for (const it of body.data ?? []) {
+    // One op per key: first-arrival position, last-arrival action, so the
+    // broadcast order can never contradict the storage last-wins result
+    // (e.g. a frame holding [tombstone K, upsert K] must leave K live on
+    // the viewer too, not delete it after re-upserting).
+    const ops = new Map() // shard key -> { shard, it, del }
+    for (const raw of body.data ?? []) {
+      const it = fitItem(raw)
       const key = itemKey(it)
       if (!key) continue
-      if (it.del) {
-        // tombstone (opencode undo → message/part removed): the key is
-        // derived exactly like an upsert's, so this deletes the item it
-        // names. Flows to viewers in the frame so live pages drop it too.
-        delete items[key]
-        batch.push(it)
-        if (it.type === "message" && it.data?.id) {
-          // cascade: opencode's full-message cleanup removes the message
-          // without per-part events; its parts must not linger as junk
-          const prefix = `part/${it.data.id}/`
-          for (const k of Object.keys(items)) if (k.startsWith(prefix)) delete items[k]
-        }
+      const shard = "i:" + key
+      const prev = ops.get(shard)
+      if (prev) {
+        prev.it = it
+        prev.del = !!it.del
       } else {
-        items[key] = it
-        batch.push(it)
+        ops.set(shard, { shard, it, del: !!it.del })
       }
     }
+    const puts = new Map()
+    const dels = []
+    const cascadePrefixes = []
+    for (const op of ops.values()) {
+      if (op.del) {
+        dels.push(op.shard)
+        if (op.it.type === "message" && op.it.data?.id) {
+          // cascade: opencode's full-message cleanup removes the message
+          // without per-part events; its parts must not linger as junk
+          cascadePrefixes.push("i:part/" + op.it.data.id + "/")
+        }
+      } else puts.set(op.shard, op.it)
+    }
+    for (const prefix of cascadePrefixes) {
+      let cursor
+      do {
+        const page = await this.state.storage.list({ prefix, cursor })
+        for (const k of page.keys()) dels.push(k)
+        cursor = page.list_complete ? undefined : page.cursor
+      } while (cursor)
+    }
+    if (puts.size) await putBatched(this.state.storage, puts)
+    if (dels.length) await deleteBatched(this.state.storage, dels)
     const rev = (meta.rev ?? 0) + 1
     meta.rev = rev
     meta.lastActive = Date.now()
     meta.pluginSeen = Date.now()
     if (body.status && STATUSES.has(body.status)) meta.status = body.status
-    await this.state.storage.put("items", items)
+    this._cache = null // rev advanced: render cache is stale
     await this.state.storage.put("meta", meta)
+    const batch = [...ops.values()].map((op) => op.it)
     await this.broadcast({ op: "frame", status: meta.status, rev, items: redactItems(batch) })
     return [200, { ok: true, rev, status: meta.status }]
   }
@@ -1028,6 +1139,21 @@ export class ShareDO {
 }
 
 const STATUSES = new Set(["live", "completed", "error", "interrupted"])
+
+// DO storage ops cap at 128 keys per call — batch the shards.
+// NOTE: per-key sequential puts, NOT put(Map): the Map form resolves ok
+// but persists NOTHING in workerd 4.151/wrangler 4.151 local dev
+// (empirically isolated via /data?dbg=put — direct put landed, Map-form
+// entries vanished). Correctness over micro-batching, everywhere.
+async function putBatched(storage, map) {
+  for (const [k, v] of map) await storage.put(k, v)
+}
+
+async function deleteBatched(storage, keys) {
+  for (let i = 0; i < keys.length; i += 128) {
+    await storage.delete(keys.slice(i, i + 128))
+  }
+}
 
 // Server-side key derivation — the client never decides its own key.
 function itemKey(item) {
@@ -1489,7 +1615,8 @@ export class AuthDO {
     do {
       const page = await this.state.storage.list({ prefix, cursor })
       for (const [, v] of page) out.push(v)
-      cursor = page.list_complete ? undefined : page.cursor
+      const complete = page.listComplete ?? page.list_complete
+      cursor = complete ? undefined : page.cursor
     } while (cursor)
     return out
   }

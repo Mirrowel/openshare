@@ -76,6 +76,8 @@
     "test:v2": "node scripts/v2-mock-tests.mjs",
     "test:auth": "node scripts/auth-tests.mjs",
     "test:server-auth": "node scripts/auth-tests.mjs --backend bun",
+    "test:big": "node scripts/big-tests.mjs",
+    "test:server-big": "node scripts/big-tests.mjs --backend bun",
     "test:server-enroll": "node scripts/enroll-tests.mjs --backend bun",
     "test:enroll": "node scripts/enroll-tests.mjs",
     "test:fanout": "node scripts/fanout-tests.mjs",

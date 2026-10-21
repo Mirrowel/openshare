@@ -896,12 +896,29 @@ function createEngine(deps) {
     }
     return true;
   };
-  const SYNC_CHUNK = 200;
+  const chunkItems = (items, maxItems, maxBytes) => {
+    const chunks = [];
+    let cur = [];
+    let curBytes = 0;
+    for (const it of items) {
+      const n = (JSON.stringify(it) ?? "null").length;
+      if (cur.length && (cur.length >= maxItems || curBytes + n > maxBytes)) {
+        chunks.push(cur);
+        cur = [];
+        curBytes = 0;
+      }
+      cur.push(it);
+      curBytes += n;
+    }
+    if (cur.length)
+      chunks.push(cur);
+    return chunks;
+  };
   const sendSync = (r, f) => {
     if (!f.items.length)
       return wsSend(r, { op: "sync", items: [], status: f.status });
-    for (let i = 0;i < f.items.length; i += SYNC_CHUNK) {
-      wsSend(r, { op: "sync", items: f.items.slice(i, i + SYNC_CHUNK), status: f.status });
+    for (const chunk of chunkItems(f.items, 200, 512 * 1024)) {
+      wsSend(r, { op: "sync", items: chunk, status: f.status });
     }
     return true;
   };
@@ -1363,18 +1380,20 @@ function createEngine(deps) {
         status = f.status;
     }
     const cred = credOf(r.url);
-    const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...cred.credential ? { authorization: `Bearer ${cred.credential}` } : {} },
-      body: JSON.stringify({ secret: r.secret ?? "", data: items, status }),
-      signal: AbortSignal.timeout(15000)
-    }).catch(() => null);
-    if (res && res.ok) {
+    for (const chunk of chunkItems(items, 500, 4 * 1024 * 1024)) {
+      const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...cred.credential ? { authorization: `Bearer ${cred.credential}` } : {} },
+        body: JSON.stringify({ secret: r.secret ?? "", data: chunk, status }),
+        signal: AbortSignal.timeout(15000)
+      }).catch(() => null);
+      if (!res || !res.ok)
+        return;
       const body = await res.json().catch(() => ({}));
       r.ackedRev = body.rev ?? r.ackedRev;
-      r.pending = [];
-      spoolSave(st, r);
     }
+    r.pending = [];
+    spoolSave(st, r);
   };
   const scheduleFlush = (st) => {
     if (st.timer)

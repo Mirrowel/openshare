@@ -36,8 +36,8 @@ const waves = [
     suite("enroll-tests", 8810, false),
     suite("fanout-tests", 8830, false),
   ],
-  // wave 2 — auth + parity + TUI + v2
-  [suite("auth-tests", 8850, false), suite("regression-tests", 8870, true), suite("tui-flow-tests", 8890, true), suite("v2-mock-tests", 8910, true)],
+  // wave 2 — auth + parity + TUI + v2 + big-session
+  [suite("auth-tests", 8850, false), suite("regression-tests", 8870, true), suite("tui-flow-tests", 8890, true), suite("v2-mock-tests", 8910, true), suite("big-tests", 8930, true)],
 ]
 
 const requested = process.argv.slice(2)

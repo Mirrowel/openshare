@@ -240,6 +240,39 @@ function writeGate(share: ShareRow, body: { secret?: string; ownerId?: string | 
 
 type Frame = { op?: string; items?: unknown[]; status?: string; [k: string]: unknown }
 
+// Contract-level item cap (~1.5MB, mirrors the CF worker's fitItem): no
+// single item may exceed it on ANY backend, so behavior is uniform.
+const MAX_ITEM_JSON = 1_500_000
+function fitItem<T>(it: T): T {
+  const s = JSON.stringify(it)
+  if (s.length <= MAX_ITEM_JSON) return it
+  const clone = structuredClone(it) as Record<string, unknown>
+  const clips: Array<{ obj: Record<string, unknown>; key: string }> = []
+  const walk = (obj: unknown) => {
+    if (!obj || typeof obj !== "object") return
+    if (Array.isArray(obj)) { for (const v of obj) walk(v); return }
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (typeof v === "string" && v.length > 1024) clips.push({ obj: obj as Record<string, unknown>, key: k })
+      else if (v && typeof v === "object") walk(v)
+    }
+  }
+  walk(clone)
+  clips.sort((a, b) => String(b.obj[b.key]).length - String(a.obj[a.key]).length)
+  for (let round = 0; round < 4 && JSON.stringify(clone).length > MAX_ITEM_JSON; round++) {
+    for (const c of clips) {
+      const v = String(c.obj[c.key])
+      c.obj[c.key] = v.slice(0, Math.max(1024, Math.floor(v.length / 2))) + "\n…[openshare: field truncated for share]"
+      if (JSON.stringify(clone).length <= MAX_ITEM_JSON) break
+    }
+  }
+  if (JSON.stringify(clone).length > MAX_ITEM_JSON) {
+    const raw = it as { type?: string; sessionID?: string; data?: { id?: string } }
+    return { type: raw.type, sessionID: raw.sessionID, data: { id: raw.data?.id }, _oshDropped: "oversize" } as unknown as T
+  }
+  ;(clone as Record<string, unknown>)._oshTruncated = true
+  return clone as T
+}
+
 function applySync(shareId: string, body: { secret?: string; ownerId?: string | null; root?: boolean; data?: unknown[]; status?: string }): { status: number; body: Record<string, unknown> } {
   const share = q.share(shareId)
   if (!share) return { status: 404, body: { ok: false, error: "share not found" } }
@@ -248,7 +281,8 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
   const rev = share.rev + 1
   const batch: unknown[] = []
   const tx = db.transaction(() => {
-    for (const it of body.data ?? []) {
+    for (const raw of body.data ?? []) {
+      const it = (raw as { del?: boolean }).del ? raw : fitItem(raw)
       const key = itemKey(it)
       if (!key) continue
       if ((it as { del?: boolean }).del) {
