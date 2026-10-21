@@ -123,6 +123,31 @@ const textOf = (content: any): string => {
     .join("\\n")
 }
 
+const V1_TOOL: Record<string, string> = { subagent: "task" }
+
+// v2 inputs name the file "path"; every v1 file renderer reads "filePath"
+function v1Input(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(input ?? {})) out[key === "path" ? "filePath" : key] = value
+  return out
+}
+
+// v1 renderers read a few metadata fields under their own names: the task
+// row links its child session through sessionId, file tools through
+// filediff, and read renders preview instead of parsing <content>.
+function v1Metadata(name: string, metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(metadata ?? {}) }
+  if (out.sessionId === undefined && typeof out.sessionID === "string") out.sessionId = out.sessionID
+  if (out.filediff === undefined && Array.isArray(out.files)) out.filediff = out.files[0]
+  return out
+}
+
+// what a v1 host stored for the read tool: <content> with numbered lines
+function readBlock(text: string): string {
+  const numbered = text.split("\\n").map((line, index) => (index + 1) + ": " + line)
+  return "<content>\\n" + numbered.join("\\n") + "\\n</content>"
+}
+
 export function adaptItems(input: AnyItem[]): AnyItem[] {
   const out: AnyItem[] = []
   // items arrive in storage-key order (an assistant message can precede its
@@ -217,7 +242,10 @@ export function adaptItems(input: AnyItem[]): AnyItem[] {
           out.push({ type: "part", data: { id: partID, sessionID, messageID: message.id, type: "text", text: content.text ?? "" } })
         else if (content.type === "reasoning")
           out.push({ type: "part", data: { id: partID, sessionID, messageID: message.id, type: "reasoning", text: content.text ?? "" } })
-        else if (content.type === "tool")
+        else if (content.type === "tool") {
+          const text = textOf(content.state?.content)
+          const failed = content.state?.status === "error"
+          const failure = failed ? content.state?.error?.message ?? "error" : undefined
           out.push({
             type: "part",
             data: {
@@ -225,18 +253,22 @@ export function adaptItems(input: AnyItem[]): AnyItem[] {
               sessionID,
               messageID: message.id,
               type: "tool",
-              tool: content.name,
+              tool: V1_TOOL[content.name] ?? content.name,
               callID: content.id,
               state: {
                 status: content.state?.status === "streaming" ? "running" : (content.state?.status ?? "completed"),
-                input: content.state?.input ?? {},
-                output: textOf(content.state?.content) || content.state?.error?.message,
-                metadata: content.state?.metadata,
+                input: v1Input(content.state?.input ?? {}),
+                // read is parsed from the v1 <content> block (numbered lines);
+                // every other tool takes the text as-is
+                output: failure ?? (content.name === "read" ? readBlock(text) : text),
+                error: failure,
+                metadata: v1Metadata(content.name, content.state?.metadata),
                 title: content.state?.title,
                 time: { start: content.time?.created ?? 0, end: content.time?.completed ?? 0 },
               },
             },
           })
+        }
       }
       continue
     }

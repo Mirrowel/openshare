@@ -884,7 +884,12 @@ function groupContent(
   })
   flush()
 
-  return groups
+  // openshare fork: a lone tool call is not a group - render it as a normal row
+  return groups.map((group) =>
+    group.type === "context" && group.refs.length === 1
+      ? { type: "part" as const, key: `part:${group.refs[0]!.messageID}:${group.refs[0]!.partID}`, ref: group.refs[0]! }
+      : group,
+  )
 }
 
 function contentGroupType(

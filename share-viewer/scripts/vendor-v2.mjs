@@ -134,7 +134,21 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       )
     }
 
-    if (!s.includes("a category may refine grouping")) {
+    // a lone tool call is not a group - render it as a normal part row
+    if (!s.includes("openshare fork: a lone tool call is not a group")) {
+      patch(
+        /( {2}flush\(\)\r?\n\r?\n {2}return groups)/,
+        `  flush()
+
+  // openshare fork: a lone tool call is not a group - render it as a normal row
+  return groups.map((group) =>
+    group.type === "context" && group.refs.length === 1
+      ? { type: "part" as const, key: \`part:\${group.refs[0]!.messageID}:\${group.refs[0]!.partID}\`, ref: group.refs[0]! }
+      : group,
+  )`,
+        "singleton grouping",
+      )
+    }    if (!s.includes("a category may refine grouping")) {
       patch(
         /( {4}const category = timelineCategory\(content\)!\r?\n)(\r?\n)?( {4}if \(detail\[category\]\.placement === "grouped"\) return "context")/,
         [

@@ -176,12 +176,26 @@ export function VirtualTimeline(props: {
   })
 
   const items = virtualizer.getVirtualItems()
+
+  // Expanding a tool row or a <details> changes the row height AFTER the
+  // click. tanstack re-observes elements it measured, but a grouped row that
+  // was never measured (freshly scrolled into view) would keep its estimate
+  // and clip while the page scrolls - re-measure the affected row directly.
+  const remeasureRow = (target: EventTarget | null) => {
+    const node = target instanceof Element ? target.closest<HTMLDivElement>("[data-row-key]") : null
+    if (!node) return
+    requestAnimationFrame(() => virtualizer.measureElement(node))
+  }
+
   return (
     <div
       class={props.class}
       ref={(el) => {
         scrollElement = el
-        if (!el || !restored?.offset) return
+        if (!el) return
+        el.addEventListener("click", (event) => remeasureRow(event.target), true)
+        el.addEventListener("toggle", (event) => remeasureRow(event.target), true)
+        if (!restored?.offset) return
         // replay the saved position once the snapshot's heights are in place
         queueMicrotask(() => {
           el.scrollTop = restored.offset
