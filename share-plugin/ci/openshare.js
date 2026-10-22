@@ -1557,6 +1557,7 @@ function createEngine(deps) {
     queueConnect(st, r);
   };
   const frameFrom = (st) => {
+    stampsPass();
     const items = Array.from(st.queue.values());
     st.queue.clear();
     const statusChanged = st.status !== st.lastSentStatus;
@@ -1637,11 +1638,144 @@ function createEngine(deps) {
     if (!st || !entry)
       return;
     st.queue.set(entry.key, entry.item);
+    indexMessage(entry);
     if (debugEvents)
       log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`);
     touch(st);
     ensureConnected(st);
     scheduleFlush(st);
+  };
+  const msgIndex = new Map;
+  const indexMessage = (entry) => {
+    if (entry.item.type !== "message")
+      return;
+    const d = entry.item.data;
+    if (!d || typeof d.id !== "string")
+      return;
+    const role = String(d.type ?? "");
+    if (role !== "user" && role !== "assistant")
+      return;
+    const key = `${entry.item.sessionID}:${d.id}`;
+    const prev = msgIndex.get(key);
+    msgIndex.set(key, {
+      sid: String(entry.item.sessionID ?? ""),
+      role,
+      agent: role === "assistant" ? typeof d.agent === "string" ? d.agent : prev?.agent : typeof d.metadata?.agent === "string" ? d.metadata.agent : prev?.agent,
+      created: Number(d.time?.created ?? prev?.created ?? 0),
+      data: d
+    });
+  };
+  const sessionStateOf = (sid) => sessions.get(childToParent.get(sid) ?? sid);
+  const reEnqueueMessage = (m) => {
+    const st = sessionStateOf(m.sid);
+    if (st)
+      enqueue(st, itemFor("message", m.data, m.sid));
+  };
+  const segmentAgent = (ordered, at) => {
+    const own = ordered[at]?.agent;
+    if (own)
+      return own;
+    for (let i = at + 1;i < ordered.length; i++) {
+      if (ordered[i].role === "assistant" && ordered[i].agent)
+        return ordered[i].agent;
+      if (ordered[i].role === "user")
+        break;
+    }
+    return;
+  };
+  const stampAgentSwitches = () => {
+    const bySession = new Map;
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid);
+      if (list)
+        list.push(m);
+      else
+        bySession.set(m.sid, [m]);
+    }
+    for (const [, list] of bySession) {
+      list.sort((a, b) => a.created - b.created);
+      const users = list.map((m, i) => m.role === "user" ? i : -1).filter((i) => i >= 0);
+      let prev;
+      for (let k = 0;k < users.length; k++) {
+        const agent = segmentAgent(list, users[k]);
+        const d = list[users[k]].data;
+        const meta = d.metadata ??= {};
+        const want = k > 0 && agent && prev && agent !== prev ? agent : undefined;
+        if (want !== meta.agentSwitch) {
+          if (want)
+            meta.agentSwitch = want;
+          else
+            delete meta.agentSwitch;
+          reEnqueueMessage(list[users[k]]);
+        }
+        if (agent)
+          prev = agent;
+      }
+    }
+  };
+  const stampTaskAgents = () => {
+    const bySession = new Map;
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid);
+      if (list)
+        list.push(m);
+      else
+        bySession.set(m.sid, [m]);
+    }
+    for (const list of bySession.values())
+      list.sort((a, b) => a.created - b.created);
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant")
+        continue;
+      const content = m.data.content;
+      if (!Array.isArray(content))
+        continue;
+      let mutated = false;
+      for (const part of content) {
+        if (!part || part.type !== "tool")
+          continue;
+        if (part.name !== "task" && part.name !== "subagent")
+          continue;
+        const state = part.state;
+        const meta = state?.metadata;
+        const childSid = typeof meta?.sessionID === "string" ? meta.sessionID : undefined;
+        if (!childSid || typeof meta.agent === "string")
+          continue;
+        const partStart = Number(part.time?.created ?? 0);
+        const child = bySession.get(childSid);
+        if (!child)
+          continue;
+        let agent;
+        for (const c of child) {
+          if (c.created < partStart)
+            continue;
+          if (c.role === "user" && c.agent) {
+            agent = c.agent;
+            break;
+          }
+        }
+        if (!agent) {
+          for (const c of child) {
+            if (c.created < partStart)
+              continue;
+            if (c.role === "assistant" && c.agent) {
+              agent = c.agent;
+              break;
+            }
+          }
+        }
+        if (agent) {
+          meta.agent = agent;
+          mutated = true;
+        }
+      }
+      if (mutated)
+        reEnqueueMessage(m);
+    }
+  };
+  const stampsPass = () => {
+    stampAgentSwitches();
+    stampTaskAgents();
   };
   const mergeEntry = (st, messageID) => {
     let e = st.merged.get(messageID);

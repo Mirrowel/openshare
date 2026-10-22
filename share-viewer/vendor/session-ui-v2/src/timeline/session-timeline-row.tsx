@@ -472,11 +472,11 @@ export function createSessionTimelineRowRenderer(input: {
         "min-w-0 w-full max-w-full": true,
         "md:max-w-session md:mx-auto": input.centered?.(),
         // openshare fork: row rhythm lives in app.css keyed by
-        // data-timeline-spacing (emitted above) - arbitrary tailwind classes
-        // added here are NEVER generated: the kit's CSS is prebuilt upstream
-        // and the viewer's tailwind does not scan the vendor tree
-        // (live-caught: every spacing fork before this silently did nothing
-        // and even removed upstream's pt-2/pt-4)
+        // data-timeline-spacing (emitted on this element) - arbitrary
+        // tailwind classes added here are NEVER generated: the kit's CSS is
+        // prebuilt upstream and the viewer's tailwind does not scan the
+        // vendor tree (live-caught: spacing forks silently did nothing and
+        // removed upstream's pt-2/pt-4)
         "pt-6": Predicate.isTagged(props.row, "Error"),
       }}
     >
@@ -731,6 +731,13 @@ export function createSessionTimelineRowRenderer(input: {
               return (
                 <div data-slot="session-turn-message-container" class={`w-full ${padding()}`}>
                   <div data-slot="session-turn-message-content" aria-live="off">
+                    {/* openshare fork: agent transition chip - the plugin
+                        stamps metadata.agentSwitch on prompts whose segment
+                        runs a different agent than the previous one; the
+                        viewer renders the stamp, nothing more */}
+                    <Show when={(message() as any).metadata?.agentSwitch}>
+                      {(agent) => <div data-component="osh-agent-switch">{"→ "}{agent()}</div>}
+                    </Show>
                     <SessionUserMessage
                       sessionID={input.sessionID()}
                       message={message()}

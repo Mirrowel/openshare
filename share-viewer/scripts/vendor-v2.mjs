@@ -395,6 +395,27 @@ export function agentFor(callID: string | undefined): string | undefined {
       if (s === before) throw new Error("vendor-v2: row spacing anchor missing - upstream drifted")
       writeFileSync(p, s)
     }
+    // openshare fork: agent transition chip on user rows (renders the
+    // plugin-stamped metadata.agentSwitch, never computes anything)
+    {
+      let s = readFileSync(p, "utf8")
+      if (!s.includes("osh-agent-switch")) {
+        const before = s
+        s = s.replace(
+          /(\r?\n\s*<div data-slot="session-turn-message-content" aria-live="off">\r?\n)(\s*<SessionUserMessage)/,
+          `$1                    {/* openshare fork: agent transition chip - the plugin
+                        stamps metadata.agentSwitch on prompts whose segment
+                        runs a different agent than the previous one; the
+                        viewer renders the stamp, nothing more */}
+                    <Show when={(message() as any).metadata?.agentSwitch}>
+                      {(agent) => <div data-component="osh-agent-switch">{"→ "}{agent()}</div>}
+                    </Show>
+$2`,
+        )
+        if (s === before) throw new Error("vendor-v2: user row anchor missing - upstream drifted")
+        writeFileSync(p, s)
+      }
+    }
   }
 }
 writeFileSync(

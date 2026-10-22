@@ -60,25 +60,43 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Auto unified/split: split ONLY when the container is wide enough for both
- * columns of the LONGEST line - no page-stretch, no squeezed panes. Falls
- * back to the unified folded view on narrow viewports or long lines. */
-function useSplitFit(props: { longest: () => number }) {
+/** Auto unified/split: split ONLY when the container fits both columns of
+ * the LONGEST line, measured with the REAL font (canvas TextMetrics), not a
+ * px-per-char guess (the guess misjudged real fonts and the diff silently
+ * fell back to unified - live-caught). Falls back to unified on narrow
+ * viewports or long lines. */
+function useSplitFit(props: { longest: () => number; sample?: () => string }) {
   const [wrap, setWrap] = createSignal<HTMLDivElement | undefined>()
   const [width, setWidth] = createSignal(0)
+  const [charWidth, setCharWidth] = createSignal(7.9)
   const needed = createMemo(() => {
-    // ~7.9px/char at the kit's 13px mono, two panes, two number gutters
-    return Math.round(props.longest() * 7.9 * 2 + 150)
+    // two panes + two number gutters + breathing room
+    return Math.round(props.longest() * charWidth() * 2 + 150)
   })
   const ref = (el: HTMLDivElement) => {
     setWrap(el)
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    const measure = () => {
+      setWidth(el.clientWidth)
+      const font = getComputedStyle(el).font
+      const sample = (props.sample?.() ?? "0".repeat(40)).slice(0, 160)
+      try {
+        const ctx = measureCanvas ??= document.createElement("canvas").getContext("2d")
+        if (ctx) {
+          ctx.font = font
+          const w = ctx.measureText(sample).width / sample.length
+          if (w > 2) setCharWidth(w)
+        }
+      } catch {}
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
     onCleanup(() => ro.disconnect())
   }
   const split = createMemo(() => width() > 0 && width() >= needed())
   return { ref, split }
 }
+let measureCanvas: CanvasRenderingContext2D | null = null
 
 /** One header for every file tool: label, directory, filename, meta. */
 function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
@@ -205,7 +223,7 @@ const EditTool = (props: ToolProps) => {
     for (const line of newText().split("\n")) n = Math.max(n, line.length)
     return n
   })
-  const fit = useSplitFit({ longest })
+  const fit = useSplitFit({ longest, sample: () => newText() || oldText() })
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known

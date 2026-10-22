@@ -255,6 +255,14 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   padding-top: 28px;
 }
 
+/* agent transition chip: quiet mono, reads as structure not content */
+[data-component="osh-agent-switch"] {
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text-weaker-base, var(--text-weaker, inherit));
+  padding: 2px 0 6px 2.5px;
+  letter-spacing: 0.02em;
+}
+
 /* Rails live on the ROW WRAPPER (tool-part-wrapper), never on the inner
    trigger: the kit renders reasoning through a nested BasicTool, so a
    trigger-level rule indented thoughts TWICE and leaked into group

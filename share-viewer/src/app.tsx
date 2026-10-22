@@ -349,9 +349,22 @@ function SessionView(props: {
                 return { ...document(), messages: all.slice(idx, end) }
               })
 
+              // display title: opencode creates child titles as
+              // "description (@agent subagent)" - the suffix carries the
+              // agent variant which can change mid-session, so it never
+              // belongs in the header. Subagent pages get a plain
+              // "subagent" label instead (owner directive); the title
+              // itself is live from the folded data, so renames propagate.
+              const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
+              const displayTitle = () => stripSubagentSuffix(info().title ?? "")
               const title = () => (
                 <div class="flex flex-col gap-4">
                   <div class="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center sm:h-8 justify-start self-stretch">
+                    <Show when={isSub()}>
+                      <span class="pl-[2.5px] pr-2 flex items-center bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base">
+                        subagent
+                      </span>
+                    </Show>
                     <Show when={isSub()}>
                       <Show when={backHref()} keyed>
                         {(href) => (
@@ -381,7 +394,7 @@ function SessionView(props: {
                       </div>
                     </div>
                   </div>
-                  <div class="text-left text-16-medium text-text-strong">{info().title}</div>
+                  <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
                 </div>
               )
 
