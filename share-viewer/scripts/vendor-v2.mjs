@@ -91,7 +91,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
     if (!s.includes("openshare fork: each segment call starts")) {
       patch(
         /(^import \{ TimelineRow[^\r\n]*\r?\n)/m,
-        "$1\n// openshare module: segment marker\nlet openshareSegmentStart = false\n",
+        "$1\n// openshare module: segment marker\nlet openshareSegmentStart = false\n// openshare fork: was the last pushed AssistantPart row a tool row? drives\n// the tool->tool message-break suppression (pure-tool message clusters)\nlet opensharePrevRowTool = false\n",
         "segment marker",
       )
       patch(
@@ -126,12 +126,20 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
         / {10}const tool = group\.type !== "part" \|\| items\[offset\]\?\.content\.type !== "text"\r?\n {10}offset \+= group\.type === "part" \? 1 : group\.refs\.length\r?\n {10}rows\.push\(\r?\n {12}new TimelineRow\.AssistantPart\(\{\r?\n {14}userMessageID: turnID,\r?\n {14}group,\r?\n {14}previousAssistantPart: assistantGroupIndex > 0,\r?\n {14}spacing: assistantGroupIndex > 0 \? \(previousAssistantTool && tool \? "tool" : "content"\) : undefined,/m,
         [
           '          const tool = group.type !== "part" || items[offset]?.content.type !== "text"',
+          '          // openshare fork: does this row START with a bare tool call? (a',
+          '          // tool group, or a part whose content is a tool) - needed for the',
+          '          // tool->tool suppression below',
+          '          const firstIsTool = group.type !== "part" || items[offset]?.content.type === "tool"',
           '          offset += group.type === "part" ? 1 : group.refs.length',
           '          // openshare fork: the first row of every assistant message (after',
-          '          // the turn\'s first) carries the "message" break; rows within a',
-          '          // message keep upstream\'s tool/content rhythm',
-          "          const messageStart = openshareSegmentStart && assistantGroupIndex > 0",
+          '          // the turn\'s first) carries the "message" break - EXCEPT when the',
+          '          // previous row ended in a tool call AND this row starts with one',
+          '          // (pure-tool messages flow as one action cluster; a break belongs',
+          '          // only where the content TYPE changes: tool->reasoning/text)',
+          "          const messageStart =",
+          "            openshareSegmentStart && assistantGroupIndex > 0 && !(firstIsTool && opensharePrevRowTool)",
           "          openshareSegmentStart = false",
+          "          opensharePrevRowTool = firstIsTool",
           "          rows.push(",
           "            new TimelineRow.AssistantPart({",
           "              userMessageID: turnID,",

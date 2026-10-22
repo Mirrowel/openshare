@@ -61,49 +61,31 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Auto unified/split: split ONLY when the container fits both columns of
- * the LONGEST line, measured with the REAL font (canvas TextMetrics), not a
- * px-per-char guess (the guess misjudged real fonts and the diff silently
- * fell back to unified - live-caught). Falls back to unified on narrow
- * viewports or long lines. */
-function useSplitFit(props: { longest: () => number; sample?: () => string }) {
-  const [wrap, setWrap] = createSignal<HTMLDivElement | undefined>()
+/** Auto unified/split (owner spec, VSCode-style): split engages when the
+ * card can grow to double the reading column (capped at viewport-48) with
+ * each pane keeping a sane minimum; panes scroll horizontally with a hidden
+ * scrollbar instead of stretching. Narrow viewports fall back to unified.
+ * The card stays LEFT-anchored like every other tool - it only extends
+ * right, never centers. */
+function useSplitFit() {
   const [width, setWidth] = createSignal(0)
-  const [charWidth, setCharWidth] = createSignal(7.9)
-  const needed = createMemo(() => {
-    // two panes + two number gutters + breathing room
-    return Math.round(props.longest() * charWidth() * 2 + 150)
-  })
   const ref = (el: HTMLDivElement) => {
-    setWrap(el)
-    // measure the AVAILABLE width, not the content: edit-content itself
-    // hugs (width: fit-content, the no-page-stretch rule), so measuring it
-    // feeds back - unified renders narrow, split never engages, deadlocked
-    // (live-caught). The parent (osh-file-body) is full-width.
+    // measure the column width (edit-content's parent, osh-file-body);
+    // edit-content itself hugs (fit-content) - measuring it feeds back
+    // (live-caught: unified rendered narrow, split never engaged)
     const host = el.parentElement ?? el
-    const measure = () => {
-      setWidth(host.clientWidth)
-      const font = getComputedStyle(host).font
-      const sample = (props.sample?.() ?? "0".repeat(40)).slice(0, 160)
-      try {
-        const ctx = measureCanvas ??= document.createElement("canvas").getContext("2d")
-        if (ctx) {
-          ctx.font = font
-          const w = ctx.measureText(sample).width / sample.length
-          if (w > 2) setCharWidth(w)
-        }
-      } catch {}
-    }
+    const measure = () => setWidth(host.clientWidth)
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(host)
-    if (host !== el) ro.observe(el)
     onCleanup(() => ro.disconnect())
   }
-  const split = createMemo(() => width() > 0 && width() >= needed())
+  const split = createMemo(() => {
+    const avail = Math.min(width() * 2, (typeof window === "undefined" ? 0 : window.innerWidth) - 48)
+    return width() > 0 && avail >= 2 * 320 + 140
+  })
   return { ref, split }
 }
-let measureCanvas: CanvasRenderingContext2D | null = null
 
 /** One header for every file tool: label, directory, filename, meta. */
 function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
@@ -221,22 +203,49 @@ const langOfPath = (path: string | undefined): string => {
 }
 
 // shared main-thread highlighter (pierre, theme "OpenCode" = CSS variables,
-// so tokens follow the page theme). Loaded once, cached per language.
+// so tokens follow the page theme). Loaded once, raced against a timeout -
+// a hung worker/imports must never leave reads as "undefined" forever
+// (live-caught: three behaviors - always fine / always broken / flash then
+// fixed - all from tokens that never arrive while innerHTML sat at
+// undefined, which the DOM coerces to the literal string "undefined").
 let highlighterPromise: Promise<any> | undefined
+const HIGHLIGHT_TIMEOUT_MS = 3000
+const highlighter = (lang: string) => {
+  highlighterPromise ??= (async () => {
+    const m = await import("@pierre/diffs")
+    registerOpenCodeTheme()
+    return m.getSharedHighlighter({ themes: ["OpenCode" as any], langs: [lang as any] })
+  })()
+  return Promise.race([
+    highlighterPromise,
+    new Promise<null>((res) => setTimeout(() => res(null), HIGHLIGHT_TIMEOUT_MS)),
+  ])
+}
+// per-line token cache: virtualizer remounts render instantly (no flash)
+const tokenCache = new Map<string, string>()
+const cacheSet = (key: string, html: string) => {
+  if (tokenCache.size > 5000) tokenCache.clear()
+  tokenCache.set(key, html)
+}
+/** highlight one line -> token html, or "" for plain. Never throws, never
+ * hangs, isolated per line. */
 const highlightLine = async (line: string, lang: string): Promise<string> => {
   if (lang === "plaintext") return ""
+  const key = `${lang}:${line}`
+  const hit = tokenCache.get(key)
+  if (hit !== undefined) return hit
   try {
-    highlighterPromise ??= (async () => {
-      const m = await import("@pierre/diffs")
-      registerOpenCodeTheme()
-      return m.getSharedHighlighter({ themes: ["OpenCode" as any], langs: [lang as any] })
-    })()
-    const hl = await highlighterPromise
+    const hl = await highlighter(lang)
+    if (!hl) return ""
     const html = hl.codeToHtml(line || " ", { lang, theme: "OpenCode" }) as string
     // shiki wraps in <pre><code>...; keep only the token spans
     const m = /<code[^>]*>([\s\S]*)<\/code>/.exec(html)
-    return m ? m[1] : ""
-  } catch {
+    const out = m ? m[1] : ""
+    if (!out) console.warn("[openshare] read highlight: empty output", lang)
+    cacheSet(key, out)
+    return out
+  } catch (e) {
+    console.warn("[openshare] read highlight failed", lang, String(e).slice(0, 120))
     return ""
   }
 }
@@ -244,18 +253,25 @@ const highlightLine = async (line: string, lang: string): Promise<string> => {
 function ReadCode(props: { contents: string; start: number; path?: string; language?: string }) {
   const rows = createMemo(() => props.contents.replace(/\n$/, "").split("\n"))
   const lang = () => (props.language && props.language !== "plaintext" ? props.language : langOfPath(props.path))
-  // [line html | ""] per row; "" = plain (pending, unsupported, or too big)
+  // token html per row; "" = plain (pending, unsupported, or too big)
   const [tokens, setTokens] = createSignal<string[]>([])
   onMount(() => {
     const n = rows().length
     if (lang() === "plaintext" || n > 400) return
     let alive = true
     onCleanup(() => (alive = false))
+    // seed from cache so remounts are instant
+    const seeded = rows().map((l) => tokenCache.get(`${lang()}:${l}`) ?? "")
+    if (seeded.some(Boolean)) setTokens(seeded)
     void (async () => {
-      const out: string[] = []
-      // one shared pass; per-line for our gutter
-      for (let i = 0; i < rows().length; i++) out.push(await highlightLine(rows()[i], lang()))
-      if (alive) setTokens(out)
+      // each line isolated: one failure/timeout is one plain line, never
+      // the whole file (and never a stall)
+      const out = seeded.slice()
+      for (let i = 0; i < rows().length; i++) {
+        if (out[i]) continue
+        out[i] = await highlightLine(rows()[i], lang())
+        if (alive) setTokens(out.slice())
+      }
     })()
   })
   return (
@@ -263,9 +279,14 @@ function ReadCode(props: { contents: string; start: number; path?: string; langu
       {rows().map((line, i) => (
         <div class="osh-read-row">
           <span class="osh-read-ln">{props.start + i}</span>
-          <span class="osh-read-line" innerHTML={tokens()[i] || undefined}>
-            {tokens()[i] ? undefined : line || " "}
-          </span>
+          {/* NEVER assign innerHTML=undefined: the DOM coerces it to the
+              literal "undefined" and Solid ignores the children fallback
+              whenever the prop exists (live-caught) */}
+          {tokens()[i] ? (
+            <span class="osh-read-line" innerHTML={tokens()[i]} />
+          ) : (
+            <span class="osh-read-line">{line || " "}</span>
+          )}
         </div>
       ))}
     </div>
@@ -279,13 +300,7 @@ const EditTool = (props: ToolProps) => {
   const oldText = createMemo(() => str((props.input as any).oldString))
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
-  const longest = createMemo(() => {
-    let n = 0
-    for (const line of oldText().split("\n")) n = Math.max(n, line.length)
-    for (const line of newText().split("\n")) n = Math.max(n, line.length)
-    return n
-  })
-  const fit = useSplitFit({ longest, sample: () => newText() || oldText() })
+  const fit = useSplitFit()
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -300,7 +315,7 @@ const EditTool = (props: ToolProps) => {
     return { adds, dels }
   })
   return (
-    <div data-component="osh-edit-tool">
+    <div data-component="osh-edit-tool" data-osh-split={fit.split() ? "on" : "off"}>
       <BasicTool
         {...props}
         icon="code-lines"

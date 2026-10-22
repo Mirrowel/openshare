@@ -18,6 +18,10 @@ export type OshSettings = {
   toolGroupingScope: "context" | "all"
   /** grove only: keep reasoning on the left (with tools) or move it right */
   groveThinking: "left" | "right"
+  /** how tool OUTPUTS overflow long lines: wrap them, or scroll the output
+   * horizontally (hidden scrollbar, VSCode-style). The width is hard-capped
+   * either way - this only picks the overflow behavior */
+  outputOverflow: "wrap" | "scroll"
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -36,6 +40,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   toolGrouping: true,
   toolGroupingScope: "context",
   groveThinking: "left",
+  outputOverflow: "scroll",
 }
 
 const COOKIE = "osh_settings"
@@ -113,6 +118,8 @@ export function applySettings(s: OshSettings) {
   // tool-call grouping (summary rows). Default ON; off = every call its
   // own row through the v2 timeline detail placements
   html.dataset.oshToolGrouping = s.toolGrouping === false ? "off" : "on"
+  // tool output overflow: wrap vs hidden-scrollbar horizontal scroll
+  html.dataset.oshOverflow = s.outputOverflow === "wrap" ? "wrap" : "scroll"
 }
 
 export const TEXT_SIZES: Record<string, string> = {

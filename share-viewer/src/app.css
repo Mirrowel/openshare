@@ -243,9 +243,10 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
    live-caught when every spacing fork silently did nothing AND removed
    upstream's pt-2/pt-4, collapsing the transcript into soup.
    tool: tool-to-tool hugs (5px). content: prose rows breathe (10px).
-   message: a NEW assistant message inside one turn gets a clear 36px
+   message: a NEW assistant message inside one turn gets a clear 24px
    break (e.g. the previous response's last tool call -> the next
-   response's thought).
+   response's thought). Tool->tool message boundaries do NOT break
+   (pure-tool clusters flow as one action - decided in the projection).
    Thought rows hug: a reasoning row tightens to 4px and the row AFTER
    a thought (its completion text) to 6px - a thought is the opening of
    its message, not a standalone block. Order matters: these come first,
@@ -254,7 +255,7 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   padding-top: 4px;
 }
 [data-timeline-row]:has([data-component="reasoning-part"]) + [data-timeline-row] {
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 [data-timeline-spacing="tool"] {
@@ -264,7 +265,7 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   padding-top: 10px;
 }
 [data-timeline-row][data-timeline-spacing="message"] {
-  padding-top: 36px;
+  padding-top: 24px;
 }
 
 /* agent transition chip: quiet mono, reads as structure not content */
@@ -469,6 +470,52 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   white-space: pre;
   padding-right: 12px;
   color: var(--text-base);
+  min-width: 0;
+  flex: 1 1 0%;
+}
+
+/* --- tool output overflow (setting: scroll | wrap) --------------------
+   Every output surface is hard-capped (max-width 100%); the setting only
+   picks how long lines behave inside the cap: hidden-scrollbar horizontal
+   scroll (VSCode-style, default) or wrapping. */
+html[data-osh-overflow="scroll"] .osh-read-line,
+html[data-osh-overflow="scroll"] .osh-pre,
+html[data-osh-overflow="scroll"] [data-component="tool-output"],
+html[data-osh-overflow="scroll"] [data-slot="bash-scroll"] {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html[data-osh-overflow="scroll"] .osh-read-line::-webkit-scrollbar,
+html[data-osh-overflow="scroll"] .osh-pre::-webkit-scrollbar,
+html[data-osh-overflow="scroll"] [data-component="tool-output"]::-webkit-scrollbar,
+html[data-osh-overflow="scroll"] [data-slot="bash-scroll"]::-webkit-scrollbar {
+  display: none;
+}
+html[data-osh-overflow="wrap"] .osh-read-line,
+html[data-osh-overflow="wrap"] .osh-pre,
+html[data-osh-overflow="wrap"] [data-component="tool-output"],
+html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+
+/* --- split diff (VSCode-style) ------------------------------------------
+   When split engages the card grows to double the reading column (capped
+   at viewport-48), LEFT-anchored like every other tool - extends right
+   only, never centers, never page-wide. Long lines scroll horizontally
+   inside the surface with a hidden scrollbar. */
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
+  width: min(200%, calc(100vw - 48px));
+}
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"]::-webkit-scrollbar {
+  display: none;
 }
 
 /* entry slots are transparent under skins that need direct grid children

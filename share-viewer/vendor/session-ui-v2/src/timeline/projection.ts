@@ -19,6 +19,9 @@ import { TimelineRow, type PartGroup, type PartRef, type TimelineRowMap } from "
 
 // openshare module: segment marker
 let openshareSegmentStart = false
+// openshare fork: was the last pushed AssistantPart row a tool row? drives
+// the tool->tool message-break suppression (pure-tool message clusters)
+let opensharePrevRowTool = false
 import { timelineCategory, timelineNoticeRequired, type TimelineDetail } from "./detail"
 
 export { TimelineRow, type PartGroup, type PartRef, type TimelineRowMap }
@@ -498,12 +501,20 @@ export namespace Timeline {
         let offset = 0
         groupContent(items, shellToolDefaultOpen, editToolDefaultOpen, detail).forEach((group) => {
           const tool = group.type !== "part" || items[offset]?.content.type !== "text"
+          // openshare fork: does this row START with a bare tool call? (a
+          // tool group, or a part whose content is a tool) - needed for the
+          // tool->tool suppression below
+          const firstIsTool = group.type !== "part" || items[offset]?.content.type === "tool"
           offset += group.type === "part" ? 1 : group.refs.length
           // openshare fork: the first row of every assistant message (after
-          // the turn's first) carries the "message" break; rows within a
-          // message keep upstream's tool/content rhythm
-          const messageStart = openshareSegmentStart && assistantGroupIndex > 0
+          // the turn's first) carries the "message" break - EXCEPT when the
+          // previous row ended in a tool call AND this row starts with one
+          // (pure-tool messages flow as one action cluster; a break belongs
+          // only where the content TYPE changes: tool->reasoning/text)
+          const messageStart =
+            openshareSegmentStart && assistantGroupIndex > 0 && !(firstIsTool && opensharePrevRowTool)
           openshareSegmentStart = false
+          opensharePrevRowTool = firstIsTool
           rows.push(
             new TimelineRow.AssistantPart({
               userMessageID: turnID,

@@ -266,6 +266,20 @@ export function SettingsBody(props: {
             on={props.settings.toolOutput}
             onChange={() => props.update({ toolOutput: !props.settings.toolOutput })}
           />
+          {/* long lines in tool outputs: wrap, or scroll horizontally
+              (hidden scrollbar) - the output width is hard-capped either
+              way; this only picks the overflow behavior */}
+          <div class="pl-3 pb-1.5">
+            <div class="text-12-regular text-text-weaker pb-1">Long lines in outputs</div>
+            <Segmented
+              value={props.settings.outputOverflow}
+              options={[
+                { id: "scroll" as const, label: "scroll" },
+                { id: "wrap" as const, label: "wrap" },
+              ]}
+              onChange={(outputOverflow) => props.update({ outputOverflow })}
+            />
+          </div>
           {/* grouping only applies to the classic timeline; views have
               their own composition */}
           <Show when={props.settings.view === "classic"}>
