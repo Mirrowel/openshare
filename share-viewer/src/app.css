@@ -250,7 +250,7 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 
 [data-timeline-row] [data-component="reasoning-part"],
 [data-row-key] [data-component="reasoning-part"] {
-  padding-left: 6px;
+  padding-left: 0;
 }
 /* the nested trigger must not inherit any indent inside a thought */
 [data-timeline-row] [data-component="reasoning-part"] [data-component="tool-trigger"],

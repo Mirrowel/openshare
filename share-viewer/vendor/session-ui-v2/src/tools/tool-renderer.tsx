@@ -571,7 +571,8 @@ export function CurrentContextToolGroup(props: {
               : part.name === "skill"
                 ? i18n.t("ui.tool.skill")
                 : part.name === "subagent"
-                  ? i18n.t("ui.tool.agent.default")
+                  // openshare fork: grouped label uses the real agent name when known
+                  ? taskAgent((part as any).input?.agent ?? (part as any).input?.subagent_type, undefined).name ?? i18n.t("ui.tool.agent.default")
                   : getToolInfo(part.name, undefined, part.name === "websearch" ? currentToolMetadata(part) : undefined)
                       .title,
           ]
@@ -1858,7 +1859,8 @@ ToolRegistry.register({
       return taskSession(props.input, data.sessionID, data.store.session)
     })
 
-    const agent = createMemo(() => taskAgent(props.input.agent, data.store.agent))
+    // openshare fork: old shares carry v1 subagent_type instead of agent
+    const agent = createMemo(() => taskAgent((props.input as any).agent ?? (props.input as any).subagent_type, data.store.agent))
     const title = createMemo(() => agent().name ?? i18n.t("ui.tool.agent.default"))
     const tone = createMemo(() => agent().color)
     const v2Tone = createMemo(() => agent().v2Color)

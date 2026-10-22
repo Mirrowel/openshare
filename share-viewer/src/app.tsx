@@ -39,6 +39,7 @@ import { useShareSource, type Branding } from "./data-source"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
+import { createMediaQuery } from "@solid-primitives/media"
 import { InfoPanel } from "./views/info-panel"
 import { findView, resolveSessionID } from "./views/registry"
 import { setVendoredData } from "./views/vendored-part"
@@ -396,9 +397,15 @@ function SessionView(props: {
               const timelineDoc = () => (searching() ? { ...document(), messages: messages().filter((m) => (m?.type === "user" ? filtered().some((u) => u.id === m.id) : true)) } : document())
 
               // mobile (narrow) layout: paged timeline under the title.
-              // Virtualized like every path тАФ rows outside the viewport
-              // never enter the DOM.
+              // Virtualized like every path — rows outside the viewport
+              // never enter the DOM. GATED on a real media query: a
+              // CSS-hidden duplicate still mounts its own virtualizer and
+              // disclosure store, and rows in the hidden copy swallow
+              // DOM-first queries (live-caught: 6 instances, dead toggles
+              // in automated probes).
+              const narrow = createMediaQuery("(max-width: 767px)")
               const turns = () => (
+                <Show when={narrow()}>
                 <VirtualTimeline
                   doc={pagedDocument() as any}
                   sessionKey={props.source.shareID + ":" + sessionID() + ":paged-m:" + (activeMessage()?.id ?? "")}
@@ -415,6 +422,7 @@ function SessionView(props: {
                   }
                   class="h-full"
                 />
+                </Show>
               )
 
               const wide = createMemo(() => diffs().length === 0)

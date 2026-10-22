@@ -475,7 +475,7 @@ export function createSessionTimelineRowRenderer(input: {
         // (9.6px), and a NEW assistant message gets a clear 16px break
         "pt-[0.3rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "tool",
         "pt-[0.6rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
-        "pt-4": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",
+        "pt-[1.5rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",
         "pt-6": Predicate.isTagged(props.row, "Error"),
       }}
     >

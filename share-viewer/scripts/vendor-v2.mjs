@@ -259,6 +259,31 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: the subagent/task rows label the REAL agent name. v1 shares
+// carry `subagent_type` in the input (the plugin contract now maps it to
+// `agent` for new shares; this makes old shares readable too).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: old shares carry v1 subagent_type")) {
+      let before = s
+      s = s.replace(
+        /const agent = createMemo\(\(\) => taskAgent\(props\.input\.agent, data\.store\.agent\)\)/,
+        "// openshare fork: old shares carry v1 subagent_type instead of agent\n    const agent = createMemo(() => taskAgent((props.input as any).agent ?? (props.input as any).subagent_type, data.store.agent))",
+      )
+      if (s === before) throw new Error("vendor-v2: task agent anchor missing - upstream drifted")
+      before = s
+      s = s.replace(
+        /: part\.name === "subagent"\r?\n\s*\? i18n\.t\("ui\.tool\.agent\.default"\)/,
+        ': part.name === "subagent"\n                  // openshare fork: grouped label uses the real agent name when known\n                  ? taskAgent((part as any).input?.agent ?? (part as any).input?.subagent_type, undefined).name ?? i18n.t("ui.tool.agent.default")',
+      )
+      if (s === before) throw new Error("vendor-v2: grouped agent label anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: tighter rhythm between tool calls in one response
 // (v1 was a 12px flex gap; upstream's 16px reads loose in a share page)
 {
@@ -325,16 +350,14 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       s = s.replace(
         / {8}"pt-2": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "tool",\r?\n {8}"pt-4": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "content",/,
         `        // openshare fork: tool-to-tool hugs (4.8px), prose rows breathe
-        // (9.6px), and a NEW assistant message gets a clear 16px break
+        // (9.6px), and a NEW assistant message gets a clear 24px break (pt-[1.5rem]: pt-6 collides with Error rows)
         "pt-[0.3rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "tool",
         "pt-[0.6rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
-        "pt-4": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",`,
+        "pt-[1.5rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",`,
       )
       if (s === before) throw new Error("vendor-v2: row spacing anchor missing - upstream drifted")
       writeFileSync(p, s)
     }
-  }
-}
 writeFileSync(
   join(ROOT, "vendor/session-ui-v2/package.json"),
   JSON.stringify(

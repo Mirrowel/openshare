@@ -8,7 +8,7 @@
 // Drives the vendored session-ui projection + row renderer, so rendering
 // is identical to the non-virtualized timeline.
 import { createVirtualizer } from "@tanstack/solid-virtual"
-import { createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { For, createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
@@ -218,42 +218,46 @@ export function VirtualTimeline(props: {
           last thing in the session — never pinned */}
       <Show when={props.header}>{props.header}</Show>
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}>
-        {items.map((item) => {
-          const row = projection.rowByKey().get(String(item.key))
-          if (!row) return null
-          return (
-            <div
-              data-row-key={item.key}
-              data-index={item.index}
-              ref={(el) => {
-                // tanstack's measureElement early-returns when the index is
-                // outside the computed range, and at ref time (DOM creation)
-                // the range is not computed yet - so nothing was ever
-                // measured and every row sat on the 90px estimate
-                // (live-caught: uniform ~46px gaps in continuous mode).
-                // Defer the first measure; the virtualizer's observer takes
-                // over from there. GUARD: a row may be re-created before this
-                // frame runs - measuring a detached node reports 0, poisons
-                // the size cache and triggers notify -> full row re-creation
-                // -> stale measure -> an endless measure/remount livelock
-                // where every click lands on a replaced node (live-caught).
-                if (el) requestAnimationFrame(() => {
-                  if (el.isConnected) virtualizer.measureElement(el)
-                })
-              }}
-              style={{
-                position: "absolute",
-                top: "0",
-                left: "0",
-                width: "100%",
-                transform: `translateY(${item.start}px)`,
-              }}
-            >
-              {/* reactive like the kit's own Row memo */}
-              <renderer.Row row={() => projection.rowByKey().get(String(item.key)) ?? row} />
-            </div>
-          )
-        })}
+        {/* KEYED rendering: <For> keys by store-node identity, and tanstack's
+            index-keyed reconcile keeps the same node object per position - so
+            row DOM persists across every virtualizer update. The old unkeyed
+            items.map re-created every visible row on each notify, which
+            orphaned in-flight measurements (layout stuck on 90px estimates,
+            first load read as a wall of gaps - the owner's broken-cold /
+            fine-after-reload report). */}
+        <For each={items}>
+          {(item) => {
+            const row = projection.rowByKey().get(String(item.key))
+            if (!row) return null
+            return (
+              <div
+                data-row-key={item.key}
+                data-index={item.index}
+                ref={(el) => {
+                  // tanstack's measureElement early-returns when the index is
+                  // outside the computed range, and at ref time (DOM creation)
+                  // the range is not computed yet - defer the first measure;
+                  // the virtualizer's observer takes over from there. GUARD:
+                  // skip detached nodes - measuring one reports 0, poisons the
+                  // size cache and feeds the measure/remount churn.
+                  requestAnimationFrame(() => {
+                    if (el.isConnected) virtualizer.measureElement(el)
+                  })
+                }}
+                style={{
+                  position: "absolute",
+                  top: "0",
+                  left: "0",
+                  width: "100%",
+                  transform: `translateY(${item.start}px)`,
+                }}
+              >
+                {/* reactive like the kit's own Row memo */}
+                <renderer.Row row={() => projection.rowByKey().get(String(item.key)) ?? row} />
+              </div>
+            )
+          }}
+        </For>
       </div>
       <Show when={props.footer}>{props.footer}</Show>
     </div>
