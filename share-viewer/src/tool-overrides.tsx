@@ -11,10 +11,11 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
+import { registerOpenCodeTheme } from "@opencode/ui/context/marked-theme-register"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
@@ -75,9 +76,14 @@ function useSplitFit(props: { longest: () => number; sample?: () => string }) {
   })
   const ref = (el: HTMLDivElement) => {
     setWrap(el)
+    // measure the AVAILABLE width, not the content: edit-content itself
+    // hugs (width: fit-content, the no-page-stretch rule), so measuring it
+    // feeds back - unified renders narrow, split never engages, deadlocked
+    // (live-caught). The parent (osh-file-body) is full-width.
+    const host = el.parentElement ?? el
     const measure = () => {
-      setWidth(el.clientWidth)
-      const font = getComputedStyle(el).font
+      setWidth(host.clientWidth)
+      const font = getComputedStyle(host).font
       const sample = (props.sample?.() ?? "0".repeat(40)).slice(0, 160)
       try {
         const ctx = measureCanvas ??= document.createElement("canvas").getContext("2d")
@@ -90,7 +96,8 @@ function useSplitFit(props: { longest: () => number; sample?: () => string }) {
     }
     measure()
     const ro = new ResizeObserver(measure)
-    ro.observe(el)
+    ro.observe(host)
+    if (host !== el) ro.observe(el)
     onCleanup(() => ro.disconnect())
   }
   const split = createMemo(() => width() > 0 && width() >= needed())
@@ -186,7 +193,7 @@ const ReadTool = (props: ToolProps) => {
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
           <FileBody title={path()}>
-            <ReadCode contents={preview()} start={readStart(props)} />
+            <ReadCode contents={preview()} start={readStart(props)} path={path()} language={str((props.metadata as any)?.language)} />
           </FileBody>
         </Show>
       </BasicTool>
@@ -196,14 +203,69 @@ const ReadTool = (props: ToolProps) => {
 
 /** Read output as a real code view: gutter numbers CONTINUE from the file
  * offset (v1 behaviour), horizontal scroll, no markdown mangling. */
-function ReadCode(props: { contents: string; start: number }) {
+// shiki language for a path - the PLUGIN stamps metadata.language
+// (authoritative); this map is the old-share fallback only
+const LANG_BY_EXT: Record<string, string> = {
+  ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
+  js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
+  json: "json", jsonc: "json", md: "markdown", mdx: "mdx",
+  py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
+  css: "css", scss: "scss", html: "html", xml: "xml", yaml: "yaml", yml: "yaml",
+  toml: "toml", sh: "shellscript", bash: "shellscript", ps1: "powershell",
+  sql: "sql", c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp",
+  swift: "swift", kt: "kotlin", php: "php", lua: "lua", vue: "vue", svelte: "svelte",
+}
+const langOfPath = (path: string | undefined): string => {
+  const ext = (path ?? "").split(".").pop()?.toLowerCase() ?? ""
+  return LANG_BY_EXT[ext] ?? "plaintext"
+}
+
+// shared main-thread highlighter (pierre, theme "OpenCode" = CSS variables,
+// so tokens follow the page theme). Loaded once, cached per language.
+let highlighterPromise: Promise<any> | undefined
+const highlightLine = async (line: string, lang: string): Promise<string> => {
+  if (lang === "plaintext") return ""
+  try {
+    highlighterPromise ??= (async () => {
+      const m = await import("@pierre/diffs")
+      registerOpenCodeTheme()
+      return m.getSharedHighlighter({ themes: ["OpenCode" as any], langs: [lang as any] })
+    })()
+    const hl = await highlighterPromise
+    const html = hl.codeToHtml(line || " ", { lang, theme: "OpenCode" }) as string
+    // shiki wraps in <pre><code>...; keep only the token spans
+    const m = /<code[^>]*>([\s\S]*)<\/code>/.exec(html)
+    return m ? m[1] : ""
+  } catch {
+    return ""
+  }
+}
+
+function ReadCode(props: { contents: string; start: number; path?: string; language?: string }) {
   const rows = createMemo(() => props.contents.replace(/\n$/, "").split("\n"))
+  const lang = () => (props.language && props.language !== "plaintext" ? props.language : langOfPath(props.path))
+  // [line html | ""] per row; "" = plain (pending, unsupported, or too big)
+  const [tokens, setTokens] = createSignal<string[]>([])
+  onMount(() => {
+    const n = rows().length
+    if (lang() === "plaintext" || n > 400) return
+    let alive = true
+    onCleanup(() => (alive = false))
+    void (async () => {
+      const out: string[] = []
+      // one shared pass; per-line for our gutter
+      for (let i = 0; i < rows().length; i++) out.push(await highlightLine(rows()[i], lang()))
+      if (alive) setTokens(out)
+    })()
+  })
   return (
     <div data-component="osh-read-code">
       {rows().map((line, i) => (
         <div class="osh-read-row">
           <span class="osh-read-ln">{props.start + i}</span>
-          <span class="osh-read-line">{line || " "}</span>
+          <span class="osh-read-line" innerHTML={tokens()[i] || undefined}>
+            {tokens()[i] ? undefined : line || " "}
+          </span>
         </div>
       ))}
     </div>

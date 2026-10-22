@@ -477,6 +477,10 @@ export namespace Timeline {
     const appendAssistantSegment = (messages: SessionMessageAssistant[]) => {
       if (thoughtOnly) return
 
+      // openshare fork: each segment call starts a NEW assistant message -
+      // its first row gets the "message" break (consumed by appendGroups)
+      openshareSegmentStart = true
+
       const refs = messages.flatMap((message, messageIndex) =>
         contentEntries(message)
           .filter(
@@ -495,12 +499,23 @@ export namespace Timeline {
         groupContent(items, shellToolDefaultOpen, editToolDefaultOpen, detail).forEach((group) => {
           const tool = group.type !== "part" || items[offset]?.content.type !== "text"
           offset += group.type === "part" ? 1 : group.refs.length
+          // openshare fork: the first row of every assistant message (after
+          // the turn's first) carries the "message" break; rows within a
+          // message keep upstream's tool/content rhythm
+          const messageStart = openshareSegmentStart && assistantGroupIndex > 0
+          openshareSegmentStart = false
           rows.push(
             new TimelineRow.AssistantPart({
               userMessageID: turnID,
               group,
               previousAssistantPart: assistantGroupIndex > 0,
-              spacing: assistantGroupIndex > 0 ? (previousAssistantTool && tool ? "tool" : "content") : undefined,
+              spacing: messageStart
+                ? ("message" as const)
+                : assistantGroupIndex > 0
+                  ? previousAssistantTool && tool
+                    ? "tool"
+                    : "content"
+                  : undefined,
             }),
           )
           assistantGroupIndex += 1
@@ -508,12 +523,27 @@ export namespace Timeline {
         })
       }
 
-      appendGroups(before)
+      // openshare fork: grouping per assistant message - one response's
+      // badge must never absorb another response's tools, and every message
+      // boundary re-arms the "message" spacing break
+      const appendSegments = (items: typeof refs) => {
+        let start = 0
+        while (start < items.length) {
+          const messageID = items[start]!.messageID
+          let end = start
+          while (end < items.length && items[end]!.messageID === messageID) end += 1
+          if (start > 0) openshareSegmentStart = true
+          appendGroups(items.slice(start, end))
+          start = end
+        }
+      }
+
+      appendSegments(before)
 
       if (interruptedAt >= 0) {
         if (!compaction && detail?.notices.placement !== "hidden")
           rows.push(new TimelineRow.TurnDivider({ userMessageID: turnID }))
-        appendGroups(after)
+        appendSegments(after)
       }
 
       if (messages.at(-1) !== lastAssistant) return

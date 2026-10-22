@@ -1614,9 +1614,49 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
+  /** file tools get metadata.language (shiki lang id, from the path the
+   * call touched) - the viewer highlights from the stamp and never guesses
+   * (owner directive; the viewer's extension map is an old-share fallback) */
+  const LANG_BY_EXT: Record<string, string> = {
+    ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
+    js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
+    json: "json", jsonc: "json", md: "markdown", mdx: "mdx",
+    py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
+    css: "css", scss: "scss", html: "html", xml: "xml", yaml: "yaml", yml: "yaml",
+    toml: "toml", sh: "shellscript", bash: "shellscript", ps1: "powershell",
+    sql: "sql", c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp",
+    swift: "swift", kt: "kotlin", php: "php", lua: "lua", vue: "vue", svelte: "svelte",
+  }
+  const FILE_TOOLS = new Set(["read", "write", "edit", "patch"])
+  const stampFileLanguages = () => {
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant") continue
+      const content = (m.data as any).content
+      if (!Array.isArray(content)) continue
+      let mutated = false
+      for (const part of content) {
+        if (!part || part.type !== "tool") continue
+        if (!FILE_TOOLS.has(part.name)) continue
+        const state = part.state
+        const meta = state?.metadata
+        if (!meta || typeof meta.language === "string") continue
+        const raw = state.input?.path ?? state.input?.filePath
+        if (typeof raw !== "string") continue
+        const ext = raw.split(".").pop()?.toLowerCase() ?? ""
+        const lang = LANG_BY_EXT[ext]
+        if (lang) {
+          meta.language = lang
+          mutated = true
+        }
+      }
+      if (mutated) reEnqueueMessage(m)
+    }
+  }
+
   const stampsPass = () => {
     stampAgentSwitches()
     stampTaskAgents()
+    stampFileLanguages()
   }
 
   // ---- contract v2 message assembly --------------------------------------

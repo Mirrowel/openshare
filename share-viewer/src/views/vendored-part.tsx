@@ -55,6 +55,17 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
               metadata={(props.entry.state?.metadata ?? {}) as Record<string, unknown>}
               output={props.entry.output ?? ""}
               status={props.entry.status}
+              // failed calls must read as failures in every view: ToolDisplay
+              // swaps in the error card when status="error" AND error is set
+              // (classic passes the same via currentToolError - live-caught:
+              // reader showed failed reads as ordinary ones)
+              error={
+                props.entry.state?.status === "error"
+                  ? typeof props.entry.state?.error === "string"
+                    ? props.entry.state.error
+                    : ((props.entry.state?.error as any)?.message ?? "Failed")
+                  : undefined
+              }
               // the per-tool natural-open rule + the toggle on top
               defaultOpen={props.entry.defaultOpen || props.settings.toolOutput || undefined}
             />

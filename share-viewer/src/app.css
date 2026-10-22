@@ -243,16 +243,28 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
    live-caught when every spacing fork silently did nothing AND removed
    upstream's pt-2/pt-4, collapsing the transcript into soup.
    tool: tool-to-tool hugs (5px). content: prose rows breathe (10px).
-   message: a NEW assistant message inside one turn gets a clear 28px
-   break (last tool call of response #1 -> the next response's thought). */
+   message: a NEW assistant message inside one turn gets a clear 36px
+   break (e.g. the previous response's last tool call -> the next
+   response's thought).
+   Thought rows hug: a reasoning row tightens to 4px and the row AFTER
+   a thought (its completion text) to 6px - a thought is the opening of
+   its message, not a standalone block. Order matters: these come first,
+   the spacing-attr rules below override on ties (message breaks win). */
+[data-timeline-row]:has([data-component="reasoning-part"]) {
+  padding-top: 4px;
+}
+[data-timeline-row]:has([data-component="reasoning-part"]) + [data-timeline-row] {
+  padding-top: 6px;
+}
+
 [data-timeline-spacing="tool"] {
   padding-top: 5px;
 }
 [data-timeline-spacing="content"] {
   padding-top: 10px;
 }
-[data-timeline-spacing="message"] {
-  padding-top: 28px;
+[data-timeline-row][data-timeline-spacing="message"] {
+  padding-top: 36px;
 }
 
 /* agent transition chip: quiet mono, reads as structure not content */

@@ -361,11 +361,6 @@ function SessionView(props: {
                 <div class="flex flex-col gap-4">
                   <div class="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center sm:h-8 justify-start self-stretch">
                     <Show when={isSub()}>
-                      <span class="pl-[2.5px] pr-2 flex items-center bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base">
-                        subagent
-                      </span>
-                    </Show>
-                    <Show when={isSub()}>
                       <Show when={backHref()} keyed>
                         {(href) => (
                           <a
@@ -377,6 +372,11 @@ function SessionView(props: {
                           </a>
                         )}
                       </Show>
+                    </Show>
+                    <Show when={isSub()}>
+                      <span class="pl-[2.5px] pr-2 flex items-center bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base">
+                        subagent
+                      </span>
                     </Show>
                     <div class="pl-[2.5px] pr-2 flex items-center gap-1.75 bg-surface-strong shadow-xs-border-base w-fit">
                       <Mark class="shrink-0 w-3 my-0.5" />

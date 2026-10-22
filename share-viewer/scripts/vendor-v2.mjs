@@ -83,52 +83,67 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       s = next
     }
 
-    // module-scope marker so the spacing expression inside appendGroups can
-    // see whether the NEXT row starts a new assistant message
-    if (!s.includes("openshare module: segment marker")) {
+    // openshare fork: row rhythm between messages. ONE guarded unit - the
+    // old two-guard encoding silently skipped the whole fork when the module
+    // var insert ran first (live-caught: spacing "fixed" repeatedly while
+    // the built bundle ran upstream spacing; regen restored the var but not
+    // the fork). All anchors throw, so upstream drift is loud.
+    if (!s.includes("openshare fork: each segment call starts")) {
       patch(
         /(^import \{ TimelineRow[^\r\n]*\r?\n)/m,
         "$1\n// openshare module: segment marker\nlet openshareSegmentStart = false\n",
         "segment marker",
       )
-    }
-
-    if (!s.includes("openshareSegmentStart")) {
+      patch(
+        /(const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{\r?\n {6}if \(thoughtOnly\) return)\r?\n/,
+        "$1\n\n      // openshare fork: each segment call starts a NEW assistant message -\n      // its first row gets the \"message\" break (consumed by appendGroups)\n      openshareSegmentStart = true\n",
+        "segment marker set",
+      )
       patch(
         /( {6}appendGroups\(before\)\r?\n)/,
         [
           "      // openshare fork: grouping per assistant message - one response's",
-          "      // badge must never absorb another response's tools",
+          "      // badge must never absorb another response's tools, and every message",
+          "      // boundary re-arms the \"message\" spacing break",
           "      const appendSegments = (items: typeof refs) => {",
           "        let start = 0",
           "        while (start < items.length) {",
           "          const messageID = items[start]!.messageID",
           "          let end = start",
           "          while (end < items.length && items[end]!.messageID === messageID) end += 1",
-          "          openshareSegmentStart = start > 0",
+          "          if (start > 0) openshareSegmentStart = true",
           "          appendGroups(items.slice(start, end))",
           "          start = end",
           "        }",
           "      }",
           "",
           "      appendSegments(before)",
-          "      openshareSegmentStart = false",
-          "",
         ].join("\n"),
         "appendGroups(before)",
       )
-      patch(/ {6}appendGroups\(after\)/, "      appendSegments(after)", "appendGroups(after)")
+      patch(/ {8}appendGroups\(after\)/, "        appendSegments(after)", "appendGroups(after)")
       patch(
-        /spacing: assistantGroupIndex > 0 \? \(previousAssistantTool && tool \? "tool" : "content"\) : undefined,/,
+        / {10}const tool = group\.type !== "part" \|\| items\[offset\]\?\.content\.type !== "text"\r?\n {10}offset \+= group\.type === "part" \? 1 : group\.refs\.length\r?\n {10}rows\.push\(\r?\n {12}new TimelineRow\.AssistantPart\(\{\r?\n {14}userMessageID: turnID,\r?\n {14}group,\r?\n {14}previousAssistantPart: assistantGroupIndex > 0,\r?\n {14}spacing: assistantGroupIndex > 0 \? \(previousAssistantTool && tool \? "tool" : "content"\) : undefined,/m,
         [
-          "spacing: (() => {",
-          "                  const messageStart = openshareSegmentStart",
-          "                  openshareSegmentStart = false",
-          "                  if (messageStart) return \"message\"",
-          "                  if (assistantGroupIndex === 0) return undefined",
-          "                  // tool-to-tool inside one response hugs; prose rows breathe",
-          "                  return previousAssistantTool && tool ? \"tool\" : \"content\"",
-          "                })() as \"tool\" | \"content\" | \"message\" | undefined,",
+          '          const tool = group.type !== "part" || items[offset]?.content.type !== "text"',
+          '          offset += group.type === "part" ? 1 : group.refs.length',
+          '          // openshare fork: the first row of every assistant message (after',
+          '          // the turn\'s first) carries the "message" break; rows within a',
+          '          // message keep upstream\'s tool/content rhythm',
+          "          const messageStart = openshareSegmentStart && assistantGroupIndex > 0",
+          "          openshareSegmentStart = false",
+          "          rows.push(",
+          "            new TimelineRow.AssistantPart({",
+          "              userMessageID: turnID,",
+          "              group,",
+          "              previousAssistantPart: assistantGroupIndex > 0,",
+          "              spacing: messageStart",
+          '                ? ("message" as const)',
+          "                : assistantGroupIndex > 0",
+          "                  ? previousAssistantTool && tool",
+          '                    ? "tool"',
+          '                    : "content"',
+          "                  : undefined,",
         ].join("\n"),
         "assistant spacing",
       )
