@@ -362,7 +362,8 @@ var TOOL_NAME_MAP = {
   task: "subagent"
 };
 var INPUT_KEY_MAP = {
-  filePath: "path"
+  filePath: "path",
+  subagent_type: "agent"
 };
 function normalizeToolInput(input, title) {
   const out = {};

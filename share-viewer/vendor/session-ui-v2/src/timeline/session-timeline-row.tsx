@@ -471,11 +471,11 @@ export function createSessionTimelineRowRenderer(input: {
       classList={{
         "min-w-0 w-full max-w-full": true,
         "md:max-w-session md:mx-auto": input.centered?.(),
-        "pt-2": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "tool",
-        // openshare fork: tighter rhythm inside one response, a clear break
-        // between responses (v1 separated turns, we separate messages)
-        "pt-[0.45rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
-        "pt-5": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",
+        // openshare fork: tool-to-tool hugs (4.8px), prose rows breathe
+        // (9.6px), and a NEW assistant message gets a clear 16px break
+        "pt-[0.3rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "tool",
+        "pt-[0.6rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
+        "pt-4": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",
         "pt-6": Predicate.isTagged(props.row, "Error"),
       }}
     >

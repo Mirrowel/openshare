@@ -144,15 +144,19 @@ html[data-osh-read-text="large"] .osh-content {
 
 /* classic view: Tool info off keeps the CALL (icon + tool name) and hides
    only what comes after it - the subtitle/arguments - until the row is
-   expanded. Hiding the whole info block made every tool disappear into an
-   empty chevron and took the reasoning rows with it (live-caught).
-   The vendored collapsible marks its open state with a bare `n` attribute
-   (Kobalte), so `:not([n])` is the collapsed state. */
-html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"]:not([data-keep]),
-html[data-osh-tool-info="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"],
-html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"],
-html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"] {
+   expanded. `:where()` keeps the hide rule at ZERO specificity so the
+   reasoning exemption below always wins: the thought's duration ("0s") is
+   part of the marker, never an arg, and must survive the toggle. */
+:where(html[data-osh-tool-info="off"]) :where([data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"]):not([data-keep]),
+:where(html[data-osh-tool-info="off"]) :where([data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"]),
+:where(html[data-osh-toolinfo="off"]) :where([data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-subtitle"]),
+:where(html[data-osh-toolinfo="off"]) :where([data-component="collapsible"][data-closed] [data-slot="basic-tool-tool-arg"]) {
   display: none;
+}
+/* reasoning rows are exempt entirely - never touch thinking */
+html[data-osh-tool-info="off"] [data-component="reasoning-part"] [data-slot="basic-tool-tool-subtitle"],
+html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basic-tool-tool-subtitle"] {
+  display: inline;
 }
 
 /* --- v1 reading layer -------------------------------------------------
@@ -232,30 +236,45 @@ html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-
 }
 
 /* --- reading rhythm ---------------------------------------------------
-   Flat left-aligned everything is what made v2 read as one grey block:
-   prose sits on the margin, tool calls step in behind a quiet rail, and
-   reasoning is deliberately quieter than the assistant's own answer. */
-[data-timeline-row] [data-component="tool-trigger"],
-[data-row-key] [data-component="tool-trigger"] {
-  padding-left: 10px;
-  border-left: 2px solid var(--border-weaker-base);
+   Rails live on the ROW WRAPPER (tool-part-wrapper), never on the inner
+   trigger: the kit renders reasoning through a nested BasicTool, so a
+   trigger-level rule indented thoughts TWICE and leaked into group
+   children (the "Used N" slide, live-caught). 1px hairline, not a colored
+   stripe. Tool rows step in 14px; thought rows sit at 6px with no rail. */
+[data-timeline-row] [data-component="tool-part-wrapper"],
+[data-row-key] [data-component="tool-part-wrapper"],
+.osh-entries [data-component="tool-part-wrapper"] {
+  padding-left: 14px;
+  border-left: 1px solid var(--border-weaker-base);
 }
 
 [data-timeline-row] [data-component="reasoning-part"],
 [data-row-key] [data-component="reasoning-part"] {
-  color: var(--text-weaker);
-  padding-left: 10px;
-  border-left: 2px dashed var(--border-weaker-base);
+  padding-left: 6px;
 }
+/* the nested trigger must not inherit any indent inside a thought */
+[data-timeline-row] [data-component="reasoning-part"] [data-component="tool-trigger"],
+[data-row-key] [data-component="reasoning-part"] [data-component="tool-trigger"] {
+  padding-left: 0;
+  border-left: none;
+}
+
+/* reasoning body: readable size and rhythm, raised off the grey floor -
+   it must read as prelude, not as disabled text */
 [data-timeline-row] [data-component="reasoning-part"] [data-component="markdown"],
 [data-row-key] [data-component="reasoning-part"] [data-component="markdown"] {
-  font-size: 13px;
-  color: var(--text-weaker);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-base);
   font-style: italic;
+}
+[data-timeline-row] [data-component="reasoning-part"] [data-component="markdown"] p,
+[data-row-key] [data-component="reasoning-part"] [data-component="markdown"] p {
+  margin-block: 4px;
 }
 [data-timeline-row] [data-component="reasoning-part"] [data-component="markdown"] :is(strong, b, code),
 [data-row-key] [data-component="reasoning-part"] [data-component="markdown"] :is(strong, b, code) {
-  color: var(--text-weaker);
+  color: var(--text-base);
 }
 
 /* tool bodies line up under their trigger, inside the same rail */
@@ -293,12 +312,20 @@ html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-
   color: var(--text-strong);
   font-size: 13px;
 }
-/* reasoning: the label is a marker, the faint italic body is the content -
-   neither should read like a tool call or the completion */
+/* reasoning: the label is a MARKER, not a tool name - its own hue (the
+   theme's keyword accent) plus a small glyph, so a thought can never be
+   mistaken for a tool call or the completion. The duration rides along
+   and is deliberately exempt from the tool-info toggle. */
 [data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"],
 [data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"] {
-  color: var(--syntax-keyword, var(--text-base));
+  color: var(--syntax-keyword, oklch(0.75 0.11 290));
   font-style: normal;
+}
+[data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"]::before,
+[data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"]::before {
+  content: "✦ ";
+  font-size: 11px;
+  opacity: 0.85;
 }
 [data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-subtitle"],
 [data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-subtitle"] {
@@ -306,7 +333,107 @@ html[data-osh-toolinfo="off"] [data-component="collapsible"][data-closed] [data-
 }
 
 /* tool info off: file cards keep the file NAME (with its meta), never the
-   long directory - the expanded body repeats the full title anyway */
+   long directory - the expanded body repeats the title bar anyway */
 html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   display: none;
+}
+
+/* --- section/entry virtualization (composed views) --------------------
+   Spacers stand in for unrendered sections/entries; in column layouts
+   like grove's 2-column grid they must span the FULL row or they would
+   distort the column rhythm. */
+.osh-win-spacer {
+  flex: none;
+  width: 100%;
+  grid-column: 1 / -1;
+}
+
+/* file cards: the expanded body opens with a title bar - icon, file name,
+   directory muted; then the content. width hugs the content so the diff
+   never stretches empty columns across the page. */
+[data-slot="osh-file-title"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-weaker-base);
+  color: var(--text-weaker);
+}
+[data-slot="osh-file-title"] .osh-file-icon {
+  flex: none;
+  color: var(--text-weaker);
+}
+[data-slot="osh-file-title"] .osh-file-dir {
+  color: var(--text-weaker);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+[data-slot="osh-file-title"] .osh-file-name {
+  flex: none;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+[data-component="osh-file-body"] > [data-component="file"],
+[data-component="osh-file-body"] > [data-component="edit-content"],
+[data-component="osh-file-body"] > pre {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* the file-title extension badge (TS/MD/JSON...) */
+[data-slot="osh-file-title"] .osh-file-ext {
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-weaker);
+  background: var(--surface-base);
+  border: 1px solid var(--border-weaker-base);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+/* read output: real code view with the gutter continuing from the file
+   offset; horizontal scroll (code semantics), no markdown mangling */
+[data-component="osh-read-code"] {
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  background: var(--surface-base);
+  border: 1px solid var(--border-weaker-base);
+  border-radius: 8px;
+  padding: 8px 0;
+  max-height: 32rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  width: fit-content;
+  min-width: 50%;
+  max-width: 100%;
+}
+.osh-read-row {
+  display: flex;
+}
+.osh-read-row:hover {
+  background: var(--surface-raised-base);
+}
+.osh-read-ln {
+  flex: none;
+  min-width: 5ch;
+  padding-right: 14px;
+  text-align: right;
+  color: var(--text-weaker);
+  user-select: none;
+}
+.osh-read-line {
+  white-space: pre;
+  padding-right: 12px;
+  color: var(--text-base);
+}
+
+/* entry slots are transparent under skins that need direct grid children
+   (grove's 2-column turn body); everywhere else they are plain blocks */
+[data-view="grove"] .osh-entry-slot {
+  display: contents;
 }

@@ -126,7 +126,8 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
           "                  openshareSegmentStart = false",
           "                  if (messageStart) return \"message\"",
           "                  if (assistantGroupIndex === 0) return undefined",
-          "                  return detail ? \"content\" : previousAssistantTool && tool ? \"tool\" : \"content\"",
+          "                  // tool-to-tool inside one response hugs; prose rows breathe",
+          "                  return previousAssistantTool && tool ? \"tool\" : \"content\"",
           "                })() as \"tool\" | \"content\" | \"message\" | undefined,",
         ].join("\n"),
         "assistant spacing",
@@ -278,6 +279,11 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       )
       if (s === before) throw new Error("vendor-v2: GenericTool signature anchor missing")
       before = s
+      // openshare fork: generic rows read like shell rows - BOLD tool name
+      // as the title ("ctx_reduce"), args stay in subtitle/args slots
+      s = s.replace('title: i18n.t("ui.basicTool.called", { tool: props.tool }),', "title: props.tool,")
+      if (s === before) throw new Error("vendor-v2: GenericTool title anchor missing")
+      before = s
       s = s.replace(/(\r?\n      hideDetails=\{props\.hideDetails\}\r?\n    \/>\r?\n  \)\r?\n\})/, `
       hideDetails={props.hideDetails}
     >
@@ -314,14 +320,15 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8")
-    if (!s.includes("pt-[0.45rem]")) {
+      if (!s.includes("pt-[0.3rem]")) {
       const before = s
       s = s.replace(
-        / {8}"pt-4": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "content",/,
-        `        // openshare fork: tighter rhythm inside one response, a clear break
-        // between responses (v1 separated turns, we separate messages)
-        "pt-[0.45rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
-        "pt-5": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",`,
+        / {8}"pt-2": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "tool",\r?\n {8}"pt-4": Predicate\.isTagged\(props\.row, "AssistantPart"\) && props\.row\.spacing === "content",/,
+        `        // openshare fork: tool-to-tool hugs (4.8px), prose rows breathe
+        // (9.6px), and a NEW assistant message gets a clear 16px break
+        "pt-[0.3rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "tool",
+        "pt-[0.6rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
+        "pt-4": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",`,
       )
       if (s === before) throw new Error("vendor-v2: row spacing anchor missing - upstream drifted")
       writeFileSync(p, s)

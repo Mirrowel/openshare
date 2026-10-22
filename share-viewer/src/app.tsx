@@ -4,12 +4,12 @@
 // local data source (live worker WS or embedded local snapshot).
 //
 // Identity model (deliberate):
-//   left header    — the DEPLOYMENT (brand logo; links to its git if set)
-//   right header   — Open(code)Share itself: github mark -> repo (fixed in
+//   left header    тАФ the DEPLOYMENT (brand logo; links to its git if set)
+//   right header   тАФ Open(code)Share itself: github mark -> repo (fixed in
 //                    source, not configurable; the product promotes itself)
-//   version badge  — the TOOL THAT RAN (opencode Mark + version; other
+//   version badge  тАФ the TOOL THAT RAN (opencode Mark + version; other
 //                    agents get their own mark later)
-//   footer         — brand wordmark image or styled text ("Open(code)Share"
+//   footer         тАФ brand wordmark image or styled text ("Open(code)Share"
 //                    by default)
 //
 // Viewer settings (cookie, gear panel): theme (system/light/dark +
@@ -104,7 +104,7 @@ const scrollMemory = new Map<string, number>()
 
 const iife = <T,>(fn: () => T): T => fn()
 
-// the product's own repo (fixed in source — the right header always
+// the product's own repo (fixed in source тАФ the right header always
 // promotes Open(code)Share; flip on extraction)
 const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/OpenShare"
 
@@ -129,7 +129,7 @@ export function PageFooter(props: { branding: Branding; class?: string }) {
           <div class="text-12-mono text-text-base select-none">
             <Show when={props.branding.name}>
               <span class="text-text-strong">{props.branding.name}</span>
-              <span class="text-text-weaker"> · </span>
+              <span class="text-text-weaker"> ┬╖ </span>
             </Show>
             <span>Open</span>
             <span class="text-text-weaker">(</span>
@@ -166,7 +166,7 @@ function NotFound(props: { status: string }) {
       <Mark class="w-16 opacity-40" />
       <p class="text-16-medium">{props.status}</p>
       <p class="text-14-regular text-text-weaker">
-        openshare — the encrypted artifact in the run summary is the permanent record.
+        openshare тАФ the encrypted artifact in the run summary is the permanent record.
       </p>
     </div>
   )
@@ -192,15 +192,15 @@ function StatusLine(props: { status: string }) {
       />
       <span>{props.status}</span>
       <Show when={props.status === "live"}>
-        <span class="animate-pulse">·</span>
+        <span class="animate-pulse">┬╖</span>
       </Show>
     </div>
   )
 }
 
-// A subagent page or the main session — same rendering, bound to one session.
+// A subagent page or the main session тАФ same rendering, bound to one session.
 // NOTE: created ONCE by App (never inside a reactive expression that re-runs
-// on data/settings changes — a re-created subtree remounts the settings
+// on data/settings changes тАФ a re-created subtree remounts the settings
 // panel and resets its open state, live-caught).
 function SessionView(props: {
   data: ShareData
@@ -244,7 +244,7 @@ function SessionView(props: {
           <DialogProvider>
           <DataProvider
             data={{
-              // wire data cast to the v2 summaries — the fold guarantees
+              // wire data cast to the v2 summaries тАФ the fold guarantees
               // the fields the renderers actually read
               session: props.data.session as any,
               session_status: Object.fromEntries(props.data.session.map((s) => [s.id, sessionStatus(props.source.status())])),
@@ -319,10 +319,7 @@ function SessionView(props: {
                   thinking: { placement: "separate", details: props.settings.reasoningOpen ? "expanded" : "collapsed" },
                   subagents: { placement: grouped && !context ? "grouped" : "separate" },
                   notices: { placement: "separate" },
-                  tools: {
-                    placement: grouped ? "grouped" : "separate",
-                    ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}),
-                  },
+                  tools: { placement: grouped ? "grouped" : "separate", ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}) },
                 } as any
               })
               // review panel: files default-OPEN (v1 behavior), user-controlled after
@@ -335,7 +332,7 @@ function SessionView(props: {
                 status: sessionStatus(props.source.status()),
                 diffs: diffs() as any,
               }))
-              // paged (classic) mode: one turn — the active user message
+              // paged (classic) mode: one turn тАФ the active user message
               // through just before the next user message
               const pagedDocument = createMemo(() => {
                 const all = messages()
@@ -362,7 +359,7 @@ function SessionView(props: {
                             class="pl-[2.5px] pr-2 flex items-center gap-1.5 bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base no-underline"
                             onclick={() => scrollMemory.set(location.pathname, window.scrollY)}
                           >
-                            ← main
+                            тЖР main
                           </a>
                         )}
                       </Show>
@@ -398,20 +395,26 @@ function SessionView(props: {
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
               const timelineDoc = () => (searching() ? { ...document(), messages: messages().filter((m) => (m?.type === "user" ? filtered().some((u) => u.id === m.id) : true)) } : document())
 
-              // mobile (narrow) layout: paged timeline under the title
+              // mobile (narrow) layout: paged timeline under the title.
+              // Virtualized like every path тАФ rows outside the viewport
+              // never enter the DOM.
               const turns = () => (
-                <div data-transcript-scroll class="relative mt-2 pb-8 min-w-0 w-full h-full overflow-y-auto no-scrollbar">
-                  <div class="px-4 py-6">{title()}</div>
-                  <SessionTimeline
-                    document={pagedDocument()}
-                    reasoningMode={reasoningMode()}
-                    shellToolDefaultOpen={props.settings.toolOutput}
-                    editToolDefaultOpen={true}
-                  />
-                  <div class="px-4 pt-20 pb-8 shrink-0">
-                    <PageFooter branding={props.source.branding()} />
-                  </div>
-                </div>
+                <VirtualTimeline
+                  doc={pagedDocument() as any}
+                  sessionKey={props.source.shareID + ":" + sessionID() + ":paged-m:" + (activeMessage()?.id ?? "")}
+                  reasoningMode={reasoningMode() as any}
+                  shellToolDefaultOpen={props.settings.toolOutput}
+                  editToolDefaultOpen={true}
+                  timelineDetail={timelineDetail() as any}
+                  anchor="start"
+                  header={<div class="px-4 py-6">{title()}</div>}
+                  footer={
+                    <div class="px-4 pt-20 pb-8">
+                      <PageFooter branding={props.source.branding()} />
+                    </div>
+                  }
+                  class="h-full"
+                />
               )
 
               const wide = createMemo(() => diffs().length === 0)
@@ -481,23 +484,28 @@ function SessionView(props: {
                           <Show
                             when={props.settings.continuous}
                             fallback={
-                              // header/footer live INSIDE the scroll flow:
-                              // the title scrolls away with the transcript
-                              // and the footer is the last thing in the
-                              // session, never pinned or clipped
-                              <div data-transcript-scroll class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 overflow-y-auto"}>
-                                <div class="px-6 pt-6">{title()}</div>
-                                <SessionTimeline
-                                  document={pagedDocument()}
-                                  reasoningMode={reasoningMode()}
-                                  shellToolDefaultOpen={props.settings.toolOutput}
-                                  editToolDefaultOpen={true}
-                                  timelineDetail={timelineDetail()}
-                                />
-                                <div class="px-6 pt-8 pb-8">
-                                  <PageFooter branding={props.source.branding()} class="px-6" />
-                                </div>
-                              </div>
+                              // paged: ONE turn, windowed row-by-row through the
+                              // same virtualizer as continuous (a giant turn
+                              // never renders whole). Header/footer live INSIDE
+                              // the scroll flow: the title scrolls away with the
+                              // transcript and the footer is the last thing in
+                              // the session, never pinned or clipped
+                              <VirtualTimeline
+                                doc={pagedDocument() as any}
+                                sessionKey={props.source.shareID + ":" + sessionID() + ":paged:" + (activeMessage()?.id ?? "")}
+                                reasoningMode={reasoningMode() as any}
+                                shellToolDefaultOpen={props.settings.toolOutput}
+                                editToolDefaultOpen={true}
+                                timelineDetail={timelineDetail() as any}
+                                anchor="start"
+                                header={<div class="px-6 pt-6">{title()}</div>}
+                                footer={
+                                  <div class="px-6 pt-8 pb-8">
+                                    <PageFooter branding={props.source.branding()} class="px-6" />
+                                  </div>
+                                }
+                                class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow h-full min-h-0"}
+                              />
                             }
                           >
                             <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col"}>
@@ -609,7 +617,7 @@ async function copySessionMarkdown(data: ShareData, sessionID: string) {
   const parts: string[] = [
     `# ${info?.title ?? sessionID}`,
     "",
-    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"} · ${info?.directory ?? ""}_`,
+    `_model: ${modelLabel || "?"} ┬╖ v${info?.version ?? "?"} ┬╖ ${info?.directory ?? ""}_`,
     "",
   ]
   const toolOutputText = (state: any): string => {
@@ -631,7 +639,7 @@ async function copySessionMarkdown(data: ShareData, sessionID: string) {
       continue
     }
     if (msg?.type === "compaction") {
-      parts.push("> _compaction — session summarized_", "", String(msg.summary ?? ""), "")
+      parts.push("> _compaction тАФ session summarized_", "", String(msg.summary ?? ""), "")
       continue
     }
     if (msg?.type !== "assistant") continue
@@ -648,8 +656,8 @@ async function copySessionMarkdown(data: ShareData, sessionID: string) {
           (c.name === "subagent" && Array.isArray(input.prompts) ? String(input.prompts[0] ?? "") : "")
         let out = toolOutputText(st)
         if (c.name === "subagent") out = ""
-        if (out.length > 600) out = out.slice(0, 600) + "…"
-        parts.push(`> _tool: ${c.name ?? "tool"}${inv ? ` — ${String(inv).slice(0, 120)}` : ""}_`, "")
+        if (out.length > 600) out = out.slice(0, 600) + "тАж"
+        parts.push(`> _tool: ${c.name ?? "tool"}${inv ? ` тАФ ${String(inv).slice(0, 120)}` : ""}_`, "")
         if (out) parts.push("> ```", out.split("\n").map((l: string) => "> " + l).join("\n"), "> ```", "")
       }
     }
@@ -659,7 +667,7 @@ async function copySessionMarkdown(data: ShareData, sessionID: string) {
 
 
 // minimal render path (?oshMinimal=1): providers + SessionTimeline only,
-// same live data source — bisects the v2 wiring from the full chrome
+// same live data source тАФ bisects the v2 wiring from the full chrome
 function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
   const d = props.source.data()
   if (!d) return <NotFound status="no data" />
@@ -885,7 +893,7 @@ function LoginCard(props: { source: ReturnType<typeof useShareSource> }) {
       </Show>
       <div class="flex flex-col gap-3 w-full max-w-72">
         <div class="text-16-medium text-center">{b().name || "openshare"}</div>
-        <div class="text-12-regular text-text-weaker text-center -mt-2">re:share — this session is protected</div>
+        <div class="text-12-regular text-text-weaker text-center -mt-2">re:share тАФ this session is protected</div>
         <input
           class="openshare-input"
           placeholder="login"
@@ -906,7 +914,7 @@ function LoginCard(props: { source: ReturnType<typeof useShareSource> }) {
         />
         <Show when={state().message}>
           <div class="text-12-regular text-red-500 text-center">
-            {state().message}{countdown() ? ` — retry in ${countdown()}` : ""}
+            {state().message}{countdown() ? ` тАФ retry in ${countdown()}` : ""}
           </div>
         </Show>
         <button
@@ -914,7 +922,7 @@ function LoginCard(props: { source: ReturnType<typeof useShareSource> }) {
           disabled={state().busy || !!countdown()}
           onClick={() => props.source.auth(login(), password())}
         >
-          {state().busy ? "checking…" : "view session"}
+          {state().busy ? "checkingтАж" : "view session"}
         </button>
       </div>
     </div>

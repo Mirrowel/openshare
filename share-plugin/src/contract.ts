@@ -98,6 +98,9 @@ const TOOL_NAME_MAP: Record<string, string> = {
 // v1 read/edit/write carry `filePath`; v2 renderers read `path`
 const INPUT_KEY_MAP: Record<string, string> = {
   filePath: "path",
+  // the v2 kit's subagent row reads input.agent for the label (the real
+  // agent name, e.g. "explore"); v1's task tool calls it subagent_type
+  subagent_type: "agent",
 }
 
 function normalizeToolInput(input: Record<string, unknown>, title?: string): Record<string, unknown> {

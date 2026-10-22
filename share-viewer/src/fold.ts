@@ -99,6 +99,15 @@ export function fold(items: { type: string; data?: any; sessionID?: string }[], 
         break
       }
     }
+
+  // The kit's message renderer reads `message.model.providerID` unguarded;
+  // a producer that omits the model must degrade to an empty label, never
+  // crash the whole transcript.
+  for (const list of Object.values(result.message)) {
+    for (const m of list as Array<Record<string, unknown>>) {
+      if (m?.type === "assistant" && !m.model) m.model = { id: "", providerID: "" }
+    }
+  }
   }
   return result
 }

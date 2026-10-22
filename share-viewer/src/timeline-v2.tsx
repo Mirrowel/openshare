@@ -62,6 +62,10 @@ export function VirtualTimeline(props: {
   header?: JSX.Element
   footer?: JSX.Element
   class?: string
+  /** "end" (default): continuous mode — start pinned to the bottom and
+   * follow live content. "start": paged turns and static docs — open at
+   * the top, no follow-live. */
+  anchor?: "end" | "start"
 }): JSX.Element {
   const projection = createReactiveTimelineProjection({
     sessionMessages: () => props.doc.messages,
@@ -89,7 +93,7 @@ export function VirtualTimeline(props: {
   })
 
   let scrollElement: HTMLDivElement | undefined
-  const [pinned, setPinned] = createSignal(true)
+  const [pinned, setPinned] = createSignal(props.anchor !== "start")
   const rows = projection.rows
   const rowKeys = createMemo(() => (rows() ?? []).map(TimelineRow.key))
 
@@ -184,7 +188,10 @@ export function VirtualTimeline(props: {
   const remeasureRow = (target: EventTarget | null) => {
     const node = target instanceof Element ? target.closest<HTMLDivElement>("[data-row-key]") : null
     if (!node) return
-    requestAnimationFrame(() => virtualizer.measureElement(node))
+    // same detached-node hazard as the ref measure below
+    requestAnimationFrame(() => {
+      if (node.isConnected) virtualizer.measureElement(node)
+    })
   }
 
   return (
@@ -221,12 +228,18 @@ export function VirtualTimeline(props: {
               ref={(el) => {
                 // tanstack's measureElement early-returns when the index is
                 // outside the computed range, and at ref time (DOM creation)
-                // the range is not computed yet — so nothing was ever
+                // the range is not computed yet - so nothing was ever
                 // measured and every row sat on the 90px estimate
                 // (live-caught: uniform ~46px gaps in continuous mode).
                 // Defer the first measure; the virtualizer's observer takes
-                // over from there.
-                if (el) requestAnimationFrame(() => virtualizer.measureElement(el))
+                // over from there. GUARD: a row may be re-created before this
+                // frame runs - measuring a detached node reports 0, poisons
+                // the size cache and triggers notify -> full row re-creation
+                // -> stale measure -> an endless measure/remount livelock
+                // where every click lands on a replaced node (live-caught).
+                if (el) requestAnimationFrame(() => {
+                  if (el.isConnected) virtualizer.measureElement(el)
+                })
               }}
               style={{
                 position: "absolute",
@@ -236,7 +249,8 @@ export function VirtualTimeline(props: {
                 transform: `translateY(${item.start}px)`,
               }}
             >
-              <renderer.Row row={() => row} />
+              {/* reactive like the kit's own Row memo */}
+              <renderer.Row row={() => projection.rowByKey().get(String(item.key)) ?? row} />
             </div>
           )
         })}

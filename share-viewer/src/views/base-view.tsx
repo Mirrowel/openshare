@@ -10,7 +10,8 @@
 //  - "composed": the base lays out prompt / ordered entries / response
 //    itself from the shared section model, skin wrappers around each
 //    element kind (current experimental views map here)
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
+import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
+import { WindowedEntries, WindowedSections } from "../section-window"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -125,6 +126,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const model = () => sessionModelLabel(props.data, props.sessionID)
   const continuous = () => props.settings.continuous
+  const cachePrefix = props.source.shareID + ":" + props.sessionID
 
   // search filter
   const q = () => props.search.trim().toLowerCase()
@@ -164,11 +166,15 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
           <MetaLine section={p.section} data={props.data} />
         </div>
       </w.PromptWrap>
-      {/* entry rhythm: -50% vs the old gap-3 (12px). Grove turns this
-          wrapper into `display: contents` so its 2-column grid takes over. */}
-      <div class="osh-entries flex flex-col gap-1.5 pt-1">
-        <For each={p.section.ordered}>
-          {(e) => (
+      {/* entry rhythm: tool-to-tool hugs (4px); the section list carries the
+          break between prompts. Grove turns this wrapper into
+          `display: contents` so its 2-column grid takes over. */}
+      <div class="osh-entries flex flex-col gap-1 pt-1">
+        <WindowedEntries
+          sectionId={p.section.id}
+          cachePrefix={cachePrefix}
+          entries={p.section.ordered}
+          render={(e, index) => (
             <Show
               when={e.kind !== "reasoning"}
               fallback={
@@ -193,7 +199,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               </Show>
             </Show>
           )}
-        </For>
+        />
       </div>
     </w.TurnWrap>
   )
@@ -210,19 +216,21 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             })()}
           </nav>
         </Show>
-        <div ref={scroller} class="flex-1 min-w-0 overflow-y-auto">
-          <div class={props.skin.columnClass ?? "max-w-3xl mx-auto px-6 py-6 flex flex-col gap-8"}>
-            <For each={visible()}>
-              {(s, i) => (
-                <Show when={continuous() || !w.Nav} fallback={<Show when={active() === i()}><TurnBody section={s} index={i()} /></Show>}>
-                  <TurnBody section={s} index={i()} />
-                </Show>
-              )}
-            </For>
-            <Show when={visible().length === 0}>
-              <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
-            </Show>
-          </div>
+        <div ref={scroller} class="relative flex-1 min-w-0 overflow-y-auto">
+          <WindowedSections
+            sections={visible()}
+            scroller={() => scroller}
+            cachePrefix={cachePrefix}
+            class={props.skin.columnClass ?? "max-w-3xl mx-auto px-6 py-6 flex flex-col gap-8"}
+            render={(s, i) => (
+              <Show when={continuous() || !w.Nav} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>
+                <TurnBody section={s} index={i} />
+              </Show>
+            )}
+          />
+          <Show when={visible().length === 0}>
+            <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
+          </Show>
         </div>
       </div>
       <w.Footer {...props} />

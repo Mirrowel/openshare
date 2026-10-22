@@ -16,9 +16,6 @@ import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
-import { subagentInfo } from "./subagent-map"
-
-const capitalize = (value: string) => (value ? value[0]!.toUpperCase() + value.slice(1) : "")
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
@@ -34,6 +31,12 @@ function readRange(props: ToolProps, lines: number): string {
   const offset = typeof input.offset === "number" ? input.offset : undefined
   const from = typeof offset === "number" ? offset + 1 : undefined
   return from ? `${lines} lines from ${from}` : `${lines} lines`
+}
+
+/** first line number for the read gutter (offset is 0-based) */
+function readStart(props: ToolProps): number {
+  const offset = (props.input as any).offset
+  return typeof offset === "number" && offset >= 0 ? offset + 1 : 1
 }
 
 function counts(props: ToolProps) {
@@ -57,14 +60,25 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Split diff when the viewport is wide enough to show two columns. */
-const diffLayout = () => {
-  const [split, setSplit] = createSignal(window.innerWidth >= 1100)
-  window.addEventListener("resize", () => setSplit(window.innerWidth >= 1100), { passive: true })
-  onCleanup(() => setSplit(false as never))
-  return split
+/** Auto unified/split: split ONLY when the container is wide enough for both
+ * columns of the LONGEST line - no page-stretch, no squeezed panes. Falls
+ * back to the unified folded view on narrow viewports or long lines. */
+function useSplitFit(props: { longest: () => number }) {
+  const [wrap, setWrap] = createSignal<HTMLDivElement | undefined>()
+  const [width, setWidth] = createSignal(0)
+  const needed = createMemo(() => {
+    // ~7.9px/char at the kit's 13px mono, two panes, two number gutters
+    return Math.round(props.longest() * 7.9 * 2 + 150)
+  })
+  const ref = (el: HTMLDivElement) => {
+    setWrap(el)
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    ro.observe(el)
+    onCleanup(() => ro.disconnect())
+  }
+  const split = createMemo(() => width() > 0 && width() >= needed())
+  return { ref, split }
 }
-const wideEnough = diffLayout()
 
 /** One header for every file tool: label, directory, filename, meta. */
 function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
@@ -82,6 +96,23 @@ function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) 
   )
 }
 
+/** The expanded body's title bar - icon-badge, file name, muted directory.
+ * Duplicates the header row on purpose: when a long transcript scrolls the
+ * row away, the card still says what you are reading. */
+function FileTitle(props: { path: string }) {
+  const name = basename(props.path)
+  const ext = name.includes(".") ? name.split(".").at(-1)!.slice(0, 4) : "file"
+  return (
+    <div data-slot="osh-file-title">
+      <span class="osh-file-icon osh-file-ext">{ext}</span>
+      <span class="osh-file-name">{name}</span>
+      <Show when={dirname(props.path)}>
+        <span class="osh-file-dir">{dirname(props.path).split("/").at(-1)}</span>
+      </Show>
+    </div>
+  )
+}
+
 /** Failed tools must say why - several kit rows drop state.error. */
 function errorText(props: ToolProps): string {
   const explicit = str((props as any).error)
@@ -94,7 +125,7 @@ function FileBody(props: { title?: string; children: JSX.Element }) {
   return (
     <div data-component="osh-file-body">
       <Show when={props.title}>
-        <div data-slot="osh-file-title">{props.title}</div>
+        <FileTitle path={props.title!} />
       </Show>
       {props.children}
     </div>
@@ -137,16 +168,26 @@ const ReadTool = (props: ToolProps) => {
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
           <FileBody title={path()}>
-            <Dynamic
-              component={fileComponent as any}
-              mode="text"
-              file={{ name: path(), contents: preview() }}
-              overflow="scroll"
-              onRendered={() => props.onContentRendered?.()}
-            />
+            <ReadCode contents={preview()} start={readStart(props)} />
           </FileBody>
         </Show>
       </BasicTool>
+    </div>
+  )
+}
+
+/** Read output as a real code view: gutter numbers CONTINUE from the file
+ * offset (v1 behaviour), horizontal scroll, no markdown mangling. */
+function ReadCode(props: { contents: string; start: number }) {
+  const rows = createMemo(() => props.contents.replace(/\n$/, "").split("\n"))
+  return (
+    <div data-component="osh-read-code">
+      {rows().map((line, i) => (
+        <div class="osh-read-row">
+          <span class="osh-read-ln">{props.start + i}</span>
+          <span class="osh-read-line">{line || " "}</span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -158,6 +199,13 @@ const EditTool = (props: ToolProps) => {
   const oldText = createMemo(() => str((props.input as any).oldString))
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
+  const longest = createMemo(() => {
+    let n = 0
+    for (const line of oldText().split("\n")) n = Math.max(n, line.length)
+    for (const line of newText().split("\n")) n = Math.max(n, line.length)
+    return n
+  })
+  const fit = useSplitFit({ longest })
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -195,12 +243,12 @@ const EditTool = (props: ToolProps) => {
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
           <FileBody title={path()}>
-            <div data-component="edit-content">
+            <div data-component="edit-content" ref={fit.ref}>
               <Dynamic
                 component={fileComponent as any}
                 mode="diff"
                 virtualize={false}
-                diffStyle={wideEnough() ? "split" : "unified"}
+                diffStyle={fit.split() ? "split" : "unified"}
                 before={{ name: path(), contents: oldText() }}
                 after={{ name: path(), contents: newText() }}
                 onRendered={() => props.onContentRendered?.()}
@@ -311,51 +359,14 @@ const TodoTool = (props: ToolProps) => {
       <div class="flex flex-col gap-1 py-1">
         {todos().map((todo: any) => (
           <div class="flex items-start gap-2 text-13-regular">
-            <span class="w-4 shrink-0 text-center" style={{ color: "var(--v2-text-text-muted)" }}>
-              {todo?.status === "completed" ? "✓" : todo?.status === "in_progress" ? "◐" : "○"}
+            <span class="w-4 shrink-0 text-center font-mono" style={{ color: "var(--text-weaker)" }}>
+              {todo?.status === "completed" ? "x" : todo?.status === "in_progress" ? ">" : "-"}
             </span>
             <span class={todo?.status === "completed" ? "line-through opacity-60" : ""}>{str(todo?.content)}</span>
           </div>
         ))}
       </div>
     </BasicTool>
-  )
-}
-
-
-/** `subagent` / `task`: v1 showed the child's own agent name (Explore),
- * not a generic "Agent" - the child session's assistant message carries it. */
-const SubagentTool = (props: ToolProps) => {
-  const id = () => str((props.metadata as any)?.sessionID) || str((props.metadata as any)?.sessionId)
-  const info = () => subagentInfo(id())
-  const agent = () => capitalize(info()?.agent ?? "")
-  const label = () => agent() || "Agent"
-  const description = () => str((props.input as any).description) || info()?.title || ""
-  const body = () => str(props.output)
-  const failure = () => errorText(props)
-  return (
-    <div data-component="osh-subagent-tool">
-      <BasicTool
-        {...props}
-        icon="mcp"
-        hasContent={!!body() || !!failure()}
-        defer
-        trigger={() => (
-          <div data-slot="basic-tool-tool-info-structured">
-            <div data-slot="basic-tool-tool-info-main">
-              <span data-slot="basic-tool-tool-title">{label()}</span>
-              <Show when={description()}>
-                <span data-slot="osh-tool-meta">{description()}</span>
-              </Show>
-            </div>
-          </div>
-        )}
-      >
-        <Show when={!failure()} fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}>
-          <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
-        </Show>
-      </BasicTool>
-    </div>
   )
 }
 
@@ -367,5 +378,6 @@ ToolRegistry.register({ name: "grep", render: TextResultTool("Grep", "magnifying
 ToolRegistry.register({ name: "glob", render: TextResultTool("Glob", "magnifying-glass-menu") })
 ToolRegistry.register({ name: "list", render: TextResultTool("List", "bullet-list") })
 ToolRegistry.register({ name: "todowrite", render: TodoTool })
-ToolRegistry.register({ name: "subagent", render: SubagentTool })
-ToolRegistry.register({ name: "task", render: SubagentTool })
+// subagent/task stay on the KIT renderer (card, expand, click-through to the
+// child session) - only its LABEL is forked to the real agent name; the map
+// it reads lives in subagent-map.ts (globalThis.__oshAgents)

@@ -411,7 +411,7 @@ export function GenericTool(props: {
       icon="mcp"
       status={props.status}
       trigger={{
-        title: i18n.t("ui.basicTool.called", { tool: props.tool }),
+        title: props.tool,
         subtitle: label(props.input),
         args: args(props.input),
       }}
