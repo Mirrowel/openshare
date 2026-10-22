@@ -11,11 +11,11 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
-import { registerOpenCodeTheme } from "@opencode/ui/context/marked-theme-register"
+import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
@@ -127,6 +127,97 @@ function errorText(props: ToolProps): string {
   return props.status === "error" ? str(props.output) : ""
 }
 
+// ---------------------------------------------------------------------------
+// FileCard: THE file surface for read/write/edit — one element, one
+// highlighting engine (pierre worker pool through the kit File), per owner
+// directive. read/write render text mode (read renumbers its gutter from
+// the plugin-stamped metadata.lineStart); edit renders the HOST's native
+// patch (real line numbers + context lines, exactly like opencode's own
+// diff view), falling back to before/after reconstruction for old shares.
+// ---------------------------------------------------------------------------
+
+/** Renumber pierre's gutter so a read slice continues from the real file
+ * line: pierre numbers from 1; gutter cells are
+ * `div[data-column-number] > span[data-line-number-content]` (verified in
+ * pierre's createGutterItem). Runs after every render pass (MutationObserver
+ * on the wrapper) so virtualized re-renders stay correct. Text mode only -
+ * diffs carry real numbers in their hunks already. */
+function GutterOffset(props: { start: number; children: JSX.Element }) {
+  let root: HTMLDivElement | undefined
+  const renumber = () => {
+    if (!root || props.start <= 1) return
+    const shift = props.start - 1
+    for (const cell of root.querySelectorAll("[data-column-number]")) {
+      const raw = cell.getAttribute("data-column-number")
+      const n = raw == null ? NaN : Number(raw)
+      if (!Number.isFinite(n)) continue
+      // idempotent: recompute from the 0-based line index pierre stamps
+      const idx = Number(cell.getAttribute("data-line-index") ?? "0")
+      const next = (Number.isFinite(idx) ? idx : n - 1) + props.start
+      if (next === n) continue
+      cell.setAttribute("data-column-number", String(next))
+      const text = cell.querySelector("[data-line-number-content]")
+      if (text) text.textContent = String(next)
+    }
+  }
+  const attach = (el: HTMLDivElement) => {
+    root = el
+    renumber()
+    const mo = new MutationObserver(() => requestAnimationFrame(renumber))
+    mo.observe(el, { childList: true, subtree: true })
+    onCleanup(() => mo.disconnect())
+  }
+  return <div ref={attach}>{props.children}</div>
+}
+
+/** One cold-pool guard: pierre renders PLAIN text if the worker pool has
+ * not finished booting when the card mounts, and never re-renders when it
+ * does (live-caught intermittency). After the first render settles, if the
+ * file has gutter cells but zero colored token spans, remount the File
+ * ONCE - the pool is warm by then. */
+function FileCard(props: {
+  path?: string
+  contents: string
+  /** first REAL file line (reads sliced from an offset); 1 = whole file */
+  lineStart?: number
+  onRendered?: () => void
+}) {
+  const fileComponent = useFileComponent()
+  let inner: HTMLDivElement | undefined
+  const [attempt, setAttempt] = createSignal(0)
+  let retried = false
+  const settle = () => {
+    if (retried) return
+    retried = true
+    setTimeout(() => {
+      const root = inner
+      if (!root) return
+      const cells = root.querySelectorAll("[data-column-number]").length
+      const tokens = root.querySelectorAll("[data-line] span[style]").length
+      if (cells > 0 && tokens === 0) setAttempt(1)
+    }, 1200)
+  }
+  return (
+    <FileBody title={props.path}>
+      <div ref={(el) => (inner = el)} style={{ display: "contents" }}>
+        <GutterOffset start={props.lineStart ?? 1}>
+          <Dynamic
+            key={attempt()}
+            component={fileComponent as any}
+            mode="text"
+            file={{ name: props.path, contents: props.contents }}
+            overflow="scroll"
+            onRendered={() => {
+              settle()
+              props.onRendered?.()
+            }}
+          />
+        </GutterOffset>
+      </div>
+    </FileBody>
+  )
+}
+
 /** Shared body frame: tools indent under their trigger. */
 function FileBody(props: { title?: string; children: JSX.Element }) {
   return (
@@ -138,12 +229,10 @@ function FileBody(props: { title?: string; children: JSX.Element }) {
     </div>
   )
 }
-/** `read`: the v1 behaviour - show the file body when there is one.
- * Prefers metadata.preview, else the tool's text output (our contract
- * puts the v1 `state.output` into content[0].text). */
-/** `read`: the file body, in the same card as write and edit. */
+/** `read`: the file body in the unified FileCard. The plugin stamps
+ * metadata.lineStart = offset+1 (authoritative); input.offset is the
+ * old-share fallback. */
 const ReadTool = (props: ToolProps) => {
-  const fileComponent = useFileComponent()
   const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
   const preview = createMemo(() => {
     const meta = (props.metadata as any) ?? {}
@@ -151,6 +240,11 @@ const ReadTool = (props: ToolProps) => {
   })
   const failure = createMemo(() => errorText(props))
   const lines = createMemo(() => countLines(preview()))
+  const lineStart = createMemo(() => {
+    const stamped = Number((props.metadata as any)?.lineStart)
+    if (Number.isFinite(stamped) && stamped > 1) return stamped
+    return readStart(props)
+  })
   return (
     <div data-component="osh-read-tool">
       <BasicTool
@@ -174,9 +268,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody title={path()}>
-            <ReadCode contents={preview()} start={readStart(props)} path={path()} language={str((props.metadata as any)?.language)} />
-          </FileBody>
+          <FileCard path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>
@@ -185,115 +277,13 @@ const ReadTool = (props: ToolProps) => {
 
 /** Read output as a real code view: gutter numbers CONTINUE from the file
  * offset (v1 behaviour), horizontal scroll, no markdown mangling. */
-// shiki language for a path - the PLUGIN stamps metadata.language
-// (authoritative); this map is the old-share fallback only
-const LANG_BY_EXT: Record<string, string> = {
-  ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
-  js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
-  json: "json", jsonc: "json", md: "markdown", mdx: "mdx",
-  py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
-  css: "css", scss: "scss", html: "html", xml: "xml", yaml: "yaml", yml: "yaml",
-  toml: "toml", sh: "shellscript", bash: "shellscript", ps1: "powershell",
-  sql: "sql", c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp",
-  swift: "swift", kt: "kotlin", php: "php", lua: "lua", vue: "vue", svelte: "svelte",
-}
-const langOfPath = (path: string | undefined): string => {
-  const ext = (path ?? "").split(".").pop()?.toLowerCase() ?? ""
-  return LANG_BY_EXT[ext] ?? "plaintext"
-}
-
-// shared main-thread highlighter (pierre, theme "OpenCode" = CSS variables,
-// so tokens follow the page theme). Loaded once, raced against a timeout -
-// a hung worker/imports must never leave reads as "undefined" forever
-// (live-caught: three behaviors - always fine / always broken / flash then
-// fixed - all from tokens that never arrive while innerHTML sat at
-// undefined, which the DOM coerces to the literal string "undefined").
-let highlighterPromise: Promise<any> | undefined
-const HIGHLIGHT_TIMEOUT_MS = 3000
-const highlighter = (lang: string) => {
-  highlighterPromise ??= (async () => {
-    const m = await import("@pierre/diffs")
-    registerOpenCodeTheme()
-    return m.getSharedHighlighter({ themes: ["OpenCode" as any], langs: [lang as any] })
-  })()
-  return Promise.race([
-    highlighterPromise,
-    new Promise<null>((res) => setTimeout(() => res(null), HIGHLIGHT_TIMEOUT_MS)),
-  ])
-}
-// per-line token cache: virtualizer remounts render instantly (no flash)
-const tokenCache = new Map<string, string>()
-const cacheSet = (key: string, html: string) => {
-  if (tokenCache.size > 5000) tokenCache.clear()
-  tokenCache.set(key, html)
-}
-/** highlight one line -> token html, or "" for plain. Never throws, never
- * hangs, isolated per line. */
-const highlightLine = async (line: string, lang: string): Promise<string> => {
-  if (lang === "plaintext") return ""
-  const key = `${lang}:${line}`
-  const hit = tokenCache.get(key)
-  if (hit !== undefined) return hit
-  try {
-    const hl = await highlighter(lang)
-    if (!hl) return ""
-    const html = hl.codeToHtml(line || " ", { lang, theme: "OpenCode" }) as string
-    // shiki wraps in <pre><code>...; keep only the token spans
-    const m = /<code[^>]*>([\s\S]*)<\/code>/.exec(html)
-    const out = m ? m[1] : ""
-    if (!out) console.warn("[openshare] read highlight: empty output", lang)
-    cacheSet(key, out)
-    return out
-  } catch (e) {
-    console.warn("[openshare] read highlight failed", lang, String(e).slice(0, 120))
-    return ""
-  }
-}
-
-function ReadCode(props: { contents: string; start: number; path?: string; language?: string }) {
-  const rows = createMemo(() => props.contents.replace(/\n$/, "").split("\n"))
-  const lang = () => (props.language && props.language !== "plaintext" ? props.language : langOfPath(props.path))
-  // token html per row; "" = plain (pending, unsupported, or too big)
-  const [tokens, setTokens] = createSignal<string[]>([])
-  onMount(() => {
-    const n = rows().length
-    if (lang() === "plaintext" || n > 400) return
-    let alive = true
-    onCleanup(() => (alive = false))
-    // seed from cache so remounts are instant
-    const seeded = rows().map((l) => tokenCache.get(`${lang()}:${l}`) ?? "")
-    if (seeded.some(Boolean)) setTokens(seeded)
-    void (async () => {
-      // each line isolated: one failure/timeout is one plain line, never
-      // the whole file (and never a stall)
-      const out = seeded.slice()
-      for (let i = 0; i < rows().length; i++) {
-        if (out[i]) continue
-        out[i] = await highlightLine(rows()[i], lang())
-        if (alive) setTokens(out.slice())
-      }
-    })()
-  })
-  return (
-    <div data-component="osh-read-code">
-      {rows().map((line, i) => (
-        <div class="osh-read-row">
-          <span class="osh-read-ln">{props.start + i}</span>
-          {/* NEVER assign innerHTML=undefined: the DOM coerces it to the
-              literal "undefined" and Solid ignores the children fallback
-              whenever the prop exists (live-caught) */}
-          {tokens()[i] ? (
-            <span class="osh-read-line" innerHTML={tokens()[i]} />
-          ) : (
-            <span class="osh-read-line">{line || " "}</span>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-/** `edit`: annotation ABOVE the diff, compact when collapsed, diff below. */
-/** `edit` / `patch`: header first (label, path, +added/-removed), diff below. */
+/** `edit` / `patch`: header first (label, path, +added/-removed). Body is
+ * the HOST's native unified patch when the share carries one (v1 metadata
+ * .filediff.patch, v2 metadata.files[].patch) - pierre parses it and the
+ * gutter shows REAL file line numbers plus the host's context lines
+ * (createTwoFilesPatch default = 4 above/below each change, exactly like
+ * opencode's own diff view). Old shares without a patch fall back to
+ * before/after reconstruction (numbers from 1). */
 const EditTool = (props: ToolProps) => {
   const fileComponent = useFileComponent()
   const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
@@ -301,6 +291,20 @@ const EditTool = (props: ToolProps) => {
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
   const fit = useSplitFit()
+  // the host's patch: v1 stamps metadata.filediff, v2 stamps metadata.files
+  const patch = createMemo(() => {
+    const meta = (props.metadata as any) ?? {}
+    const p1 = meta.filediff?.patch
+    if (typeof p1 === "string" && p1) return p1
+    const p2 = Array.isArray(meta.files) ? meta.files[0]?.patch : undefined
+    return typeof p2 === "string" && p2 ? p2 : undefined
+  })
+  const fileDiff = createMemo(() =>
+    patch() != null
+      ? // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
+        (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
+      : undefined,
+  )
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -344,8 +348,9 @@ const EditTool = (props: ToolProps) => {
                 mode="diff"
                 virtualize={false}
                 diffStyle={fit.split() ? "split" : "unified"}
-                before={{ name: path(), contents: oldText() }}
-                after={{ name: path(), contents: newText() }}
+                {...(fileDiff()
+                  ? { fileDiff: fileDiff() }
+                  : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
                 onRendered={() => props.onContentRendered?.()}
               />
             </div>
@@ -355,10 +360,9 @@ const EditTool = (props: ToolProps) => {
     </div>
   )
 }
-/** `write`: same header discipline as edit, body is the written file. */
+
 /** `write`: same card as read/edit, body is the written file. */
 const WriteTool = (props: ToolProps) => {
-  const fileComponent = useFileComponent()
   const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
   const content = createMemo(() => str((props.input as any).content))
   const failure = createMemo(() => errorText(props))
@@ -382,15 +386,7 @@ const WriteTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody title={path()}>
-            <Dynamic
-              component={fileComponent as any}
-              mode="text"
-              file={{ name: path(), contents: content() }}
-              overflow="scroll"
-              onRendered={() => props.onContentRendered?.()}
-            />
-          </FileBody>
+          <FileCard path={path()} contents={content()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>

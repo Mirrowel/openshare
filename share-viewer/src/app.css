@@ -224,15 +224,17 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 [data-row-key] [data-component="tool-output"] {
   content-visibility: visible;
 }
-[data-timeline-row] [data-scrollable],
-[data-timeline-row] [data-component="tool-output"],
-[data-timeline-row] [data-slot="bash-scroll"],
-[data-timeline-row] [data-component="edit-content"],
-[data-row-key] [data-scrollable],
-[data-row-key] [data-component="tool-output"],
-[data-row-key] [data-slot="bash-scroll"],
-[data-row-key] [data-component="edit-content"] {
-  overscroll-behavior: contain;
+/* Scroll containment: NONE by default (owner rule) - the browser default
+   captures the wheel only when a surface actually scrolls in that
+   direction and chains to the page otherwise. Horizontal-only scrollers
+   (the split diff) contain their X axis so trackpad sideways never nudges
+   the page, while vertical wheel always chains. Live-caught: blanket
+   `overscroll-behavior: contain` on tool surfaces locked page scroll even
+   when nothing could scroll (read/edit/shell locked, write - never in the
+   list - worked). */
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 
 /* --- reading rhythm ---------------------------------------------------
@@ -437,48 +439,19 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   padding: 2px 4px;
 }
 
-/* read output: real code view with the gutter continuing from the file
-   offset; horizontal scroll (code semantics), no markdown mangling */
-[data-component="osh-read-code"] {
-  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
-  background: var(--surface-base);
-  border: 1px solid var(--border-weaker-base);
-  border-radius: 8px;
-  padding: 8px 0;
-  max-height: 32rem;
-  overflow: auto;
-  overscroll-behavior: contain;
-  width: fit-content;
-  min-width: 50%;
-  max-width: 100%;
-}
-.osh-read-row {
-  display: flex;
-}
-.osh-read-row:hover {
-  background: var(--surface-raised-base);
-}
-.osh-read-ln {
-  flex: none;
-  min-width: 5ch;
-  padding-right: 14px;
-  text-align: right;
-  color: var(--text-weaker);
-  user-select: none;
-}
-.osh-read-line {
-  white-space: pre;
-  padding-right: 12px;
-  color: var(--text-base);
-  min-width: 0;
-  flex: 1 1 0%;
-}
 
 /* --- tool output overflow (setting: scroll | wrap) --------------------
-   Every output surface is hard-capped (max-width 100%); the setting only
-   picks how long lines behave inside the cap: hidden-scrollbar horizontal
-   scroll (VSCode-style, default) or wrapping. */
-html[data-osh-overflow="scroll"] .osh-read-line,
+   Every output surface is hard-capped at min(100%, 75vw) - one long line
+   must never stretch a card to page width; the setting only picks how
+   long lines behave inside the cap: hidden-scrollbar horizontal scroll
+   (VSCode-style, default) or wrapping. The split diff keeps its own
+   wider-but-capped escape. */
+[data-timeline-row] [data-component="osh-file-body"],
+[data-row-key] [data-component="osh-file-body"],
+[data-timeline-row] .osh-pre,
+[data-row-key] .osh-pre {
+  max-width: min(100%, 75vw);
+}
 html[data-osh-overflow="scroll"] .osh-pre,
 html[data-osh-overflow="scroll"] [data-component="tool-output"],
 html[data-osh-overflow="scroll"] [data-slot="bash-scroll"] {
@@ -486,13 +459,11 @@ html[data-osh-overflow="scroll"] [data-slot="bash-scroll"] {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-html[data-osh-overflow="scroll"] .osh-read-line::-webkit-scrollbar,
 html[data-osh-overflow="scroll"] .osh-pre::-webkit-scrollbar,
 html[data-osh-overflow="scroll"] [data-component="tool-output"]::-webkit-scrollbar,
 html[data-osh-overflow="scroll"] [data-slot="bash-scroll"]::-webkit-scrollbar {
   display: none;
 }
-html[data-osh-overflow="wrap"] .osh-read-line,
 html[data-osh-overflow="wrap"] .osh-pre,
 html[data-osh-overflow="wrap"] [data-component="tool-output"],
 html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
@@ -508,6 +479,8 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
    inside the surface with a hidden scrollbar. */
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(200%, calc(100vw - 48px));
+  /* exempt from the 75vw text-card cap: split MAY use the wider escape */
+  max-width: min(200%, calc(100vw - 48px));
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
   overflow-x: auto;

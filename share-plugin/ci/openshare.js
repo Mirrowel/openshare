@@ -1830,16 +1830,23 @@ function createEngine(deps) {
           continue;
         const state = part.state;
         const meta = state?.metadata;
-        if (!meta || typeof meta.language === "string")
+        if (!meta)
           continue;
         const raw = state.input?.path ?? state.input?.filePath;
-        if (typeof raw !== "string")
-          continue;
-        const ext = raw.split(".").pop()?.toLowerCase() ?? "";
-        const lang = LANG_BY_EXT[ext];
-        if (lang) {
-          meta.language = lang;
-          mutated = true;
+        if (typeof meta.language !== "string" && typeof raw === "string") {
+          const ext = raw.split(".").pop()?.toLowerCase() ?? "";
+          const lang = LANG_BY_EXT[ext];
+          if (lang) {
+            meta.language = lang;
+            mutated = true;
+          }
+        }
+        if (typeof meta.lineStart !== "number" && part.name === "read") {
+          const off = state.input?.offset;
+          if (typeof off === "number" && off >= 0 && off > 0) {
+            meta.lineStart = off + 1;
+            mutated = true;
+          }
         }
       }
       if (mutated)

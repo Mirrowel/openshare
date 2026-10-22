@@ -1639,14 +1639,26 @@ export function createEngine(deps: EngineDeps): Engine {
         if (!FILE_TOOLS.has(part.name)) continue
         const state = part.state
         const meta = state?.metadata
-        if (!meta || typeof meta.language === "string") continue
+        if (!meta) continue
         const raw = state.input?.path ?? state.input?.filePath
-        if (typeof raw !== "string") continue
-        const ext = raw.split(".").pop()?.toLowerCase() ?? ""
-        const lang = LANG_BY_EXT[ext]
-        if (lang) {
-          meta.language = lang
-          mutated = true
+        // language stamp (shiki id from the path)
+        if (typeof meta.language !== "string" && typeof raw === "string") {
+          const ext = raw.split(".").pop()?.toLowerCase() ?? ""
+          const lang = LANG_BY_EXT[ext]
+          if (lang) {
+            meta.language = lang
+            mutated = true
+          }
+        }
+        // lineStart stamp: reads sliced from an offset keep REAL file line
+        // numbers in the viewer's unified file card (pierre numbers from 1;
+        // the viewer shifts by this stamp, authoritatively)
+        if (typeof meta.lineStart !== "number" && part.name === "read") {
+          const off = state.input?.offset
+          if (typeof off === "number" && off >= 0 && off > 0) {
+            meta.lineStart = off + 1
+            mutated = true
+          }
         }
       }
       if (mutated) reEnqueueMessage(m)
