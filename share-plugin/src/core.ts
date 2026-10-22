@@ -1368,6 +1368,10 @@ export function createEngine(deps: EngineDeps): Engine {
 
   // ---- flush -------------------------------------------------------------
   const frameFrom = (st: SessionState) => {
+    // stamps run at frame time: the whole family's data is indexed by now
+    // (child prompts are created during the task call, well inside the
+    // flush debounce), and any re-enqueued message lands in this frame
+    stampsPass()
     const items = Array.from(st.queue.values())
     st.queue.clear()
     const statusChanged = st.status !== st.lastSentStatus
@@ -1460,10 +1464,159 @@ export function createEngine(deps: EngineDeps): Engine {
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
     st.queue.set(entry.key, entry.item)
+    indexMessage(entry)
     if (debugEvents) log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`)
     touch(st)
     ensureConnected(st)
     scheduleFlush(st)
+  }
+
+  // ---- authoritative stamps ----------------------------------------------
+  // The viewer renders stamped facts and never re-derives them (owner
+  // directive). Both stamps are computed at frame time across the whole
+  // share family - the engine sees every session of the family regardless
+  // of host generation, so this is the only place with the full picture.
+
+  type IndexedMessage = {
+    sid: string
+    role: string
+    agent?: string
+    created: number
+    data: Record<string, unknown>
+  }
+  const msgIndex = new Map<string, IndexedMessage>() // `${sid}:${messageID}`
+
+  const indexMessage = (entry: ItemEntry) => {
+    if (entry.item.type !== "message") return
+    const d = entry.item.data as Record<string, any> | undefined
+    if (!d || typeof d.id !== "string") return
+    const role = String(d.type ?? "")
+    if (role !== "user" && role !== "assistant") return
+    const key = `${entry.item.sessionID}:${d.id}`
+    const prev = msgIndex.get(key)
+    msgIndex.set(key, {
+      sid: String(entry.item.sessionID ?? ""),
+      role: role as string,
+      agent:
+        role === "assistant"
+          ? typeof d.agent === "string"
+            ? d.agent
+            : prev?.agent
+          : typeof d.metadata?.agent === "string"
+            ? d.metadata.agent
+            : prev?.agent,
+      created: Number(d.time?.created ?? prev?.created ?? 0),
+      data: d as Record<string, unknown>,
+    })
+  }
+
+  const sessionStateOf = (sid: string): SessionState | undefined =>
+    sessions.get(childToParent.get(sid) ?? sid)
+
+  const reEnqueueMessage = (m: IndexedMessage) => {
+    const st = sessionStateOf(m.sid)
+    if (st) enqueue(st, itemFor("message", m.data, m.sid))
+  }
+
+  /** segment agent for a user prompt: the prompt's own recorded agent (v1
+   * hosts stamp it on every user message), else the first assistant
+   * response inside the segment (v2 hosts), else carry-forward. */
+  const segmentAgent = (ordered: IndexedMessage[], at: number): string | undefined => {
+    const own = ordered[at]?.agent
+    if (own) return own
+    for (let i = at + 1; i < ordered.length; i++) {
+      if (ordered[i].role === "assistant" && ordered[i].agent) return ordered[i].agent
+      if (ordered[i].role === "user") break // next segment already began
+    }
+    return undefined
+  }
+
+  /** user messages whose segment runs a DIFFERENT agent than the previous
+   * segment carry metadata.agentSwitch = <agent> - the viewer renders the
+   * transition chip from the stamp alone. */
+  const stampAgentSwitches = () => {
+    const bySession = new Map<string, IndexedMessage[]>()
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid)
+      if (list) list.push(m)
+      else bySession.set(m.sid, [m])
+    }
+    for (const [, list] of bySession) {
+      list.sort((a, b) => a.created - b.created)
+      const users = list.map((m, i) => (m.role === "user" ? i : -1)).filter((i) => i >= 0)
+      let prev: string | undefined
+      for (let k = 0; k < users.length; k++) {
+        const agent = segmentAgent(list, users[k])
+        const d = list[users[k]].data as Record<string, any>
+        const meta = (d.metadata ??= {}) as Record<string, unknown>
+        const want = k > 0 && agent && prev && agent !== prev ? agent : undefined
+        if (want !== (meta.agentSwitch as string | undefined)) {
+          if (want) meta.agentSwitch = want
+          else delete meta.agentSwitch
+          reEnqueueMessage(list[users[k]])
+        }
+        if (agent) prev = agent
+      }
+    }
+  }
+
+  /** task/subagent tool calls get metadata.agent = the agent that actually
+   * ran for THAT call: the child's first prompt created at/after the call
+   * started (v1 prompts carry the agent; v2 resolves via the response).
+   * Rank-free pairing - a resumed child's second call lands on its second
+   * prompt by construction time. */
+  const stampTaskAgents = () => {
+    const bySession = new Map<string, IndexedMessage[]>()
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid)
+      if (list) list.push(m)
+      else bySession.set(m.sid, [m])
+    }
+    for (const list of bySession.values()) list.sort((a, b) => a.created - b.created)
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant") continue
+      const content = (m.data as any).content
+      if (!Array.isArray(content)) continue
+      let mutated = false
+      for (const part of content) {
+        if (!part || part.type !== "tool") continue
+        if (part.name !== "task" && part.name !== "subagent") continue
+        const state = part.state
+        const meta = state?.metadata
+        const childSid = typeof meta?.sessionID === "string" ? meta.sessionID : undefined
+        if (!childSid || typeof meta.agent === "string") continue
+        const partStart = Number(part.time?.created ?? 0)
+        const child = bySession.get(childSid)
+        if (!child) continue
+        let agent: string | undefined
+        for (const c of child) {
+          if (c.created < partStart) continue
+          if (c.role === "user" && c.agent) {
+            agent = c.agent
+            break
+          }
+        }
+        if (!agent) {
+          for (const c of child) {
+            if (c.created < partStart) continue
+            if (c.role === "assistant" && c.agent) {
+              agent = c.agent
+              break
+            }
+          }
+        }
+        if (agent) {
+          meta.agent = agent
+          mutated = true
+        }
+      }
+      if (mutated) reEnqueueMessage(m)
+    }
+  }
+
+  const stampsPass = () => {
+    stampAgentSwitches()
+    stampTaskAgents()
   }
 
   // ---- contract v2 message assembly --------------------------------------

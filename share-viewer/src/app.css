@@ -236,7 +236,26 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 }
 
 /* --- reading rhythm ---------------------------------------------------
-   Rails live on the ROW WRAPPER (tool-part-wrapper), never on the inner
+   Row spacing lives HERE, keyed by the data-timeline-spacing attribute the
+   kit's Frame already emits. Never via tailwind classes forked into the
+   vendor tree: arbitrary classes there are never generated (kit CSS is
+   prebuilt upstream; the viewer's tailwind does not scan vendor/) -
+   live-caught when every spacing fork silently did nothing AND removed
+   upstream's pt-2/pt-4, collapsing the transcript into soup.
+   tool: tool-to-tool hugs (5px). content: prose rows breathe (10px).
+   message: a NEW assistant message inside one turn gets a clear 28px
+   break (last tool call of response #1 -> the next response's thought). */
+[data-timeline-spacing="tool"] {
+  padding-top: 5px;
+}
+[data-timeline-spacing="content"] {
+  padding-top: 10px;
+}
+[data-timeline-spacing="message"] {
+  padding-top: 28px;
+}
+
+/* Rails live on the ROW WRAPPER (tool-part-wrapper), never on the inner
    trigger: the kit renders reasoning through a nested BasicTool, so a
    trigger-level rule indented thoughts TWICE and leaked into group
    children (the "Used N" slide, live-caught). 1px hairline, not a colored

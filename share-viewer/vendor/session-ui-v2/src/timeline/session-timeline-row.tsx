@@ -471,11 +471,12 @@ export function createSessionTimelineRowRenderer(input: {
       classList={{
         "min-w-0 w-full max-w-full": true,
         "md:max-w-session md:mx-auto": input.centered?.(),
-        // openshare fork: tool-to-tool hugs (4.8px), prose rows breathe
-        // (9.6px), and a NEW assistant message gets a clear 16px break
-        "pt-[0.3rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "tool",
-        "pt-[0.6rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "content",
-        "pt-[1.5rem]": Predicate.isTagged(props.row, "AssistantPart") && props.row.spacing === "message",
+        // openshare fork: row rhythm lives in app.css keyed by
+        // data-timeline-spacing (emitted above) - arbitrary tailwind classes
+        // added here are NEVER generated: the kit's CSS is prebuilt upstream
+        // and the viewer's tailwind does not scan the vendor tree
+        // (live-caught: every spacing fork before this silently did nothing
+        // and even removed upstream's pt-2/pt-4)
         "pt-6": Predicate.isTagged(props.row, "Error"),
       }}
     >
