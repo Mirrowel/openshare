@@ -1,5 +1,7 @@
 // Viewer settings: JSON cookie (osh_settings, 1yr), read pre-paint by
 // entry.tsx to set html[data-osh-theme] / text size without a flash.
+import { createSignal } from "solid-js"
+
 export type OshSettings = {
   view: string
   theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
@@ -7,7 +9,9 @@ export type OshSettings = {
   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
-  diffStyle: "unified" | "split"
+  /** diff rendering: auto (split when it fits), or forced (forced split
+   * still requires the space; too-narrow falls back to unified) */
+  diffMode: "auto" | "split" | "unified"
   backgroundOn: boolean
   reasoningOpen: boolean
   centerContent: boolean
@@ -31,7 +35,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   followLive: true,
   textSize: "normal",
   readText: "normal",
-  diffStyle: "unified",
+  diffMode: "auto",
   backgroundOn: true,
   reasoningOpen: false,
   centerContent: false,
@@ -51,6 +55,11 @@ export function readSettings(): OshSettings {
       const [k, ...v] = part.trim().split("=")
       if (k === COOKIE) {
         const parsed = JSON.parse(decodeURIComponent(v.join("=")))
+        // migrate the old diffStyle setting (unified|split) to diffMode
+        // (auto|split|unified): an explicit old value stays forced
+        if (parsed.diffStyle && !parsed.diffMode) {
+          parsed.diffMode = parsed.diffStyle === "split" ? "split" : "unified"
+        }
         return { ...SETTINGS_DEFAULTS, ...parsed }
       }
     }
@@ -80,6 +89,18 @@ const PREMADE_BASE: Record<string, "light" | "dark"> = {
   nord: "light",
 }
 let systemHooked = false
+// diffMode as a standalone reactive signal: tool renderers (outside the
+// app's settings store tree) read it live, and the per-card toggle writes
+// it through setDiffMode (cookie + apply, then the signal).
+const [diffModeSignal, setDiffModeSignal] = createSignal<OshSettings["diffMode"]>(readSettings().diffMode)
+export { diffModeSignal, setDiffModeSignal }
+export function setDiffMode(mode: OshSettings["diffMode"]) {
+  const next = readSettings()
+  next.diffMode = mode
+  delete (next as any).diffStyle
+  writeSettings(next)
+  setDiffModeSignal(mode)
+}
 function resolvedScheme(theme: string): "light" | "dark" {
   if (theme === "system")
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"

@@ -426,12 +426,20 @@ export function agentFor(callID: string | undefined): string | undefined {
         const before = s
         s = s.replace(
           /(\r?\n\s*<div data-slot="session-turn-message-content" aria-live="off">\r?\n)(\s*<SessionUserMessage)/,
-          `$1                    {/* openshare fork: agent transition chip - the plugin
+          `$1                    {/* openshare fork: agent transition EVENT ROW - the plugin
                         stamps metadata.agentSwitch on prompts whose segment
                         runs a different agent than the previous one; the
                         viewer renders the stamp, nothing more */}
                     <Show when={(message() as any).metadata?.agentSwitch}>
-                      {(agent) => <div data-component="osh-agent-switch">{"→ "}{agent()}</div>}
+                      {(agent) => (
+                        <div data-component="osh-agent-switch" role="note">
+                          <span class="osh-as-label">
+                            <span class="osh-as-arrow">⇄</span>
+                            <span>switched to</span>
+                            <span class="osh-as-agent">{String(agent())}</span>
+                          </span>
+                        </div>
+                      )}
                     </Show>
 $2`,
         )

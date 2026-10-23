@@ -75,8 +75,17 @@ export function useShareSource(): Source {
 
   const merge = (incoming: any[]) => {
     setItems((prev) => {
+      // SMART SYNC: a no-op update (identical poll, empty since-frame,
+      // re-delivery of the same item objects) must NOT produce a new Map
+      // identity - the whole render chain keys off items() and a fresh
+      // identity refolds + rebuilds every visible row (live-caught as
+      // "tools close on their own, like on a timer" while the 5s poll
+      // fallback ran). Only a real change (new/different item, or a
+      // tombstone that actually deletes) creates the next container.
+      if (!incoming || incoming.length === 0) return prev
+      let changed = false
       const next = new Map(prev)
-      for (const it of incoming ?? []) {
+      for (const it of incoming) {
         const key = it.type === "session" ? `session/${it.data?.id ?? ""}`
           : it.type === "message" ? `message/${it.sessionID ?? it.data?.sessionID ?? ""}/${it.data?.id ?? ""}`
           : it.type === "model" ? `model/${it.sessionID ?? ""}`
@@ -84,10 +93,17 @@ export function useShareSource(): Source {
           : it.type === "session_diff" ? `session_diff/${it.sessionID ?? ""}`
           : null
         // tombstones (opencode undo → removed message): same key
-        // derivation as the upsert, opposite effect
-        if (key) it.del ? next.delete(key) : next.set(key, it)
+        // derivation as the upsert, opposite effect; deleting a key that
+        // is already gone is a no-op, not a change
+        if (!key) continue
+        if (it.del) {
+          if (next.delete(key)) changed = true
+        } else if (next.get(key) !== it) {
+          next.set(key, it)
+          changed = true
+        }
       }
-      return next
+      return changed ? next : prev
     })
   }
 

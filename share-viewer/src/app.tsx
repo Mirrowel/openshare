@@ -269,7 +269,9 @@ function SessionView(props: {
           >
             {iife(() => {
               const [store, setStore] = createStore({ messageId: undefined as string | undefined })
-              const [diffStyle, setDiffStyle] = createSignal<"unified" | "split">(props.settings.diffStyle)
+              const [diffStyle, setDiffStyle] = createSignal<"unified" | "split">(
+    props.settings.diffMode === "split" ? "split" : "unified",
+  )
               const messages = createMemo(() => visibleMessages(props.data, sessionID()))
               const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
               const firstUserMessage = createMemo(() => userTurns().at(0))
@@ -741,12 +743,16 @@ export function App() {
   // the reader's transcript offset, tracked from real scroll events so a
   // settings-driven reflow can put them back exactly where they were
   let lastTranscriptOffset: number | undefined
+  let lastWindowScrollY: number | undefined
   const trackTranscriptScroll = (event: Event) => {
     const el = event.target
-    if (!(el instanceof HTMLElement) || el.dataset.transcriptScroll === undefined) return
-    lastTranscriptOffset = el.scrollTop
+    if (!(el instanceof HTMLElement)) return
+    if (el.dataset.transcriptScroll !== undefined) lastTranscriptOffset = el.scrollTop
   }
   document.addEventListener("scroll", trackTranscriptScroll, true)
+  window.addEventListener("scroll", () => {
+    lastWindowScrollY = window.scrollY
+  }, { passive: true })
 
   const updateSettings = (patch: Partial<OshSettings>) => {
     // Settings can reflow the transcript (grouping, details, view): classic
@@ -782,6 +788,27 @@ export function App() {
     const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80
     if (!atBottom) return
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }))
+  })
+
+  // SMART-SYNC scroll continuity: a real data update (rev bump) rebuilds
+  // the projection; even with in-place row updates the page height can
+  // shift under the reader mid-rebuild and the browser clamps scroll
+  // toward the top (live-caught as "pushed to the top when it finished").
+  // Same capture/reapply as settings changes, driven by data instead:
+  // restore the transcript offset AND the window position unless the
+  // reader is following live at the bottom (the effect above owns that).
+  createEffect(() => {
+    source.rev()
+    const restore = () => {
+      const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
+      if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
+      else if (lastWindowScrollY != null) window.scrollTo(0, lastWindowScrollY)
+    }
+    requestAnimationFrame(() => {
+      restore()
+      requestAnimationFrame(restore)
+      setTimeout(restore, 120)
+    })
   })
 
   // in-page navigation (popstate) re-parses the sub segment

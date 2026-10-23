@@ -8,7 +8,7 @@
 // Drives the vendored session-ui projection + row renderer, so rendering
 // is identical to the non-virtualized timeline.
 import { createVirtualizer } from "@tanstack/solid-virtual"
-import { For, createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, Show, createRoot, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
@@ -21,6 +21,28 @@ const END_EPSILON = 4
 const ESTIMATE = 90
 
 const measurementCache = new Map<string, number>()
+
+// Disclosure (open/closed tool rows) persisted per sessionKey across
+// component remounts and data refolds (smart-sync: an update must never
+// close what the reader opened). Bounded LRU by insertion.
+const disclosureMemory = new Map<string, Record<string, boolean | undefined>>()
+function readDisclosure(key: string) {
+  const hit = disclosureMemory.get(key)
+  if (hit) {
+    disclosureMemory.delete(key)
+    disclosureMemory.set(key, hit)
+    return hit
+  }
+  return {}
+}
+function writeDisclosure(key: string, store: Record<string, boolean | undefined>) {
+  disclosureMemory.set(key, { ...store })
+  while (disclosureMemory.size > 12) {
+    const oldest = disclosureMemory.keys().next().value as string | undefined
+    if (oldest === undefined) break
+    disclosureMemory.delete(oldest)
+  }
+}
 
 // Exact restore across remounts/settings changes: tanstack snapshots the
 // measured rows, and replaying the snapshot plus the scroll offset makes the
@@ -75,7 +97,11 @@ export function VirtualTimeline(props: {
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
     timelineDetail: props.timelineDetail && (() => props.timelineDetail!),
   })
-  const [toolOpen, setToolOpen] = createStore<Record<string, boolean | undefined>>({})
+  const [toolOpen, setToolOpen] = createStore<Record<string, boolean | undefined>>(
+    // seed from the persistent disclosure map (survives remounts)
+    readDisclosure(props.sessionKey),
+  )
+  onCleanup(() => writeDisclosure(props.sessionKey, toolOpen))
   const renderer = createSessionTimelineRowRenderer({
     sessionID: () => props.doc.sessionID,
     status: () => props.doc.status,
@@ -86,7 +112,10 @@ export function VirtualTimeline(props: {
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
     disclosure: {
       value: (key) => toolOpen[key],
-      set: (key, open) => setToolOpen(key, open),
+      set: (key, open) => {
+        setToolOpen(key, open)
+        writeDisclosure(props.sessionKey, toolOpen)
+      },
     },
     // drives per-row default-open (Tool outputs / Expanded reasoning)
     timelineDetail: props.timelineDetail && (() => props.timelineDetail!),
@@ -181,6 +210,100 @@ export function VirtualTimeline(props: {
 
   const items = virtualizer.getVirtualItems()
 
+  // KEYED ROW CACHE (smart-sync): one component + DOM node per row key,
+  // created in its own root and REUSED for the component's lifetime. A
+  // data update repositions rows (transform) and lets the reactive row
+  // accessor update content IN PLACE - it never remounts a row that still
+  // exists, so open tools, expanded bodies and scroll anchors survive
+  // every sync. Rows whose key leaves the projection entirely (revert /
+  // tombstone deletion) are disposed. Replaces both the original unkeyed
+  // items.map (remount storm, orphaned measurements) and the interim
+  // <For> (keyed by virtual-item identity, which tanstack does not
+  // guarantee across notifies).
+  let host: HTMLDivElement | undefined
+  const rowEls = new Map<string, { el: HTMLDivElement; dispose: () => void }>()
+  const ROW_CACHE_CAP = 500
+
+  createEffect(() => {
+    const vis = items
+    const h = host
+    if (!h) return
+    const inWindow = new Set<string>()
+    for (const item of vis) {
+      const key = String(item.key)
+      inWindow.add(key)
+      let entry = rowEls.get(key)
+      if (!entry) {
+        const [dispose, el] = createRoot((dispose) => {
+          const node = (
+            <div
+              data-row-key={key}
+              ref={(el) => {
+                // tanstack's measureElement early-returns when the index
+                // is outside the computed range, and at ref time the range
+                // is not computed yet - defer the first measure; the
+                // virtualizer's observer takes over from there. GUARD:
+                // skip detached nodes - measuring one reports 0, poisons
+                // the size cache and feeds the measure/remount churn.
+                requestAnimationFrame(() => {
+                  if (el.isConnected) virtualizer.measureElement(el)
+                })
+              }}
+              style={{
+                position: "absolute",
+                top: "0",
+                left: "0",
+                width: "100%",
+              }}
+            >
+              {/* reactive like the kit's own Row memo: re-reads the CURRENT
+                  projection per update without remounting this row. Falls
+                  back to the last known row object for the tick between a
+                  deletion and the prune effect (never null mid-render). */}
+              {(() => {
+                let last: unknown = null
+                return <renderer.Row row={() => (last = projection.rowByKey().get(key) ?? last) as never} />
+              })()}
+            </div>
+          ) as HTMLDivElement
+          return [dispose, node] as const
+        })
+        entry = { el, dispose }
+        rowEls.set(key, entry)
+        h.appendChild(el)
+      }
+      entry.el.dataset.index = String(item.index)
+      entry.el.style.transform = `translateY(${item.start}px)`
+    }
+    // evict off-window entries when the cache grows past cap (scrolled-
+    // away rows keep their components otherwise)
+    if (rowEls.size > ROW_CACHE_CAP) {
+      for (const [key, entry] of rowEls) {
+        if (rowEls.size <= ROW_CACHE_CAP) break
+        if (inWindow.has(key)) continue
+        entry.el.remove()
+        entry.dispose()
+        rowEls.delete(key)
+      }
+    }
+  })
+
+  // rows removed from the projection (undo/revert tombstones) dispose
+  // cleanly - their reactive roots must not linger
+  createEffect(() => {
+    const live = new Set(rowKeys())
+    for (const [key, entry] of rowEls) {
+      if (live.has(key)) continue
+      entry.el.remove()
+      entry.dispose()
+      rowEls.delete(key)
+    }
+  })
+  onCleanup(() => {
+    for (const entry of rowEls.values()) entry.dispose()
+    rowEls.clear()
+  })
+
   // Expanding a tool row or a <details> changes the row height AFTER the
   // click. tanstack re-observes elements it measured, but a grouped row that
   // was never measured (freshly scrolled into view) would keep its estimate
@@ -217,48 +340,10 @@ export function VirtualTimeline(props: {
           the title scrolls away with the transcript and the footer is the
           last thing in the session — never pinned */}
       <Show when={props.header}>{props.header}</Show>
-      <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}>
-        {/* KEYED rendering: <For> keys by store-node identity, and tanstack's
-            index-keyed reconcile keeps the same node object per position - so
-            row DOM persists across every virtualizer update. The old unkeyed
-            items.map re-created every visible row on each notify, which
-            orphaned in-flight measurements (layout stuck on 90px estimates,
-            first load read as a wall of gaps - the owner's broken-cold /
-            fine-after-reload report). */}
-        <For each={items}>
-          {(item) => {
-            const row = projection.rowByKey().get(String(item.key))
-            if (!row) return null
-            return (
-              <div
-                data-row-key={item.key}
-                data-index={item.index}
-                ref={(el) => {
-                  // tanstack's measureElement early-returns when the index is
-                  // outside the computed range, and at ref time (DOM creation)
-                  // the range is not computed yet - defer the first measure;
-                  // the virtualizer's observer takes over from there. GUARD:
-                  // skip detached nodes - measuring one reports 0, poisons the
-                  // size cache and feeds the measure/remount churn.
-                  requestAnimationFrame(() => {
-                    if (el.isConnected) virtualizer.measureElement(el)
-                  })
-                }}
-                style={{
-                  position: "absolute",
-                  top: "0",
-                  left: "0",
-                  width: "100%",
-                  transform: `translateY(${item.start}px)`,
-                }}
-              >
-                {/* reactive like the kit's own Row memo */}
-                <renderer.Row row={() => projection.rowByKey().get(String(item.key)) ?? row} />
-              </div>
-            )
-          }}
-        </For>
-      </div>
+      <div
+        ref={(el) => (host = el)}
+        style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
+      />
       <Show when={props.footer}>{props.footer}</Show>
     </div>
   )

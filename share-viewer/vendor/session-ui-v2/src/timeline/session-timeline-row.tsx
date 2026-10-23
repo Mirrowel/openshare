@@ -736,7 +736,15 @@ export function createSessionTimelineRowRenderer(input: {
                         runs a different agent than the previous one; the
                         viewer renders the stamp, nothing more */}
                     <Show when={(message() as any).metadata?.agentSwitch}>
-                      {(agent) => <div data-component="osh-agent-switch">{"→ "}{agent()}</div>}
+                      {(agent) => (
+                        <div data-component="osh-agent-switch" role="note">
+                          <span class="osh-as-label">
+                            <span class="osh-as-arrow">⇄</span>
+                            <span>switched to</span>
+                            <span class="osh-as-agent">{String(agent())}</span>
+                          </span>
+                        </div>
+                      )}
                     </Show>
                     <SessionUserMessage
                       sessionID={input.sessionID()}

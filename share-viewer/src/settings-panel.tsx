@@ -10,6 +10,7 @@ import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import type { OshSettings } from "./settings"
+import { setDiffMode } from "./settings"
 import type { Branding } from "./data-source"
 import { VIEW_OPTIONS } from "./views/registry"
 
@@ -278,6 +279,24 @@ export function SettingsBody(props: {
                 { id: "wrap" as const, label: "wrap" },
               ]}
               onChange={(outputOverflow) => props.update({ outputOverflow })}
+            />
+          </div>
+          {/* diff layout: auto (split when it fits), or forced - forced
+              split still requires the width; the per-card U/A/S toggle in
+              edit headers writes the same setting */}
+          <div class="pl-3 pb-1.5">
+            <div class="text-12-regular text-text-weaker pb-1">Diff layout</div>
+            <Segmented
+              value={props.settings.diffMode}
+              options={[
+                { id: "auto" as const, label: "auto" },
+                { id: "split" as const, label: "split" },
+                { id: "unified" as const, label: "unified" },
+              ]}
+              onChange={(diffMode) => {
+                props.update({ diffMode })
+                setDiffMode(diffMode)
+              }}
             />
           </div>
           {/* grouping only applies to the classic timeline; views have

@@ -17,6 +17,7 @@ import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
+import { diffModeSignal, setDiffMode } from "./settings"
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
@@ -61,30 +62,40 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Auto unified/split (owner spec, VSCode-style): split engages when the
- * card can grow to double the reading column (capped at viewport-48) with
- * each pane keeping a sane minimum; panes scroll horizontally with a hidden
- * scrollbar instead of stretching. Narrow viewports fall back to unified.
- * The card stays LEFT-anchored like every other tool - it only extends
- * right, never centers. */
+/** Auto/forced unified-split (owner spec): `diffMode` setting = auto |
+ * split | unified. Width is MEASURED against the card's real left edge
+ * (left-anchored card extending right): split engages only when
+ * viewport - left - margin gives each pane a sane minimum, so a split
+ * card can never overflow the page (live-caught horizontal scrollbar).
+ * Panes scroll horizontally with a hidden scrollbar. The settle race
+ * (identical edits rendering different modes - measured mid-animation)
+ * dies via re-check + remount: when the width settles and the mode
+ * flips, the File remounts once with the right layout. */
 function useSplitFit() {
-  const [width, setWidth] = createSignal(0)
+  const [maxPx, setMaxPx] = createSignal(0)
   const ref = (el: HTMLDivElement) => {
-    // measure the column width (edit-content's parent, osh-file-body);
-    // edit-content itself hugs (fit-content) - measuring it feeds back
-    // (live-caught: unified rendered narrow, split never engaged)
-    const host = el.parentElement ?? el
-    const measure = () => setWidth(host.clientWidth)
+    // edit-content itself hugs (fit-content); measure the CARD (its
+    // parent osh-file-body, full column width) and its left edge
+    const card = el.parentElement ?? el
+    const measure = () => {
+      const rect = card.getBoundingClientRect()
+      const avail = window.innerWidth - rect.left - 24
+      const col = rect.width || 0
+      setMaxPx(Math.max(0, Math.min(col * 2, avail)))
+    }
     measure()
     const ro = new ResizeObserver(measure)
-    ro.observe(host)
+    ro.observe(card)
     onCleanup(() => ro.disconnect())
   }
+  const mode = () => diffModeSignal()
   const split = createMemo(() => {
-    const avail = Math.min(width() * 2, (typeof window === "undefined" ? 0 : window.innerWidth) - 48)
-    return width() > 0 && avail >= 2 * 320 + 140
+    const m = mode()
+    if (m === "unified") return false
+    // forced split needs each pane >= ~300px; auto needs a comfortable fit
+    return maxPx() >= (m === "split" ? 600 : 780)
   })
-  return { ref, split }
+  return { ref, split, maxPx }
 }
 
 /** One header for every file tool: label, directory, filename, meta. */
@@ -330,9 +341,35 @@ const EditTool = (props: ToolProps) => {
             label={props.tool === "patch" ? "Patch" : "Edit"}
             path={path()}
             meta={
-              <Show when={stats().adds || stats().dels}>
-                <ChangeCounts adds={stats().adds} dels={stats().dels} />
-              </Show>
+              <div class="flex items-center gap-2">
+                <Show when={stats().adds || stats().dels}>
+                  <ChangeCounts adds={stats().adds} dels={stats().dels} />
+                </Show>
+                {/* per-card diff mode toggle (writes the global setting) */}
+                <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
+                  <button
+                    type="button"
+                    class="osh-dm-btn"
+                    classList={{ "osh-dm-on": diffModeSignal() === "unified" }}
+                    title="Unified (forced)"
+                    onclick={(e) => { e.stopPropagation(); setDiffMode("unified") }}
+                  >U</button>
+                  <button
+                    type="button"
+                    class="osh-dm-btn"
+                    classList={{ "osh-dm-on": diffModeSignal() === "auto" }}
+                    title="Auto (split when it fits)"
+                    onclick={(e) => { e.stopPropagation(); setDiffMode("auto") }}
+                  >A</button>
+                  <button
+                    type="button"
+                    class="osh-dm-btn"
+                    classList={{ "osh-dm-on": diffModeSignal() === "split" }}
+                    title="Split (forced, needs width)"
+                    onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
+                  >S</button>
+                </div>
+              </div>
             }
           />
         )}
@@ -342,8 +379,13 @@ const EditTool = (props: ToolProps) => {
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
           <FileBody title={path()}>
-            <div data-component="edit-content" ref={fit.ref}>
+            <div
+              data-component="edit-content"
+              ref={fit.ref}
+              style={fit.split() ? { width: `${fit.maxPx()}px` } : undefined}
+            >
               <Dynamic
+                key={`diff-${fit.split() ? "split" : "unified"}`}
                 component={fileComponent as any}
                 mode="diff"
                 virtualize={false}

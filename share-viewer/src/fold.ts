@@ -25,10 +25,16 @@ export type SessionLite = {
 export type FileDiffInfo = Record<string, any>
 
 /** v2 renderers read additions/deletions unguarded — guarantee the counts
- * (compute from the patch when absent) so no share can crash the page. */
+ * (compute from the patch when absent) so no share can crash the page.
+ * Cached per source object: an unchanged session_diff item yields the
+ * SAME normalized array across folds, so downstream memos skip work
+ * (smart-sync: only what changed re-renders). */
+const diffCache = new WeakMap<object, any>()
 function normalizeDiff(d: any) {
   if (!d || typeof d !== "object") return d
   if (typeof d.additions === "number" && typeof d.deletions === "number") return d
+  const hit = diffCache.get(d)
+  if (hit) return hit
   const patch = typeof d.patch === "string" ? d.patch : ""
   let additions = 0
   let deletions = 0
@@ -36,7 +42,9 @@ function normalizeDiff(d: any) {
     if (line.startsWith("+") && !line.startsWith("+++")) additions++
     else if (line.startsWith("-") && !line.startsWith("---")) deletions++
   }
-  return { ...d, additions: typeof d.additions === "number" ? d.additions : additions, deletions: typeof d.deletions === "number" ? d.deletions : deletions }
+  const out = { ...d, additions: typeof d.additions === "number" ? d.additions : additions, deletions: typeof d.deletions === "number" ? d.deletions : deletions }
+  diffCache.set(d, out)
+  return out
 }
 
 export type ProviderCatalog = {

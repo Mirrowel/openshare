@@ -232,11 +232,6 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
    `overscroll-behavior: contain` on tool surfaces locked page scroll even
    when nothing could scroll (read/edit/shell locked, write - never in the
    list - worked). */
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
-  overscroll-behavior-x: contain;
-  overscroll-behavior-y: auto;
-}
-
 /* --- reading rhythm ---------------------------------------------------
    Row spacing lives HERE, keyed by the data-timeline-spacing attribute the
    kit's Frame already emits. Never via tailwind classes forked into the
@@ -473,24 +468,83 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 }
 
 /* --- split diff (VSCode-style) ------------------------------------------
-   When split engages the card grows to double the reading column (capped
-   at viewport-48), LEFT-anchored like every other tool - extends right
-   only, never centers, never page-wide. Long lines scroll horizontally
-   inside the surface with a hidden scrollbar. */
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
-  width: min(200%, calc(100vw - 48px));
-  /* exempt from the 75vw text-card cap: split MAY use the wider escape */
-  max-width: min(200%, calc(100vw - 48px));
-}
+   The split card's width is set INLINE from measurement (viewport - card
+   left - margin) so it can never overflow the page (the old min(200%,
+   100vw-48) rule overflowed because the card is left-anchored inside a
+   CENTERED column). Panes scroll horizontally, hidden scrollbar, and
+   contain only their X axis so vertical wheel chains to the page. */
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"]::-webkit-scrollbar {
   display: none;
 }
 
+/* per-card diff mode toggle (U | A | S) in the edit header */
+[data-slot="osh-diff-mode"] {
+  display: inline-flex;
+  border: 1px solid var(--border-weaker-base);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.osh-dm-btn {
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 700;
+  padding: 3px 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-weaker);
+  cursor: pointer;
+}
+.osh-dm-btn:hover {
+  color: var(--text-base);
+  background: var(--surface-raised-base);
+}
+.osh-dm-btn.osh-dm-on {
+  background: var(--surface-raised-base);
+  color: var(--text-strong);
+}
+
+/* --- agent/mode switch: a full-width centered EVENT row ------------------
+   Reads like the compaction divider: hairline rules both sides, centered
+   accent-tinted label. Announces build↔plan (or any agent change) at a
+   glance instead of a tiny inline chip. */
+[data-component="osh-agent-switch"] {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 0 6px;
+}
+[data-component="osh-agent-switch"]::before,
+[data-component="osh-agent-switch"]::after {
+  content: "";
+  flex: 1 1 0%;
+  height: 1px;
+  background: var(--border-weaker-base);
+}
+[data-component="osh-agent-switch"] .osh-as-label {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: 11.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-weaker);
+}
+[data-component="osh-agent-switch"] .osh-as-label .osh-as-arrow {
+  color: var(--text-weaker);
+  font-size: 12px;
+}
+[data-component="osh-agent-switch"] .osh-as-label .osh-as-agent {
+  color: var(--accent, var(--text-strong));
+}
 /* entry slots are transparent under skins that need direct grid children
    (grove's 2-column turn body); everywhere else they are plain blocks */
 [data-view="grove"] .osh-entry-slot {
