@@ -98,7 +98,7 @@ function FullPageView(props: {
 }
 import { children, sessionStatus, visibleMessages, type ShareData } from "./fold"
 import { setSubagentData } from "./subagent-map"
-import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
+import { applySettings, continuousFor, readSettings, writeSettings, type OshSettings } from "./settings"
 
 // scroll memory for in-page session switching: restore on return
 const scrollMemory = new Map<string, number>()
@@ -513,7 +513,7 @@ function SessionView(props: {
                     >
                       <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
                         <div class="flex items-start justify-start h-full min-h-0 w-full">
-                          <Show when={!props.settings.continuous && userTurns().length > 1}>
+                          <Show when={!continuousFor(props.settings, "classic") && userTurns().length > 1}>
                             {/* paged prompt switcher: the shared FLOATING
                                 rail (fixed to the viewport, proximity
                                 reveal) instead of the persistent
@@ -529,7 +529,7 @@ function SessionView(props: {
                             />
                           </Show>
                           <Show
-                            when={props.settings.continuous}
+                            when={continuousFor(props.settings, "classic")}
                             fallback={
                               // paged: ONE turn, windowed row-by-row through the
                               // same virtualizer as continuous (a giant turn

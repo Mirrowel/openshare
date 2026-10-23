@@ -9,7 +9,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
-import type { OshSettings } from "./settings"
+import { continuousFor, setContinuousFor, type OshSettings } from "./settings"
 import { setDiffMode } from "./settings"
 import type { Branding } from "./data-source"
 import { VIEW_OPTIONS } from "./views/registry"
@@ -246,9 +246,13 @@ export function SettingsBody(props: {
         <div class="flex flex-col">
           <Switch
             label="Continuous"
-            hint="every prompt in one scroll"
-            on={props.settings.continuous}
-            onChange={() => props.update({ continuous: !props.settings.continuous })}
+            hint="every prompt in one scroll (per view)"
+            on={continuousFor(props.settings, props.settings.view)}
+            onChange={() =>
+              props.update(
+                setContinuousFor(props.settings, props.settings.view, !continuousFor(props.settings, props.settings.view)),
+              )
+            }
           />
           <Switch
             label="Center content"

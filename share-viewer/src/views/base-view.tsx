@@ -19,7 +19,7 @@ import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
 import { useSessionSections, type SessionSection, type ToolEntry, type ReasoningEntry, type TextEntry } from "./session-data"
 import type { ViewProps } from "./registry"
-import type { OshSettings } from "../settings"
+import { continuousFor, type OshSettings } from "../settings"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
@@ -133,7 +133,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   const [active, setActive] = createSignal(0)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const model = () => sessionModelLabel(props.data, props.sessionID)
-  const continuous = () => props.settings.continuous
+  const continuous = () => continuousFor(props.settings, props.skin.id)
   const cachePrefix = props.source.shareID + ":" + props.sessionID
 
   // search filter

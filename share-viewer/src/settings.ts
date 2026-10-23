@@ -5,7 +5,12 @@ import { createSignal } from "solid-js"
 export type OshSettings = {
   view: string
   theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
+  /** DEFAULT for views without their own choice (owner directive
+   *  2026-10-24: the paged/continuous choice is remembered PER VIEW) */
   continuous: boolean
+  /** per-view override of `continuous`, keyed by view id ("classic",
+   * "terminal", "casefile", ...). Absent key = use the default */
+  continuousByView?: Record<string, boolean>
   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
@@ -80,6 +85,22 @@ export function readSettings(): OshSettings {
 export function writeSettings(s: OshSettings) {
   // not HttpOnly by design: the viewer reads its own settings cookie
   document.cookie = `${COOKIE}=${encodeURIComponent(JSON.stringify(s))}; Path=/; Max-Age=31536000; SameSite=Lax`
+}
+
+/** the paged/continuous choice FOR A VIEW: per-view override first, the
+ *  global default second (owner directive: each view remembers its own
+ *  mode - terminal can stay continuous while classic pages). */
+export function continuousFor(s: OshSettings, view: string): boolean {
+  const per = s.continuousByView?.[view]
+  return typeof per === "boolean" ? per : s.continuous
+}
+
+/** write a view's mode choice (per-view map; keeps other views' choices) */
+export function setContinuousFor(prev: OshSettings, view: string, value: boolean): OshSettings {
+  return {
+    ...prev,
+    continuousByView: { ...(prev.continuousByView ?? {}), [view]: value },
+  }
 }
 
 // Apply to <html>: theme attribute + scale attributes. Called pre-paint.
