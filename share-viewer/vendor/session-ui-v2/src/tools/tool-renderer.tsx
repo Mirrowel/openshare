@@ -625,8 +625,11 @@ export function CurrentContextToolGroup(props: {
 
       const previous = groups.at(-1)
 
-      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {
-        previous.push(tool)
+      // openshare fork: file-change tools NEVER merge with each other -
+      // each edit/write/patch renders as its own expandable card inside
+      // the group, exactly like every other tool (owner directive)
+      if (isFileChangeTool(tool)) {
+        groups.push([tool])
 
         return groups
       }

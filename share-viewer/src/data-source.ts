@@ -218,7 +218,11 @@ function liveSource(ctx: any): Source {
       merge(body.data ?? [])
       setRev(body.rev ?? 0)
       setStatus(body.status ?? "live")
-    } catch {
+    } catch (e) {
+      // a swallowed flush exception leaves the page half-updated forever
+      // (live-caught: status stuck at its initial value while items
+      // rendered) - always visible
+      console.warn("[openshare] data tick failed:", e)
       // transient; WS or the next tick recovers
     }
   }

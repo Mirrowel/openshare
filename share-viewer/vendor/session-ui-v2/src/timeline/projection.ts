@@ -550,7 +550,6 @@ export namespace Timeline {
       }
 
       appendSegments(before)
-
       if (interruptedAt >= 0) {
         if (!compaction && detail?.notices.placement !== "hidden")
           rows.push(new TimelineRow.TurnDivider({ userMessageID: turnID }))

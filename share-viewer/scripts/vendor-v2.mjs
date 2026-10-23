@@ -260,6 +260,26 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: file-change tools never merge with each other inside a
+// context group (owner directive 2026-10-24: grouping groups individual
+// tools; edit/write/patch each render as their own expandable card - the
+// merged CurrentFileToolGroup showed one aggregate row for N edits with
+// broken expansion). Literal anchors; throws on upstream drift.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: file-change tools NEVER merge")) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const A = ["      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {", "        previous.push(tool)", "", "        return groups", "      }"].join(nl)
+      const B = ["      // openshare fork: file-change tools NEVER merge with each other -", "      // each edit/write/patch renders as its own expandable card inside", "      // the group, exactly like every other tool (owner directive)", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
+      if (!s.includes(A)) throw new Error("vendor-v2: file-tools-merge anchor missing - upstream drifted")
+      s = s.replace(A, B)
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: reads keep their own renderer so their output can expand.
 // Upstream (fresh) routes every `read` inside a context group into
 // CurrentReadToolGroup, whose expanded state only lists filenames; and a
@@ -499,6 +519,17 @@ $2`,
           '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />',
           '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />',
         )
+        // openshare fork: hidden PREWARM copy while collapsed - the body
+        // only mounts on expand, so the markdown worker parse started at
+        // expand and the fallback->rich swap showed as a visible "snap".
+        // The hidden copy parses under the same cacheKey at row mount.
+        {
+          const nl2 = s.includes("\r\n") ? "\r\n" : "\n"
+          const A = ["        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />", "      </BasicTool>"].join(nl2)
+          const B = ["        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />", "        <Show when={!open() && props.content.text.trim()}>", "          {/* openshare fork: hidden PREWARM copy - expansion finds the cache warm */}", "          <div style={{ display: \"none\" }} aria-hidden=\"true\">", "            <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />", "          </div>", "        </Show>", "      </BasicTool>"].join(nl2)
+          if (!s.includes(A)) throw new Error("vendor-v2: prewarm anchor missing - upstream drifted")
+          s = s.replace(A, B)
+        }
         if (s === before) throw new Error("vendor-v2: message-content anchors missing - upstream drifted")
         writeFileSync(p, s)
       }
@@ -578,6 +609,23 @@ writeFileSync(
 
 // --- ui ---
 copyTree(join(SRC, "packages/ui/src"), join(ROOT, "vendor/ui-v2/src"))
+
+// vendor fork (en locale): the kit's group label reads ui.tool.todos for
+// todowrite rows; upstream en.ts ships without the key so the label shows
+// the raw key (live-caught: "Used 3 ui.tool.todos, Shell, Glob").
+{
+  const p = join(ROOT, "vendor/ui-v2/src/i18n/en.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes('"ui.tool.todos"')) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const A = '  "ui.tool.task": "Task",'
+      if (!s.includes(A)) throw new Error("vendor-v2: en locale anchor missing - upstream drifted")
+      s = s.replace(A, A + nl + '  "ui.tool.todos": "Todos",')
+      writeFileSync(p, s)
+    }
+  }
+}
 // styles live under src/styles in the beta (no separate styles dir)
 {
   // exports map copied verbatim from the beta package — per-component

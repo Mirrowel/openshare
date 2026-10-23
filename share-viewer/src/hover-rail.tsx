@@ -45,20 +45,33 @@ export function HoverRail(props: {
 
   return (
     <div class="relative shrink-0">
-      {/* the hover zone: hairline affordance that breathes in on approach */}
+      {/* the hover zone: a PERSISTENT slim handle (dotted hairline + ≡ tab
+          at mid-height) so the switcher is discoverable at rest — the
+          pure-hover original was invisible until stumbled into
+          (live-caught). Brightens on approach. */}
       <div
         ref={zone}
         class="h-full w-4 cursor-pointer group"
         onMouseEnter={enter}
         onMouseLeave={leave}
+        onClick={() => (open() ? leave() : enter())}
         role="navigation"
         aria-label="prompts"
         title="prompts"
       >
         <div
-          class="absolute left-0 top-0 bottom-0 w-[3px] opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-          style={{ background: "linear-gradient(to bottom, transparent, var(--border-weak-base) 30%, var(--border-weak-base) 70%, transparent)" }}
+          class="absolute left-[3px] top-0 bottom-0 w-px opacity-45 group-hover:opacity-100 transition-opacity duration-150"
+          style={{
+            background:
+              "repeating-linear-gradient(to bottom, var(--border-weak-base) 0 3px, transparent 3px 8px)",
+          }}
         />
+        <div
+          class="absolute left-[1px] top-1/2 -translate-y-1/2 size-[18px] flex items-center justify-center rounded-md border border-border-weaker-base bg-surface-raised-base text-text-weaker text-[10px] leading-none opacity-60 group-hover:opacity-100 group-hover:text-text-base transition-all duration-150 group-hover:border-border-weak-base"
+          style={{ "box-shadow": "0 1px 4px rgb(0 0 0 / 0.15)" }}
+        >
+          ≡
+        </div>
       </div>
       <Show when={open()}>
         <div

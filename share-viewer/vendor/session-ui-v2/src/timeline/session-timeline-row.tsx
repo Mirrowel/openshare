@@ -745,7 +745,7 @@ export function createSessionTimelineRowRenderer(input: {
               return (
                 <div data-slot="session-turn-message-container" class={`w-full ${padding()}`}>
                   <div data-slot="session-turn-message-content" aria-live="off">
-                    {/* openshare fork: agent transition chip - the plugin
+                    {/* openshare fork: agent transition EVENT ROW - the plugin
                         stamps metadata.agentSwitch on prompts whose segment
                         runs a different agent than the previous one; the
                         viewer renders the stamp, nothing more */}

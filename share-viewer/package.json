@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "vendor": "node scripts/vendor-v2.mjs && bun install",
+    "vendor": "node scripts/vendor-v2.mjs && node scripts/vendor-solid.mjs && bun install",
     "build": "vite build && node scripts/build-themes.mjs",
     "typecheck": "bunx tsc --noEmit",
     "dev": "vite"

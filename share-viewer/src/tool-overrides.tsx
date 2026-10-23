@@ -83,15 +83,31 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 /** Auto/forced unified-split (owner spec): `diffMode` setting = auto |
- * split | unified. Width is MEASURED against the card's real left edge
- * (left-anchored card extending right): split engages only when
- * viewport - left - margin gives each pane a sane minimum, so a split
- * card can never overflow the page (live-caught horizontal scrollbar).
- * Panes scroll horizontally with a hidden scrollbar. The settle race
- * (identical edits rendering different modes - measured mid-animation)
- * dies via re-check + remount: when the width settles and the mode
- * flips, the File remounts once with the right layout. */
-function useSplitFit() {
+ * split | unified. Split width is CONTENT-DERIVED (longest diff line),
+ * clamped to the measured available space (viewport - card left - margin)
+ * so a split card never overflows the page and never sprawls half-empty
+ * (live-caught both ways). Panes scroll horizontally with a hidden
+ * scrollbar. The settle race (identical edits rendering different modes -
+ * measured mid-animation) dies via re-check after Kobalte's spring; the
+ * <Show keyed> branch pair re-creates the File when the mode flips
+ * (Dynamic has no remount API - a `key` prop does nothing). */
+// mono char width at the kit's 12px code size (measured once, lazily)
+let monoCharWidth = 0
+function measureMonoChar(): number {
+  if (monoCharWidth > 0) return monoCharWidth
+  try {
+    const canvas = document.createElement("canvas")
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return 7.2
+    ctx.font = '12px ui-monospace, SFMono-Regular, Consolas, monospace'
+    monoCharWidth = ctx.measureText("0123456789abcdef").width / 16
+  } catch {
+    monoCharWidth = 7.2
+  }
+  return monoCharWidth
+}
+
+function useSplitFit(contentChars?: () => number) {
   const [maxPx, setMaxPx] = createSignal(0)
   const ref = (el: HTMLDivElement) => {
     // edit-content itself hugs (fit-content); measure the CARD (its
@@ -108,11 +124,9 @@ function useSplitFit() {
     ro.observe(card)
     // The initial measure races Kobalte's collapsible expand spring
     // (0.35s): during the animation the content wrapper is temporarily
-    // constrained, and cards expanded in a batch mount mid-animation -
-    // the garbage maxPx stuck (live-caught: only the FIRST edit of a
-    // batch rendered split on auto; forced mode never measures). Re-check
-    // once past the spring and when the animation actually settles; the
-    // existing remount-on-flip makes any late correction automatic.
+    // constrained, and cards expanded in a batch mount mid-animation - the
+    // garbage maxPx stuck (live-caught: only the FIRST edit of a batch
+    // rendered split on auto). Re-check past the spring and on settle.
     const settle = () => measure()
     const t1 = setTimeout(settle, 450)
     const t2 = setTimeout(settle, 1100)
@@ -125,13 +139,20 @@ function useSplitFit() {
     })
   }
   const mode = () => diffModeSignal()
+  // the width the split card actually wants: longest line x2 panes +
+  // gutter allowance, clamped to [780, maxPx]
+  const splitWidth = createMemo(() => {
+    const chars = contentChars?.() ?? 0
+    if (chars <= 0) return maxPx()
+    const wanted = Math.ceil(chars * measureMonoChar()) * 2 + 140
+    return Math.max(780, Math.min(wanted, maxPx() || wanted))
+  })
   const split = createMemo(() => {
     const m = mode()
     if (m === "unified") return false
-    // forced split needs each pane >= ~300px; auto needs a comfortable fit
-    return maxPx() >= (m === "split" ? 600 : 780)
+    return splitWidth() >= 780 && maxPx() >= 600
   })
-  return { ref, split, maxPx }
+  return { ref, split, width: splitWidth, maxPx }
 }
 
 /** One header for every file tool: label, directory, filename, meta. */
@@ -248,17 +269,31 @@ function FileCard(props: {
     <FileBody title={props.path}>
       <div ref={(el) => (inner = el)} style={{ display: "contents" }}>
         <GutterOffset start={props.lineStart ?? 1}>
-          <Dynamic
-            key={attempt()}
-            component={fileComponent as any}
-            mode="text"
-            file={{ name: props.path, contents: props.contents }}
-            overflow="scroll"
-            onRendered={() => {
-              settle()
-              props.onRendered?.()
-            }}
-          />
+          {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
+              prop is just passed through) - a distinct <Show keyed> branch
+              is what actually re-creates the File when the cold-pool guard
+              fires (live-caught: the guard never worked before) */}
+          <Show when={attempt() === 0} keyed>
+            <Dynamic
+              component={fileComponent as any}
+              mode="text"
+              file={{ name: props.path, contents: props.contents }}
+              overflow="scroll"
+              onRendered={() => {
+                settle()
+                props.onRendered?.()
+              }}
+            />
+          </Show>
+          <Show when={attempt() === 1} keyed>
+            <Dynamic
+              component={fileComponent as any}
+              mode="text"
+              file={{ name: props.path, contents: props.contents }}
+              overflow="scroll"
+              onRendered={() => props.onRendered?.()}
+            />
+          </Show>
         </GutterOffset>
       </div>
     </FileBody>
@@ -341,7 +376,6 @@ const EditTool = (props: ToolProps) => {
   const oldText = createMemo(() => str((props.input as any).oldString))
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
-  const fit = useSplitFit()
   // the host's patch: v1 stamps metadata.filediff, v2 stamps metadata.files
   const patch = createMemo(() => {
     const meta = (props.metadata as any) ?? {}
@@ -356,6 +390,16 @@ const EditTool = (props: ToolProps) => {
         (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
       : undefined,
   )
+  // longest diff line (content chars) drives the split width; from the
+  // host patch when present, else before/after. NOTE: memos are EAGER -
+  // this must be declared after `patch` or it reads a TDZ const
+  // (live-caught: "Cannot access 'patch' before initialization").
+  const contentChars = createMemo(() => {
+    const lines = (t: string) => t.split("\n").map((l) => l.replace(/^[+-@ ]/, "").length)
+    const all = patch() != null ? lines(patch()!) : [...lines(oldText()), ...lines(newText())]
+    return all.reduce((a, b) => Math.max(a, b), 0)
+  })
+  const fit = useSplitFit(contentChars)
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -422,19 +466,37 @@ const EditTool = (props: ToolProps) => {
             <div
               data-component="edit-content"
               ref={fit.ref}
-              style={fit.split() ? { width: `${fit.maxPx()}px` } : undefined}
+              style={fit.split() ? { width: `${fit.width()}px` } : undefined}
             >
-              <Dynamic
-                key={`diff-${fit.split() ? "split" : "unified"}`}
-                component={fileComponent as any}
-                mode="diff"
-                virtualize={false}
-                diffStyle={fit.split() ? "split" : "unified"}
-                {...(fileDiff()
-                  ? { fileDiff: fileDiff() }
-                  : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
-                onRendered={() => props.onContentRendered?.()}
-              />
+              {/* keyed branch pair: Solid's Dynamic has NO remount API (a
+                  `key` prop is passed through, does nothing - live-caught:
+                  the first card of a batch rendered split, the rest stayed
+                  unified forever). Distinct <Show keyed> branches actually
+                  re-create the File when the mode flips. */}
+              <Show when={fit.split()} keyed>
+                <Dynamic
+                  component={fileComponent as any}
+                  mode="diff"
+                  virtualize={false}
+                  diffStyle="split"
+                  {...(fileDiff()
+                    ? { fileDiff: fileDiff() }
+                    : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
+                  onRendered={() => props.onContentRendered?.()}
+                />
+              </Show>
+              <Show when={!fit.split()} keyed>
+                <Dynamic
+                  component={fileComponent as any}
+                  mode="diff"
+                  virtualize={false}
+                  diffStyle="unified"
+                  {...(fileDiff()
+                    ? { fileDiff: fileDiff() }
+                    : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
+                  onRendered={() => props.onContentRendered?.()}
+                />
+              </Show>
             </div>
           </FileBody>
         </Show>

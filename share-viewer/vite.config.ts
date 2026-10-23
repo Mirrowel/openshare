@@ -8,6 +8,16 @@ import path from "node:path"
 // embedded (window.__MIRROBOT_SNAPSHOT__ set by the local server).
 export default defineConfig({
   plugins: [solid(), tailwindcss()],
+  // solid-js resolves to the VENDORED copy carrying the cleanNode
+  // re-entrant-disposal hardening (scripts/vendor-solid.mjs); node_modules
+  // stays pristine and the patch is reproducible from `npm run vendor`
+  resolve: {
+    alias: [
+      // exact match only - solid-js/web & friends keep resolving to the
+      // real package (a plain string alias would also match subpaths)
+      { find: /^solid-js$/, replacement: path.resolve(__dirname, "vendor/solid/solid.js") },
+    ],
+  },
   build: {
     target: "es2022",
     outDir: "dist",

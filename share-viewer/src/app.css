@@ -449,11 +449,24 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   color: var(--text-strong);
   font-weight: 600;
 }
+[data-component="osh-file-body"] {
+  /* the whole card hugs its content (capped at the column): the titlebar
+     and the overflow toggle then sit on the CONTENT's real edge instead
+     of the page column's (live-caught: the toggle floated far right of a
+     narrow unified diff) */
+  width: fit-content;
+  max-width: min(100%, 75vw);
+}
 [data-component="osh-file-body"] > [data-component="file"],
 [data-component="osh-file-body"] > [data-component="edit-content"],
 [data-component="osh-file-body"] > pre {
-  width: fit-content;
+  width: auto;
   max-width: 100%;
+}
+/* split escape: the edit card may grow past the 75vw text cap (its width
+   is set inline from content measurement) */
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
+  max-width: calc(100vw - 48px);
 }
 
 /* the file-title extension badge (TS/MD/JSON...) */
@@ -609,10 +622,12 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 [data-timeline-row] [data-component="task-tool-surface"]::after,
 [data-row-key] [data-component="task-tool-surface"]::after {
   content: "open subagent \2197";
+  /* BELOW the card (live-caught: the previous right-side chip sat ON the
+     subtitle text and obscured it) */
   position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%) translateX(4px);
+  left: 50%;
+  bottom: -22px;
+  transform: translateX(-50%) translateY(-3px);
   font: 10.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: 0.04em;
   color: var(--text-weaker);
@@ -620,13 +635,35 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   border: 1px solid var(--border-weaker-base);
   padding: 3px 8px;
   border-radius: 6px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
   opacity: 0;
   pointer-events: none;
   transition: opacity 130ms ease, transform 130ms ease;
   white-space: nowrap;
+  z-index: 5;
 }
 [data-timeline-row] [data-component="task-tool-surface"]:hover::after,
 [data-row-key] [data-component="task-tool-surface"]:hover::after {
   opacity: 1;
-  transform: translateY(-50%) translateX(0);
+  transform: translateX(-50%) translateY(0);
+}
+
+/* glob/grep/list rows inside a context group render through the kit's
+   special compact branch (a bare tool-trigger, no BasicTool wrapper) -
+   every other group child gets BasicTool's padding, these rendered flush
+   left (live-caught: Glob missing the group indent). Match the indent. */
+[data-slot="context-tool-group-item"] > [data-component="tool-trigger"] {
+  margin-left: 12px;
+}
+
+/* reasoning fallback (defer=false renders plain text instantly, rich
+   markdown swaps in when the worker finishes): match the markdown's
+   typography so the swap is invisible instead of a visible "snap"
+   (live-caught: line spacing changed on arrival) */
+[data-component="reasoning-part"] [data-slot="collapsible-content"] > pre,
+.osh-reasoning-fallback {
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0 0 0.55em;
+  white-space: pre-wrap;
 }
