@@ -667,3 +667,10 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   margin: 0 0 0.55em;
   white-space: pre-wrap;
 }
+
+/* grep/glob/list row meta (match counts) */
+[data-slot="osh-tool-meta"] {
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text-weaker);
+  white-space: nowrap;
+}

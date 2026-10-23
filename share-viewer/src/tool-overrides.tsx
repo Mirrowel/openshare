@@ -11,9 +11,10 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { createMemo, createSignal, onCleanup, For, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
+import { useData } from "@opencode/session-ui/context"
 import { useFileComponent } from "@opencode/ui/context"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
@@ -41,6 +42,26 @@ function OverflowToggle() {
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
+/** a display path: relativized against the session directory when under
+ *  it, else the last two segments (live-caught: full absolute paths
+ *  stretched rows even for same-folder searches). The session directory
+ *  comes from the DataProvider - set by app.tsx from the session item. */
+function displayPath(path: string): string {
+  let directory: string | undefined
+  try {
+    directory = (useData() as any)?.directory
+  } catch {
+    directory = undefined
+  }
+  if (!path) return ""
+  if (!directory || directory === "/" || directory === "\\") return path
+  const sep = directory.includes("\\") ? "\\" : "/"
+  const prefix = directory.endsWith(sep) ? directory : directory + sep
+  if (path.startsWith(prefix)) return "." + sep + path.slice(directory.length)
+  if (path === directory) return "."
+  const segs = path.split(/[/\\]/).filter(Boolean)
+  return segs.length > 2 ? "..." + sep + segs.slice(-2).join(sep) : path
+}
 const dirname = (path: string) => {
   const clean = path.split(/[/\\]/).filter(Boolean)
   return clean.slice(0, -1).join("/")
@@ -537,16 +558,26 @@ const WriteTool = (props: ToolProps) => {
   )
 }
 /** Text-result tools: raw output in a preformatted surface, never
- * markdown (markdown turned each result line into a paragraph, which is
- * where the blank-line inflation came from). */
+ *  markdown (markdown turned each result line into a paragraph, which is
+ *  where the blank-line inflation came from). Subtitle = the search path
+ *  RELATIVIZED against the session directory (live-caught: the full
+ *  absolute path stretched the row even for files in the same folder). */
 const TextResultTool =
   (label: string, icon: string) => (props: ToolProps) => {
+    const searchPath = createMemo(() => {
+      const input = props.input as any
+      return typeof input.path === "string" ? input.path : undefined
+    })
     const args = createMemo(() => {
       const input = props.input as any
       if (typeof input.pattern === "string") return [input.pattern]
       if (typeof input.query === "string") return [input.query]
-      if (typeof input.path === "string") return [input.path]
       return []
+    })
+    const count = createMemo(() => {
+      const meta = (props.metadata as any) ?? {}
+      const n = typeof meta.count === "number" ? meta.count : typeof meta.matches === "number" ? meta.matches : undefined
+      return typeof n === "number" && n > 0 ? `${n} ${label === "Grep" ? "matches" : "results"}` : undefined
     })
     const body = createMemo(() =>
       str(props.output)
@@ -561,7 +592,22 @@ const TextResultTool =
         icon={icon}
         hasContent={!!body()}
         defer
-        trigger={{ title: label, subtitle: args()[0] ?? "", args: args().slice(1) }}
+        trigger={() => (
+          <div data-slot="basic-tool-tool-info-structured">
+            <div data-slot="basic-tool-tool-info-main">
+              <span data-slot="basic-tool-tool-title">{label}</span>
+              <Show when={searchPath()}>
+                {(p) => <span data-slot="osh-tool-dir">{displayPath(p())}</span>}
+              </Show>
+              <For each={args()}>
+                {(a) => <span data-slot="basic-tool-tool-arg">{a}</span>}
+              </For>
+            </div>
+            <Show when={count()}>
+              {(c) => <span data-slot="osh-tool-meta">{c()}</span>}
+            </Show>
+          </div>
+        )}
       >
         <div class="osh-pre-wrap">
           <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
