@@ -34,6 +34,7 @@ import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 import { Icon } from "@opencode/ui/icon"
 import { createEffect, createMemo, createSignal, ErrorBoundary, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
 import { SettingsPanel, togglePanel } from "./settings-panel"
@@ -73,26 +74,28 @@ function FullPageView(props: {
   return (
     <>
       <Show when={view()} keyed>
-        {(entry) =>
-          entry.component({
-            get data() {
-              return props.source.data()
-            },
-            get sessionID() {
-              return sessionID()
-            },
-            source: props.source,
-            get settings() {
-              return props.settings
-            },
-            updateSettings: props.updateSettings,
-            get search() {
-              return props.search
-            },
-            onSearch: props.onSearch,
-          })
-        }
-      </Show>
+        {(entry) => (
+          <Dynamic
+            component={entry.component as any}
+            {...({
+              get data() {
+                return props.source.data()
+              },
+              get sessionID() {
+                return sessionID()
+              },
+              source: props.source,
+              get settings() {
+                return props.settings
+              },
+              updateSettings: props.updateSettings,
+              get search() {
+                return props.search
+              },
+              onSearch: props.onSearch,
+            } as any)}
+          />
+        )}</Show>
     </>
   )
 }
@@ -234,41 +237,10 @@ function SessionView(props: {
   const isSub = () => target().isSub
   const backHref = () => (target().isSub ? `/s/${props.source.shareID}` : undefined)
   const info = createMemo(() => props.data.session[match().index])
+  // the classic/reader transcript body - see the mount-site comment
+  const ClassicBody = () => {
+    const [store, setStore] = createStore({ messageId: undefined as string | undefined })
 
-  return (
-    <>
-      <Show when={info().title}>
-        <Title>{info().title} | {props.source.branding().name || "openshare"}</Title>
-      </Show>
-      <WorkerPoolProvider pools={getWorkerPools()}>
-        <FileComponentProvider component={FileSSR}>
-          <DialogProvider>
-          <DataProvider
-            data={{
-              // wire data cast to the v2 summaries — the fold guarantees
-              // the fields the renderers actually read
-              session: props.data.session as any,
-              session_status: Object.fromEntries(props.data.session.map((s) => [s.id, sessionStatus(props.source.status())])),
-              session_diff: props.data.session_diff as any,
-              provider: props.data.provider,
-            }}
-            directory={info().directory}
-            sessionID={sessionID()}
-            onSessionHref={(id) => subHref(props.source, id)}
-            onNavigateToSession={(id) => {
-              const href = subHref(props.source, id)
-              if (!href) return
-              if (props.source.prefs().openTasksInNewTab !== false) {
-                window.open(href, "_blank")
-              } else {
-                scrollMemory.set(location.pathname, window.scrollY)
-                window.history.pushState({}, "", href)
-                window.dispatchEvent(new PopStateEvent("popstate"))
-              }
-            }}
-          >
-            {iife(() => {
-              const [store, setStore] = createStore({ messageId: undefined as string | undefined })
               const [diffStyle, setDiffStyle] = createSignal<"unified" | "split">(
     props.settings.diffMode === "split" ? "split" : "unified",
   )
@@ -644,7 +616,48 @@ function SessionView(props: {
                   </div>
                 </div>
               )
-            })}
+
+  }
+
+  return (
+    <>
+      <Show when={info().title}>
+        <Title>{info().title} | {props.source.branding().name || "openshare"}</Title>
+      </Show>
+      <WorkerPoolProvider pools={getWorkerPools()}>
+        <FileComponentProvider component={FileSSR}>
+          <DialogProvider>
+          <DataProvider
+            data={{
+              // wire data cast to the v2 summaries — the fold guarantees
+              // the fields the renderers actually read
+              session: props.data.session as any,
+              session_status: Object.fromEntries(props.data.session.map((s) => [s.id, sessionStatus(props.source.status())])),
+              session_diff: props.data.session_diff as any,
+              provider: props.data.provider,
+            }}
+            directory={info().directory}
+            sessionID={sessionID()}
+            onSessionHref={(id) => subHref(props.source, id)}
+            onNavigateToSession={(id) => {
+              const href = subHref(props.source, id)
+              if (!href) return
+              if (props.source.prefs().openTasksInNewTab !== false) {
+                window.open(href, "_blank")
+              } else {
+                scrollMemory.set(location.pathname, window.scrollY)
+                window.history.pushState({}, "", href)
+                window.dispatchEvent(new PopStateEvent("popstate"))
+              }
+            }}
+          >
+            {/* a REAL component boundary: this body was an IIFE child of
+                DataProvider - any children-slot re-evaluation re-ran the
+                whole body, recreating its createStore (live-caught: the
+                paged rail's selection reset on every click; the view body
+                ran 3x at load). ClassicBody closes over SessionView memos
+                and owns its reactive scope. */}
+            <ClassicBody />
           </DataProvider>
           </DialogProvider>
         </FileComponentProvider>
