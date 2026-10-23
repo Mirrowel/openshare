@@ -518,6 +518,43 @@ $2`,
     }
   }
 
+  // vendor fork (markdown.tsx): paragraph-SHAPED fallback. Upstream's
+  // fallback() joined the whole text with <br>, so a paragraph break
+  // rendered as a full blank LINE while ready markdown uses
+  // p { margin-bottom: 12px } - the fallback->ready swap visibly snapped
+  // spacing (live-caught "reasoning snap"). The fork emits real <p> chunks
+  // with <br> soft breaks: metrically identical to the parsed result.
+  {
+    const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
+    if (existsSync(p)) {
+      let s = readFileSync(p, "utf8")
+      if (!s.includes("openshare fork: paragraph-SHAPED fallback")) {
+        const nl = s.includes("\r\n") ? "\r\n" : "\n"
+        const A = ["function fallback(markdown: string) {", '  return escape(markdown).replace(/\\r\\n?/g, "\\n").replace(/\\n/g, "<br>")', "}"].join(nl)
+        const B = [
+          "function fallback(markdown: string) {",
+          "  // openshare fork: paragraph-SHAPED fallback (live-caught \"reasoning",
+          "  // snap\"): upstream joined everything with <br>, so a paragraph break",
+          "  // (\\n\\n) rendered as a full blank LINE while the ready markdown uses",
+          "  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready",
+          "  // swap snapped the spacing. Emit real <p> chunks with <br> soft breaks",
+          "  // so the fallback is metrically identical to the parsed result.",
+          "  const esc = (s: string) =>",
+          '    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")',
+          "  return esc(markdown)",
+          '    .replace(/\\r\\n?/g, "\\n")',
+          "    .split(/\\n{2,}/)",
+          '    .map((chunk) => `<p>${chunk.replace(/\\n/g, "<br>")}</p>`)',
+          '    .join("")',
+          "}",
+        ].join(nl)
+        if (!s.includes(A)) throw new Error("vendor-v2: markdown fallback anchor missing - upstream drifted")
+        s = s.replace(A, B)
+        writeFileSync(p, s)
+      }
+    }
+  }
+
   // vendor fork (message-content): reasoning bodies mount ON EXPAND, and
   // Markdown deferUntilReady shows NOTHING until the markdown worker
   // parses the whole blob (live-caught: visible blank beat on a 12s

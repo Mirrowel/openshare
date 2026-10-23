@@ -84,7 +84,19 @@ function escape(text: string) {
 }
 
 function fallback(markdown: string) {
-  return escape(markdown).replace(/\r\n?/g, "\n").replace(/\n/g, "<br>")
+  // openshare fork: paragraph-SHAPED fallback (live-caught "reasoning
+  // snap"): upstream joined everything with <br>, so a paragraph break
+  // (\n\n) rendered as a full blank LINE while the ready markdown uses
+  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready
+  // swap snapped the spacing. Emit real <p> chunks with <br> soft breaks
+  // so the fallback is metrically identical to the parsed result.
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+  return esc(markdown)
+    .replace(/\r\n?/g, "\n")
+    .split(/\n{2,}/)
+    .map((chunk) => `<p>${chunk.replace(/\n/g, "<br>")}</p>`)
+    .join("")
 }
 
 async function code(text: string, language: string | undefined, key: string, complete = false) {
