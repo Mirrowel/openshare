@@ -25,7 +25,7 @@ import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
 import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
 import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
-import { MessageNav } from "@opencode/session-ui/message-nav"
+import { HoverRail } from "./hover-rail"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { Logo, Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
@@ -274,6 +274,19 @@ function SessionView(props: {
   )
               const messages = createMemo(() => visibleMessages(props.data, sessionID()))
               const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
+              // every tool name this share actually used (the auto-expand
+              // picker appends them to the known vocabulary: mcp, ctx_*,
+              // custom tools)
+              const sessionToolNames = createMemo(() => [
+                ...new Set(
+                  messages().flatMap((m: any) =>
+                    (m?.content ?? []).flatMap((c: any) => (c?.type === "tool" && typeof c.name === "string" ? [c.name] : [])),
+                  ),
+                ),
+              ])
+              // the auto-expand checkbox list drives default-open per tool
+              // name (renderer input; consulted before the categories)
+              const autoExpandOpen = (tool: { name: string }) => props.settings.autoExpand.includes(tool.name)
               const firstUserMessage = createMemo(() => userTurns().at(0))
               const activeMessage = createMemo(() => userTurns().find((m: any) => m.id === store.messageId) ?? firstUserMessage())
               function setActiveMessage(message: any) {
@@ -315,7 +328,10 @@ function SessionView(props: {
                 // v1 scope = only reads/searches collapse; everything else
                 // keeps its own row with its own output
                 const context = props.settings.toolGroupingScope !== "all"
-                const details = props.settings.toolOutput ? "expanded" : "collapsed"
+                // per-tool auto-expand drives everything (renderer's
+                // toolDefaultOpen, consulted before categories); category
+                // details stay collapsed so unlisted tools never open
+                const details = "collapsed" as const
                 return {
                   shell: { placement: grouped && !context ? "grouped" : "separate", details },
                   edit: { placement: grouped && !context ? "grouped" : "separate", details },
@@ -425,8 +441,10 @@ function SessionView(props: {
                   doc={pagedDocument() as any}
                   sessionKey={props.source.shareID + ":" + sessionID() + ":paged-m:" + (activeMessage()?.id ?? "")}
                   reasoningMode={reasoningMode() as any}
-                  shellToolDefaultOpen={props.settings.toolOutput}
-                  editToolDefaultOpen={true}
+                  shellToolDefaultOpen={false}
+                  editToolDefaultOpen={false}
+                  toolDefaultOpen={autoExpandOpen}
+
                   timelineDetail={timelineDetail() as any}
                   anchor="start"
                   header={<div class="px-4 py-6">{title()}</div>}
@@ -480,6 +498,7 @@ function SessionView(props: {
                         branding={props.source.branding()}
                         search={props.search}
                         onSearch={props.onSearch}
+                        sessionTools={sessionToolNames()}
                       />
                     </div>
                   </header>
@@ -495,14 +514,20 @@ function SessionView(props: {
                       <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
                         <div class="flex items-start justify-start h-full min-h-0 w-full">
                           <Show when={!props.settings.continuous && userTurns().length > 1}>
-                            <MessageNav
-                              class="sticky top-0 shrink-0 py-2 pl-4"
-                              messages={userTurns() as any}
-                              current={activeMessage() as any}
-                              size="normal"
-                              onMessageSelect={setActiveMessage}
-                              getLabel={(message: any) => (typeof message?.text === "string" ? message.text.trim().split("\n")[0] : undefined)}
-                            />
+                            {/* paged prompt switcher: the shared hover rail
+                                (popover on a thin left zone) instead of the
+                                persistent MessageNav column that ate width */}
+                            <div class="sticky top-0 h-full shrink-0">
+                              <HoverRail
+                                count={userTurns().length}
+                                active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                                label={(i) => {
+                                  const t = userTurns()[i]?.text
+                                  return typeof t === "string" ? t.trim().split("\n")[0] : undefined
+                                }}
+                                onSelect={(i) => setActiveMessage(userTurns()[i])}
+                              />
+                            </div>
                           </Show>
                           <Show
                             when={props.settings.continuous}
@@ -517,8 +542,10 @@ function SessionView(props: {
                                 doc={pagedDocument() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID() + ":paged:" + (activeMessage()?.id ?? "")}
                                 reasoningMode={reasoningMode() as any}
-                                shellToolDefaultOpen={props.settings.toolOutput}
-                                editToolDefaultOpen={true}
+                                shellToolDefaultOpen={false}
+                  editToolDefaultOpen={false}
+                  toolDefaultOpen={autoExpandOpen}
+              
                                 timelineDetail={timelineDetail() as any}
                                 anchor="start"
                                 header={<div class="px-6 pt-6">{title()}</div>}
@@ -536,8 +563,10 @@ function SessionView(props: {
                                 doc={timelineDoc() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID()}
                                 reasoningMode={reasoningMode() as any}
-                                shellToolDefaultOpen={props.settings.toolOutput}
-                                editToolDefaultOpen={true}
+                                shellToolDefaultOpen={false}
+                  editToolDefaultOpen={false}
+                  toolDefaultOpen={autoExpandOpen}
+              
                                 timelineDetail={timelineDetail() as any}
                                 header={<div class="px-6 pt-6">{title()}</div>}
                                 footer={
@@ -743,26 +772,28 @@ export function App() {
   // the reader's transcript offset, tracked from real scroll events so a
   // settings-driven reflow can put them back exactly where they were
   let lastTranscriptOffset: number | undefined
-  let lastWindowScrollY: number | undefined
+  let lastPanelOffset: number | undefined
   const trackTranscriptScroll = (event: Event) => {
     const el = event.target
     if (!(el instanceof HTMLElement)) return
     if (el.dataset.transcriptScroll !== undefined) lastTranscriptOffset = el.scrollTop
+    else if (el.dataset.oshPanelScroll !== undefined) lastPanelOffset = el.scrollTop
   }
   document.addEventListener("scroll", trackTranscriptScroll, true)
-  window.addEventListener("scroll", () => {
-    lastWindowScrollY = window.scrollY
-  }, { passive: true })
 
   const updateSettings = (patch: Partial<OshSettings>) => {
     // Settings can reflow the transcript (grouping, details, view): classic
     // reset to the top and continuous clamped to the end when the rows were
-    // rebuilt (probed on the live build). Remember the offset from real
-    // scroll events and reapply it to whatever scroller exists afterwards -
-    // by selector, because the element itself can be replaced.
+    // rebuilt (probed on the live build). Remember the offsets from real
+    // scroll events and reapply them to whatever scroller exists afterwards -
+    // by selector, because the element itself can be replaced. The settings
+    // panel itself resets too (toggling reflows its section list) - restore
+    // its scroll as well.
     const restore = () => {
       const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
       if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
+      const panel = document.querySelector<HTMLElement>("[data-osh-panel-scroll]")
+      if (panel && lastPanelOffset != null) panel.scrollTop = lastPanelOffset
     }
     setSettings((prev) => {
       const next = { ...prev, ...patch }
@@ -802,7 +833,6 @@ export function App() {
     const restore = () => {
       const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
       if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
-      else if (lastWindowScrollY != null) window.scrollTo(0, lastWindowScrollY)
     }
     requestAnimationFrame(() => {
       restore()

@@ -79,6 +79,9 @@ export function VirtualTimeline(props: {
   reasoningMode?: ReasoningMode
   shellToolDefaultOpen?: boolean
   editToolDefaultOpen?: boolean
+  /** per-tool-name default-open (the auto-expand list); consulted before
+   *  the category booleans. undefined = fall through to kit logic. */
+  toolDefaultOpen?: (tool: { name: string }) => boolean | undefined
   timelineDetail?: TimelineDetail
   presentation?: Record<string, SessionUserPresentation | undefined>
   header?: JSX.Element
@@ -110,6 +113,7 @@ export function VirtualTimeline(props: {
     reasoningMode: () => props.reasoningMode ?? "compact",
     shellToolDefaultOpen: () => props.shellToolDefaultOpen ?? false,
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
+    toolDefaultOpen: props.toolDefaultOpen,
     disclosure: {
       value: (key) => toolOpen[key],
       set: (key, open) => {

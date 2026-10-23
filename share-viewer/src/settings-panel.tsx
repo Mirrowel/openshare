@@ -15,6 +15,8 @@ import type { Branding } from "./data-source"
 import { VIEW_OPTIONS } from "./views/registry"
 
 const [panelOpen, setPanelOpen] = createSignal(false)
+// auto-expand picker sub-view inside the settings panel
+const [expandPicker, setExpandPicker] = createSignal(false)
 export const togglePanel = () => setPanelOpen((v) => !v)
 export const closePanel = () => setPanelOpen(false)
 
@@ -159,7 +161,16 @@ export function SettingsBody(props: {
   branding: Branding
   search: string
   onSearch: (v: string) => void
+  /** tool names seen in THIS share (appends to the known list in the
+   *  auto-expand picker) */
+  sessionTools?: string[]
 }) {
+  // known tool vocabulary: the canonical host tools we render + any tool
+  // this session used (mcp, ctx_*, custom) - deduped, sorted
+  const autoExpandChoices = () => {
+    const known = ["bash", "shell", "read", "write", "edit", "patch", "grep", "glob", "list", "task", "todowrite", "webfetch", "websearch"]
+    return [...new Set([...known, ...(props.sessionTools ?? [])])].sort()
+  }
   return (
     <div class="flex flex-col gap-1">
       <Section label="view">
@@ -261,12 +272,43 @@ export function SettingsBody(props: {
             on={props.settings.toolInfo}
             onChange={() => props.update({ toolInfo: !props.settings.toolInfo })}
           />
-          <Switch
-            label="Tool outputs"
-            hint="expand tool results by default"
-            on={props.settings.toolOutput}
-            onChange={() => props.update({ toolOutput: !props.settings.toolOutput })}
-          />
+          {/* auto-expand: WHICH tool bodies open on render. Checkbox list
+              (known tools + anything this session used), cookie-persisted
+              so every share picks it up. Default: none */}
+          <div class="pl-3 pb-1.5">
+            <button
+              type="button"
+              class="w-full flex items-center justify-between text-left text-12-regular text-text-base py-1 hover:text-text-strong"
+              onClick={() => setExpandPicker(!expandPicker())}
+            >
+              <span>Auto-expand tools</span>
+              <span class="text-text-weaker">{props.settings.autoExpand.length ? `${props.settings.autoExpand.length} on` : "none"} {expandPicker() ? "▾" : "▸"}</span>
+            </button>
+            <Show when={expandPicker()}>
+              <div class="flex flex-col gap-0.5 pt-1 max-h-56 overflow-y-auto" data-osh-panel-scroll>
+                <For each={autoExpandChoices()}>
+                  {(name) => {
+                    const on = () => props.settings.autoExpand.includes(name)
+                    return (
+                      <label class="flex items-center gap-2 text-12-regular text-text-base cursor-pointer py-0.5">
+                        <input
+                          type="checkbox"
+                          checked={on()}
+                          onChange={() => {
+                            const next = on()
+                              ? props.settings.autoExpand.filter((t) => t !== name)
+                              : [...props.settings.autoExpand, name]
+                            props.update({ autoExpand: next })
+                          }}
+                        />
+                        <span classList={{ "text-text-weaker": !on() }}>{name}</span>
+                      </label>
+                    )
+                  }}
+                </For>
+              </div>
+            </Show>
+          </div>
           {/* long lines in tool outputs: wrap, or scroll horizontally
               (hidden scrollbar) - the output width is hard-capped either
               way; this only picks the overflow behavior */}
@@ -374,6 +416,7 @@ export function SettingsPanel(props: {
   branding: Branding
   search: string
   onSearch: (v: string) => void
+  sessionTools?: string[]
 }) {
   return (
     <div class="relative">
@@ -385,7 +428,7 @@ export function SettingsPanel(props: {
         <Icon name="settings-gear" size="small" />
       </button>
       <Show when={panelOpen()}>
-        <div class="absolute top-9 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
+        <div data-osh-panel-scroll class="absolute top-9 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
           onScroll={saveSettingsScroll as any}
           ref={restoreSettingsScroll}>
           <div class="flex items-center justify-between pb-1">
@@ -403,6 +446,7 @@ export function SettingsPanel(props: {
             branding={props.branding}
             search={props.search}
             onSearch={props.onSearch}
+            sessionTools={props.sessionTools}
           />
         </div>
       </Show>

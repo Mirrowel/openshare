@@ -447,6 +447,62 @@ $2`,
         writeFileSync(p, s)
       }
     }
+
+    // openshare fork: per-tool-name default-open input (the viewer's
+    // auto-expand checkbox list) consulted BEFORE the category booleans,
+    // in the content default-open and the shell row's defaultOpen.
+    {
+      let s = readFileSync(p, "utf8")
+      if (!s.includes("openshare fork: the viewer's per-tool auto-expand list wins first")) {
+        const before = s
+        s = s.replace(
+          "  editToolDefaultOpen: Accessor<boolean>\r\n",
+          "  editToolDefaultOpen: Accessor<boolean>\r\n  /** openshare fork: per-tool-name default-open (the viewer's auto-expand\r\n   *  checkbox list). Consulted BEFORE the category booleans; undefined =\r\n   *  fall through to the kit's own logic. */\r\n  toolDefaultOpen?: (tool: { name: string }) => boolean | undefined\r\n",
+        )
+        s = s.replace(
+          "  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {\r\n    if (input.timelineDetail) {",
+          "  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {\r\n    // openshare fork: the viewer's per-tool auto-expand list wins first\r\n    if (item.type === \"tool\" && input.toolDefaultOpen) {\r\n      const custom = input.toolDefaultOpen(item)\r\n      if (custom !== undefined) return custom\r\n    }\r\n    if (input.timelineDetail) {",
+        )
+        s = s.replace(
+          "    const defaultOpen = createMemo(() => {\r\n      if (!input.timelineDetail) return input.shellToolDefaultOpen()",
+          "    const defaultOpen = createMemo(() => {\r\n      // openshare fork: the viewer's per-tool auto-expand list wins first\r\n      if (input.toolDefaultOpen) {\r\n        const custom = input.toolDefaultOpen({ name: \"shell\" })\r\n        if (custom !== undefined) return custom\r\n      }\r\n      if (!input.timelineDetail) return input.shellToolDefaultOpen()",
+        )
+        if (s === before) throw new Error("vendor-v2: toolDefaultOpen anchors missing - upstream drifted")
+        writeFileSync(p, s)
+      }
+    }
+  }
+
+  // vendor fork (message-content): reasoning bodies mount ON EXPAND, and
+  // Markdown deferUntilReady shows NOTHING until the markdown worker
+  // parses the whole blob (live-caught: visible blank beat on a 12s
+  // thought; minutes-long reasoning would be a long empty wait). The
+  // fork adds a `defer` prop to PacedMarkdown (default true = unchanged
+  // for load-time text) and passes defer={false} from the reasoning
+  // call site only: instant plain fallback, rich markdown swaps in when
+  // the worker completes.
+  {
+    const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
+    if (existsSync(p)) {
+      let s = readFileSync(p, "utf8")
+      if (!s.includes("openshare fork: `defer` defaults true")) {
+        const before = s
+        s = s.replace(
+          "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean }) {",
+          "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean; defer?: boolean }) {",
+        )
+        s = s.replace(
+          "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady />",
+          "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady={props.defer !== false} />",
+        )
+        s = s.replace(
+          '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />',
+          '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />',
+        )
+        if (s === before) throw new Error("vendor-v2: message-content anchors missing - upstream drifted")
+        writeFileSync(p, s)
+      }
+    }
   }
 }
 writeFileSync(

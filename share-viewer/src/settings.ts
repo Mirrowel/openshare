@@ -16,7 +16,9 @@ export type OshSettings = {
   reasoningOpen: boolean
   centerContent: boolean
   toolInfo: boolean
-  toolOutput: boolean
+  /** tools whose bodies auto-expand on render (checkbox list, cookie-
+   * persisted so every share picks it up). Default: none. */
+  autoExpand: string[]
   toolGrouping: boolean
   /** what grouping covers: v1 scope (reads/searches only) or every tool */
   toolGroupingScope: "context" | "all"
@@ -40,7 +42,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   reasoningOpen: false,
   centerContent: false,
   toolInfo: true,
-  toolOutput: false,
+  autoExpand: [],
   toolGrouping: true,
   toolGroupingScope: "context",
   groveThinking: "left",
@@ -60,6 +62,14 @@ export function readSettings(): OshSettings {
         if (parsed.diffStyle && !parsed.diffMode) {
           parsed.diffMode = parsed.diffStyle === "split" ? "split" : "unified"
         }
+        // migrate the old toolOutput boolean to the autoExpand list (its
+        // old semantics: shell tools expanded)
+        if (typeof parsed.toolOutput === "boolean" && !Array.isArray(parsed.autoExpand)) {
+          parsed.autoExpand = parsed.toolOutput ? ["shell"] : []
+        }
+        delete parsed.diffStyle
+        delete parsed.toolOutput
+        if (!Array.isArray(parsed.autoExpand)) parsed.autoExpand = []
         return { ...SETTINGS_DEFAULTS, ...parsed }
       }
     }
@@ -101,6 +111,18 @@ export function setDiffMode(mode: OshSettings["diffMode"]) {
   writeSettings(next)
   setDiffModeSignal(mode)
 }
+
+// output overflow (scroll | wrap) as a signal too: the per-card toggle on
+// EXPANDED output bodies writes it live (same cookie + html attr path)
+const [overflowSignal, setOverflowSignal] = createSignal<OshSettings["outputOverflow"]>(readSettings().outputOverflow)
+export { overflowSignal }
+export function setOutputOverflow(mode: OshSettings["outputOverflow"]) {
+  const next = readSettings()
+  next.outputOverflow = mode
+  writeSettings(next)
+  setOverflowSignal(mode)
+  applySettings(next)
+}
 function resolvedScheme(theme: string): "light" | "dark" {
   if (theme === "system")
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
@@ -132,10 +154,8 @@ export function applySettings(s: OshSettings) {
   html.dataset.oshReadText =
     s.readText === "compact" ? "compact" : s.readText === "large" ? "large" : "normal"
   html.dataset.oshReasoning = s.reasoningOpen ? "open" : "collapsed"
-  // tool invocation info + extra output expansion (the vendored per-tool
-  // rule still governs what shows naturally - see toolDefaultOpen)
+  // tool invocation info (subtitle/args while collapsed)
   html.dataset.oshToolInfo = s.toolInfo ? "on" : "off"
-  html.dataset.oshToolOutput = s.toolOutput ? "on" : "off"
   // tool-call grouping (summary rows). Default ON; off = every call its
   // own row through the v2 timeline detail placements
   html.dataset.oshToolGrouping = s.toolGrouping === false ? "off" : "on"

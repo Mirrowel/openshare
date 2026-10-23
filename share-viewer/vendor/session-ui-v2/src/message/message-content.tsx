@@ -201,7 +201,7 @@ function createPacedValue(getValue: () => string, live?: () => boolean) {
   return value
 }
 
-function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean }) {
+function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean; defer?: boolean }) {
   const value = createPacedValue(
     () => props.text,
     () => props.streaming,
@@ -209,7 +209,13 @@ function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boole
 
   return (
     <Show when={value()}>
-      <Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady />
+      {/* openshare fork: `defer` defaults true (flash-free for text that
+          renders at load); reasoning bodies mount ON EXPAND - deferring
+          there shows NOTHING until the markdown worker finishes parsing
+          (live-caught: 12s of reasoning = visible blank beat; 3m would
+          be a long empty wait). Non-deferred renders the instant plain
+          fallback, rich markdown swaps in when the worker completes. */}
+      <Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady={props.defer !== false} />
     </Show>
   )
 }
@@ -758,7 +764,7 @@ export function AssistantReasoningContent(props: {
           </div>
         }
       >
-        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />
+        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />
       </BasicTool>
     </div>
   )

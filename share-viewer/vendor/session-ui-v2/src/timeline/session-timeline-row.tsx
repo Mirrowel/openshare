@@ -62,6 +62,10 @@ export function createSessionTimelineRowRenderer(input: {
   reasoningMode: Accessor<ReasoningMode>
   shellToolDefaultOpen: Accessor<boolean>
   editToolDefaultOpen: Accessor<boolean>
+  /** openshare fork: per-tool-name default-open (the viewer's auto-expand
+   *  checkbox list). Consulted BEFORE the category booleans; undefined =
+   *  fall through to the kit's own logic. */
+  toolDefaultOpen?: (tool: { name: string }) => boolean | undefined
   timelineDetail?: Accessor<TimelineDetail>
   disclosure: {
     value: (key: string) => boolean | undefined
@@ -375,6 +379,11 @@ export function createSessionTimelineRowRenderer(input: {
   }
 
   function contentDefaultOpen(item: SessionMessageAssistant["content"][number]) {
+    // openshare fork: the viewer's per-tool auto-expand list wins first
+    if (item.type === "tool" && input.toolDefaultOpen) {
+      const custom = input.toolDefaultOpen(item)
+      if (custom !== undefined) return custom
+    }
     if (input.timelineDetail) {
       const category = timelineCategory(item)
 
@@ -676,6 +685,11 @@ export function createSessionTimelineRowRenderer(input: {
     })
 
     const defaultOpen = createMemo(() => {
+      // openshare fork: the viewer's per-tool auto-expand list wins first
+      if (input.toolDefaultOpen) {
+        const custom = input.toolDefaultOpen({ name: "shell" })
+        if (custom !== undefined) return custom
+      }
       if (!input.timelineDetail) return input.shellToolDefaultOpen()
       const value = message()
 

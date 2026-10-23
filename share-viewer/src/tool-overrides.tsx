@@ -17,7 +17,27 @@ import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useFileComponent } from "@opencode/ui/context"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
-import { diffModeSignal, setDiffMode } from "./settings"
+import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow } from "./settings"
+
+/** Per-card overflow toggle (owner directive): on the EXPANDED card body -
+ *  never the collapsed trigger row. Wraps vs hidden-scrollbar scroll for
+ *  long lines; writes the global setting (cookie + html attr). */
+function OverflowToggle() {
+  const wrapping = () => overflowSignal() === "wrap"
+  return (
+    <button
+      type="button"
+      data-slot="osh-overflow-toggle"
+      title={wrapping() ? "wrap: on (click to scroll instead)" : "wrap: off (click to wrap instead)"}
+      onClick={(e) => {
+        e.stopPropagation()
+        setOutputOverflow(wrapping() ? "scroll" : "wrap")
+      }}
+    >
+      {wrapping() ? "⏎" : "→"}
+    </button>
+  )
+}
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
@@ -86,7 +106,23 @@ function useSplitFit() {
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(card)
-    onCleanup(() => ro.disconnect())
+    // The initial measure races Kobalte's collapsible expand spring
+    // (0.35s): during the animation the content wrapper is temporarily
+    // constrained, and cards expanded in a batch mount mid-animation -
+    // the garbage maxPx stuck (live-caught: only the FIRST edit of a
+    // batch rendered split on auto; forced mode never measures). Re-check
+    // once past the spring and when the animation actually settles; the
+    // existing remount-on-flip makes any late correction automatic.
+    const settle = () => measure()
+    const t1 = setTimeout(settle, 450)
+    const t2 = setTimeout(settle, 1100)
+    const host = card.closest("[data-slot='collapsible-content'], [data-component='collapsible']")
+    host?.addEventListener("transitionend", settle, { once: true })
+    onCleanup(() => {
+      clearTimeout(t1)
+      clearTimeout(t2)
+      ro.disconnect()
+    })
   }
   const mode = () => diffModeSignal()
   const split = createMemo(() => {
@@ -229,13 +265,17 @@ function FileCard(props: {
   )
 }
 
-/** Shared body frame: tools indent under their trigger. */
+/** Shared body frame: tools indent under their trigger. The overflow
+ *  toggle rides the title row (expanded only by construction). */
 function FileBody(props: { title?: string; children: JSX.Element }) {
   return (
     <div data-component="osh-file-body">
-      <Show when={props.title}>
-        <FileTitle path={props.title!} />
-      </Show>
+      <div class="osh-file-titlebar">
+        <Show when={props.title}>
+          <FileTitle path={props.title!} />
+        </Show>
+        <OverflowToggle />
+      </div>
       {props.children}
     </div>
   )
@@ -461,7 +501,10 @@ const TextResultTool =
         defer
         trigger={{ title: label, subtitle: args()[0] ?? "", args: args().slice(1) }}
       >
-        <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+        <div class="osh-pre-wrap">
+          <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+          <OverflowToggle />
+        </div>
       </BasicTool>
     )
   }

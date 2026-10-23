@@ -12,6 +12,7 @@
 //    element kind (current experimental views map here)
 import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
+import { HoverRail } from "../hover-rail"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -208,13 +209,38 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
       <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
       <div class="flex flex-1 min-h-0">
-        <Show when={w.Nav && !continuous()}>
-          <nav class="shrink-0 py-3 pl-3 pr-1 overflow-y-auto no-scrollbar">
-            {(() => {
-              const NavSkin = w.Nav!
-              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-            })()}
-          </nav>
+        {/* paged prompt switcher: ONE shared hover rail (owner directive) -
+            a thin left hover zone opening a popover, replacing the
+            persistent nav column that ate width. Skins with a Nav render
+            it INSIDE the popover (their identity stays); Nav-less skins
+            (reader, atlas) get the default list, which jumps by scrolling. */}
+        <Show when={!continuous()}>
+          <HoverRail
+            count={visible().length}
+            active={w.Nav ? active() : undefined}
+            title={props.skin.id}
+            label={(i) => {
+              const p = visible()[i]?.prompt
+              return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+            }}
+            onSelect={(i) => {
+              if (w.Nav) {
+                setActive(i)
+                return
+              }
+              // scroll mode: jump to the section wrapper
+              const sc = scroller as unknown as HTMLDivElement | undefined
+              const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+              el?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }}
+          >
+            <Show when={w.Nav}>
+              {(() => {
+                const NavSkin = w.Nav!
+                return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+              })()}
+            </Show>
+          </HoverRail>
         </Show>
         <div ref={scroller} class="relative flex-1 min-w-0 overflow-y-auto">
           <WindowedSections

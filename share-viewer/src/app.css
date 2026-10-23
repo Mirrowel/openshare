@@ -409,6 +409,41 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   white-space: nowrap;
   min-width: 0;
 }
+/* titlebar of the unified file card: title left, overflow toggle right */
+.osh-file-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.osh-pre-wrap {
+  position: relative;
+}
+.osh-pre-wrap [data-slot="osh-overflow-toggle"] {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+[data-slot="osh-overflow-toggle"] {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-weaker-base);
+  border-radius: 5px;
+  background: var(--surface-raised-base);
+  color: var(--text-weaker);
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+[data-slot="osh-overflow-toggle"]:hover {
+  opacity: 1;
+  color: var(--text-strong);
+}
 [data-slot="osh-file-title"] .osh-file-name {
   flex: none;
   color: var(--text-strong);
@@ -546,7 +581,52 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   color: var(--accent, var(--text-strong));
 }
 /* entry slots are transparent under skins that need direct grid children
-   (grove's 2-column turn body); everywhere else they are plain blocks */
-[data-view="grove"] .osh-entry-slot {
+   (grove's 2-column turn body; atlas's sheet grid - without this the
+   wrapper divs become the grid's direct children, auto-placement
+   alternates them across columns and the rail lands inline before the
+   first station - live-caught); everywhere else they are plain blocks */
+[data-view="grove"] .osh-entry-slot,
+[data-view="atlas"] .osh-entry-slot {
   display: contents;
+}
+
+/* The kit's expanded tool-group header is position:sticky (its own scroll
+   flow). Inside our absolutely-positioned virtualized rows the sticky
+   context is the group wrapper, so the header floats with the viewport
+   until the group ends and pins over the last tool call (live-caught).
+   Neutralize - the virtualizer already keeps geometry correct. */
+[data-timeline-row] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"],
+[data-row-key] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"] {
+  position: static;
+}
+
+/* subagent rows: hover says what clicking does (owner directive - the
+   click already opens the child session; the hover just announces it) */
+[data-timeline-row] [data-component="task-tool-surface"],
+[data-row-key] [data-component="task-tool-surface"] {
+  position: relative;
+}
+[data-timeline-row] [data-component="task-tool-surface"]::after,
+[data-row-key] [data-component="task-tool-surface"]::after {
+  content: "open subagent \2197";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%) translateX(4px);
+  font: 10.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.04em;
+  color: var(--text-weaker);
+  background: var(--surface-raised-base);
+  border: 1px solid var(--border-weaker-base);
+  padding: 3px 8px;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 130ms ease, transform 130ms ease;
+  white-space: nowrap;
+}
+[data-timeline-row] [data-component="task-tool-surface"]:hover::after,
+[data-row-key] [data-component="task-tool-surface"]:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
 }

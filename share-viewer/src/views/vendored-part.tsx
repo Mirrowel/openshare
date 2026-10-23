@@ -67,7 +67,7 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
                   : undefined
               }
               // the per-tool natural-open rule + the toggle on top
-              defaultOpen={props.entry.defaultOpen || props.settings.toolOutput || undefined}
+              defaultOpen={props.settings.autoExpand.includes(props.entry.tool) || undefined}
             />
           </DialogProvider>
         </FileComponentProvider>
