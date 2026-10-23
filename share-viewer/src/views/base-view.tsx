@@ -11,6 +11,7 @@
 //    itself from the shared section model, skin wrappers around each
 //    element kind (current experimental views map here)
 import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
+import { Dynamic } from "solid-js/web"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { HoverRail } from "../hover-rail"
 import { Markdown } from "@opencode/session-ui/markdown"
@@ -33,6 +34,11 @@ export type SkinWrappers = {
   ResponseWrap?: Component<{ text: string; settings: OshSettings; children: JSX.Element }>
   Header?: Component<ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean }>
   Footer?: Component<ViewProps>
+  /** a persistent RIGHT-side panel beside the transcript (lg and up),
+   *  like the classic info panel - the skin's identity chrome, visible in
+   *  BOTH modes (atlas's legend + coordinates). Self-contained: reads its
+   *  own state (atlas uses a module feed published by its Header). */
+  Rail?: Component
   Nav?: Component<{
     sections: SessionSection[]
     active: number
@@ -61,6 +67,7 @@ function wrappersOf(skin: Skin): Required<SkinWrappers> {
     ResponseWrap: skin.wrappers.ResponseWrap ?? Identity,
     Header: skin.wrappers.Header ?? DefaultHeader,
     Footer: skin.wrappers.Footer ?? DefaultFooter,
+    Rail: skin.wrappers.Rail,
     Nav: skin.wrappers.Nav,
   }
 }
@@ -259,6 +266,16 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
           </Show>
         </div>
+        {/* the skin's right rail: a real panel like the classic info view
+            (atlas's legend + coordinates), NOT a CSS-grid column of the
+            scrolling sheet - the grid version put station 1 in the 13rem
+            column via auto-placement and the legend inline before the
+            first prompt (live-caught). Visible in BOTH modes; lg and up. */}
+        <Show when={w.Rail}>
+          <aside class="hidden lg:flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-l border-border-weak-base bg-background-base px-4 py-5">
+            <Dynamic component={w.Rail!} />
+          </aside>
+        </Show>
       </div>
       <w.Footer {...props} />
     </div>

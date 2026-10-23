@@ -821,19 +821,8 @@
 
 /* === end of skins.css - append new view sections above this line === */
 
-/* the margin rail: sheet grid column two, spanning every station row so
-   the sticky pin holds for the whole scroll */
-[data-view="atlas"] .atlas-rail {
-  grid-column: 2;
-  grid-row: 1 / span 9999;
-  align-self: start;
-  position: sticky;
-  top: 1.25rem;
-  height: fit-content;
-}
-[data-view="atlas"] .atlas-station {
-  grid-column: 1;
-}
+/* the margin rail is now a base-view Rail PANEL (flex sibling of the
+   scroller) - no sheet-grid positioning rules needed */
 
 /* station headings: prompt prose at the survey title size */
 [data-view="atlas"] .atlas-prompt p {

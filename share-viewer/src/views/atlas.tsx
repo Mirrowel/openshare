@@ -483,7 +483,7 @@ function MarginRail() {
     </div>
   )
   return (
-    <aside class="atlas-rail hidden w-52 flex-col gap-6 lg:flex">
+    <aside class="atlas-rail flex flex-col gap-6">
       <Show when={legendOpen()}>
         <Profile sections={feed().sections} query={feed().query} />
         <Legend counts={feed().counts} />
@@ -509,14 +509,10 @@ function MarginRail() {
 // the station body; the article is the jump target for the profile bars.
 // In continuous mode the gutter and the rail drop away and the rhythm
 // tightens, mirroring the original behavior.
-function Station(props: TurnProps) {
-  const continuous = () => railFeed().continuous
-  const total = () => railFeed().sections.length
-  return (
-    <>
-      <Show when={props.index === 0 && !continuous()}>
-        <MarginRail />
-      </Show>
+  function Station(props: TurnProps) {
+    const continuous = () => railFeed().continuous
+    const total = () => railFeed().sections.length
+    return (
       <article
         id={`atlas-wp-${props.section.id}`}
         class="atlas-station relative scroll-mt-4 pt-1"
@@ -545,9 +541,8 @@ function Station(props: TurnProps) {
         </Show>
         <div class="min-w-0 max-w-[44rem]">{props.children}</div>
       </article>
-    </>
-  )
-}
+    )
+  }
 
 // station heading: the W-number tag against the prompt
 function StationHeading(props: PromptProps) {
@@ -645,13 +640,16 @@ function FieldNote(props: ResponseProps) {
 export const atlasSkin: Skin = {
   id: "atlas",
   mode: "composed",
-  // the sheet: stations down column one, the margin rail as grid column
-  // two (sticky via skins.css), the graticule behind it all
-  columnClass:
-    "atlas-sheet w-full max-w-[76rem] mx-auto px-5 py-5 lg:grid lg:grid-cols-[minmax(0,1fr)_13rem] lg:gap-x-8",
+  // the sheet: a single clean column (the margin rail is a real right-side
+  // PANEL via the Rail wrapper - base-view renders it beside the scroller
+  // like the classic info view, in BOTH modes; the old CSS-grid column put
+  // station 1 in the 13rem rail via auto-placement and the legend inline
+  // before the first prompt - live-caught)
+  columnClass: "atlas-sheet w-full max-w-[76rem] mx-auto px-5 py-5",
   wrappers: {
     Header: Masthead,
     Footer: SheetFooter,
+    Rail: MarginRail,
     TurnWrap: Station,
     PromptWrap: StationHeading,
     ToolWrap: Reading,
