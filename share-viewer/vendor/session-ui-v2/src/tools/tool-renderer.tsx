@@ -808,7 +808,7 @@ export function CurrentContextToolGroup(props: {
                           }
                         >
                           <Show
-                            when={tool().state.status !== "error" && ["glob", "grep", "list"].includes(tool().name)}
+                            when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches could never expand (live-caught). ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}
                             fallback={
                               <Show
                                 when={
@@ -816,7 +816,7 @@ export function CurrentContextToolGroup(props: {
                                 }
                                 fallback={
                                   <Show
-                                    when={isFileChangeTool(tool())}
+                                    when={false /* openshare fork: file-change tools render as their own ToolDisplay cards (owner directive: grouping groups individual tools) - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}
                                     fallback={
                                       <ToolDisplay
                                         id={tool().id}

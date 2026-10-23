@@ -280,6 +280,31 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: grouped rows all EXPAND. Upstream renders glob/grep/list
+// inside a context group as a STATIC trigger row (no Collapsible at all -
+// live-caught: grouped searches could never expand) and file-change tools
+// as an aggregate CurrentFileToolGroup accordion. Both branches now fall
+// through to ToolDisplay + our registry renderers: real expandable bodies,
+// patch diffs, per-card toggles (owner directive: grouping groups
+// individual tools, each one expands like its ungrouped self).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: glob/grep/list expand like every other grouped tool")) {
+      const A = 'when={tool().state.status !== "error" && ["glob", "grep", "list"].includes(tool().name)}'
+      const B = 'when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches could never expand (live-caught). ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}'
+      if (!s.includes(A)) throw new Error("vendor-v2: glob/grep static-row anchor missing - upstream drifted")
+      s = s.replace(A, B)
+      const C = "when={isFileChangeTool(tool())}"
+      const D = 'when={false /* openshare fork: file-change tools render as their own ToolDisplay cards (owner directive: grouping groups individual tools) - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}'
+      if (!s.includes(C)) throw new Error("vendor-v2: file group render anchor missing - upstream drifted")
+      s = s.replace(C, D)
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: reads keep their own renderer so their output can expand.
 // Upstream (fresh) routes every `read` inside a context group into
 // CurrentReadToolGroup, whose expanded state only lists filenames; and a
