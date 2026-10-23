@@ -6,6 +6,32 @@ set -euo pipefail
 # share-plugin/ inside a monorepo — resolve it from the script location
 # (.github/scripts/ -> repo root -> share-plugin/) instead of assuming the
 # package sits at the repo root like agent-variants.
+#
+# Versioning model
+# ----------------
+# AUTO releases (git pushes) are grunt work only: conventional commits pick
+# none/patch/minor, and a computed MAJOR is demoted to minor (clamp below at
+# conventional_bump_since). An auto release can therefore never open a new
+# x.0.0 line and never move more than one 0.x step from the last stable
+# (0.3.1 -> at most 0.4.0 on breaking/feat, 0.3.2 on fixes).
+# x.0.0 versions (1.0.0 = the hand-set "stable out" release, 2.0.0, ...) are
+# milestones only a human sets, through the manual levers below.
+#
+# MANUAL versioning - how to set the version by hand:
+#   1. Move the release line persistently:
+#        npm run release:intent -- <version|patch|minor|major>
+#      (run in share-plugin/). Writes .release.json "next" and updates
+#      package.json + package-lock.json to match; the CI release gate
+#      (release:intent:check) fails unless all three agree. The intent is a
+#      floor: released version = max(intent, existing prerelease line, auto
+#      bump) - it can raise the line any distance (0.3.x -> 1.0.0 included),
+#      while commits alone never can.
+#   2. One-shot exact version: dispatch the Release workflow with
+#      target_version=x.y.z - stable and prerelease releases both use exactly
+#      that version for that run.
+#   3. One-shot bump override: dispatch with version_bump=major|minor|patch|
+#      none - an explicit human choice, so "major" is honored as-is (not
+#      demoted like computed majors).
 
 PKG_DIR="$(cd "$(dirname "$0")/../.." && pwd)/share-plugin"
 cd "$PKG_DIR"
@@ -167,6 +193,12 @@ fi
 
 if [ "$version_bump" = "auto" ]; then
   bump="$(conventional_bump_since "$stable_tag")"
+  # Computed majors are manual territory (see "Versioning model" in the
+  # header): demote to minor so an auto release never opens an x.0.0 line
+  # and never moves more than one 0.x step from the last stable.
+  if [ "$bump" = "major" ]; then
+    bump="minor"
+  fi
 else
   bump="$version_bump"
 fi
