@@ -208,40 +208,41 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   return (
     <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
       <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
+      {/* paged prompt switcher: ONE shared FLOATING rail (owner directive
+          2026-10-24 redesign) - fixed to the viewport, revealed by an
+          invisible left-edge proximity strip, zero layout impact. Skins
+          with a Nav render it INSIDE the popover (their identity stays);
+          Nav-less skins (reader, atlas) get the default numbered list,
+          which jumps by scrolling. */}
+      <Show when={!continuous()}>
+        <HoverRail
+          count={visible().length}
+          active={w.Nav ? active() : undefined}
+          title={props.skin.id}
+          label={(i) => {
+            const p = visible()[i]?.prompt
+            return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+          }}
+          onSelect={(i) => {
+            if (w.Nav) {
+              setActive(i)
+              return
+            }
+            // scroll mode: jump to the section wrapper
+            const sc = scroller as unknown as HTMLDivElement | undefined
+            const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+            el?.scrollIntoView({ behavior: "smooth", block: "start" })
+          }}
+        >
+          <Show when={w.Nav}>
+            {(() => {
+              const NavSkin = w.Nav!
+              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+            })()}
+          </Show>
+        </HoverRail>
+      </Show>
       <div class="flex flex-1 min-h-0">
-        {/* paged prompt switcher: ONE shared hover rail (owner directive) -
-            a thin left hover zone opening a popover, replacing the
-            persistent nav column that ate width. Skins with a Nav render
-            it INSIDE the popover (their identity stays); Nav-less skins
-            (reader, atlas) get the default list, which jumps by scrolling. */}
-        <Show when={!continuous()}>
-          <HoverRail
-            count={visible().length}
-            active={w.Nav ? active() : undefined}
-            title={props.skin.id}
-            label={(i) => {
-              const p = visible()[i]?.prompt
-              return typeof p === "string" ? p.trim().split("\n")[0] : undefined
-            }}
-            onSelect={(i) => {
-              if (w.Nav) {
-                setActive(i)
-                return
-              }
-              // scroll mode: jump to the section wrapper
-              const sc = scroller as unknown as HTMLDivElement | undefined
-              const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-              el?.scrollIntoView({ behavior: "smooth", block: "start" })
-            }}
-          >
-            <Show when={w.Nav}>
-              {(() => {
-                const NavSkin = w.Nav!
-                return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-              })()}
-            </Show>
-          </HoverRail>
-        </Show>
         <div ref={scroller} class="relative flex-1 min-w-0 overflow-y-auto">
           <WindowedSections
             sections={visible()}

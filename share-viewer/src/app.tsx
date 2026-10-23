@@ -514,20 +514,19 @@ function SessionView(props: {
                       <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
                         <div class="flex items-start justify-start h-full min-h-0 w-full">
                           <Show when={!props.settings.continuous && userTurns().length > 1}>
-                            {/* paged prompt switcher: the shared hover rail
-                                (popover on a thin left zone) instead of the
-                                persistent MessageNav column that ate width */}
-                            <div class="sticky top-0 h-full shrink-0">
-                              <HoverRail
-                                count={userTurns().length}
-                                active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
-                                label={(i) => {
-                                  const t = userTurns()[i]?.text
-                                  return typeof t === "string" ? t.trim().split("\n")[0] : undefined
-                                }}
-                                onSelect={(i) => setActiveMessage(userTurns()[i])}
-                              />
-                            </div>
+                            {/* paged prompt switcher: the shared FLOATING
+                                rail (fixed to the viewport, proximity
+                                reveal) instead of the persistent
+                                MessageNav column that ate width */}
+                            <HoverRail
+                              count={userTurns().length}
+                              active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                              label={(i) => {
+                                const t = userTurns()[i]?.text
+                                return typeof t === "string" ? t.trim().split("\n")[0] : undefined
+                              }}
+                              onSelect={(i) => setActiveMessage(userTurns()[i])}
+                            />
                           </Show>
                           <Show
                             when={props.settings.continuous}
