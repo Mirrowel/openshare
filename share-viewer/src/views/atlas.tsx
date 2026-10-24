@@ -92,7 +92,7 @@ const emptyFeed: RailFeed = {
   continuous: false,
 }
 const [railFeed, setRailFeed] = createSignal<RailFeed>(emptyFeed)
-const [legendOpen, setLegendOpen] = createSignal(true)
+const [legendOpen, setLegendOpen] = createSignal(false)
 
 function BrandChip(props: { logoUrl?: string; linkUrl?: string; title?: string }) {
   const frame =
