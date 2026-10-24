@@ -125,7 +125,7 @@ export function HoverRail(props: {
             aria-label="prompts"
           >
             <Show when={props.title}>
-              <div class="px-2 pb-1.5 text-11-mono text-text-weaker uppercase tracking-wider">{props.title}</div>
+              <div class="px-2 pb-1.5 text-12-mono text-text-weaker uppercase tracking-wider">{props.title}</div>
             </Show>
             <Show
               when={props.children}
@@ -151,7 +151,7 @@ export function HoverRail(props: {
                           classList={{ "opacity-100": props.active === i, "opacity-0": props.active !== i }}
                           style={{ background: "var(--openshare-accent, var(--text-base))" }}
                         />
-                        <span class="text-11-mono text-text-weaker mr-2">{String(i + 1).padStart(2, "0")}</span>
+                        <span class="text-12-mono text-text-weaker mr-2">{String(i + 1).padStart(2, "0")}</span>
                         {props.label(i) ?? "prompt"}
                       </button>
                     )}

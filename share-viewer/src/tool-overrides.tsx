@@ -94,7 +94,7 @@ function counts(props: ToolProps) {
 
 function ChangeCounts(props: { adds: number; dels: number }) {
   return (
-    <span class="font-mono text-11-regular whitespace-nowrap">
+    <span class="font-mono text-12-regular whitespace-nowrap">
       <span style={{ color: "var(--syntax-diff-add)" }}>+{props.adds}</span>{" "}
       <span style={{ color: "var(--syntax-diff-delete)" }}>−{props.dels}</span>
     </span>

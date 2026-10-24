@@ -348,7 +348,7 @@ async function httpHandler(req: Request): Promise<Response> {
 
   if (path === "/branding") {
     const b = (f: string) => (process.env["BRAND_" + f.replace(/[a-z]/g, (c) => c === f[0] ? c.toUpperCase() : c)] ?? "")
-    return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "" })
+    return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "" })
   }
 
   // identity
@@ -667,9 +667,44 @@ async function shareAuthRoute(id: string, body: Record<string, unknown>, req: Re
 
 // --- static viewer -------------------------------------------------------------
 
+// link-preview crawlers (Discord/Telegram/Slack/... never run the SPA)
+// get index.html with og:/twitter: tags injected from the BRAND_* env.
+// og:title carries the DEPLOYMENT name, never the session title.
+const CRAWLER_RE = /(discordbot|discordapp|telegrambot|slackbot|slack-imgproxy|facebookexternalhit|facebookcatalog|whatsapp|twitterbot|x-bot|linkedinbot|pinterestbot|skypeuripreview|snapchat|bluefish|mattermost|gitter|flowdock)/i
+
+function htmlEscape(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!)
+}
+
+async function ogIndex(url: URL): Promise<Response> {
+  const index = Bun.file(join(VIEWER_DIR, "index.html"))
+  const name = process.env.BRAND_NAME ?? "openshare"
+  const desc = process.env.BRAND_DESCRIPTION ?? "shared agent sessions, self-hosted"
+  const image = process.env.BRAND_OG_IMAGE ?? process.env.BRAND_LOGO_URL ?? ""
+  const absImage = image && image.startsWith("/") ? url.origin + image : image
+  const tags = [
+    `<meta property="og:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta property="og:description" content="${htmlEscape(desc)}">`,
+    `<meta property="og:site_name" content="${htmlEscape(name)}">`,
+    `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
+    `<meta name="twitter:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
+  ]
+  if (absImage) {
+    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(absImage)}">`)
+    tags.push(`<meta name="twitter:image" content="${htmlEscape(absImage)}">`)
+  }
+  const html = (await index.text()).replace(/<head>/i, "<head>\n    " + tags.join("\n    "))
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } })
+}
+
 async function staticOr404(req: Request, url: URL): Promise<Response> {
   if (!existsSync(VIEWER_DIR)) return json(404, { error: "not found" })
   const isSpa = url.pathname === "/" || url.pathname.startsWith("/s/")
+  if (isSpa && CRAWLER_RE.test(req.headers.get("user-agent") ?? "")) {
+    const index = Bun.file(join(VIEWER_DIR, "index.html"))
+    if (await index.exists()) return await ogIndex(url)
+  }
   const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1)
   const file = Bun.file(join(VIEWER_DIR, rel))
   if (await file.exists()) {

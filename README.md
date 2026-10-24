@@ -62,7 +62,7 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **Subagent pages** — child sessions (`parentID`) route into the parent's share as numbered sub-pages; task rows link to them.
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share (per-token caps enforced server-side).
-- **Branding** — your deployment's logo, wordmark, accent, background — config only, no code.
+- **Branding** — your deployment's logo, wordmark, accent, background, description, link previews — config only, no code ([worked example](share-worker/branding-example/)).
 - **Viewer settings** — themes, text size, continuous mode, live-follow, reasoning expanded, prompt search — persisted per visitor.
 
 ## Quick start

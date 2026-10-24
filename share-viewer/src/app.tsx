@@ -142,7 +142,10 @@ export function PageFooter(props: { branding: Branding; class?: string }) {
 
 function applyDocumentBranding(b: Branding) {
   const name = b.name || "openshare"
-  if (!document.title.includes(" | ")) document.title = `${document.title} | ${name}`
+  // strip-and-reappend: the effect first runs BEFORE the branding fetch
+  // resolves (appends "| openshare"); when the real name arrives it must
+  // REPLACE the placeholder, not skip because " | " already exists
+  document.title = document.title.replace(/\s*\|[^|]*$/, "") + ` | ${name}`
   let icon = document.querySelector<HTMLLinkElement>("link[rel='icon']")
   if (b.faviconUrl) {
     if (!icon) {
@@ -153,15 +156,49 @@ function applyDocumentBranding(b: Branding) {
     icon.href = b.faviconUrl
   }
   if (b.accent) document.documentElement.style.setProperty("--openshare-accent", b.accent)
+  // social/link preview tags (JS fallback - the worker serves crawler
+  // user-agents a statically-injected head; this covers the rest)
+  const ogTitle = `${name} · Open(code)Share`
+  const ogDesc = b.description || "shared agent sessions, self-hosted"
+  const ogImage = b.ogImage || b.logoUrl || ""
+  const meta: [string, string][] = [
+    ["og:title", ogTitle],
+    ["og:description", ogDesc],
+    ["twitter:title", ogTitle],
+    ["twitter:description", ogDesc],
+    ["twitter:card", ogImage ? "summary_large_image" : "summary"],
+  ]
+  if (ogImage) {
+    meta.unshift(["og:image", new URL(ogImage, location.origin).href])
+    meta.push(["twitter:image", new URL(ogImage, location.origin).href])
+  }
+  for (const [key, content] of meta) {
+    let el = document.querySelector<HTMLMetaElement>(`meta[property="${key}"], meta[name="${key}"]`)
+    if (!el) {
+      el = document.createElement("meta")
+      if (key.startsWith("og:")) el.setAttribute("property", key)
+      else el.setAttribute("name", key)
+      document.head.appendChild(el)
+    }
+    el.content = content
+  }
 }
 
-function NotFound(props: { status: string }) {
+function NotFound(props: { status: string; branding?: Branding }) {
+  const b = () => props.branding
   return (
     <div class="min-h-screen w-full bg-background-base text-text-base flex flex-col items-center justify-center gap-4 p-6 text-center">
-      <Mark class="w-16 opacity-40" />
+      <Show when={b()?.logoUrl} fallback={<Mark class="w-16 opacity-40" />}>
+        <img src={b()?.logoUrl} alt="" class="w-14 rounded-xl opacity-90" />
+      </Show>
       <p class="text-16-medium">{props.status}</p>
       <p class="text-14-regular text-text-weaker">
-        openshare — the encrypted artifact in the run summary is the permanent record.
+        <Show
+          when={b()?.name}
+          fallback={<>openshare — the encrypted artifact in the run summary is the permanent record.</>}
+        >
+          {(n) => <>{n()} — shared agent sessions, self-hosted</>}
+        </Show>
       </p>
     </div>
   )
@@ -223,7 +260,7 @@ function SessionView(props: {
     const idx = props.data.session.findIndex((s: any) => s.id === target().sessionID)
     return { found: idx >= 0, index: idx }
   })
-  if (!match().found) return <NotFound status="session data not synced yet" />
+  if (!match().found) return <NotFound status="session data not synced yet" branding={props.source.branding()} />
   const sessionID = () => target().sessionID
   const isSub = () => target().isSub
   const backHref = () => (target().isSub ? `/s/${props.source.shareID}` : undefined)
@@ -458,19 +495,25 @@ function SessionView(props: {
                       - both bars rendered duplicated (live-caught) */}
                   <Show when={props.settings.view !== "reader"}>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-                    <Show
-                      when={props.source.branding().linkUrl}
-                      fallback={
-                        <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
-                          <BrandMark branding={props.source.branding()} class="h-5 rounded" />
-                        </span>
-                      }
-                    >
-                      {(href) => (
-                        <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={props.source.branding().name || ""}>
-                          <BrandMark branding={props.source.branding()} class="h-5 rounded" />
-                        </a>
-                      )}
+                    {/* the brand frame renders ONLY when there is a logo:
+                        with no branding an empty bordered chip showed as a
+                        tiny circle (live-caught) - nothing to show, nothing
+                        rendered */}
+                    <Show when={props.source.branding().logoUrl}>
+                      <Show
+                        when={props.source.branding().linkUrl}
+                        fallback={
+                          <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
+                            <BrandMark branding={props.source.branding()} class="h-5 rounded" />
+                          </span>
+                        }
+                      >
+                        {(href) => (
+                          <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={props.source.branding().name || ""}>
+                            <BrandMark branding={props.source.branding()} class="h-5 rounded" />
+                          </a>
+                        )}
+                      </Show>
                     </Show>
                     <StatusLine status={props.source.status()} />
                     <div class="flex items-center gap-2.5">
@@ -665,7 +708,7 @@ function subHref(source: ReturnType<typeof useShareSource>, childSessionID: stri
 // same live data source — bisects the v2 wiring from the full chrome
 function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
   const d = props.source.data()
-  if (!d) return <NotFound status="no data" />
+  if (!d) return <NotFound status="no data" branding={props.source.branding()} />
   const sid = d.sessionID
   const info = d.session.find((s) => s.id === sid)
   return (
@@ -851,7 +894,7 @@ export function App() {
           )
         }}
       >
-        <Show when={source.ready()} fallback={<NotFound status={source.status()} />}>
+        <Show when={source.ready()} fallback={<NotFound status={source.status()} branding={source.branding()} />}>
           <WorkerPoolProvider pools={getWorkerPools()}>
             <FileComponentProvider component={FileSSR}>
               <DialogProvider>
@@ -921,6 +964,9 @@ function LoginCard(props: { source: ReturnType<typeof useShareSource> }) {
       </Show>
       <div class="flex flex-col gap-3 w-full max-w-72">
         <div class="text-16-medium text-center">{b().name || "openshare"}</div>
+        <Show when={b().description}>
+          {(d) => <div class="text-12-regular text-text-weaker text-center -mt-2">{d()}</div>}
+        </Show>
         <div class="text-12-regular text-text-weaker text-center -mt-2">re:share — this session is protected</div>
         <input
           class="openshare-input"

@@ -18,6 +18,11 @@ export type Branding = {
   accent?: string
   faviconUrl?: string
   backgroundUrl?: string
+  /** one-line deployment description: login card subtitle + og:description */
+  description?: string
+  /** social/link-preview image (og:image / twitter:image). Falls back to
+   *  logoUrl when unset. Deployment-branded, never session content. */
+  ogImage?: string
 }
 
 export type Source = {

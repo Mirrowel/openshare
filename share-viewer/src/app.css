@@ -606,7 +606,9 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   font-size: 12px;
 }
 [data-component="osh-agent-switch"] .osh-as-label .osh-as-agent {
-  color: var(--accent, var(--text-strong));
+  /* brand accent when configured (--openshare-accent), the theme accent
+   * otherwise */
+  color: var(--openshare-accent, var(--accent, var(--text-strong)));
 }
 /* entry slots are transparent under skins that need direct grid children
    (grove's 2-column turn body; atlas's sheet grid - without this the

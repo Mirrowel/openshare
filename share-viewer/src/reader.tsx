@@ -53,8 +53,14 @@ function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
       titleClass="text-16-medium text-text-strong truncate"
       afterBack={
         <Show
-          when={b().linkUrl}
-          fallback={<span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base"><BrandMark branding={b()} class="h-5 rounded" /></span>}
+          when={b().logoUrl && b().linkUrl}
+          fallback={
+            <Show when={b().logoUrl}>
+              <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
+                <BrandMark branding={b()} class="h-5 rounded" />
+              </span>
+            </Show>
+          }
         >
           {(href) => (
             <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={b().name || ""}>

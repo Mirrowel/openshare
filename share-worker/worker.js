@@ -63,7 +63,44 @@ const DEFAULT_BRANDING = {
   accent: "",
   faviconUrl: "",
   backgroundUrl: "",
+  description: "",
+  ogImage: "",
   ...defaultBrandingFile,
+}
+
+// resolve the deployment branding with the same env > file priority as
+// the /branding endpoint (used by the crawler og-injection)
+function brandingField(env, field) {
+  const envKey = "BRAND_" + field.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()
+  return env[envKey] || DEFAULT_BRANDING[field] || ""
+}
+
+function htmlEscape(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
+}
+
+// index.html with og:/twitter: tags for link-preview crawlers
+async function serveOgIndex(req, env, url) {
+  const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
+  if (!r.ok) return r
+  const name = brandingField(env, "name") || "openshare"
+  const desc = brandingField(env, "description") || "shared agent sessions, self-hosted"
+  const image = brandingField(env, "ogImage") || brandingField(env, "logoUrl") || ""
+  const absImage = image && image.startsWith("/") ? url.origin + image : image
+  const tags = [
+    `<meta property="og:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta property="og:description" content="${htmlEscape(desc)}">`,
+    `<meta property="og:site_name" content="${htmlEscape(name)}">`,
+    `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
+    `<meta name="twitter:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
+  ]
+  if (absImage) {
+    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(absImage)}">`)
+    tags.push(`<meta name="twitter:image" content="${htmlEscape(absImage)}">`)
+  }
+  const html = (await r.text()).replace(/<head>/i, "<head>\n    " + tags.join("\n    "))
+  return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })
 }
 
 export default {
@@ -76,6 +113,21 @@ export default {
     })
 
     try {
+      // ---- link previews (branding v2) ----
+      // /s/* and / reach the worker via run_worker_first; normal browsers
+      // pass straight through to the static assets. Crawler user-agents
+      // (Discord/Telegram/Slack/etc - they never run the SPA) get
+      // index.html with og:/twitter: tags injected from the deployment
+      // branding. og:title carries the DEPLOYMENT name, never the session
+      // title - a link preview must not leak what a share contains.
+      if (req.method === "GET" && (path === "/" || path === "/index.html" || path.startsWith("/s/"))) {
+        const ua = (req.headers.get("user-agent") || "").toLowerCase()
+        if (/(discordbot|discordapp|telegrambot|slackbot|slack-imgproxy|facebookexternalhit|facebookcatalog|whatsapp|twitterbot|x-bot|linkedinbot|pinterestbot|skypeuripreview|snapchat|bluefish|mattermost|gitter|flowdock)/.test(ua)) {
+          return await serveOgIndex(req, env, url)
+        }
+        return env.ASSETS.fetch(req)
+      }
+
       if (path === "/health")
         return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env), auth: { mode: authMode(env) } })
 
@@ -198,6 +250,8 @@ export default {
           accent: b("accent"),
           faviconUrl: b("faviconUrl"),
           backgroundUrl: b("backgroundUrl"),
+          description: b("description"),
+          ogImage: b("ogImage"),
         }), {
           headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
         })

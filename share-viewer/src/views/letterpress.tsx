@@ -120,6 +120,8 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
         titleStyle={{ "font-family": SERIF }}
         metaClass="flex items-center gap-3 shrink-0"
         afterBack={
+          // letterpress's brand box ALWAYS has content: the logo, or the
+          // serif wordmark fallback inside BrandMark (name || "openshare")
           <Show
             when={props.source.branding().linkUrl}
             fallback={<div class={`${BRAND_BOX} shrink-0`}><BrandMark branding={props.source.branding()} /></div>}
