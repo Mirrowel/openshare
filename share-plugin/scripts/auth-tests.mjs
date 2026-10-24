@@ -295,6 +295,37 @@ try {
     ok("T25b normal-size body reaches the route (not 413)", okRes.status !== 413, String(okRes.status))
   }
 
+  // T26 — /data?since handshake (poll delta): flat rev answers EMPTY,
+  // changed rev answers ONLY the touched items, tombstones ride the
+  // delta, and the full read prunes deleted items. Regression lock for
+  // the router forward (the delta was once dead on Cloudflare while Bun
+  // served it — the router hardcoded ?token= and dropped url.search).
+  {
+    const c = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_since" } })
+    ok("T26 share staged", c.json?.ok === true, JSON.stringify(c.json))
+    const SID = c.json?.id ?? ""
+    const SECRET = c.json?.secret ?? ""
+    const s1 = await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", data: { id: "msg_s1", role: "user" } }, { type: "message", data: { id: "msg_s2", role: "user" } }] } })
+    const rev1 = s1.json?.rev ?? 0
+    ok("T26a initial sync", s1.json?.ok === true && rev1 > 0, JSON.stringify(s1.json))
+    const flat = await req(W1, "GET", `/api/share/${SID}/data?since=${rev1}`)
+    ok("T26b flat rev answers empty delta", flat.json?.rev === rev1 && (flat.json?.data ?? []).length === 0, JSON.stringify({ rev: flat.json?.rev, n: (flat.json?.data ?? []).length }))
+    const s2 = await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", data: { id: "msg_s3", role: "user" } }] } })
+    const rev2 = s2.json?.rev ?? 0
+    const delta = await req(W1, "GET", `/api/share/${SID}/data?since=${rev1}`)
+    const deltaIds = (delta.json?.data ?? []).map((i) => i.data?.id)
+    ok("T26c changed rev answers only the delta", delta.json?.rev === rev2 && deltaIds.length === 1 && deltaIds[0] === "msg_s3", JSON.stringify(deltaIds))
+    const s3 = await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", del: true, data: { id: "msg_s1", role: "user" } }] } })
+    const rev3 = s3.json?.rev ?? 0
+    const dtd = await req(W1, "GET", `/api/share/${SID}/data?since=${rev2}`)
+    const td = (dtd.json?.data ?? []).find((i) => i.data?.id === "msg_s1")
+    ok("T26d tombstone rides the delta", dtd.json?.rev === rev3 && td?.del === true, JSON.stringify(dtd.json?.data))
+    const full = await req(W1, "GET", `/api/share/${SID}/data`)
+    const fullIds = (full.json?.data ?? []).map((i) => i.data?.id)
+    ok("T26e full read prunes the deleted item", fullIds.includes("msg_s2") && fullIds.includes("msg_s3") && !fullIds.includes("msg_s1"), JSON.stringify(fullIds))
+    await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
+  }
+
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)
   const frozenSecretSync = await req(W1, "POST", `/api/share/${U1_SHARE}/sync`, { body: { secret: U1_SECRET, data: [{ type: "message", data: { id: "msg_frozen", role: "user" } }] } })

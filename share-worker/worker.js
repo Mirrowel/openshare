@@ -330,8 +330,15 @@ export default {
 
       if (req.method === "GET" && op === "/data") {
         const token = bearer(req) || cookieToken(req, id)
-        const r = await shareStub(env, id).fetch(`https://do/data?token=${encodeURIComponent(token)}`)
-        return new Response(await r.text(), {
+        // forward the FULL query (since handshakes the poll delta; a
+        // hardcoded token-only URL silently dropped it — the delta path
+        // was dead on Cloudflare while Bun served it). Stream the body
+        // through instead of materializing a 25MB string in the router.
+        const doUrl = new URL("https://do/data")
+        doUrl.searchParams.set("token", token)
+        for (const [k, v] of url.searchParams) if (k !== "token") doUrl.searchParams.set(k, v)
+        const r = await shareStub(env, id).fetch(doUrl)
+        return new Response(r.body, {
           status: r.status,
           headers: { "content-type": "application/json", "cache-control": "no-store" },
         })
@@ -889,7 +896,11 @@ export class ShareDO {
           out.push(v) // legacy unwrapped row: only visible to rev-0 readers
         }
       }
-      cursor = page.list_complete ? undefined : page.cursor
+      // pagination metadata: accept both spellings — a runtime exposing
+      // only one silently truncates at the first page (the H5 sweeper
+      // class; listPrefix guards the same way)
+      const complete = page.listComplete ?? page.list_complete
+      cursor = complete ? undefined : page.cursor
     } while (cursor)
     return out
   }
@@ -1321,11 +1332,13 @@ export class ShareDO {
       // both shapes carry the tombstone item: full renders skip d-rows,
       // delta readers re-emit the tombstone verbatim
       puts.set(op.shard, op.del ? { d: 1, r: rev, i: op.it } : { r: rev, i: op.it })
-      if (op.it.type === "message" && op.it.data?.id) {
-        // cascade: opencode's full-message cleanup removes the message
-        // without per-part events; its parts must not linger as junk
-        // (legacy v1 part shards — hard delete is fine, the message
-        // marker supersedes them)
+      if (op.del && op.it.type === "message" && op.it.data?.id) {
+        // cascade ONLY on full-message deletes: opencode's cleanup removes
+        // the message without per-part events, so its legacy v1 part
+        // shards must not linger. Gating on del matters — an unconditional
+        // cascade ran one storage.list per UPSERTED message too (200
+        // sequential lists per backfill chunk, the dominant apply cost;
+        // live-caught in the optimization audit)
         cascadePrefixes.push("i:part/" + op.it.data.id + "/")
       }
     }
@@ -1351,8 +1364,12 @@ export class ShareDO {
   }
 
   async broadcast(frame) {
+    // serialize ONCE per frame, send the same string to every socket —
+    // per-socket stringify burned V× the CPU on every sync chunk (Bun
+    // parity: its broadcast already stringifies once)
+    const s = JSON.stringify({ v: 2, ...frame })
     for (const ws of this.state.getWebSockets("viewer")) {
-      try { ws.send(JSON.stringify({ v: 2, ...frame })) } catch {}
+      try { ws.send(s) } catch {}
     }
   }
 
