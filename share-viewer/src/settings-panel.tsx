@@ -11,9 +11,11 @@ import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { pagedFor, setPagedFor, type OshSettings } from "./settings"
 import { setDiffMode } from "./settings"
-import { viewSupportsPaged } from "./views/registry"
+import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
+import type { ViewSettingDef } from "./views/registry"
+import { tryView } from "./views/view-context"
+import { sessionToolNamesOf } from "./views/session-data"
 import type { Branding } from "./data-source"
-import { VIEW_OPTIONS } from "./views/registry"
 
 const [panelOpen, setPanelOpen] = createSignal(false)
 // auto-expand picker sub-view inside the settings panel
@@ -46,20 +48,8 @@ const THEMES: { id: OshSettings["theme"]; label: string; bg: string; fg: string 
   { id: "nord", label: "nord", bg: "#2e3440", fg: "#88c0d0" },
 ]
 
-// a visual signature per view for the selector grid
-const VIEW_MARKS: Record<string, string> = {
-  classic: "▣",
-  reader: "≡",
-  terminal: "❯",
-  casefile: "◫",
-  blueprint: "⊞",
-  cinema: "⬒",
-  timeline: "⋮",
-  letterpress: "A",
-  atlas: "△",
-  teletype: "≣",
-  grove: "❧",
-}
+// a visual signature per view comes from the registry (viewMark) - the
+// marks table is gone; entries carry their own glyphs
 
 function SectionLabel(props: { children: string }) {
   return <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase">{props.children}</div>
@@ -156,6 +146,37 @@ function Switch(props: { on: boolean; label: string; hint?: string; onChange: ()
 }
 
 // The panel content, embeddable anywhere. No positioning of its own.
+
+/** renders one view-scoped setting from the registry schema */
+function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings; update: (patch: Partial<OshSettings>) => void }) {
+  const value = () => (props.settings as Record<string, unknown>)[props.def.key]
+  if (props.def.kind === "switch") {
+    return (
+      <Switch
+        label={props.def.label}
+        hint={props.def.hint}
+        on={value() === true}
+        onChange={() => props.update({ [props.def.key]: value() !== true } as Partial<OshSettings>)}
+      />
+    )
+  }
+  return (
+    <Show when={props.def.showWhen ? (props.settings as Record<string, unknown>)[props.def.showWhen] === true : true}>
+      <div class="pl-3 pb-1.5">
+        <div class="text-12-regular text-text-weaker pb-1">{props.def.label}</div>
+        <Segmented
+          value={value() as string}
+          options={props.def.options}
+          onChange={(v) => props.update({ [props.def.key]: v } as Partial<OshSettings>)}
+        />
+        <Show when={props.def.hint}>
+          <div class="text-12-regular text-text-weaker pt-1">{props.def.hint}</div>
+        </Show>
+      </div>
+    </Show>
+  )
+}
+
 export function SettingsBody(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void
@@ -188,7 +209,7 @@ export function SettingsBody(props: {
                 onClick={() => props.update({ view: v.id })}
               >
                 <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
-                  {VIEW_MARKS[v.id] ?? v.label[0]}
+                  {viewMark(v.id)}
                 </span>
                 <span class="text-12-regular text-text-base truncate">{v.label}</span>
               </button>
@@ -354,47 +375,12 @@ export function SettingsBody(props: {
               }}
             />
           </div>
-          {/* grouping only applies to the classic timeline; views have
-              their own composition */}
-          <Show when={props.settings.view === "classic"}>
-            <Switch
-              label="Group tool calls"
-              hint="collapse a response's tool calls into summary rows"
-              on={props.settings.toolGrouping}
-              onChange={() => props.update({ toolGrouping: !props.settings.toolGrouping })}
-            />
-            <Show when={props.settings.toolGrouping}>
-              <div class="pl-3 pb-1.5">
-                <div class="text-12-regular text-text-weaker pb-1">Group</div>
-                <Segmented
-                  value={props.settings.toolGroupingScope}
-                  options={[
-                    { id: "context" as const, label: "reads & searches" },
-                    { id: "all" as const, label: "all calls" },
-                  ]}
-                  onChange={(toolGroupingScope) => props.update({ toolGroupingScope })}
-                />
-                <div class="text-11-regular text-text-weaker pt-1">
-                  reads &amp; searches matches the original scope: shell, edits and agents stay their own rows
-                </div>
-              </div>
-            </Show>
-          </Show>
-          {/* grove owns its own composition: reasoning sits with the tools
-              on the left by default; this flips it to the reading column */}
-          <Show when={props.settings.view === "grove"}>
-            <div class="pl-3 pb-1.5">
-              <div class="text-12-regular text-text-weaker pb-1">Thinking</div>
-              <Segmented
-                value={props.settings.groveThinking}
-                options={[
-                  { id: "left" as const, label: "left, with tools" },
-                  { id: "right" as const, label: "right, with prompts" },
-                ]}
-                onChange={(groveThinking) => props.update({ groveThinking })}
-              />
-            </div>
-          </Show>
+          {/* view-scoped settings render from the registry schema
+              (VIEW_SETTINGS / ViewEntry.settings) - a view that adds a
+              setting edits ONLY its own entry, never this file */}
+          <For each={VIEW_SETTINGS[props.settings.view] ?? []}>
+            {(def) => <ViewSettingControl def={def} settings={props.settings} update={props.update} />}
+          </For>
           <Show when={props.branding.backgroundUrl}>
             <Switch
               label="Background image"
@@ -450,7 +436,9 @@ export function SettingsPanel(props: {
  *  modals): a gear button + an ANCHORED popover under it (top-8 right-0,
  *  opaque, scroll-preserving). letterpress/terminal/cinema each shipped a
  *  centered fixed modal - "settings show up in the middle of the page"
- *  (live-caught); every skin now uses this instead. */
+ *  (live-caught); every skin now uses this instead.
+ *  Inside a view it self-sources sessionTools from the ViewContext, so
+ *  the auto-expand picker lists this share's mcp/custom tools everywhere. */
 export function SkinSettingsPopover(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void
@@ -463,6 +451,8 @@ export function SkinSettingsPopover(props: {
   gearSize?: "small" | "normal"
   gearLabel?: string
 }) {
+  const view = tryView()
+  const sessionTools = () => props.sessionTools ?? (view ? sessionToolNamesOf(view.data, view.sessionID) : undefined)
   return (
     <div class="relative flex items-center">
       <button
@@ -496,7 +486,7 @@ export function SkinSettingsPopover(props: {
             branding={props.branding}
             search={props.search}
             onSearch={props.onSearch}
-            sessionTools={props.sessionTools}
+            sessionTools={sessionTools()}
           />
         </div>
       </Show>

@@ -1,20 +1,16 @@
 // The shared base every view rides. ONE logic source: the same components
 // classic uses (the vendored tool pipeline via VendoredPart, the reasoning
-// block, MetaLine, the review column, the nav) with per-view SKINS that
-// only arrange and restyle them. Skins may override pieces (discouraged
-// but possible); they never reimplement data handling.
-//
-// Two content modes:
-//  - "pipeline": the vendored SessionTurn renders a turn (maximum classic
-//    fidelity - grouping, diffs, todos, everything)
-//  - "composed": the base lays out prompt / ordered entries / response
-//    itself from the shared section model, skin wrappers around each
-//    element kind (current experimental views map here)
-import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
-import { Dynamic } from "solid-js/web"
+// block, MetaLine, the nav) with per-view SKINS that only arrange and
+// restyle them. Skins may override pieces (discouraged but possible);
+// they never reimplement data handling. The base lays out prompt / ordered
+// entries / response from the shared section model, skin wrappers around
+// each element kind.
+import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { HoverRail } from "../hover-rail"
 import { viewSupportsPaged } from "./registry"
+import { ViewProvider, type ViewContextValue } from "./view-context"
+import { copySessionMarkdown } from "../copy-markdown"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -23,7 +19,6 @@ import type { ViewProps } from "./registry"
 import { pagedFor, type OshSettings } from "../settings"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
-import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { sessionModelLabel } from "./session-data"
 
 // ---------------------------------------------------------------- skin ----
@@ -35,11 +30,6 @@ export type SkinWrappers = {
   ResponseWrap?: Component<{ text: string; settings: OshSettings; children: JSX.Element }>
   Header?: Component<ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean }>
   Footer?: Component<ViewProps>
-  /** a persistent RIGHT-side panel beside the transcript (lg and up),
-   *  like the classic info panel - the skin's identity chrome, visible in
-   *  BOTH modes (atlas's legend + coordinates). Self-contained: reads its
-   *  own state (atlas uses a module feed published by its Header). */
-  Rail?: Component
   Nav?: Component<{
     sections: SessionSection[]
     active: number
@@ -49,7 +39,6 @@ export type SkinWrappers = {
 
 export type Skin = {
   id: string
-  mode: "pipeline" | "composed"
   /** false when the skin renders the prompt itself (cinema's slugline,
    *  teletype's wire headline): base-view then renders ONLY the meta line
    *  inside PromptWrap - without this the prompt text appears twice
@@ -71,7 +60,6 @@ function wrappersOf(skin: Skin): Required<SkinWrappers> {
     ResponseWrap: skin.wrappers.ResponseWrap ?? Identity,
     Header: skin.wrappers.Header ?? DefaultHeader,
     Footer: skin.wrappers.Footer ?? DefaultFooter,
-    Rail: skin.wrappers.Rail,
     Nav: skin.wrappers.Nav,
   }
 }
@@ -218,71 +206,90 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     </w.TurnWrap>
   )
 
+  // the ViewContext (views-SDK phase 1): every skin surface reads useView()
+  // instead of duplicating lookups/derivations. One value, provided once.
+  const ctxValue: ViewContextValue = {
+    skin: props.skin,
+    data: props.data,
+    sessionID: props.sessionID,
+    source: props.source,
+    settings: props.settings,
+    updateSettings: props.updateSettings,
+    search: props.search,
+    onSearch: props.onSearch,
+    sections: () => sections(),
+    visible: () => visible(),
+    query: () => q(),
+    continuous: () => continuous(),
+    active: () => active(),
+    setActive: (i: number) => setActive(i),
+    info: () => info(),
+    version: () => info()?.version as string | number | undefined,
+    model: () => model(),
+    status: () => props.source.status(),
+    back: () => back(),
+    copyMarkdown: () => copySessionMarkdown(props.data, props.sessionID),
+    isSub: () => isSub(),
+    cachePrefix,
+  }
+
   return (
-    <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
-      <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
-      {/* the prompt rail v4 (owner round 2026-10-24 night): ALWAYS present
-          with >1 prompt, both modes - paged pages, continuous fast-skips by
-          scrolling to the section. Paged ignores the hide setting (it is
-          the pager); continuous hides when showRail === false. children
-          MUST be undefined for Nav-less skins (a <Show> element is always
-          truthy - the empty-popover bug, live-caught twice). */}
-      <Show when={visible().length > 1 && (!continuous() || props.settings.showRail !== false)}>
-        <HoverRail
-          count={visible().length}
-          active={continuous() ? undefined : active()}
-          title={props.skin.id}
-          mode={continuous() ? "continuous" : "paged"}
-          onHide={() => props.updateSettings({ showRail: false })}
-          label={(i) => {
-            const p = visible()[i]?.prompt
-            return typeof p === "string" ? p.trim().split("\n")[0] : undefined
-          }}
-          onSelect={(i) => {
-            if (continuous()) {
-              const sc = scroller as unknown as HTMLDivElement | undefined
-              const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-              el?.scrollIntoView({ behavior: "smooth", block: "start" })
-              return
-            }
-            setActive(i)
-          }}
-        >
-          {w.Nav ? (() => {
-            const NavSkin = w.Nav!
-            return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-          })() : undefined}
-        </HoverRail>
-      </Show>
-      <div class="flex flex-1 min-h-0">
-        <div ref={scroller} data-transcript-scroll class="relative flex-1 min-w-0 overflow-y-auto">
-          <WindowedSections
-            sections={visible()}
-            scroller={() => scroller}
-            cachePrefix={cachePrefix}
-            class={props.skin.columnClass ?? "max-w-3xl mx-auto osh-indent px-6 py-6 flex flex-col gap-8"}
-            render={(s, i) => (
-              <Show when={continuous()} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>
-                <TurnBody section={s} index={i} />
-              </Show>
-            )}
-          />
-          <Show when={visible().length === 0}>
-            <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
-          </Show>
-        </div>
-        {/* the skin's right rail: a real panel like the classic info view
-            (atlas's legend + coordinates), NOT a CSS-grid column of the
-            scrolling sheet - the grid version put station 1 in the 13rem
-            column via auto-placement and the legend inline before the
-            first prompt (live-caught). Visible in BOTH modes; lg and up. */}
-        <Show when={w.Rail}>
-          <aside class="hidden lg:flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-l border-border-weak-base bg-background-base px-4 py-5">
-            <Dynamic component={w.Rail!} />
-          </aside>
+    <ViewProvider value={ctxValue}>
+      <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
+        <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
+        {/* the prompt rail v4 (owner round 2026-10-24 night): ALWAYS present
+            with >1 prompt, both modes - paged pages, continuous fast-skips by
+            scrolling to the section. Paged ignores the hide setting (it is
+            the pager); continuous hides when showRail === false. children
+            MUST be undefined for Nav-less skins (a <Show> element is always
+            truthy - the empty-popover bug, live-caught twice). */}
+        <Show when={visible().length > 1 && (!continuous() || props.settings.showRail !== false)}>
+          <HoverRail
+            count={visible().length}
+            active={continuous() ? undefined : active()}
+            title={props.skin.id}
+            mode={continuous() ? "continuous" : "paged"}
+            onHide={() => props.updateSettings({ showRail: false })}
+            label={(i) => {
+              const p = visible()[i]?.prompt
+              return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+            }}
+            onSelect={(i) => {
+              if (continuous()) {
+                const sc = scroller as unknown as HTMLDivElement | undefined
+                const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+                el?.scrollIntoView({ behavior: "smooth", block: "start" })
+                return
+              }
+              setActive(i)
+            }}
+          >
+            {w.Nav ? (() => {
+              const NavSkin = w.Nav!
+              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+            })() : undefined}
+          </HoverRail>
         </Show>
+        <div class="flex flex-1 min-h-0">
+          <div ref={scroller} data-transcript-scroll class="relative flex-1 min-w-0 overflow-y-auto">
+            <WindowedSections
+              sections={visible()}
+              scroller={() => scroller}
+              cachePrefix={cachePrefix}
+              class={props.skin.columnClass ?? "max-w-3xl mx-auto osh-indent px-6 py-6 flex flex-col gap-8"}
+              render={(s, i) => (
+                <Show when={continuous()} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>
+                  <TurnBody section={s} index={i} />
+                </Show>
+              )}
+            />
+            <Show when={visible().length === 0}>
+              <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
+            </Show>
+          </div>
+        </div>
+        <w.Footer {...props} />
       </div>
-      <w.Footer {...props} />
-    </div>
+    </ViewProvider>
   )
 }

@@ -8,10 +8,9 @@
 // arranges and decorates.
 import { Show, createComputed, createSignal } from "solid-js"
 import { Title } from "@solidjs/meta"
-import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import type { ViewEntry } from "./registry"
+import { useView } from "./view-context"
+import { SkinHeader, SkinFooter } from "./chrome"
 import { useSessionSections, type SessionSection } from "./session-data"
 import { SkinSettingsPopover } from "../settings-panel"
 import { pagedFor } from "../settings"
@@ -54,13 +53,14 @@ function castName(model?: { providerID?: string; modelID?: string }): string {
   return "ASSISTANT"
 }
 
-// production strip and title card: back-to-main, the session title as
-// the picture title, version, model and status as the production slug,
-// settings: the shared anchored popover (was a bespoke right drawer)
+// production strip and title card: SkinHeader carries the structure
+// (back, version, model, status, GitHub, settings trigger); cinema
+// supplies the flavor (the "shooting script" caption, the slug status)
 function CinemaHeader(props: HeaderProps) {
   const sections = useSessionSections(props.data, props.sessionID)
   createComputed(() => setFlowing(!pagedFor(props.settings, "cinema")))
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const b = () => props.source.branding()
   createComputed(() => {
     const i = info()
@@ -82,40 +82,28 @@ function CinemaHeader(props: HeaderProps) {
   return (
     <>
       <Title>{info()?.title ?? "session"} | {b().name || "openshare"}</Title>
-      <header class="shrink-0 px-4 py-2 flex items-center justify-between gap-3 bg-background-stronger border-b border-border-weak-base relative z-30">
-        <div class="flex items-center gap-2.5 min-w-0">
-          <Show when={props.isSub && props.onBack}>
-            <button
-              class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base shrink-0 transition-colors duration-150"
-              onClick={() => props.onBack?.()}
-            >
-              <Icon name="arrow-left" size="small" />
-              main
-            </button>
-          </Show>
+      <SkinHeader
+        class="shrink-0 px-4 py-2 flex items-center justify-between gap-3 bg-background-stronger border-b border-border-weak-base relative z-30"
+        leadClass="flex items-center gap-2.5 min-w-0"
+        titleClass="text-12-mono uppercase tracking-widest text-text-weaker"
+        metaClass="flex items-center gap-3 shrink-0"
+        title="shooting script"
+        afterBack={
           <Show when={b().logoUrl}>
             <a href={b().linkUrl ?? "#"} target="_blank" rel="noreferrer" class="shrink-0">
               <img src={b().logoUrl} alt="" class="h-4 rounded-sm" />
             </a>
           </Show>
-          <div class="min-w-0">
-            <div class="text-12-mono uppercase tracking-widest text-text-weaker">shooting script</div>
-          </div>
-        </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
-            <Mark class="h-3" />
-            v{info()?.version ?? "?"}
-          </span>
-          <Show when={props.model}>
-            <span class="hidden md:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
-          </Show>
+        }
+        statusRender={(status) => (
           <span
             class="text-12-mono uppercase tracking-widest border rounded px-1.5 py-0.5"
             classList={{ [slugClass()]: true }}
           >
-            {props.status}
+            {status}
           </span>
+        )}
+        settingsTrigger={
           <SkinSettingsPopover
             settings={props.settings}
             update={props.updateSettings}
@@ -125,24 +113,15 @@ function CinemaHeader(props: HeaderProps) {
             gearClass="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
             gearLabel="settings"
           />
-          <a
-            href="https://github.com/Mirrowel/OpenShare"
-            target="_blank"
-            rel="noreferrer"
-            class="text-icon-weaker-base hover:text-icon-strong-base"
-          >
-            <Icon name="github" size="small" />
-          </a>
-        </div>
-      </header>
+        }
+      />
     </>
   )
 }
 
-// script footer: the fade line, the brand row, the scene count
+// script footer: the fade line, then the shared brand row
 function ScriptFooter(props: FooterProps) {
   const sections = useSessionSections(props.data, props.sessionID)
-  const b = () => props.source.branding()
   return (
     <footer class="shrink-0 bg-background-stronger border-t border-border-weak-base">
       <Show when={sections().length > 0}>
@@ -150,20 +129,7 @@ function ScriptFooter(props: FooterProps) {
           {props.source.status() === "live" ? "continued..." : "fade out."}
         </div>
       </Show>
-      <div class="h-7 px-4 flex items-center justify-between gap-3 text-12-mono text-text-weaker">
-        <span class="flex items-center gap-2 min-w-0">
-          <Show when={b().logoUrl}>
-            <img src={b().logoUrl} alt="" class="h-3 rounded-sm" />
-          </Show>
-          <span class="truncate">
-            {b().wordmarkUrl ? "" : `${b().name ? b().name + " · " : ""}Open(code)Share`}
-          </span>
-          <Show when={b().wordmarkUrl}>
-            <img src={b().wordmarkUrl} alt="" class="h-3.5" />
-          </Show>
-        </span>
-        <span class="shrink-0">{sections().length} scenes · cinema</span>
-      </div>
+      <SkinFooter class="h-7 px-4 flex items-center justify-between gap-3 text-12-mono text-text-weaker" label={`${sections().length} scenes · cinema`} />
     </footer>
   )
 }
@@ -204,7 +170,6 @@ function Scene(props: TurnProps) {
 
 export const cinemaSkin: Skin = {
   id: "cinema",
-  mode: "composed",
   columnClass: "osh-content max-w-[48rem] mx-auto px-6 pt-10 pb-8",
   wrappers: {
     Header: CinemaHeader,
@@ -237,8 +202,3 @@ export const cinemaSkin: Skin = {
   },
 }
 
-export const cinema: ViewEntry = {
-  id: "cinema",
-  label: "cinema",
-  component: (p) => <BaseSessionView {...p} skin={cinemaSkin} />,
-}

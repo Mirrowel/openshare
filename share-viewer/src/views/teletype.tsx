@@ -13,12 +13,12 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SettingsBody, restoreSettingsScroll, saveSettingsScroll } from "../settings-panel"
+import { useView } from "./view-context"
+import { OPENSHARE_REPO } from "./chrome"
+import { SkinSettingsPopover } from "../settings-panel"
 import { useSessionSections, type ReasoningEntry, type SessionSection, type ToolEntry } from "./session-data"
-import type { ViewEntry } from "./registry"
 import { visibleMessages } from "../fold"
 
-const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the desk's file number: the wire copy this session was filed under
 const fileNo = (sessionID: string) =>
@@ -93,8 +93,8 @@ function BrandTile(props: { logoUrl?: string }) {
 }
 
 function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const branding = () => props.source.branding()
   const created = () => millis(info()?.time?.created)
   const searching = () => props.search.trim().length > 0
@@ -154,7 +154,7 @@ function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
           </Show>
           <span class="flex items-center gap-1.5 rounded-md border border-border-weak-base px-2 py-1 text-12-mono text-text-base">
             <Mark class="h-3 shrink-0" />
-            v{info()?.version ?? "?"}
+            v{view.version() ?? "?"}
           </span>
           <a
             href={OPENSHARE_REPO}
@@ -165,32 +165,17 @@ function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
           >
             <Icon name="github" size="small" />
           </a>
-          <div class="relative flex items-center gap-1 rounded-md border border-border-weak-base pl-2 pr-1 py-0.5 text-12-mono text-text-weaker hover:border-border-strong-base transition-colors duration-150">
-            <button
-              class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base p-0"
-              onClick={() => setSettingsOpen(!settingsOpen())}
-            >
-              <span class="hidden sm:inline">settings</span>
-              <Icon name="chevron-down" size="small" />
-            </button>
-            <Show when={settingsOpen()}>
-              <div
-                class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                onScroll={(e) => saveSettingsScroll(e.currentTarget)}
-                ref={restoreSettingsScroll}
-              >
-                <SettingsBody
-                  settings={props.settings}
-                  update={props.updateSettings}
-                  branding={props.source.branding()}
-                  search={props.search}
-                  onSearch={props.onSearch}
-                />
-              </div>
-            </Show>
-          </div>
-        </div>
-      </div>
+           <SkinSettingsPopover
+             settings={props.settings}
+             update={props.updateSettings}
+             branding={props.source.branding()}
+             search={props.search}
+             onSearch={props.onSearch}
+             gearClass="flex items-center gap-1 rounded-md border border-border-weak-base px-2 py-0.5 text-12-mono text-text-weaker hover:border-border-strong-base hover:text-text-base bg-transparent cursor-pointer transition-colors duration-150"
+             gearLabel="settings"
+           />
+         </div>
+       </div>
       {/* edition band */}
       <div class="flex items-center gap-2.5 px-4 h-8 border-b border-border-weak-base text-12-mono text-text-weaker">
         <span class="shrink-0">wire {fileNo(props.sessionID)}</span>
@@ -452,7 +437,6 @@ export const teletypeSkin: Skin = {
   // the wire headline + lede ARE the prompt - the raw body would
   // duplicate them (live-caught, same class as cinema's slugline)
   promptInBody: false,
-  mode: "composed",
   columnClass: "max-w-[54rem] mx-auto px-4 sm:px-6 py-6 osh-content flex flex-col",
   wrappers: {
     Header: Masthead,
@@ -466,12 +450,3 @@ export const teletypeSkin: Skin = {
   },
 }
 
-export function TeletypeView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={teletypeSkin} />
-}
-
-export const teletype: ViewEntry = {
-  id: "teletype",
-  label: "teletype",
-  component: TeletypeView,
-}

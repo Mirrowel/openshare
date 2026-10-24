@@ -5,11 +5,11 @@
 // the right, an archive-line footer.
 import { Show, createSignal } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SettingsBody } from "../settings-panel"
-import type { ViewEntry } from "./registry"
+import { useView } from "./view-context"
+import { SkinHeader, SkinFooter } from "./chrome"
+import { SkinSettingsPopover } from "../settings-panel"
 import type { SessionSection } from "./session-data"
 import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 
@@ -30,8 +30,8 @@ function filedLine(s: SessionSection) {
 }
 
 function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [drawer, setDrawer] = createSignal(false)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const stampColor = () =>
     props.status === "live"
       ? "text-icon-strong-base border-icon-strong-base"
@@ -41,105 +41,50 @@ function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
   return (
     <>
       <Title>{info()?.title} | {props.source.branding().name || "openshare"}</Title>
-      <header class="shrink-0 px-5 pt-3 bg-background-stronger border-b border-border-weak-base relative z-30">
-        <div class="flex items-end justify-between gap-4">
-          <div class="flex items-end gap-3 min-w-0">
-            <Show when={props.isSub && props.onBack}>
-              <button
-                class="flex items-center gap-1 self-center bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base shrink-0 transition-colors duration-150"
-                onClick={() => props.onBack?.()}
-              >
-                <Icon name="arrow-left" size="small" />
-                main
-              </button>
-            </Show>
-            <div class="px-3 py-1 rounded-t-lg border border-b-0 border-border-weak-base bg-background-base text-12-mono text-text-weaker">
-              CASE {fileNo(props.sessionID)}
-            </div>
-            <h1 class="text-16-medium text-text-strong truncate pb-1">{info()?.title ?? "session"}</h1>
+      <SkinHeader
+        class="shrink-0 px-5 pt-3 bg-background-stronger border-b border-border-weak-base relative z-30"
+        leadClass="flex items-end gap-3 min-w-0"
+        titleClass="text-16-medium text-text-strong truncate pb-1"
+        metaClass="flex items-center gap-3 pb-1.5 shrink-0"
+        afterBack={
+          <div class="px-3 py-1 rounded-t-lg border border-b-0 border-border-weak-base bg-background-base text-12-mono text-text-weaker self-end">
+            CASE {fileNo(props.sessionID)}
           </div>
-          <div class="flex items-center gap-3 pb-1.5 shrink-0">
-            <span class="text-12-mono text-text-weaker flex items-center gap-1.5">
-              <Mark class="h-3" />
-              v{info()?.version ?? "?"}
-            </span>
-            <span
-              class="text-12-mono uppercase tracking-widest border rounded px-1.5 py-0.5 rotate-[-2deg]"
-              classList={{ [stampColor()]: true }}
-            >
-              {props.status}
-            </span>
-            <button
-              class="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-              onClick={() => setDrawer(true)}
-            >
-              <Icon name="bullet-list" size="small" />
-              index
-            </button>
-          </div>
-        </div>
-      </header>
-      <Show when={drawer()}>
-        <div class="fixed inset-0 z-40" onClick={(e) => e.target === e.currentTarget && setDrawer(false)}>
-          <div
-            class="absolute top-0 right-0 bottom-0 w-[19rem] max-w-[85vw] overflow-y-auto border-l border-border-weak-base bg-background-base shadow-xl p-4"
-            style={{ animation: "osh-slide-in 180ms ease-out" }}
+        }
+        statusRender={(status) => (
+          <span
+            class="text-12-mono uppercase tracking-widest border rounded px-1.5 py-0.5 rotate-[-2deg]"
+            classList={{ [stampColor()]: true }}
           >
-            <div class="flex items-center justify-between pb-2">
-              <span class="text-14-medium text-text-strong">Index</span>
-              <button
-                class="bg-transparent border-none cursor-pointer text-icon-weaker-base hover:text-icon-strong-base p-1"
-                onClick={() => setDrawer(false)}
-              >
-                <Icon name="close-small" size="small" />
-              </button>
-            </div>
-            <SettingsBody
-              settings={props.settings}
-              update={props.updateSettings}
-              branding={props.source.branding()}
-              search={props.search}
-              onSearch={props.onSearch}
-            />
-          </div>
-        </div>
-      </Show>
+            {status}
+          </span>
+        )}
+        settingsTrigger={
+          <SkinSettingsPopover
+            settings={props.settings}
+            update={props.updateSettings}
+            branding={props.source.branding()}
+            search={props.search}
+            onSearch={props.onSearch}
+            gearClass="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            gearLabel="index"
+          />
+        }
+      />
     </>
   )
 }
 
-function ArchiveLine(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
-  const b = () => props.source.branding()
+function ArchiveLine(_props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
   return (
     <div class="shrink-0 px-6 py-3 border-t border-border-weak-base bg-background-base">
-      <div class="max-w-[52rem] mx-auto flex items-center justify-between gap-4 text-12-mono text-text-weaker">
-        <span class="flex items-center gap-2 min-w-0">
-          <Show when={b().logoUrl}>
-            <img src={b().logoUrl} alt="" class="h-4 rounded-sm" />
-          </Show>
-          <span class="truncate">
-            {b().wordmarkUrl ? "" : `${b().name ? b().name + " · " : ""}Open(code)Share`}
-          </span>
-          <Show when={b().wordmarkUrl}>
-            <img src={b().wordmarkUrl} alt="" class="h-3.5" />
-          </Show>
-        </span>
-        <a
-          href="https://github.com/Mirrowel/OpenShare"
-          target="_blank"
-          rel="noreferrer"
-          class="text-icon-weaker-base hover:text-icon-strong-base"
-        >
-          <Icon name="github" size="small" />
-        </a>
-      </div>
+      <SkinFooter class="max-w-[52rem] mx-auto flex items-center justify-between gap-4 text-12-mono text-text-weaker" />
     </div>
   )
 }
 
 export const casefileSkin: Skin = {
   id: "casefile",
-  mode: "composed",
   columnClass: "max-w-[52rem] mx-auto px-6 py-6",
   wrappers: {
     Header: CasefileHeader,
@@ -179,12 +124,3 @@ export const casefileSkin: Skin = {
   },
 }
 
-export function CasefileView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={casefileSkin} />
-}
-
-export const casefile = {
-  id: "casefile",
-  label: "casefile",
-  component: CasefileView,
-}

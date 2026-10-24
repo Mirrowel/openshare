@@ -199,6 +199,18 @@ export function sessionModelLabel(data: ShareData, sessionID: string): string {
   return ""
 }
 
+/** every tool name this session used (the auto-expand picker appends
+ *  them to the known vocabulary: mcp, ctx_*, custom tools) */
+export function sessionToolNamesOf(data: ShareData, sessionID: string): string[] {
+  const out = new Set<string>()
+  for (const m of (data.message as any)?.[sessionID] ?? []) {
+    for (const c of m?.content ?? []) {
+      if (c?.type === "tool" && typeof c.name === "string") out.add(c.name)
+    }
+  }
+  return [...out]
+}
+
 // Aggregate facts for the info panel: tokens, cost, counts, timing.
 export type SessionUsage = {
   prompts: number

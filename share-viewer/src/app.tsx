@@ -35,6 +35,8 @@ import { createEffect, createMemo, createSignal, ErrorBoundary, For, onCleanup, 
 import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
+import { copySessionMarkdown } from "./copy-markdown"
+import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
@@ -109,15 +111,6 @@ const iife = <T,>(fn: () => T): T => fn()
 // the product's own repo (fixed in source — the right header always
 // promotes Open(code)Share; flip on extraction)
 const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/OpenShare"
-
-// Brand-aware mark: configured image or the vendored default
-function BrandMark(props: { branding: Branding; class?: string }) {
-  return (
-    <Show when={props.branding.logoUrl} fallback={null}>
-      <img src={props.branding.logoUrl} alt="" class={props.class} />
-    </Show>
-  )
-}
 
 // Page footer: thin rule + brand name + product wordmark (theme tokens so
 // it reads on every theme; wordmark image overrides the text)
@@ -385,12 +378,33 @@ function SessionView(props: {
                 </div>
               )
 
-              // settings-filtered search: user-turn text (v2 messages carry
-              // it inline)
+              // search: prompts AND responses (owner decision 2026-10-25 -
+              // unified with the skins' semantics; a turn matches when its
+              // prompt text or any of its responses' text/reasoning/tool
+              // titles contain the query)
               const filtered = createMemo(() => {
                 const q = props.search.trim().toLowerCase()
                 if (!q) return userTurns()
-                return userTurns().filter((m: any) => typeof m?.text === "string" && m.text.toLowerCase().includes(q))
+                return userTurns().filter((m: any) => {
+                  if (typeof m?.text === "string" && m.text.toLowerCase().includes(q)) return true
+                  // the turn's span: this user message until the next one
+                  const all = messages()
+                  const start = all.findIndex((x: any) => x.id === m.id)
+                  if (start < 0) return false
+                  for (let i = start + 1; i < all.length; i++) {
+                    const msg: any = all[i]
+                    if (msg?.type === "user") break
+                    if (msg?.type === "assistant") {
+                      for (const c of msg?.content ?? []) {
+                        const text =
+                          c?.type === "text" || c?.type === "reasoning" ? c.text :
+                          c?.type === "tool" ? `${c.name} ${typeof c.state?.input?.prompt === "string" ? c.state.input.prompt : ""}` : ""
+                        if (typeof text === "string" && text.toLowerCase().includes(q)) return true
+                      }
+                    }
+                  }
+                  return false
+                })
               })
               const searching = createMemo(() => props.search.trim().length > 0)
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
@@ -438,6 +452,11 @@ function SessionView(props: {
                   <Show when={props.source.branding().backgroundUrl && props.settings.backgroundOn}>
                     <div class="osh-bg" style={{ "background-image": `url(${props.source.branding().backgroundUrl})` }} />
                   </Show>
+                  {/* the chrome bar is hidden for reader: reader's own
+                      SkinHeader carries the full row once (branding,
+                      title, version/model/status, copy, GitHub, settings)
+                      - both bars rendered duplicated (live-caught) */}
+                  <Show when={props.settings.view !== "reader"}>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
                     <Show
                       when={props.source.branding().linkUrl}
@@ -475,6 +494,7 @@ function SessionView(props: {
                       />
                     </div>
                   </header>
+                  </Show>
                   <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">
                     <Show when={props.settings.view !== "reader"}>
                     <div
@@ -640,60 +660,6 @@ function subHref(source: ReturnType<typeof useShareSource>, childSessionID: stri
 }
 
 // serialize the visible session to markdown (clipboard)
-async function copySessionMarkdown(data: ShareData, sessionID: string) {
-  const info = data.session.find((s: any) => s.id === sessionID) as any
-  const modelLabel = data.model[sessionID]?.[0]?.name ?? data.model[sessionID]?.[0]?.id ?? ""
-  const parts: string[] = [
-    `# ${info?.title ?? sessionID}`,
-    "",
-    `_model: ${modelLabel || "?"} ┬╖ v${info?.version ?? "?"} ┬╖ ${info?.directory ?? ""}_`,
-    "",
-  ]
-  const toolOutputText = (state: any): string => {
-    // our v1 normalization emits content[]; v2 hosts may emit output
-    for (const key of ["content", "output"]) {
-      const v = state?.[key]
-      if (typeof v === "string") return v
-      if (Array.isArray(v)) {
-        const text = v.map((c: any) => (typeof c === "string" ? c : c?.text ?? "")).join("")
-        if (text) return text
-      }
-    }
-    return ""
-  }
-  for (const m of visibleMessages(data, sessionID)) {
-    const msg = m as any
-    if (msg?.type === "user") {
-      if (msg.text) parts.push("## user", "", msg.text, "")
-      continue
-    }
-    if (msg?.type === "compaction") {
-      parts.push("> _compaction — session summarized_", "", String(msg.summary ?? ""), "")
-      continue
-    }
-    if (msg?.type !== "assistant") continue
-    parts.push("## assistant", "")
-    for (const c of msg.content ?? []) {
-      if (c?.type === "text" && c.text) parts.push(c.text, "")
-      else if (c?.type === "reasoning" && c.text) parts.push("<details><summary>thinking</summary>", "", c.text, "", "</details>", "")
-      else if (c?.type === "tool") {
-        const st = c.state ?? {}
-        const input = st.input ?? {}
-        const inv =
-          [input.query, input.command, input.prompt, input.pattern, input.path, input.description]
-            .find((v: unknown) => typeof v === "string" && v.trim()) ??
-          (c.name === "subagent" && Array.isArray(input.prompts) ? String(input.prompts[0] ?? "") : "")
-        let out = toolOutputText(st)
-        if (c.name === "subagent") out = ""
-        if (out.length > 600) out = out.slice(0, 600) + "—"
-        parts.push(`> _tool: ${c.name ?? "tool"}${inv ? ` — ${String(inv).slice(0, 120)}` : ""}_`, "")
-        if (out) parts.push("> ```", out.split("\n").map((l: string) => "> " + l).join("\n"), "> ```", "")
-      }
-    }
-  }
-  await navigator.clipboard.writeText(parts.join("\n"))
-}
-
 
 // minimal render path (?oshMinimal=1): providers + SessionTimeline only,
 // same live data source — bisects the v2 wiring from the full chrome
@@ -841,7 +807,14 @@ export function App() {
     const msgs = visibleMessages(d, sid).filter((m) => (m as any)?.type === "user")
     const current = msgs.findIndex((m) => location.hash.includes(m.id))
     const next = e.key === "j" ? Math.min(current + 1, msgs.length - 1) : Math.max(current - 1, 0)
-    msgs[next]?.id && document.querySelector(`[data-message-id="${msgs[next].id}"]`)?.scrollIntoView({ behavior: "smooth" })
+    const target = msgs[next]?.id
+    if (!target) return
+    // classic renders [data-message-id] rows; skins render sections keyed
+    // `prefix:<userMessageID>` - fall through so j/k works in every view
+    const el =
+      document.querySelector(`[data-message-id="${target}"]`) ??
+      document.querySelector(`[data-section-key$=":${CSS.escape(target)}"]`)
+    el?.scrollIntoView({ behavior: "smooth" })
   })
 
   // Ctrl+K opens the panel and focuses search

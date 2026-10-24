@@ -17,10 +17,10 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import type { ViewEntry } from "./registry"
+import { useView } from "./view-context"
 import { setInfoExtra } from "./info-extras"
 import { useSessionSections, type SessionSection } from "./session-data"
-import { SettingsBody } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import { pagedFor } from "../settings"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
@@ -156,12 +156,8 @@ function StatusStamp(props: { status: string }) {
 // graticule layer behind the sheet is rendered here and pinned by CSS to
 // the whole view; the masthead also publishes the rail feed.
 function Masthead(props: HeaderProps) {
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
-  // dropdown scroll memory: the sheet outlives the dropdown, remember
-  // where the reader was (wired locally; the shared helpers are typed as
-  // ref callbacks and cannot serve onScroll)
-  let settingsScrollTop = 0
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const b = () => props.source.branding()
   const sections = useSessionSections(props.data, props.sessionID)
   const counts = () => countsOf(sections())
@@ -213,7 +209,7 @@ function Masthead(props: HeaderProps) {
               </span>
               <span class="hidden items-center gap-1.5 rounded-md border border-border-weak-base bg-background-stronger px-1.5 py-0.5 text-12-mono text-text-weaker sm:flex">
                 <Mark class="size-3" />
-                <span>v{info()?.version ?? "0"}</span>
+                <span>v{view.version() ?? "0"}</span>
               </span>
               <Show when={props.model}>
                 <span class="hidden truncate text-12-mono text-text-weaker md:inline max-w-48">{props.model}</span>
@@ -228,42 +224,15 @@ function Masthead(props: HeaderProps) {
                 <Icon name="github" size="small" />
               </a>
 {/* the legend lives in the global Session info popup now (setInfoExtra) */}
-              <div class="relative flex items-center rounded-md border border-border-weak-base bg-background-base p-0.5">
-                <button
-                  class="flex items-center gap-1 h-6 px-1.5 text-12-mono text-text-weaker hover:text-text-base cursor-pointer bg-transparent border-none"
-                  onClick={() => setSettingsOpen(!settingsOpen())}
-                >
-                  <span class="hidden sm:inline">settings</span>
-                  <span
-                    class="text-icon-weaker-base transition-transform duration-200 ease-out"
-                    classList={{ "rotate-180": settingsOpen() }}
-                  >
-                    <Icon name="chevron-down" size="small" />
-                  </span>
-                </button>
-                <Show when={settingsOpen()}>
-                  <div
-                    class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                    ref={(el) => {
-                      const top = settingsScrollTop
-                      queueMicrotask(() => {
-                        if (top) el.scrollTop = top
-                      })
-                    }}
-                    onScroll={(e) => {
-                      settingsScrollTop = e.currentTarget.scrollTop
-                    }}
-                  >
-                    <SettingsBody
-                      settings={props.settings}
-                      update={props.updateSettings}
-                      branding={b()}
-                      search={props.search}
-                      onSearch={props.onSearch}
-                    />
-                  </div>
-                </Show>
-              </div>
+              <SkinSettingsPopover
+                settings={props.settings}
+                update={props.updateSettings}
+                branding={b() as any}
+                search={props.search}
+                onSearch={props.onSearch}
+                gearClass="flex items-center gap-1 h-6 px-1.5 rounded-md border border-border-weak-base bg-background-base text-12-mono text-text-weaker hover:text-text-base cursor-pointer transition-colors duration-150"
+                gearLabel="settings"
+              />
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border-weak-base py-2 text-12-mono text-text-weaker">
@@ -304,7 +273,8 @@ function Masthead(props: HeaderProps) {
 // (the rail is lg and up only), then the brand and end-of-log line
 function SheetFooter(props: FooterProps) {
   const b = () => props.source.branding()
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const sections = useSessionSections(props.data, props.sessionID)
   return (
     <footer class="relative z-10 shrink-0 border-t border-border-weak-base bg-background-base">
@@ -625,7 +595,6 @@ function FieldNote(props: ResponseProps) {
 
 export const atlasSkin: Skin = {
   id: "atlas",
-  mode: "composed",
   // the sheet: a single clean column (the margin rail is a real right-side
   // PANEL via the Rail wrapper - base-view renders it beside the scroller
   // like the classic info view, in BOTH modes; the old CSS-grid column put
@@ -643,8 +612,3 @@ export const atlasSkin: Skin = {
   },
 }
 
-export const atlas: ViewEntry = {
-  id: "atlas",
-  label: "atlas",
-  component: (p) => <BaseSessionView {...p} skin={atlasSkin} />,
-}
