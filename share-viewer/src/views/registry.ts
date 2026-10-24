@@ -50,18 +50,6 @@ export function findView(id: string): ViewEntry | undefined {
   return VIEWS.find((v) => v.id === id)
 }
 
-/** view-scoped extras for the global Session info panel (owner round
- *  2026-10-24 night: atlas's legend + coordinates merge INTO the info
- *  popup instead of living in a separate surface). A skin module
- *  registers a component at import time; InfoPanel renders it after the
- *  stock groups. */
-let infoExtra: (() => JSX.Element) | undefined
-export function setInfoExtra(component: (() => JSX.Element) | undefined) {
-  infoExtra = component
-}
-export function getInfoExtra() {
-  return infoExtra
-}
 
 /** does this view support paged mode? (classic/reader do; registered views
  *  declare it via ViewEntry.paged, default true) */

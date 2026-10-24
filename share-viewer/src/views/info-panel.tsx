@@ -5,7 +5,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { Icon } from "@opencode/ui/icon"
-import { getInfoExtra } from "./registry"
+import { getInfoExtra } from "./info-extras"
 import type { ShareData } from "../fold"
 import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-data"
 

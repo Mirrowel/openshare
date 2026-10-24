@@ -73,9 +73,11 @@ export function HoverRail(props: {
 
   return (
     <>
-      {/* invisible proximity strip: NEAR raises opacity only, never expands */}
+      {/* invisible proximity strip: NEAR raises opacity only, never
+          expands. Narrow (8px) and BELOW the pill in stacking - a wide
+          strip covered the pill and swallowed its hover (gate-caught) */}
       <div
-        class="fixed left-0 top-0 bottom-0 z-40 w-9"
+        class="fixed left-0 top-0 bottom-0 z-30 w-2"
         onMouseEnter={stripEnter}
         onMouseLeave={stripLeave}
         aria-hidden="true"
