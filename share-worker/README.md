@@ -112,11 +112,11 @@ hard-deletes the reverted range — the plugin emits **tombstones**
 The deployment skin is config-first: **`openshare.config.json`** next to
 `wrangler.toml` (bundled at deploy) holds `name`, `logoUrl`,
 `wordmarkUrl`, `linkUrl`, `accent`, `faviconUrl`, `backgroundUrl`,
-`description`, `ogImage` — all optional, all defaulting to the neutral
-upstream look. `BRAND_*` env vars override the file when both exist
-(same ENV > file > defaults chain as the plugin config). Edit the file,
-redeploy, done — no code. A complete worked example (config + logo +
-steps) ships in **`branding-example/`**.
+`description`, `ogTitle`, `ogImage` — all optional, all defaulting to the
+neutral upstream look. `BRAND_*` env vars override the file when both
+exist (same ENV > file > defaults chain as the plugin config). Edit the
+file, redeploy, done — no code. A complete worked example (config +
+logo + steps) ships in **`branding-example/`**.
 
 Identity model on the page: **left header = the deployment** (logo,
 links to its git when `linkUrl` is set), **right header = Open(code)
@@ -132,12 +132,13 @@ agent-switch name.
 Crawler user-agents (Discordbot, TelegramBot, Slackbot, WhatsApp,
 Twitterbot, ...) never run the SPA, so the worker serves them
 `index.html` with `og:`/`twitter:` tags injected from the branding:
-`og:title` = `<name> · Open(code)Share` (the **deployment** name, never
-a session title — a link preview must not leak what a share contains),
-`og:description` = `description`, `og:image` = `ogImage` (absolute URL,
-falls back to `logoUrl`). `/s/*` and `/` are in `run_worker_first` for
-this; regular browsers pass straight through to the static assets, and
-the viewer injects the same tags client-side as a fallback.
+`og:title` = `ogTitle` (or `name · Open(code)Share` — the **deployment**
+identity, never a session title; a link preview must not leak what a
+share contains), `og:description` = `description`, `og:image` =
+`ogImage` (absolute URL, falls back to `logoUrl`). `/s/*` and `/` are
+in `run_worker_first` for this; regular browsers pass straight through
+to the static assets, and the viewer injects the same tags client-side
+as a fallback.
 
 ## Viewer settings (cookie)
 

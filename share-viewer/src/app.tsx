@@ -124,7 +124,7 @@ export function PageFooter(props: { branding: Branding; class?: string }) {
           <div class="text-12-mono text-text-base select-none">
             <Show when={props.branding.name}>
               <span class="text-text-strong">{props.branding.name}</span>
-              <span class="text-text-weaker"> ┬╖ </span>
+              <span class="text-text-weaker"> · </span>
             </Show>
             <span>Open</span>
             <span class="text-text-weaker">(</span>
@@ -158,7 +158,7 @@ function applyDocumentBranding(b: Branding) {
   if (b.accent) document.documentElement.style.setProperty("--openshare-accent", b.accent)
   // social/link preview tags (JS fallback - the worker serves crawler
   // user-agents a statically-injected head; this covers the rest)
-  const ogTitle = `${name} · Open(code)Share`
+  const ogTitle = b.ogTitle || `${name} · Open(code)Share`
   const ogDesc = b.description || "shared agent sessions, self-hosted"
   const ogImage = b.ogImage || b.logoUrl || ""
   const meta: [string, string][] = [
@@ -224,7 +224,7 @@ function StatusLine(props: { status: string }) {
       />
       <span>{props.status}</span>
       <Show when={props.status === "live"}>
-        <span class="animate-pulse">┬╖</span>
+        <span class="animate-pulse">·</span>
       </Show>
     </div>
   )

@@ -36,6 +36,7 @@ look). Use this as the template when you want your own skin.
 | `faviconUrl` | the tab favicon |
 | `backgroundUrl` | page background (rendered with a readability overlay; users can toggle it off in settings) |
 | `description` | login-card subtitle and `og:description` |
+| `ogTitle` | full custom embed/link-preview title (empty = `name · Open(code)Share`) |
 | `ogImage` | link-preview image for chats/social; falls back to `logoUrl` |
 
 All fields optional; empty string = hide / fall back.
@@ -52,11 +53,11 @@ uppercased field with underscores: `BRAND_NAME`, `BRAND_LOGO_URL`,
 Crawler user-agents (Discordbot, TelegramBot, Slackbot, WhatsApp,
 Twitterbot, ...) never run the SPA, so the worker serves them
 `index.html` with `og:`/`twitter:` tags injected from the branding:
-`og:title` = `<name> · Open(code)Share`, `og:description` =
-`description`, `og:image` = `ogImage` (absolute URL). The title carries
-the **deployment** name, never a session title — a link preview must
-not leak what a share contains. Browsers get the plain SPA (the viewer
-also injects the same tags client-side as a fallback).
+`og:title` = `ogTitle` (or `name · Open(code)Share`), `og:description`
+= `description`, `og:image` = `ogImage` (absolute URL). The title never
+carries a session title — a link preview must not leak what a share
+contains. Browsers get the plain SPA (the viewer also injects the same
+tags client-side as a fallback).
 
 The portable Bun server supports the same fields via `BRAND_*` env vars
 and the same crawler rewrite.

@@ -348,7 +348,7 @@ async function httpHandler(req: Request): Promise<Response> {
 
   if (path === "/branding") {
     const b = (f: string) => (process.env["BRAND_" + f.replace(/[a-z]/g, (c) => c === f[0] ? c.toUpperCase() : c)] ?? "")
-    return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "" })
+    return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "" })
   }
 
   // identity
@@ -681,13 +681,14 @@ async function ogIndex(url: URL): Promise<Response> {
   const name = process.env.BRAND_NAME ?? "openshare"
   const desc = process.env.BRAND_DESCRIPTION ?? "shared agent sessions, self-hosted"
   const image = process.env.BRAND_OG_IMAGE ?? process.env.BRAND_LOGO_URL ?? ""
+  const title = process.env.BRAND_OG_TITLE ?? `${name} · Open(code)Share`
   const absImage = image && image.startsWith("/") ? url.origin + image : image
   const tags = [
-    `<meta property="og:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta property="og:title" content="${htmlEscape(title)}">`,
     `<meta property="og:description" content="${htmlEscape(desc)}">`,
     `<meta property="og:site_name" content="${htmlEscape(name)}">`,
     `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
-    `<meta name="twitter:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta name="twitter:title" content="${htmlEscape(title)}">`,
     `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
   ]
   if (absImage) {

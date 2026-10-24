@@ -1,5 +1,5 @@
 {
-  "$comment": "Open(code)Share worker branding - DEFAULT, UNBRANDED skin (neutral upstream look). Priority: BRAND_* env vars > this file > code defaults. Edit this file and redeploy to skin your deployment: name (deployment label), logoUrl (left-header chip image, served from public/branding/ or any URL), wordmarkUrl (footer image; empty = 'name · Open(code)Share' text), linkUrl (where the left chip points), accent (hex; status dot, login card, prompt-rail marker, agent-switch name), faviconUrl, backgroundUrl (page background with readability overlay), description (login subtitle + og:description), ogImage (link-preview image; falls back to logoUrl). All optional; empty string = hide/fall back. See branding-example/ for a complete worked example.",
+  "$comment": "Open(code)Share worker branding - DEFAULT, UNBRANDED skin (neutral upstream look). Priority: BRAND_* env vars > this file > code defaults. Edit this file and redeploy to skin your deployment: name (deployment label), logoUrl (left-header chip image, served from public/branding/ or any URL), wordmarkUrl (footer image; empty = 'name · Open(code)Share' text), linkUrl (where the left chip points), accent (hex; status dot, login card, prompt-rail marker, agent-switch name), faviconUrl, backgroundUrl (page background with readability overlay), description (login subtitle + og:description), ogTitle (full custom embed title; empty = the name template), ogImage (link-preview image; falls back to logoUrl). All optional; empty string = hide/fall back. See branding-example/ for a complete worked example.",
   "name": "",
   "logoUrl": "",
   "wordmarkUrl": "",
@@ -8,5 +8,6 @@
   "faviconUrl": "",
   "backgroundUrl": "",
   "description": "",
+  "ogTitle": "",
   "ogImage": ""
 }

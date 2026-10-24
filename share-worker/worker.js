@@ -64,6 +64,7 @@ const DEFAULT_BRANDING = {
   faviconUrl: "",
   backgroundUrl: "",
   description: "",
+  ogTitle: "",
   ogImage: "",
   ...defaultBrandingFile,
 }
@@ -86,13 +87,14 @@ async function serveOgIndex(req, env, url) {
   const name = brandingField(env, "name") || "openshare"
   const desc = brandingField(env, "description") || "shared agent sessions, self-hosted"
   const image = brandingField(env, "ogImage") || brandingField(env, "logoUrl") || ""
+  const title = brandingField(env, "ogTitle") || `${name} · Open(code)Share`
   const absImage = image && image.startsWith("/") ? url.origin + image : image
   const tags = [
-    `<meta property="og:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta property="og:title" content="${htmlEscape(title)}">`,
     `<meta property="og:description" content="${htmlEscape(desc)}">`,
     `<meta property="og:site_name" content="${htmlEscape(name)}">`,
     `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
-    `<meta name="twitter:title" content="${htmlEscape(`${name} · Open(code)Share`)}">`,
+    `<meta name="twitter:title" content="${htmlEscape(title)}">`,
     `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
   ]
   if (absImage) {
@@ -251,6 +253,7 @@ export default {
           faviconUrl: b("faviconUrl"),
           backgroundUrl: b("backgroundUrl"),
           description: b("description"),
+          ogTitle: b("ogTitle"),
           ogImage: b("ogImage"),
         }), {
           headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },

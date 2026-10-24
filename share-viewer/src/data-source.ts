@@ -20,6 +20,9 @@ export type Branding = {
   backgroundUrl?: string
   /** one-line deployment description: login card subtitle + og:description */
   description?: string
+  /** full custom embed/link-preview title (verbatim). Empty = the
+   *  "<name> · Open(code)Share" template */
+  ogTitle?: string
   /** social/link-preview image (og:image / twitter:image). Falls back to
    *  logoUrl when unset. Deployment-branded, never session content. */
   ogImage?: string
