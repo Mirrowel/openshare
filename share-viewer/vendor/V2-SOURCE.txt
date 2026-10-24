@@ -1,3 +1,3 @@
 vendored from c:/tools/opencode-beta
 git: 4617210822bdbb31e5749751afbfb4584ccedac8 (v2.0.0-1105-g4617210822)
-date: 2026-10-23T22:53:22.851Z
+date: 2026-10-24T12:58:45.386Z

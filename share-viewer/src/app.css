@@ -239,6 +239,10 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
    prebuilt upstream; the viewer's tailwind does not scan vendor/) -
    live-caught when every spacing fork silently did nothing AND removed
    upstream's pt-2/pt-4, collapsing the transcript into soup.
+   Upstream emits BOTH its pt-2/pt-4 classes and the data-timeline-spacing
+   attribute; these UNLAYERED rules win the cascade over tailwind's
+   @layer utilities regardless of specificity (app.css @source-scans the
+   vendor trees, so the classes are generated - they simply lose).
    tool: tool-to-tool hugs (5px). content: prose rows breathe (10px).
    message: a NEW assistant message inside one turn gets a clear 24px
    break (e.g. the previous response's last tool call -> the next
