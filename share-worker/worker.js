@@ -314,7 +314,12 @@ export default {
       }
 
       if (req.method === "POST" && op === "/sync") {
-        const body = await req.json().catch(() => ({}))
+        // request-size cap: the engine's HTTP fallback chunks at a 4MB
+        // byte budget, so 8MB covers every legit body (plus envelope) —
+        // anything bigger is a hostile/buggy client. Refuse before parsing.
+        const text = await req.text()
+        if (text.length > 8_000_000) return json(413, { error: "payload too large" })
+        const body = (() => { try { return JSON.parse(text) } catch { return {} } })()
         const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/sync", {
           method: "POST",
@@ -856,7 +861,37 @@ export class ShareDO {
       await this.state.storage.delete("items")
       this._cache = null
     }
-    return this.listPrefix("i:")
+    // unwrap the {r, i} / {d, i} storage envelope: full renders see live
+    // items only — delete markers are invisible here and re-emitted as
+    // tombstones by the delta reader. Bare values are pre-envelope items
+    // (legacy migration) and pass through.
+    const out = []
+    for (const v of await this.listPrefix("i:")) {
+      if (v && typeof v === "object" && v.d === 1) continue
+      if (v && typeof v === "object" && v.i !== undefined && v.r !== undefined) out.push(v.i)
+      else out.push(v)
+    }
+    return out
+  }
+
+  /** Items changed since a rev (poll delta): every `i:` row with a newer
+   * rev, tombstones included — a hard delete would be invisible to the
+   * filter and undone content would resurrect until a full reload. */
+  async itemsSince(since) {
+    const out = []
+    let cursor
+    do {
+      const page = await this.state.storage.list({ prefix: "i:", cursor })
+      for (const v of page.values()) {
+        if (v && typeof v === "object" && v.i !== undefined && v.r !== undefined) {
+          if ((v.r ?? 0) > since) out.push(v.i)
+        } else if (since < 1) {
+          out.push(v) // legacy unwrapped row: only visible to rev-0 readers
+        }
+      }
+      cursor = page.list_complete ? undefined : page.cursor
+    } while (cursor)
+    return out
   }
 
   // Per-rev render cache for viewer loads. Both payload shapes build once
@@ -1092,14 +1127,20 @@ export class ShareDO {
         return json(401, { authRequired: true })
       }
       // `since` handshake for the poll path (same shape as the WS):
-      // unchanged rev answers an empty set — a polling viewer stops
-      // re-transferring the whole share every 5s. NOTE: only when the
-      // caller actually PASSED since (Number(null) is 0, which would
-      // collide with a fresh share's rev 0)
+      // unchanged rev answers an empty set; a CHANGED rev answers only
+      // the items touched since — a polling viewer stops re-transferring
+      // the whole share every 5s. NOTE: only when the caller actually
+      // PASSED since (Number(null) is 0, which would collide with a
+      // fresh share's rev 0)
       const sinceRaw = url.searchParams.get("since")
-      const since = sinceRaw === null ? NaN : Number(sinceRaw)
-      if (Number.isFinite(since) && since === (meta.rev ?? 0)) {
-        return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0 })
+      if (sinceRaw !== null) {
+        const since = Number(sinceRaw)
+        if (Number.isFinite(since)) {
+          if (since === (meta.rev ?? 0)) {
+            return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0 })
+          }
+          return json(200, { v: 2, data: redactItems(await this.itemsSince(since)), status: meta.status, rev: meta.rev ?? 0 })
+        }
       }
       return new Response((await this.renderCache(meta)).dataStr, { status: 200, headers: { "content-type": "application/json" } })
     }
@@ -1249,10 +1290,16 @@ export class ShareDO {
     if (!meta) return [404, { ok: false, error: "share not found" }]
     const gate = this.writeGate(meta, body)
     if (gate) return [gate === "frozen" ? 403 : 403, { ok: false, error: gate }]
+    const rev = (meta.rev ?? 0) + 1
     // One op per key: first-arrival position, last-arrival action, so the
     // broadcast order can never contradict the storage last-wins result
     // (e.g. a frame holding [tombstone K, upsert K] must leave K live on
     // the viewer too, not delete it after re-upserting).
+    // Storage shape: `i:<key>` = {r: rev, i: item} for live items and
+    // {d:1, r: rev, i: tombstoneItem} for deletes — the rev stamps power
+    // /data?since deltas (poll path), and delete MARKERS (not row
+    // deletes) keep deletions visible to delta readers so an undone
+    // message cannot resurrect for a polling viewer.
     const ops = new Map() // shard key -> { shard, it, del }
     for (const raw of body.data ?? []) {
       const it = fitItem(raw)
@@ -1268,29 +1315,30 @@ export class ShareDO {
       }
     }
     const puts = new Map()
-    const dels = []
+    const hardDels = []
     const cascadePrefixes = []
     for (const op of ops.values()) {
-      if (op.del) {
-        dels.push(op.shard)
-        if (op.it.type === "message" && op.it.data?.id) {
-          // cascade: opencode's full-message cleanup removes the message
-          // without per-part events; its parts must not linger as junk
-          cascadePrefixes.push("i:part/" + op.it.data.id + "/")
-        }
-      } else puts.set(op.shard, op.it)
+      // both shapes carry the tombstone item: full renders skip d-rows,
+      // delta readers re-emit the tombstone verbatim
+      puts.set(op.shard, op.del ? { d: 1, r: rev, i: op.it } : { r: rev, i: op.it })
+      if (op.it.type === "message" && op.it.data?.id) {
+        // cascade: opencode's full-message cleanup removes the message
+        // without per-part events; its parts must not linger as junk
+        // (legacy v1 part shards — hard delete is fine, the message
+        // marker supersedes them)
+        cascadePrefixes.push("i:part/" + op.it.data.id + "/")
+      }
     }
     for (const prefix of cascadePrefixes) {
       let cursor
       do {
         const page = await this.state.storage.list({ prefix, cursor })
-        for (const k of page.keys()) dels.push(k)
+        for (const k of page.keys()) hardDels.push(k)
         cursor = page.list_complete ? undefined : page.cursor
       } while (cursor)
     }
     if (puts.size) await putBatched(this.state.storage, puts)
-    if (dels.length) await deleteBatched(this.state.storage, dels)
-    const rev = (meta.rev ?? 0) + 1
+    if (hardDels.length) await deleteBatched(this.state.storage, hardDels)
     meta.rev = rev
     meta.lastActive = Date.now()
     meta.pluginSeen = Date.now()

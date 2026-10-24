@@ -263,14 +263,18 @@ function liveSource(ctx: any): Source {
         return
       }
       const body = await res.json()
-      // /data is the FULL live set: replace, so items deleted while we
-      // were disconnected (tombstones are server-side deletes, not
-      // markers) get pruned instead of resurrecting until a hard reload.
-      // Same rev = nothing changed server-side since our last view —
-      // keep the container identity (no refold, no traffic-shaped work)
+      // Two shapes by request: without `since` the answer is the FULL
+      // live set — replace, so items deleted while we were disconnected
+      // get pruned instead of resurrecting. With `since` and a changed
+      // rev the answer is a DELTA (only items touched since, tombstones
+      // included) — merge it; the merge path already deletes on
+      // tombstones. Same rev = nothing changed: keep the container
+      // identity (no refold, no traffic-shaped work)
       const curRev = typeof rev === "function" ? rev() : -1
       if (typeof body.rev === "number" && body.rev === curRev) {
         // unchanged
+      } else if (since) {
+        merge(body.data ?? [])
       } else {
         replaceFull(body.data ?? [])
       }

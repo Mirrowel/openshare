@@ -106,4 +106,9 @@ test suite is the stronger, lower-friction guarantee).
   sockets reconnect and refetch.
 - **Reverse proxy**: terminate TLS, allow upgrade headers; turn-scoped
   sockets mean idle connections are dropped client-side anyway, so short
-  proxy idle timeouts are fine.
+  proxy idle timeouts are fine. Per-IP rate limits (enrollment, login
+  lockout) trust `X-Forwarded-For`, which is only honest when a proxy you
+  control sets it — if you expose the port directly, those limits are
+  best-effort and the global caps (100 enrollments/hour, 20 login fails)
+  are the real brake. Configure your proxy to overwrite (not append) the
+  header.

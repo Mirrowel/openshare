@@ -127,7 +127,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS shares (
   pluginSeen INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'live',
   ownerId TEXT, frozen INTEGER NOT NULL DEFAULT 0, auth TEXT, tokens TEXT NOT NULL DEFAULT '[]',
   attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER)`)
-db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY (shareId, key))`)
+db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 0, del INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (shareId, key))`)
+// pre-existing databases: add the delta-tracking columns (rev stamps +
+// delete markers for the /data `since` handshake)
+try { db.exec("ALTER TABLE items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0") } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN del INTEGER NOT NULL DEFAULT 0") } catch {}
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}')`)
 db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
@@ -298,20 +302,21 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
       const it = (raw as { del?: boolean }).del ? raw : fitItem(raw)
       const key = itemKey(it)
       if (!key) continue
-      if ((it as { del?: boolean }).del) {
-        db.query("DELETE FROM items WHERE shareId = ? AND key = ?").run(shareId, key)
-        batch.push(it)
-        if ((it as { type?: string }).type === "message" && (it as { data?: { id?: string } }).data?.id) {
-          const prefix = `part/${(it as { data: { id: string } }).data.id}/`
-          const parts = db.query("SELECT key, item FROM items WHERE shareId = ? AND key LIKE ?").all(shareId, prefix + "%") as Array<{ key: string; item: string }>
-          for (const p of parts) {
-            db.query("DELETE FROM items WHERE shareId = ? AND key = ?").run(shareId, p.key)
-            batch.push(JSON.parse(p.item))
-          }
+      // upserts and deletes both keep a ROW: rev + del power the /data
+      // `since` delta (a hard delete would be invisible to `rev > ?` and
+      // undone content would resurrect for polling viewers); full reads
+      // filter del rows, delta readers re-emit the tombstone verbatim
+      const del = (it as { del?: boolean }).del ? 1 : 0
+      db.query("INSERT INTO items (shareId, key, item, rev, del) VALUES (?, ?, ?, ?, ?) ON CONFLICT(shareId, key) DO UPDATE SET item = excluded.item, rev = excluded.rev, del = excluded.del").run(shareId, key, JSON.stringify(it), rev, del)
+      batch.push(it)
+      if (del && (it as { type?: string }).type === "message" && (it as { data?: { id?: string } }).data?.id) {
+        // cascade: legacy v1 part shards die hard — the message marker
+        // supersedes them for delta readers
+        const prefix = `part/${(it as { data: { id: string } }).data.id}/`
+        const parts = db.query("SELECT key, item FROM items WHERE shareId = ? AND key LIKE ? AND del = 0").all(shareId, prefix + "%") as Array<{ key: string; item: string }>
+        for (const p of parts) {
+          db.query("DELETE FROM items WHERE shareId = ? AND key = ?").run(shareId, p.key)
         }
-      } else {
-        db.query("INSERT INTO items (shareId, key, item) VALUES (?, ?, ?) ON CONFLICT(shareId, key) DO UPDATE SET item = excluded.item").run(shareId, key, JSON.stringify(it))
-        batch.push(it)
       }
     }
     const status = body.status && STATUSES.has(body.status) ? body.status : share.status
@@ -324,7 +329,9 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
 }
 
 function shareData(share: ShareRow) {
-  const items = db.query("SELECT item FROM items WHERE shareId = ?").all(share.id) as Array<{ item: string }>
+  // full reads see live items only — del rows are markers for delta
+  // readers (rev > since re-emits the tombstone), invisible here
+  const items = db.query("SELECT item FROM items WHERE shareId = ? AND del = 0").all(share.id) as Array<{ item: string }>
   return items.map((r) => JSON.parse(r.item))
 }
 
@@ -350,6 +357,20 @@ function broadcast(shareId: string, frame: unknown) {
   if (!set) return
   const s = JSON.stringify({ v: 2, ...(frame as Record<string, unknown>) })
   for (const ws of set) try { ws.send(s) } catch {}
+}
+
+// per-rev /data render cache (worker parity): a polling viewer hits /data
+// every 5s — rebuilding + re-serializing the full share per request is
+// pure CPU burn when nothing changed. Single slot per share (bounded by
+// share count); applySync bumps the rev so the slot self-invalidates.
+// Oversized shares (> 25 MB, matching the worker's cap) skip caching.
+const dataCache = new Map<string, { rev: number; status: string; json: string }>()
+function renderData(share: ShareRow): string {
+  const hit = dataCache.get(share.id)
+  if (hit && hit.rev === share.rev && hit.status === share.status) return hit.json
+  const payload = JSON.stringify({ v: 2, data: redactItems(shareData(share)), status: share.status, rev: share.rev })
+  if (payload.length <= 25_000_000) dataCache.set(share.id, { rev: share.rev, status: share.status, json: payload })
+  return payload
 }
 
 function json(code: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -424,7 +445,8 @@ async function httpHandler(req: Request): Promise<Response> {
     return httpCreate(await bodyJson(req), chk.userId ?? null, chk.ttlMaxDays ?? 0, chk.defaultTtlDays ?? 0)
   }
   if (req.method === "POST" && op === "/sync") {
-    const body = await bodyJson(req)
+    const body = await bodyJson(req, 8_000_000)
+    if (body._tooLarge) return json(413, { error: "payload too large" })
     const ident = await resolveIdentity(req, body)
     const r = applySync(id, { ...body, ownerId: ident.ownerId, root: ident.root })
     return json(r.status, r.body)
@@ -436,15 +458,22 @@ async function httpHandler(req: Request): Promise<Response> {
       return json(401, { authRequired: true })
     }
     // `since` handshake (worker parity): unchanged rev answers an empty
-    // set — a polling viewer stops re-transferring the whole share.
+    // set; a changed rev answers only the items touched since — a
+    // polling viewer stops re-transferring the whole share every 5s.
     // Only when the caller actually PASSED since (Number(null) is 0,
     // which would collide with a fresh share's rev 0)
     const sinceRaw = new URL(req.url).searchParams.get("since")
-    const since = sinceRaw === null ? NaN : Number(sinceRaw)
-    if (Number.isFinite(since) && since === share.rev) {
-      return json(200, { v: 2, data: [], status: share.status, rev: share.rev })
+    if (sinceRaw !== null) {
+      const since = Number(sinceRaw)
+      if (Number.isFinite(since)) {
+        if (since === share.rev) {
+          return json(200, { v: 2, data: [], status: share.status, rev: share.rev })
+        }
+        const delta = db.query("SELECT item FROM items WHERE shareId = ? AND rev > ?").all(share.id, since) as Array<{ item: string }>
+        return json(200, { v: 2, data: delta.map((r) => JSON.parse(r.item)), status: share.status, rev: share.rev })
+      }
     }
-    return json(200, { v: 2, data: redactItems(shareData(share)), status: share.status, rev: share.rev })
+    return new Response(renderData(share), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
   }
   if (req.method === "DELETE" && op === "") {
     const body = await bodyJson(req)
@@ -483,11 +512,24 @@ function removeShare(id: string) {
   broadcast(id, { op: "frame", status: "gone", rev: 1, items: [] })
   db.query("DELETE FROM shares WHERE id = ?").run(id)
   db.query("DELETE FROM items WHERE shareId = ?").run(id)
+  dataCache.delete(id)
+  // close viewer sockets: the gone frame already told them; closing moves
+  // them onto the poll path, where the 404 renders the gone page (parity
+  // with the worker, where the DO dies and takes the sockets with it)
+  const set = viewers.get(id)
+  if (set) {
+    for (const ws of set) try { ws.close(1000, "gone") } catch {}
+    viewers.delete(id)
+  }
 }
 
-async function bodyJson(req: Request): Promise<Record<string, unknown>> {
+async function bodyJson(req: Request, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
   try {
-    const b = await req.json()
+    const text = await req.text()
+    // request-size cap before parse: a hostile client posting a huge
+    // body must not burn CPU on the parse (the engine chunks at ~512 KB)
+    if (text.length > maxBytes) return { _tooLarge: true }
+    const b = JSON.parse(text)
     return b && typeof b === "object" ? (b as Record<string, unknown>) : {}
   } catch {
     return {}
@@ -810,6 +852,9 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
   const data = ws.data as ControlData
   const send = (obj: unknown) => { try { ws.send(JSON.stringify(obj)) } catch {} }
   try {
+    // message-size cap before parse: a hostile socket posting a huge
+    // frame must not burn CPU on the parse (engine WS chunks at ~512KB)
+    if (String(raw).length > 8_000_000) return send({ op: "error", error: "payload too large" })
     const frame = JSON.parse(String(raw)) as Frame
     // frame auth: /health advertises frameAuth — the plugin can keep the
     // token out of the query string (proxy logs) by sending it as the

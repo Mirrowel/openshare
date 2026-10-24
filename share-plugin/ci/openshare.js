@@ -345,6 +345,7 @@ function resolveShareMode(cfg, input) {
 
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join as join2 } from "node:path";
 
 // src/contract.ts
@@ -552,6 +553,15 @@ function normalizeV1Diff(diff) {
 }
 function cursorFor(id, time) {
   return Buffer.from(JSON.stringify({ id, time })).toString("base64url");
+}
+
+// src/binding-queue.ts
+var queues = new Map;
+function queueBindingWrite(sid, fn) {
+  const prev = queues.get(sid) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  queues.set(sid, run.catch(() => {}));
+  return run;
 }
 
 // src/core.ts
@@ -849,7 +859,8 @@ function createEngine(deps) {
     activated: false,
     wroteBinding: false,
     everConnected: false,
-    merged: new Map
+    merged: new Map,
+    sentHash: new Map
   });
   const refreshConfig = () => {
     const next = loadConfig(deps.pluginDir, deps.options);
@@ -882,6 +893,7 @@ function createEngine(deps) {
     }
     st.activated = true;
     st.opts = opts;
+    st.sentHash.clear();
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
       chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnectAll(st)).catch((e) => logError("activation error", e?.message || e));
@@ -933,24 +945,26 @@ function createEngine(deps) {
   async function writeMetadata(st, value) {
     if (!st.client)
       return;
-    try {
-      const info = unwrap(await st.client.session.get({
-        path: { id: st.sid },
-        ...deps.directory ? { query: { directory: deps.directory } } : {}
-      }));
-      const metadata = { ...info?.metadata ?? {} };
-      if (value === null)
-        delete metadata[METADATA_KEY];
-      else
-        metadata[METADATA_KEY] = value;
-      unwrap(await st.client.session.update({
-        path: { id: st.sid },
-        body: { metadata },
-        ...deps.directory ? { query: { directory: deps.directory } } : {}
-      }));
-    } catch (e) {
-      log("metadata write failed (spool still covers reconnects):", e?.message || e);
-    }
+    await queueBindingWrite(st.sid, async () => {
+      try {
+        const info = unwrap(await st.client.session.get({
+          path: { id: st.sid },
+          ...deps.directory ? { query: { directory: deps.directory } } : {}
+        }));
+        const metadata = { ...info?.metadata ?? {} };
+        if (value === null)
+          delete metadata[METADATA_KEY];
+        else
+          metadata[METADATA_KEY] = value;
+        unwrap(await st.client.session.update({
+          path: { id: st.sid },
+          body: { metadata },
+          ...deps.directory ? { query: { directory: deps.directory } } : {}
+        }));
+      } catch (e) {
+        log("metadata write failed (spool still covers reconnects):", e?.message || e);
+      }
+    });
   }
   const parseBinding = (record) => {
     const out = new Map;
@@ -1057,6 +1071,8 @@ function createEngine(deps) {
       writeFileSync2(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join(`
 `) + (r.pending.length ? `
 ` : ""));
+      rmSync(legacyMetaPath(st), { force: true });
+      rmSync(legacyQueuePath(st), { force: true });
     } catch (e) {
       logError("spool save failed", e?.message || e);
     }
@@ -1125,6 +1141,8 @@ function createEngine(deps) {
     try {
       rmSync(metaPath(st, r.url), { force: true });
       rmSync(queuePath(st, r.url), { force: true });
+      rmSync(legacyMetaPath(st), { force: true });
+      rmSync(legacyQueuePath(st), { force: true });
     } catch {}
   };
   let nextSeq = 0;
@@ -1578,6 +1596,7 @@ function createEngine(deps) {
         flush(st);
       }
       if (wasFanoutCreate) {
+        st.sentHash.clear();
         chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", e?.message || e));
       }
       return;
@@ -1734,6 +1753,19 @@ function createEngine(deps) {
   const enqueue = (st, entry) => {
     if (!st || !entry)
       return;
+    let h;
+    try {
+      h = createHash("sha256").update(JSON.stringify(entry.item)).digest("hex");
+    } catch {
+      h = "";
+    }
+    if (h && st.sentHash.get(entry.key) === h) {
+      if (debugEvents)
+        log(`enqueue dedupe ${entry.item.type} ${entry.key.slice(0, 40)}`);
+      return;
+    }
+    if (h)
+      st.sentHash.set(entry.key, h);
     st.queue.set(entry.key, entry.item);
     indexMessage(entry);
     if (debugEvents)
@@ -1799,13 +1831,14 @@ function createEngine(deps) {
       for (let k = 0;k < users.length; k++) {
         const agent = segmentAgent(list, users[k]);
         const d = list[users[k]].data;
-        const meta = d.metadata ??= {};
         const want = k > 0 && agent && prev && agent !== prev ? agent : undefined;
-        if (want !== meta.agentSwitch) {
-          if (want)
+        if (want !== d.metadata?.agentSwitch) {
+          if (want) {
+            const meta = d.metadata ??= {};
             meta.agentSwitch = want;
-          else
-            delete meta.agentSwitch;
+          } else if (d.metadata) {
+            delete d.metadata.agentSwitch;
+          }
           reEnqueueMessage(list[users[k]]);
         }
         if (agent)
@@ -2078,6 +2111,17 @@ function createEngine(deps) {
     }, 1000);
     for (const r of st.remotes.values())
       spoolClear(st, r);
+    const stSid = st.sid;
+    const pfx = `${stSid}:`;
+    for (const k of msgIndex.keys())
+      if (k.startsWith(pfx))
+        msgIndex.delete(k);
+    for (const k of tombstoned)
+      if (k.startsWith(pfx))
+        tombstoned.delete(k);
+    for (const [child, parent] of childToParent)
+      if (parent === stSid || child === stSid)
+        childToParent.delete(child);
     sessions.delete(st.sid);
     try {
       chain = chain.then(async () => {

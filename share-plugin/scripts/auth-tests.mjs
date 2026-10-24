@@ -278,6 +278,23 @@ try {
     ok("T24b3 seq share gone", !after.some((s) => s.id === seqShare.id))
   }
 
+  // T25 — request-size cap: a >8MB sync body is refused BEFORE parsing
+  // (the engine's HTTP fallback chunks at 4MB; only a hostile/buggy
+  // client exceeds 8MB). The route 413s before the share lookup, so a
+  // synthetic id works.
+  {
+    const big = "x".repeat(8_500_000)
+    const capRes = await fetch(`${W1}/api/share/${"a".repeat(32)}/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${CREATE_TOKEN}` },
+      body: JSON.stringify({ secret: "irrelevant", data: [{ type: "message", data: { id: big } }] }),
+      signal: AbortSignal.timeout(15000),
+    })
+    ok("T25 oversized sync body refused (413)", capRes.status === 413, String(capRes.status))
+    const okRes = await req(W1, "POST", `/api/share/${"a".repeat(32)}/sync`, { body: { secret: "x", data: [] } })
+    ok("T25b normal-size body reaches the route (not 413)", okRes.status !== 413, String(okRes.status))
+  }
+
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)
   const frozenSecretSync = await req(W1, "POST", `/api/share/${U1_SHARE}/sync`, { body: { secret: U1_SECRET, data: [{ type: "message", data: { id: "msg_frozen", role: "user" } }] } })

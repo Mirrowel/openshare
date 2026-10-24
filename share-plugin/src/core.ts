@@ -43,9 +43,11 @@
 //    secret must never reach viewers.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
+import { queueBindingWrite } from "./binding-queue.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -156,6 +158,12 @@ type SessionState = {
    * item embeds content, so the engine holds the assembled view per
    * message and re-emits the normalized whole on every update */
   merged: Map<string, { info?: Record<string, unknown>; parts: Map<string, Record<string, unknown>> }>
+  /** content hash of the LAST item enqueued per key: identical re-feeds
+   * (v2 hosts re-sync the whole transcript on every refresh; unchanged
+   * session info on every session.updated) are skipped instead of being
+   * flushed to every remote, bumping rev and re-folding every viewer.
+   * Cleared on activation — re-activation re-backfills by design. */
+  sentHash: Map<string, string>
 }
 
 type Message = { info?: Record<string, unknown>; parts?: Record<string, unknown>[] }
@@ -544,6 +552,7 @@ export function createEngine(deps: EngineDeps): Engine {
     wroteBinding: false,
     everConnected: false,
     merged: new Map(),
+    sentHash: new Map(),
   })
 
   const refreshConfig = () => {
@@ -582,6 +591,9 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     st.activated = true
     st.opts = opts
+    // re-activation re-backfills the whole session (unshare -> share
+    // again): the enqueue dedupe must not skip the returning content
+    st.sentHash.clear()
     const gated = mode === "manual" || opts2?.gated === true
     if (gated) {
       // seed the share status from the session's CURRENT state before
@@ -657,26 +669,31 @@ export function createEngine(deps: EngineDeps): Engine {
 
   async function writeMetadata(st: SessionState, value: Record<string, unknown> | null) {
     if (!st.client) return
-    try {
-      const info = unwrap(
-        await st.client.session.get({
-          path: { id: st.sid },
-          ...(deps.directory ? { query: { directory: deps.directory } } : {}),
-        }),
-      )
-      const metadata = { ...(info?.metadata ?? {}) }
-      if (value === null) delete metadata[METADATA_KEY]
-      else metadata[METADATA_KEY] = value
-      unwrap(
-        await st.client.session.update({
-          path: { id: st.sid },
-          body: { metadata },
-          ...(deps.directory ? { query: { directory: deps.directory } } : {}),
-        }),
-      )
-    } catch (e) {
-      log("metadata write failed (spool still covers reconnects):", (e as Error)?.message || e)
-    }
+    // the read-modify-write runs inside the shared per-session queue: the
+    // TUI patches the same metadata (opt-outs, collisions) and interleaved
+    // RMWs silently lose one side's update (see binding-queue.ts)
+    await queueBindingWrite(st.sid, async () => {
+      try {
+        const info = unwrap(
+          await st.client!.session.get({
+            path: { id: st.sid },
+            ...(deps.directory ? { query: { directory: deps.directory } } : {}),
+          }),
+        )
+        const metadata = { ...(info?.metadata ?? {}) }
+        if (value === null) delete metadata[METADATA_KEY]
+        else metadata[METADATA_KEY] = value
+        unwrap(
+          await st.client!.session.update({
+            path: { id: st.sid },
+            body: { metadata },
+            ...(deps.directory ? { query: { directory: deps.directory } } : {}),
+          }),
+        )
+      } catch (e) {
+        log("metadata write failed (spool still covers reconnects):", (e as Error)?.message || e)
+      }
+    })
   }
 
   /** Parse the metadata binding: v2 map ({v:2, servers:{url:{id,secret,
@@ -788,6 +805,10 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       writeFileSync(metaPath(st, r.url), JSON.stringify({ shareId: r.shareId, secret: r.secret, ackedRev: r.ackedRev, sid: st.sid, url: r.url }))
       writeFileSync(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join("\n") + (r.pending.length ? "\n" : ""))
+      // the migrated content now lives in the new queue (or was acked):
+      // retire the single-server-era files so they don't accumulate forever
+      rmSync(legacyMetaPath(st), { force: true })
+      rmSync(legacyQueuePath(st), { force: true })
     } catch (e) {
       logError("spool save failed", (e as Error)?.message || e)
     }
@@ -876,6 +897,9 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       rmSync(metaPath(st, r.url), { force: true })
       rmSync(queuePath(st, r.url), { force: true })
+      // single-server-era files die with the session too
+      rmSync(legacyMetaPath(st), { force: true })
+      rmSync(legacyQueuePath(st), { force: true })
     } catch {}
   }
 
@@ -1423,7 +1447,12 @@ export function createEngine(deps: EngineDeps): Engine {
       if (wasFanoutCreate) {
         // a server joined an ALREADY-live session (fan-out add, or a
         // post-mismatch recreate): its fresh share needs the full history —
-        // backfill is keyed-idempotent, other servers just re-upsert
+        // backfill is keyed-idempotent, other servers just re-upsert.
+        // The enqueue dedupe must step aside: those hashes say "already
+        // entered the machinery", but the NEW remote never received any
+        // of it (live-caught by F3: the join's backfill was fully
+        // deduped away and the joined share stayed empty).
+        st.sentHash.clear()
         chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", (e as Error)?.message || e))
       }
       return
@@ -1629,6 +1658,24 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
+    // content dedupe at the machinery boundary: an identical re-feed has
+    // either entered the queue already or been flushed into every
+    // remote's pending/spool (the per-remote delivery machinery owns it
+    // from there) — re-sending it bumps rev, rewrites storage and
+    // re-folds every viewer for nothing. This is the engine-side home
+    // the v2-adapter dedupe lacked (an adapter-side cache poisoned while
+    // dormant and skipped the flag-time content — live-caught).
+    let h: string
+    try {
+      h = createHash("sha256").update(JSON.stringify(entry.item)).digest("hex")
+    } catch {
+      h = ""
+    }
+    if (h && st.sentHash.get(entry.key) === h) {
+      if (debugEvents) log(`enqueue dedupe ${entry.item.type} ${entry.key.slice(0, 40)}`)
+      return
+    }
+    if (h) st.sentHash.set(entry.key, h)
     st.queue.set(entry.key, entry.item)
     indexMessage(entry)
     if (debugEvents) log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`)
@@ -1723,11 +1770,19 @@ export function createEngine(deps: EngineDeps): Engine {
       for (let k = 0; k < users.length; k++) {
         const agent = segmentAgent(list, users[k])
         const d = list[users[k]].data as Record<string, any>
-        const meta = (d.metadata ??= {}) as Record<string, unknown>
         const want = k > 0 && agent && prev && agent !== prev ? agent : undefined
-        if (want !== (meta.agentSwitch as string | undefined)) {
-          if (want) meta.agentSwitch = want
-          else delete meta.agentSwitch
+        // only touch metadata when the stamp actually CHANGES — a blanket
+        // `d.metadata ??= {}` polluted every user message (including the
+        // host's live objects on v2 pass-through) with an empty metadata
+        // object, which re-emitted the message once per refresh (rev churn
+        // per feed — live-caught by the enqueue-dedupe rev check)
+        if (want !== (d.metadata?.agentSwitch as string | undefined)) {
+          if (want) {
+            const meta = (d.metadata ??= {}) as Record<string, unknown>
+            meta.agentSwitch = want
+          } else if (d.metadata) {
+            delete d.metadata.agentSwitch
+          }
           reEnqueueMessage(list[users[k]])
         }
         if (agent) prev = agent
@@ -1988,6 +2043,15 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }, 1000)
     for (const r of st.remotes.values()) spoolClear(st, r)
+    // memory hygiene: the session is gone — its index corpses, tombstone
+    // guards and child routing must not linger (msgIndex/tombstoned are
+    // engine-global and otherwise only grow; sentHash rides the session
+    // state and dies with it)
+    const stSid = st.sid
+    const pfx = `${stSid}:`
+    for (const k of msgIndex.keys()) if (k.startsWith(pfx)) msgIndex.delete(k)
+    for (const k of tombstoned) if (k.startsWith(pfx)) tombstoned.delete(k)
+    for (const [child, parent] of childToParent) if (parent === stSid || child === stSid) childToParent.delete(child)
     sessions.delete(st.sid)
     try {
       chain = chain.then(async () => {

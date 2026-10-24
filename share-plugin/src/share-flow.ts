@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { loadConfig, moduleDir, configPaths, configHomePath, resolveServer, saveServerEntry, deleteServerEntry, METADATA_KEY, type ShareConfig, type ServerEntry } from "./config.js"
 import { dbg, dbgLog } from "./sidebar.js"
 import type { ClientApi, SessionInfo, SessionOpts } from "./core.js"
+import { queueBindingWrite } from "./binding-queue.js"
 import type { ShareHostApi } from "./tui-host.js"
 
 export type SessionBinding = {
@@ -174,18 +175,23 @@ export async function patchSessionBinding(
   sid: string,
   mutator: (servers: Record<string, unknown>, binding: Record<string, unknown>) => void,
 ): Promise<boolean> {
-  const info = await getSession(client, sid)
-  if (!info) return false
-  const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
-  const raw = info.metadata?.[METADATA_KEY]
-  const binding: Record<string, unknown> =
-    raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : { v: 2, servers: {} }
-  const servers: Record<string, unknown> =
-    binding.servers && typeof binding.servers === "object" ? { ...(binding.servers as Record<string, unknown>) } : {}
-  mutator(servers, binding)
-  binding.servers = servers
-  metadata[METADATA_KEY] = binding
-  return patchMetadata(client, sid, metadata)
+  // the whole read-modify-write runs inside the shared per-session queue:
+  // the engine patches the same metadata (binding refresh) and interleaved
+  // RMWs silently lose one side's update (see binding-queue.ts)
+  return queueBindingWrite(sid, async () => {
+    const info = await getSession(client, sid)
+    if (!info) return false
+    const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
+    const raw = info.metadata?.[METADATA_KEY]
+    const binding: Record<string, unknown> =
+      raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : { v: 2, servers: {} }
+    const servers: Record<string, unknown> =
+      binding.servers && typeof binding.servers === "object" ? { ...(binding.servers as Record<string, unknown>) } : {}
+    mutator(servers, binding)
+    binding.servers = servers
+    metadata[METADATA_KEY] = binding
+    return patchMetadata(client, sid, metadata)
+  })
 }
 
 /** The display/primary binding: the active server's entry when bound
