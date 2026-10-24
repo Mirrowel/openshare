@@ -37,28 +37,30 @@ export function armToggleAnchor() {
   )
 }
 
-/** call right after a disclosure state write triggered by a user click */
+/** call right after a disclosure state write triggered by a user click.
+ *  COMPOSED views only (the virtualized path is tanstack's). Runs ONE
+ *  correction, delayed past Kobalte's expand/collapse spring (~300ms) -
+ *  an earlier double-rAF settle pinned the trigger against a transient
+ *  spring-bounce delta and scrolled by it (live-caught flicker +
+ *  pushed-up titles; headless automation skips springs and never saw
+ *  it). Measuring once after the spring lands is bounce-proof. */
 export function settleToggleAnchor() {
   const trigger = lastTrigger
   const wasTop = lastViewportTop
   if (!trigger) return
   lastTrigger = undefined
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!trigger.isConnected) return
-      const scroller = trigger.closest<HTMLElement>("[data-transcript-scroll]")
-      const nowTop = trigger.getBoundingClientRect().top
-      const delta = nowTop - wasTop
-      if (Math.abs(delta) < 2) return
-      if (scroller && scroller.scrollHeight > scroller.clientHeight) {
-        const max = scroller.scrollHeight - scroller.clientHeight
-        const target = Math.max(0, Math.min(max, scroller.scrollTop + delta))
-        scroller.scrollTop = target
-      } else {
-        const max = document.documentElement.scrollHeight - window.innerHeight
-        const target = Math.max(0, Math.min(max, window.scrollY + delta))
-        window.scrollTo({ top: target })
-      }
-    })
-  })
+  setTimeout(() => {
+    if (!trigger.isConnected) return
+    const scroller = trigger.closest<HTMLElement>("[data-transcript-scroll]")
+    const nowTop = trigger.getBoundingClientRect().top
+    const delta = nowTop - wasTop
+    if (Math.abs(delta) < 2) return
+    if (scroller && scroller.scrollHeight > scroller.clientHeight) {
+      const max = scroller.scrollHeight - scroller.clientHeight
+      scroller.scrollTop = Math.max(0, Math.min(max, scroller.scrollTop + delta))
+    } else {
+      const max = document.documentElement.scrollHeight - window.innerHeight
+      window.scrollTo({ top: Math.max(0, Math.min(max, window.scrollY + delta)) })
+    }
+  }, 360)
 }
