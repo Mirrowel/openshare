@@ -49,17 +49,6 @@ Share statuses: `live`, `completed`, `error` (terminal turn failure -
 recovered retries are forgiven), `interrupted` (server-side only: plugin
 vanished mid-live), `gone`.
 
-- Title: **Open(code)Share** · tagline: *re:share — session sharing, back
-  for opencode*
-- Package/plugin: `@mirrowel/opencode-openshare` (package; the CI single
-  file `ci/openshare.js` + `openshare.config.json`)
-- Worker: `openshare-worker` (Cloudflare, free-tier friendly)
-
-The default deploy is the **unbranded neutral skin**; deployments brand
-themselves via `BRAND_*` worker vars or the bundled
-`openshare.config.json` (e.g. a mirrobot-style look) — swap the vars and
-the assets to make it yours.
-
 ## Architecture
 
 **Live** — the plugin (`share-plugin/` — package
@@ -142,27 +131,37 @@ as a fallback.
 
 ## Viewer settings (cookie)
 
-The gear in the header opens the settings panel — persisted in a
-`osh_settings` cookie, applied pre-paint (no theme flash):
+The gear in the header (or Ctrl+K, in every view) opens the settings
+panel — persisted in a `osh_settings` cookie, applied pre-paint (no
+theme flash):
 
+- **View** — the reading skin: classic, reader, or one of the nine composed views (terminal, casefile, blueprint, cinema, timeline, letterpress, atlas, teletype, grove). Every view is a skin over the same base ([the view contract](../share-viewer/src/views/README.md)).
 - **Theme**: system (default), forced light/dark, plus premades —
   `mirrobot` (the landing-page paper-terminal look, included by
   default), `midnight`, `sepia`, `nord`. Forced themes work via
   attribute-scoped token copies emitted by
   `share-viewer/scripts/build-themes.mjs` at build time.
+- **Paged mode** (per view) — one prompt at a time with the prompt rail
+  paging, or one continuous scroll where the rail fast-skips. Views
+  without a paging metaphor hide the toggle.
 - **Text size**: compact / normal / roomy (root font scale).
-- **Continuous mode**: render every prompt in one scroll instead of
-  one-turn-at-a-time with the left selector — continuity reading.
 - **Follow live scroll**: during a live share the view keeps the newest
   content visible, but only while you are already at the bottom — it
   never fights your reading position.
 - **Reasoning expanded**: default open instead of collapsed (applies to
   rendered blocks immediately).
+- **Auto-expand tools**: a checklist (the known host tools plus anything
+  this session used — mcp/custom tools included) picking which tool
+  bodies open on render. Default: none.
+- **Diff layout**: auto (split when it fits) / always split / always
+  unified — the per-card toggle in edit headers writes the same setting.
+- **Long lines in outputs**: horizontal scroll (hidden scrollbar) or
+  wrap; the output width is capped either way.
 - **Background image**: on/off toggle, present only when the deployment
   sets `backgroundUrl` (rendered under a dark readability overlay).
-- **Session search**: prompt filter (Ctrl+K).
+- **Session search**: matches prompts AND responses (Ctrl+K).
 
-Header extras: copy session as markdown, j/k prompt navigation.
+Header extras: copy session as markdown, `j`/`k` prompt navigation.
 
 ## Read auth (optional, casual-eyes resistance)
 
@@ -269,9 +268,10 @@ title/version/model.
   `POST /api/share/:id/sync` (secret or Bearer owner token),
   `GET /api/share/:id/data`,
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
-- `GET /branding` — the deployment's `BRAND_*` skin (name, logoUrl,
-  wordmarkUrl, linkUrl, accent, faviconUrl; all optional — absent =
-  neutral default)
+- `GET /branding` — the deployment's resolved skin (name, logoUrl,
+  wordmarkUrl, linkUrl, accent, faviconUrl, backgroundUrl, description,
+  ogTitle, ogImage; all optional — absent = neutral default; see
+  [Branding](#branding) and `branding-example/`)
 - `POST /api/admin/purge` (Bearer CREATE_TOKEN) — owner maintenance:
   iterates the share index and removes EVERY share (DO storage + index;
   connected viewers get a final `gone` frame). Returns `{removed}`.
@@ -311,12 +311,15 @@ any exported session injected — see [`tools/README.md`](../tools/README.md).
 
 ## Viewer (share-viewer)
 
-The upstream share page vendored (session-ui + ui + core utils + sdk
-types; vite+solid+tailwind client-only build). Tailwind scan roots are
-explicit (`source(none)` in the vendored ui entry + `@source` lines in
-src/app.css) — without them, vendor-only utilities silently never
-generate. Branding swaps at runtime: logo/wordmark images, header link,
-page title, favicon, accent. Default = neutral upstream look.
+The share page — built on the vendored **opencode v2 component kit**
+(session-ui + ui + core utils + sdk types; vite+solid+tailwind
+client-only build). Tailwind scan roots are explicit (`source(none)` in
+the vendored ui entry + `@source` lines in src/app.css) — without them,
+vendor-only utilities silently never generate. Views are skins over one
+base (the [views SDK](../share-viewer/src/views/README.md)); every view
+virtualizes. Branding swaps at runtime: logo/wordmark images, header
+link, page title, favicon, accent, login/gone pages, link previews.
+Default = neutral upstream look.
 
 Host-integration empirical notes (v1 event shapes, client quirks, the
 v2 adapter posture) moved to [`../DEVELOPMENT.md`](../DEVELOPMENT.md#host-integration-notes-v1v2).

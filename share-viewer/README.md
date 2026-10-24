@@ -1,6 +1,6 @@
 # Open(code)Share viewer
 
-The share page your viewers open — the vendored upstream opencode share page (built on `@opencode-ai/session-ui`), adapted for the OpenShare protocol. One build serves two jobs: **live** pages on the share worker, and **local** snapshots via the export tool. Same rendering, same views, same settings either way.
+The share page your viewers open — built on the vendored **opencode v2 component kit** (`@opencode/session-ui` v2 + `@opencode/ui`), speaking the OpenShare protocol. One build serves two jobs: **live** pages on the share worker, and **local** snapshots via the export tool. Same rendering, same views, same settings either way.
 
 ## How it runs
 
@@ -9,7 +9,7 @@ The share page your viewers open — the vendored upstream opencode share page (
 
 ## Data contract
 
-Everything renders one shape: the share `Data[]` items — the same items the plugin streams, the worker stores, and the export tool injects. Items merge client-side **by key** (idempotent — a replayed frame is a no-op); `del` tombstones remove undone work; the fold re-runs on every frame so the revert pointer (carried on the session item, `info.revert`) keeps undone turns folded exactly like opencode's own session view.
+Everything renders one shape: the share `Data[]` items — the same items the plugin streams, the worker stores, and the export tool injects. Items merge client-side **by key** (identity-preserving smart sync: a no-op frame returns the same containers, unchanged items keep their folded objects and rendered components, so expansion state and scroll position survive every update); `del` tombstones remove undone work; the fold re-runs on every frame so the revert pointer (carried on the session item, `info.revert`) keeps undone turns folded exactly like opencode's own session view.
 
 ## Status badges
 
@@ -17,13 +17,14 @@ Everything renders one shape: the share `Data[]` items — the same items the pl
 
 ## What the page does
 
-- **Conversation views** — classic and reader layouts plus the session-ui full-page views; syntax highlighting (shiki), KaTeX, markdown and diff workers all bundled — the dist is ~22 MB and self-contained, no CDN.
-- **Multi-session shares** — subagent sessions appear in the share; each gets its own sub-page (`/s/<id>/<N>`) linked from task rows (new-tab behavior is a plugin setting), parent linked back; in-page navigation uses the URL sub-segment (popstate).
-- **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer swaps to a login form, exchanges credentials for a 7-day cookie, and resumes; repeated failures lock out (429 → "locked"). The gate never grants write access.
-- **Reader settings** (gear panel, `osh_settings` cookie, 1 year, read pre-paint so there's no theme flash): theme (system/light/dark/mirrobot/midnight/sepia/nord), view, continuous vs paged, follow-live, text and reading sizes, unified/split diffs, reasoning auto-open, tool info/output visibility, content centering, plus view-scoped controls: **classic** - group tool calls on/off and what grouping covers (reads & searches only, the original scope, or every call); **grove** - whether reasoning sits left with the tools or right with the prompts.
-- **Tool rendering** - read/write/edit/patch show their content (read: the file body; edit/write: the annotation above a collapsible diff with +added/−removed), grep/glob/list render preformatted output on a surface (no markdown paragraph inflation), and todo lists render as checklists. Edits default to collapsed so a long diff never eats the page.
-- **Scroll behaviour** - the title and footer live in the transcript flow (the title scrolls away, the footer is the last thing in the session); tool outputs contain their own wheel scrolling; changing a setting keeps the reader exactly where they were (measured row snapshot + offset); the continuous view virtualizes rows and never shows unpainted pop-in blocks.
-- **Branding** — self-hosters can rebrand: the worker serves `/branding` (name + wordmark image) and the page renders it in the footer/title when present.
+- **Eleven views, one base** — classic and reader in the standard chrome plus nine full-page skins (terminal, casefile, blueprint, cinema, timeline, letterpress, atlas, teletype, grove). Every skin is a reskin of the shared base — data, paging, search, settings, virtualization come from the SDK ([`src/views/README.md`](src/views/README.md) is the contract; a complete view is one file, ~30 lines).
+- **Virtualization everywhere** — continuous mode windows rows as you scroll (`src/timeline-v2.tsx`), paged mode windows inside a giant turn, and the composed skins window two-level (sections + entries, `src/section-window.tsx`). Multi-thousand-message shares cost the same DOM as small ones.
+- **Prompt rail** — a floating pill beside the transcript whenever there's more than one prompt: paged mode pages, continuous mode fast-skips. `[`/`]` and `j`/`k` jump prompts in every view.
+- **Agent attribution** — the plugin stamps the resolving agent on task parts and agent switches (`metadata.agent`, rank-joined at sync time); the viewer renders agent-switch event rows and real subagent names without inferring anything (the viewer stays dumb by design). Task rows link to the subagent's sub-page.
+- **Tool rendering** — read/write/edit/patch share **one FileCard** (kit `File` component): real file line numbers (plugin-stamped offsets), the host's own unified patches for edits (4 context lines), text bodies for reads/writes, and one highlighting engine (the kit's shiki worker pool). Grep/glob/list render preformatted output; todo lists render as checklists. Failed tools show their error text.
+- **Scroll behaviour** — the title and footer live in the transcript flow; tool outputs contain their own wheel scrolling (horizontal-only scrollers don't chain); changing a setting or a live sync keeps the reader exactly where they were (measured-row snapshots + identity-preserving merge); no unpainted pop-in blocks while scrolling.
+- **Reader settings** (gear or Ctrl+K, `osh_settings` cookie, 1 year, read pre-paint so there's no theme flash): theme (system/light/dark/mirrobot/midnight/sepia/nord), view, paged mode (per view), prompt rail, follow-live, text and reading sizes, diff layout (auto/split/unified), reasoning auto-open, tool info, auto-expand tools (a checklist of known + this session's tools), long-line scroll/wrap, content centering, background image — plus view-scoped settings rendered from each view's registration (classic: tool grouping + scope; grove: which side thinking sits on).
+- **Branding** — the deployment's skin from `/branding`: logo chip, footer wordmark, favicon, accent, login and gone pages, and social/link previews (the worker injects og tags for crawler user-agents; the viewer does the same client-side as a fallback). Default is the neutral upstream look; see [`../share-worker/branding-example/`](../share-worker/branding-example/).
 
 ## Building
 
@@ -45,18 +46,24 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 | File | Role |
 |---|---|
 | `src/entry.tsx` | pre-paint settings read (no theme flash), mount |
-| `src/app.tsx` | page shell, item → renderer mapping, views, branding |
-| `src/data-source.ts` | live vs local sources, WS attach + poll fallback, auth flow |
+| `src/app.tsx` | page shell, the classic/reader chrome, branding, search + j/k |
+| `src/data-source.ts` | live vs local sources, WS attach + poll fallback, auth flow, smart-sync merge |
 | `src/fold.ts` | item merging, revert-pointer folding, the `Data[]` contract |
-| `src/reader.tsx` | reader layout |
-| `src/settings.ts`, `src/settings-panel.tsx` | settings cookie + gear panel |
-| `src/views/` | the registered conversation views (atlas, blueprint, casefile, cinema, grove, letterpress, teletype, terminal, timeline; `classic` is the built-in chrome layout, not a registered view) — see [`src/views/README.md`](src/views/README.md) for the view contract |
+| `src/timeline-v2.tsx` | the virtualized continuous timeline (keyed rows, snapshot restore) |
+| `src/section-window.tsx` | two-level virtualization for the composed views |
+| `src/tool-overrides.tsx` | the FileCard + tool renderers registered over the kit |
+| `src/hover-rail.tsx` | the prompt rail (paging / fast-skip) |
+| `src/settings.ts`, `src/settings-panel.tsx` | settings cookie + the shared gear/Ctrl+K panel |
+| `src/views/` | the views SDK: registry, ViewContext, chrome primitives, and the ten skins — see [`src/views/README.md`](src/views/README.md) |
 | `scripts/build-themes.mjs` | theme CSS build (bundler-safe file URLs) |
+| `scripts/vendor-v2.mjs` / `vendor-solid.mjs` | deterministic vendoring + fork re-application (run via `npm run vendor`) |
 
 ## Vendored components
 
-`vendor/` carries upstream `@opencode-ai` packages (`ui`, `session-ui`,
-core utils, SDK types) vendored for the client-only build — they are
-upstream code under upstream licensing (MIT), modified only where the
-adapter layers require it. The theme builder and data source are
+`vendor/` carries the opencode **v2** kit (`session-ui-v2`, `ui-v2`,
+`client-v2`, `util-v2`) plus a **vendored solid-js** (snapshot-loop fix
+for a re-entrant disposal crash — see DEVELOPMENT.md), all under
+upstream licensing (MIT), modified only where surgical forks require
+it. Regenerate with `npm run vendor`; provenance in
+`vendor/V2-SOURCE.txt`. The theme builder and data source are
 OpenShare's own.
