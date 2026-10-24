@@ -125,7 +125,6 @@ function CinemaHeader(props: HeaderProps) {
             gearClass="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
             gearLabel="settings"
           />
-          {props.reviewToggle}
           <a
             href="https://github.com/Mirrowel/OpenShare"
             target="_blank"

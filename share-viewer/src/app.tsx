@@ -19,7 +19,6 @@
 // reasoning expand-all. Header extras: session search (Ctrl+K), copy
 // session as markdown, j/k prompt navigation.
 import { SessionTimeline } from "@opencode/session-ui/timeline"
-import { SessionReview } from "@opencode/session-ui/session-review"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
@@ -29,12 +28,10 @@ import { HoverRail } from "./hover-rail"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { Logo, Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
-import { Tabs } from "@opencode/ui/tabs"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 import { Icon } from "@opencode/ui/icon"
-import { ReviewToggle } from "./review"
-import { createEffect, createMemo, createSignal, ErrorBoundary, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, ErrorBoundary, For, onCleanup, Show } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
@@ -242,9 +239,6 @@ function SessionView(props: {
   const ClassicBody = () => {
     const [store, setStore] = createStore({ messageId: undefined as string | undefined })
 
-              const [diffStyle, setDiffStyle] = createSignal<"unified" | "split">(
-    props.settings.diffMode === "split" ? "split" : "unified",
-  )
               const messages = createMemo(() => visibleMessages(props.data, sessionID()))
               const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
               // every tool name this share actually used (the auto-expand
@@ -319,9 +313,6 @@ function SessionView(props: {
                   tools: { placement: grouped ? "grouped" : "separate", ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}) },
                 } as any
               })
-              // review panel: files default-OPEN (v1 behavior), user-controlled after
-              const [reviewOpen, setReviewOpen] = createSignal<string[]>(diffs().map((d: any) => String(d.file ?? "")))
-
               // the v2 timeline document: full session (continuous mode)
               const document = createMemo(() => ({
                 sessionID: sessionID(),
@@ -436,9 +427,11 @@ function SessionView(props: {
                 </Show>
               )
 
-              // wide = full-width transcript: no diffs, or the review
-              // panel closed via the header toggle (owner 2026-10-25)
-              const wide = createMemo(() => diffs().length === 0 || props.settings.reviewOpen === false)
+              // (diff review view removed 2026-10-25 - see DEVELOPMENT.md:
+              // a true session-cumulative diff needs full file contents in
+              // the share, rejected on privacy; per-edit last-wins patches
+              // were pointless. wide = the transcript is the only column)
+              const wide = createMemo(() => true)
 
               return (
                 <div class="relative bg-background-stronger w-screen h-screen overflow-hidden flex flex-col">
@@ -480,13 +473,6 @@ function SessionView(props: {
                         onSearch={props.onSearch}
                         sessionTools={sessionToolNames()}
                       />
-                      <Show when={diffs().length > 0 && props.settings.view !== "reader"}>
-                        <ReviewToggle
-                          count={diffs().length}
-                          open={props.settings.reviewOpen !== false}
-                          onToggle={() => props.updateSettings({ reviewOpen: props.settings.reviewOpen === false })}
-                        />
-                      </Show>
                     </div>
                   </header>
                   <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">
@@ -572,57 +558,14 @@ function SessionView(props: {
                                 }
                                 class="grow min-h-0 w-full"
                               />
-                            </div>
-                          </Show>
-                        </div>
+                             </div>
+                           </Show>
+                         </div>
+                       </div>
+                     </div>
+                      <div classList={{ "!overflow-hidden": true, "md:hidden": wide(), "lg:hidden": !wide() }}>
+                        {turns()}
                       </div>
-                      <Show when={diffs().length > 0 && props.settings.reviewOpen !== false}>
-                        <div class="@container relative pt-6 flex-1 basis-2/5 min-w-0 min-h-0 border-l border-border-weak-base">
-                          <SessionReview
-                            diffs={diffs() as any}
-                            open={reviewOpen()}
-                            onOpenChange={setReviewOpen}
-                            diffStyle={diffStyle()}
-                            onDiffStyleChange={setDiffStyle}
-                            classes={{ root: "pb-20", header: "px-6", container: "px-6" }}
-                          />
-                        </div>
-                      </Show>
-                    </div>
-                    <Switch>
-                      <Match when={diffs().length > 0 && props.settings.reviewOpen !== false}>
-                        <Tabs classList={{ "md:hidden": wide(), "lg:hidden": !wide() }}>
-                          <Tabs.List>
-                            <Tabs.Trigger value="session" class="w-1/2" classes={{ button: "w-full" }}>
-                              Session
-                            </Tabs.Trigger>
-                            <Tabs.Trigger value="review" class="w-1/2 !border-r-0" classes={{ button: "w-full" }}>
-                              {diffs().length} Files Changed
-                            </Tabs.Trigger>
-                          </Tabs.List>
-                          <Tabs.Content value="session" class="!overflow-hidden">
-                            {turns()}
-                          </Tabs.Content>
-                          <Tabs.Content value="review" class="!overflow-hidden hidden data-[selected]:block">
-                            <div data-transcript-scroll class="relative h-full pt-8 overflow-y-auto no-scrollbar">
-                              <SessionReview
-                                diffs={diffs() as any}
-                                open={reviewOpen()}
-                                onOpenChange={setReviewOpen}
-                                diffStyle={diffStyle()}
-                                onDiffStyleChange={setDiffStyle}
-                                classes={{ root: "pb-20", header: "px-4", container: "px-4" }}
-                              />
-                            </div>
-                          </Tabs.Content>
-                        </Tabs>
-                      </Match>
-                      <Match when={true}>
-                        <div classList={{ "!overflow-hidden": true, "md:hidden": wide(), "lg:hidden": !wide() }}>
-                          {turns()}
-                        </div>
-                      </Match>
-                     </Switch>
                     </Show>
                     <Show when={props.settings.view === "reader"}>
                       <ReaderView

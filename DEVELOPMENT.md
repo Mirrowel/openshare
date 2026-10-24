@@ -68,6 +68,10 @@ Suite rules of the road (all learned from live failures):
 
 Visual verification rig: `share-viewer` build served by a throwaway wrangler, a rich contract-v2 fixture share, then playwright-core over real Edge — screenshots + console-error capture for classic/continuous/reader, a 2000-message scale check (virtualized continuous mode must keep ~40 rows in the DOM), and a views sweep across all ten custom views. The rig lives outside the repo; rebuild it from this description when needed. Continuous mode rides `src/timeline-v2.tsx` (lean port of the v2 app virtualizer: measured rows, per-key measurement cache, pinned-to-end anchoring).
 
+### Diff review view — removed (2026-10-25), optional future
+
+A diff review panel (per-session changed-files view) existed briefly in classic + all skins and was removed by owner decision. Why: the only reconstructable data is the **per-edit tool-part patches** (`metadata.files[].patch`), so any aggregation is last-write-wins per file — not a true session-cumulative diff. Producing a real cumulative diff requires shipping **full file contents** in the share, which was rejected on privacy grounds. If ever revisited as an optional, opt-in-per-share feature: the v2 host API `session.diff()` (typed, FileDiffInfo[]) is the intended source — v1.18's `client.session.diff` is a hardcoded stub returning `[]` unconditionally (see `upstream-reports/`), and its `session.diff` event only fires on revert/compaction, so v1 hosts can never feed it. The `session_diff` item type remains in the contract; the viewer ignores it.
+
 ## Release workflow
 
 Lifted from the family (agent-variants/config-studio), adapted to the monorepo (the package lives in `share-plugin/`):

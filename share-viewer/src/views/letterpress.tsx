@@ -175,7 +175,6 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
             onSearch={props.onSearch}
             gearLabel="settings"
           />
-          {props.reviewToggle}
         </div>
       </header>
     </>

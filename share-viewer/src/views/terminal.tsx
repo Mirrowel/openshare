@@ -50,7 +50,6 @@ function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
             gearTitle=":set"
             gearSize="small"
           />
-          {props.reviewToggle}
         </div>
       </div>
     </>

@@ -18,7 +18,6 @@ import { viewSupportsPaged } from "./registry"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
-import { DefaultReview, ReviewToggle, type ReviewSurface } from "../review"
 import { useSessionSections, type SessionSection, type ToolEntry, type ReasoningEntry, type TextEntry } from "./session-data"
 import type { ViewProps } from "./registry"
 import { pagedFor, type OshSettings } from "../settings"
@@ -34,7 +33,7 @@ export type SkinWrappers = {
   ToolWrap?: Component<{ entry: ToolEntry; index: number; settings: OshSettings; children: JSX.Element }>
   ReasoningWrap?: Component<{ entry: ReasoningEntry; settings: OshSettings; children: JSX.Element }>
   ResponseWrap?: Component<{ text: string; settings: OshSettings; children: JSX.Element }>
-  Header?: Component<ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean; reviewToggle?: JSX.Element }>
+  Header?: Component<ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean }>
   Footer?: Component<ViewProps>
   /** a persistent RIGHT-side panel beside the transcript (lg and up),
    *  like the classic info panel - the skin's identity chrome, visible in
@@ -59,10 +58,6 @@ export type Skin = {
   wrappers: SkinWrappers
   // content column class (layout identity)
   columnClass?: string
-  /** the diff review panel (owner round 2026-10-25): default = the shared
-   *  ReviewPanel column; a Component replaces it (SDK surface, same props
-   *  as the default); false opts the skin out entirely */
-  review?: ReviewSurface
 }
 
 const Identity = (props: { children: JSX.Element }) => <>{props.children}</>
@@ -175,38 +170,6 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     return i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2])
   }
 
-  // ---- diff review panel (owner round 2026-10-25: shown by default in
-  // EVERY view, toggled from the header button right of the settings) ----
-  const diffs = createMemo(() => props.data.session_diff[props.sessionID] ?? [])
-  const reviewOn = () => diffs().length > 0 && props.settings.reviewOpen !== false && props.skin.review !== false
-  // the mobile overlay opens ONLY on an explicit toggle press (default-
-  // open must not splash a full-screen panel over the transcript)
-  const [mobileReview, setMobileReview] = createSignal(false)
-  const renderReview = () => {
-    const skin = props.skin.review
-    if (skin === false) return undefined
-    const shared = { diffs: diffs() as any, settings: props.settings, updateSettings: props.updateSettings }
-    if (skin === undefined || skin === true) return <DefaultReview {...shared} />
-    const Custom = skin
-    return <Custom {...shared} />
-  }
-  const reviewToggle = (
-    <Show when={diffs().length > 0 && props.skin.review !== false}>
-      <ReviewToggle
-        count={diffs().length}
-        open={props.settings.reviewOpen !== false}
-        onToggle={() => {
-          const desktop = window.matchMedia("(min-width: 1024px)").matches
-          // what the user currently sees on THIS viewport
-          const shown = desktop ? props.settings.reviewOpen !== false : props.settings.reviewOpen !== false && mobileReview()
-          const next = !shown
-          props.updateSettings({ reviewOpen: next })
-          setMobileReview(next)
-        }}
-      />
-    </Show>
-  )
-
   const TurnBody = (p: { section: SessionSection; index: number }) => (
     <w.TurnWrap section={p.section} index={p.index} settings={props.settings}>
       <w.PromptWrap section={p.section} settings={props.settings}>
@@ -257,7 +220,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
 
   return (
     <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
-      <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} reviewToggle={reviewToggle} />
+      <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
       {/* the prompt rail v4 (owner round 2026-10-24 night): ALWAYS present
           with >1 prompt, both modes - paged pages, continuous fast-skips by
           scrolling to the section. Paged ignores the hide setting (it is
@@ -308,31 +271,6 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
           </Show>
         </div>
-        {/* the diff review panel (owner round 2026-10-25): a column at
-            lg+ (like classic's), a full-screen overlay below lg that
-            opens only on an explicit toggle press. Skin-customizable via
-            Skin.review (Component replaces the default panel). */}
-        <Show when={reviewOn()}>
-          <aside class="hidden lg:flex @container relative pt-6 flex-1 basis-2/5 min-w-0 min-h-0 max-w-[40rem] border-l border-border-weak-base">
-            {renderReview()}
-          </aside>
-          <Show when={mobileReview()}>
-            <div class="lg:hidden fixed inset-0 z-50 bg-background-base flex flex-col" data-osh-review-overlay>
-              <div class="h-9 px-4 flex items-center justify-between border-b border-border-weak-base shrink-0">
-                <span class="text-13-medium text-text-strong">{diffs().length} {diffs().length === 1 ? "file" : "files"} changed</span>
-                <button
-                  type="button"
-                  class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
-                  aria-label="close diff review"
-                  onClick={() => setMobileReview(false)}
-                >
-                  <Icon name="close-small" size="small" />
-                </button>
-              </div>
-              <div class="flex-1 min-h-0 overflow-y-auto">{renderReview()}</div>
-            </div>
-          </Show>
-        </Show>
         {/* the skin's right rail: a real panel like the classic info view
             (atlas's legend + coordinates), NOT a CSS-grid column of the
             scrolling sheet - the grid version put station 1 in the 13rem
