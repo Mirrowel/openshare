@@ -28,6 +28,12 @@ export type ViewEntry = {
   id: string
   label: string
   component: (props: ViewProps) => JSX.Element
+  /** false = this view is continuous-only (a stream metaphor with no
+   *  meaningful "one prompt at a time" page): the settings panel hides the
+   *  paged/continuous toggle for it and it never renders the prompt rail
+   *  (owner directive 2026-10-24: some views are always continuous, and
+   *  the option to enable paging should not even be shown) */
+  paged?: boolean
 }
 
 // full-page views (classic and reader live in the standard chrome)
@@ -42,6 +48,14 @@ export function registerView(entry: ViewEntry) {
 
 export function findView(id: string): ViewEntry | undefined {
   return VIEWS.find((v) => v.id === id)
+}
+
+/** does this view support paged mode? (classic/reader do; registered views
+ *  declare it via ViewEntry.paged, default true) */
+export function viewSupportsPaged(id: string): boolean {
+  if (id === "classic" || id === "reader") return true
+  const v = VIEWS.find((x) => x.id === id)
+  return v?.paged !== false
 }
 
 // which session a route renders (main or subagent /N) - shared with the

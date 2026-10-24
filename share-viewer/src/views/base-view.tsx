@@ -14,6 +14,7 @@ import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup,
 import { Dynamic } from "solid-js/web"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { HoverRail } from "../hover-rail"
+import { viewSupportsPaged } from "./registry"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -133,7 +134,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   const [active, setActive] = createSignal(0)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const model = () => sessionModelLabel(props.data, props.sessionID)
-  const continuous = () => continuousFor(props.settings, props.skin.id)
+  const continuous = () => continuousFor(props.settings, props.skin.id, viewSupportsPaged(props.skin.id))
   const cachePrefix = props.source.shareID + ":" + props.sessionID
 
   // search filter
@@ -215,41 +216,34 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   return (
     <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
       <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
-      {/* paged prompt switcher: ONE shared FLOATING rail (owner directive
-          2026-10-24 redesign) - fixed to the viewport, revealed by an
-          invisible left-edge proximity strip, zero layout impact. Skins
-          with a Nav render it INSIDE the popover (their identity stays);
-          Nav-less skins (reader, atlas) get the default numbered list,
-          which jumps by scrolling. */}
-      <Show when={!continuous()}>
-        <HoverRail
-          count={visible().length}
-          active={w.Nav ? active() : undefined}
-          title={props.skin.id}
-          label={(i) => {
-            const p = visible()[i]?.prompt
-            return typeof p === "string" ? p.trim().split("\n")[0] : undefined
-          }}
-          onSelect={(i) => {
-            if (w.Nav) {
-              setActive(i)
-              return
-            }
-            // scroll mode: jump to the section wrapper
-            const sc = scroller as unknown as HTMLDivElement | undefined
-            const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-            el?.scrollIntoView({ behavior: "smooth", block: "start" })
-          }}
-        >
-          <Show when={w.Nav}>
-            {(() => {
-              const NavSkin = w.Nav!
-              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-            })()}
-          </Show>
-        </HoverRail>
-      </Show>
+      {/* paged prompt switcher: the ALWAYS-VISIBLE gutter rail (owner
+          directive v3) - a permanent ~28px column with the prompt pill;
+          content shifts right by the gutter. Paged = one section at a
+          time for EVERY skin (Nav or not - Nav-less skins previously
+          rendered all sections in both modes, live-caught as "the toggle
+          does nothing"). Skins with a Nav render it INSIDE the popover;
+          Nav-less skins get the default numbered list. Continuous-only
+          skins (ViewEntry.paged === false) never show the rail. */}
       <div class="flex flex-1 min-h-0">
+        <Show when={!continuous()}>
+          <HoverRail
+            count={visible().length}
+            active={active()}
+            title={props.skin.id}
+            label={(i) => {
+              const p = visible()[i]?.prompt
+              return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+            }}
+            onSelect={(i) => setActive(i)}
+          >
+            <Show when={w.Nav}>
+              {(() => {
+                const NavSkin = w.Nav!
+                return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+              })()}
+            </Show>
+          </HoverRail>
+        </Show>
         <div ref={scroller} class="relative flex-1 min-w-0 overflow-y-auto">
           <WindowedSections
             sections={visible()}
@@ -257,7 +251,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             cachePrefix={cachePrefix}
             class={props.skin.columnClass ?? "max-w-3xl mx-auto px-6 py-6 flex flex-col gap-8"}
             render={(s, i) => (
-              <Show when={continuous() || !w.Nav} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>
+              <Show when={continuous()} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>
                 <TurnBody section={s} index={i} />
               </Show>
             )}

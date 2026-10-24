@@ -89,8 +89,11 @@ export function writeSettings(s: OshSettings) {
 
 /** the paged/continuous choice FOR A VIEW: per-view override first, the
  *  global default second (owner directive: each view remembers its own
- *  mode - terminal can stay continuous while classic pages). */
-export function continuousFor(s: OshSettings, view: string): boolean {
+ *  mode - terminal can stay continuous while classic pages). Views that
+ *  do not support paging (ViewEntry.paged === false) are always
+ *  continuous regardless of any stored choice. */
+export function continuousFor(s: OshSettings, view: string, supportsPaged = true): boolean {
+  if (!supportsPaged) return true
   const per = s.continuousByView?.[view]
   return typeof per === "boolean" ? per : s.continuous
 }

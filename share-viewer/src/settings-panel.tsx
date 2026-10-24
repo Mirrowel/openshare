@@ -11,6 +11,7 @@ import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { continuousFor, setContinuousFor, type OshSettings } from "./settings"
 import { setDiffMode } from "./settings"
+import { viewSupportsPaged } from "./views/registry"
 import type { Branding } from "./data-source"
 import { VIEW_OPTIONS } from "./views/registry"
 
@@ -244,16 +245,18 @@ export function SettingsBody(props: {
 
       <Section label="behavior">
         <div class="flex flex-col">
-          <Switch
-            label="Continuous"
-            hint="every prompt in one scroll (per view)"
-            on={continuousFor(props.settings, props.settings.view)}
-            onChange={() =>
-              props.update(
-                setContinuousFor(props.settings, props.settings.view, !continuousFor(props.settings, props.settings.view)),
-              )
-            }
-          />
+          <Show when={viewSupportsPaged(props.settings.view)}>
+            <Switch
+              label="Continuous"
+              hint="every prompt in one scroll (per view)"
+              on={continuousFor(props.settings, props.settings.view)}
+              onChange={() =>
+                props.update(
+                  setContinuousFor(props.settings, props.settings.view, !continuousFor(props.settings, props.settings.view)),
+                )
+              }
+            />
+          </Show>
           <Switch
             label="Center content"
             on={props.settings.centerContent}
