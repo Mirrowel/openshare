@@ -708,6 +708,17 @@
 }
 
 /* ------------------------------------------------------------ atlas */
+/* atlas: tool bodies stay INSIDE the stylized housing (live-caught: the
+   pre/bash body clipped outside the rounded card and was obscured) */
+[data-view="atlas"] [data-slot="collapsible-content"] {
+  max-width: 100%;
+  overflow-x: auto;
+}
+[data-view="atlas"] .osh-pre-wrap,
+[data-view="atlas"] [data-component="bash-output"],
+[data-view="atlas"] [data-component="osh-file-body"] {
+  max-width: 100% !important;
+}
 /* the survey sheet: graticule behind everything, content lifted above */
 [data-view="atlas"] {
   position: relative;

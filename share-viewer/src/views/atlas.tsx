@@ -17,7 +17,7 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import type { ViewEntry } from "./registry"
+import { setInfoExtra, type ViewEntry } from "./registry"
 import { useSessionSections, type SessionSection } from "./session-data"
 import { SettingsBody } from "../settings-panel"
 import { pagedFor } from "../settings"
@@ -92,7 +92,6 @@ const emptyFeed: RailFeed = {
   continuous: false,
 }
 const [railFeed, setRailFeed] = createSignal<RailFeed>(emptyFeed)
-const [legendOpen, setLegendOpen] = createSignal(false)
 
 function BrandChip(props: { logoUrl?: string; linkUrl?: string; title?: string }) {
   const frame =
@@ -227,36 +226,7 @@ function Masthead(props: HeaderProps) {
               >
                 <Icon name="github" size="small" />
               </a>
-              <div class="relative flex items-center">
-                <button
-                  class="flex items-center gap-1.5 rounded-md border border-border-weak-base bg-background-base px-2 py-1 text-12-mono text-text-weaker transition-colors duration-150 hover:border-border-strong-base hover:text-text-base cursor-pointer"
-                  onClick={() => setLegendOpen(!legendOpen())}
-                  aria-expanded={legendOpen()}
-                  title={legendOpen() ? "hide the legend" : "show the legend"}
-                >
-                  <Icon name="dot-grid" size="small" />
-                  <span class="hidden sm:inline">legend</span>
-                  <span
-                    class="text-icon-weaker-base transition-transform duration-200 ease-out"
-                    classList={{ "rotate-90": !legendOpen() }}
-                  >
-                    <Icon name="chevron-right" size="small" />
-                  </span>
-                </button>
-                {/* the legend as an ANCHORED POPUP under the button (owner
-                    directive): the permanent right panel took layout space
-                    even when hidden and pushed the sheet off-center. The
-                    popup carries the old margin-rail content: profile,
-                    legend, coordinates. */}
-                <Show when={legendOpen()}>
-                  <div
-                    class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-6rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <MarginRail />
-                  </div>
-                </Show>
-              </div>
+{/* the legend lives in the global Session info popup now (setInfoExtra) */}
               <div class="relative flex items-center rounded-md border border-border-weak-base bg-background-base p-0.5">
                 <button
                   class="flex items-center gap-1 h-6 px-1.5 text-12-mono text-text-weaker hover:text-text-base cursor-pointer bg-transparent border-none"
@@ -337,12 +307,7 @@ function SheetFooter(props: FooterProps) {
   const sections = useSessionSections(props.data, props.sessionID)
   return (
     <footer class="relative z-10 shrink-0 border-t border-border-weak-base bg-background-base">
-      <div class="mx-auto w-full max-w-[76rem] px-5">
-        <Show when={legendOpen()}>
-          <div class="border-b border-border-weak-base py-2.5 lg:hidden">
-            <Legend counts={countsOf(sections())} layout="row" />
-          </div>
-        </Show>
+      <div class="mx-auto w-full max-w-[90rem] px-5">
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
           <span class="flex min-w-0 items-center gap-2">
             <BrandChip logoUrl={b().logoUrl} linkUrl={b().linkUrl} title={b().name} />
@@ -479,7 +444,10 @@ function Profile(props: { sections: SessionSection[]; query: string }) {
 // the margin rail: profile, legend, coordinates. Rendered as the second
 // grid column of the sheet and made sticky for the whole scroll via the
 // skins.css grid-row span, exactly the original right margin
-function MarginRail() {
+// the legend + coordinates, rendered INSIDE the global Session info
+// popup (owner round 2026-10-24 night: one info surface, no separate
+// legend button/popup, no permanent right panel)
+function AtlasInfoExtra() {
   const feed = railFeed
   const worktree = () => {
     const dir = feed().info?.directory
@@ -493,33 +461,34 @@ function MarginRail() {
   const sessionCode = () =>
     (feed().sessionID.replace(/^ses_/, "").slice(-8) || "00000000").toUpperCase()
   const row = (label: string, value: string) => (
-    <div class="flex items-baseline gap-2">
-      <span class="w-17 shrink-0 text-12-mono text-text-weaker opacity-70">{label}</span>
-      <span class="min-w-0 truncate text-12-mono text-text-base">{value}</span>
+    <div class="flex items-baseline justify-between gap-4 py-1">
+      <span class="text-12-regular text-text-weaker shrink-0">{label}</span>
+      <span class="text-12-mono text-text-base text-right break-all">{value}</span>
     </div>
   )
   return (
-    <div class="flex flex-col gap-6">
-      <Show when={legendOpen()}>
-        <Profile sections={feed().sections} query={feed().query} />
+    <>
+      <div class="flex flex-col pt-3 border-t border-border-weak-base">
+        <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase pb-1">legend</div>
         <Legend counts={feed().counts} />
-        <div class="flex flex-col gap-1.5">
-          <div class="text-12-mono uppercase tracking-[0.14em] text-text-weaker">coordinates</div>
-          {row("extent", `${feed().counts.stations} stations · ${feed().counts.readings} readings`)}
-          <Show when={worktree()}>{(dir) => row("worktree", dir())}</Show>
-          {row("charted", created())}
-          <Show when={tokens()?.input != null || tokens()?.output != null}>
-            {row("scale", `${countTokens(tokens()?.input) ?? 0} in · ${countTokens(tokens()?.output) ?? 0} out`)}
-          </Show>
-          <Show when={feed().info?.summary?.files != null}>
-            {row("files", String(feed().info?.summary?.files))}
-          </Show>
-          {row("session", sessionCode())}
-        </div>
-      </Show>
-    </div>
+      </div>
+      <div class="flex flex-col pt-3 border-t border-border-weak-base">
+        <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase pb-1">coordinates</div>
+        {row("extent", feed().counts.stations + " stations / " + feed().counts.readings + " readings")}
+        <Show when={worktree()}>{(dir) => row("worktree", dir())}</Show>
+        {row("charted", created())}
+        <Show when={tokens()?.input != null || tokens()?.output != null}>
+          {row("scale", (countTokens(tokens()?.input) ?? 0) + " in / " + (countTokens(tokens()?.output) ?? 0) + " out")}
+        </Show>
+        <Show when={feed().info?.summary?.files != null}>
+          {row("files", String(feed().info?.summary?.files))}
+        </Show>
+        {row("session", sessionCode())}
+      </div>
+    </>
   )
 }
+setInfoExtra(() => <AtlasInfoExtra />)
 
 // station: the chain-line gutter (index over total, datum diamond) beside
 // the station body; the article is the jump target for the profile bars.
@@ -661,7 +630,7 @@ export const atlasSkin: Skin = {
   // like the classic info view, in BOTH modes; the old CSS-grid column put
   // station 1 in the 13rem rail via auto-placement and the legend inline
   // before the first prompt - live-caught)
-  columnClass: "atlas-sheet w-full max-w-[76rem] mx-auto px-5 py-5",
+  columnClass: "atlas-sheet w-full max-w-[90rem] mx-auto px-5 py-5",
   wrappers: {
     Header: Masthead,
     Footer: SheetFooter,

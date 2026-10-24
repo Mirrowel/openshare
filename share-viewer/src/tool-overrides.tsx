@@ -138,7 +138,16 @@ function useSplitFit(contentChars?: () => number) {
       const rect = card.getBoundingClientRect()
       const avail = window.innerWidth - rect.left - 24
       const col = rect.width || 0
-      setMaxPx(Math.max(0, Math.min(col * 2, avail)))
+      let cap = avail
+      // skin sheets (atlas): a split card must not jut past the sheet's
+      // right edge into the page margin (live-caught on atlas with the
+      // widened sheet)
+      const sheet = card.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet") ?? card.closest(".atlas-sheet")
+      if (sheet) {
+        const sr = sheet.getBoundingClientRect()
+        cap = Math.min(cap, Math.max(0, sr.right - rect.left - 24))
+      }
+      setMaxPx(Math.max(0, Math.min(col * 2, cap)))
     }
     measure()
     const ro = new ResizeObserver(measure)
