@@ -227,21 +227,36 @@ function Masthead(props: HeaderProps) {
               >
                 <Icon name="github" size="small" />
               </a>
-              <button
-                class="flex items-center gap-1.5 rounded-md border border-border-weak-base bg-background-base px-2 py-1 text-12-mono text-text-weaker transition-colors duration-150 hover:border-border-strong-base hover:text-text-base cursor-pointer"
-                onClick={() => setLegendOpen(!legendOpen())}
-                aria-expanded={legendOpen()}
-                title={legendOpen() ? "hide the legend" : "show the legend"}
-              >
-                <Icon name="dot-grid" size="small" />
-                <span class="hidden sm:inline">legend</span>
-                <span
-                  class="text-icon-weaker-base transition-transform duration-200 ease-out"
-                  classList={{ "rotate-90": !legendOpen() }}
+              <div class="relative flex items-center">
+                <button
+                  class="flex items-center gap-1.5 rounded-md border border-border-weak-base bg-background-base px-2 py-1 text-12-mono text-text-weaker transition-colors duration-150 hover:border-border-strong-base hover:text-text-base cursor-pointer"
+                  onClick={() => setLegendOpen(!legendOpen())}
+                  aria-expanded={legendOpen()}
+                  title={legendOpen() ? "hide the legend" : "show the legend"}
                 >
-                  <Icon name="chevron-right" size="small" />
-                </span>
-              </button>
+                  <Icon name="dot-grid" size="small" />
+                  <span class="hidden sm:inline">legend</span>
+                  <span
+                    class="text-icon-weaker-base transition-transform duration-200 ease-out"
+                    classList={{ "rotate-90": !legendOpen() }}
+                  >
+                    <Icon name="chevron-right" size="small" />
+                  </span>
+                </button>
+                {/* the legend as an ANCHORED POPUP under the button (owner
+                    directive): the permanent right panel took layout space
+                    even when hidden and pushed the sheet off-center. The
+                    popup carries the old margin-rail content: profile,
+                    legend, coordinates. */}
+                <Show when={legendOpen()}>
+                  <div
+                    class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-6rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MarginRail />
+                  </div>
+                </Show>
+              </div>
               <div class="relative flex items-center rounded-md border border-border-weak-base bg-background-base p-0.5">
                 <button
                   class="flex items-center gap-1 h-6 px-1.5 text-12-mono text-text-weaker hover:text-text-base cursor-pointer bg-transparent border-none"
@@ -484,7 +499,7 @@ function MarginRail() {
     </div>
   )
   return (
-    <aside class="atlas-rail flex flex-col gap-6">
+    <div class="flex flex-col gap-6">
       <Show when={legendOpen()}>
         <Profile sections={feed().sections} query={feed().query} />
         <Legend counts={feed().counts} />
@@ -502,7 +517,7 @@ function MarginRail() {
           {row("session", sessionCode())}
         </div>
       </Show>
-    </aside>
+    </div>
   )
 }
 
@@ -650,7 +665,6 @@ export const atlasSkin: Skin = {
   wrappers: {
     Header: Masthead,
     Footer: SheetFooter,
-    Rail: MarginRail,
     TurnWrap: Station,
     PromptWrap: StationHeading,
     ToolWrap: Reading,
