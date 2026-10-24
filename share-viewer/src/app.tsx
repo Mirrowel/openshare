@@ -439,19 +439,25 @@ function SessionView(props: {
                     <div class="osh-bg" style={{ "background-image": `url(${props.source.branding().backgroundUrl})` }} />
                   </Show>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-                    <Show
-                      when={props.source.branding().linkUrl}
-                      fallback={
-                        <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
-                          <BrandMark branding={props.source.branding()} class="h-5 rounded" />
-                        </span>
-                      }
-                    >
-                      {(href) => (
-                        <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={props.source.branding().name || ""}>
-                          <BrandMark branding={props.source.branding()} class="h-5 rounded" />
-                        </a>
-                      )}
+                    {/* the brand frame renders ONLY when there is a logo:
+                        with no branding an empty bordered chip showed as a
+                        tiny circle (live-caught) - nothing to show, nothing
+                        rendered */}
+                    <Show when={props.source.branding().logoUrl}>
+                      <Show
+                        when={props.source.branding().linkUrl}
+                        fallback={
+                          <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
+                            <BrandMark branding={props.source.branding()} class="h-5 rounded" />
+                          </span>
+                        }
+                      >
+                        {(href) => (
+                          <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={props.source.branding().name || ""}>
+                            <BrandMark branding={props.source.branding()} class="h-5 rounded" />
+                          </a>
+                        )}
+                      </Show>
                     </Show>
                     <StatusLine status={props.source.status()} />
                     <div class="flex items-center gap-2.5">
