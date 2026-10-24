@@ -334,7 +334,12 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   overflow-wrap: anywhere;
   max-height: 32rem;
   overflow: auto;
-  overscroll-behavior: contain;
+  /* NO overscroll-behavior here, ever: `contain` on a box that is a
+     scroll container in Y (overflow:auto) blocks vertical wheel chaining
+     EVEN WHEN NOTHING CAN SCROLL (live-caught: grep bodies locked page
+     scroll in both overflow modes). The browser default chains exactly
+     per the owner rule - capture only when the surface actually scrolls
+     vertically. The split diff keeps its X-only contain. */
 }
 .osh-pre-error {
   color: var(--syntax-diff-delete);
@@ -418,6 +423,12 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 .osh-pre-wrap {
   position: relative;
+  /* outputs HUG their content (owner directive): a plain block fills the
+     row width - the toggle floated to the far-right edge of the page and
+     short outputs showed a wide empty surface (live-caught on grep; the
+     kit's bash-output width:100% did the same to shell). Cap applies. */
+  width: fit-content;
+  max-width: min(100%, 75vw);
 }
 .osh-pre-wrap [data-slot="osh-overflow-toggle"] {
   position: absolute;
@@ -693,4 +704,14 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 }
 .osh-rail-pill-open {
   border-color: var(--border-strong-base) !important;
+}
+
+/* shell output card hugs too (the kit hardcodes width:100% on
+   bash-output - a short command rendered a full-row empty surface,
+   live-caught) */
+[data-row-key] [data-component="bash-output"],
+[data-timeline-row] [data-component="bash-output"] {
+  width: fit-content;
+  min-width: min(60%, 340px);
+  max-width: min(100%, 75vw);
 }
