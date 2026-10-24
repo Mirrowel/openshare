@@ -1,87 +1,47 @@
 // terminal: the scrollback skin over the shared base - tmux-style
 // statusbars top and bottom, everything monospace, prompts as ^ lines.
-import { Show, createSignal } from "solid-js"
+// Phase-2 chrome: StatusBar/StatusLine are thin SkinHeader/SkinFooter
+// stylings - the structure (back, title, version, model, status, GitHub,
+// settings) is written once in chrome.tsx.
+import { Show } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
+import { SkinHeader, SkinFooter } from "./chrome"
 import { SkinSettingsPopover } from "../settings-panel"
 import type { ViewEntry } from "./registry"
-import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 
 function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const view = useView()
-  const info = view.info
-  const statusColor = () =>
-    props.status === "live" ? "#4ade80" : props.status === "error" ? "#f87171" : "#7aa2f7"
   return (
-    <>
-      <div class="h-7 px-3 flex items-center justify-between gap-4 bg-background-stronger border-b border-border-weak-base shrink-0 text-12-mono text-text-weaker font-mono relative z-30">
-        <div class="flex items-center gap-3 min-w-0">
-          <Show when={props.isSub && props.onBack}>
-            <button
-              class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base shrink-0"
-              onClick={() => props.onBack?.()}
-            >
-              &lt; main
-            </button>
-          </Show>
-          <span class="text-text-strong truncate">{info()?.title ?? "session"}</span>
-        </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <span class="flex items-center gap-1.5">
-            <Mark class="h-3" />
-            <span class="text-text-base">v{view.version() ?? ""}</span>
-          </span>
-          <Show when={props.model}>
-            <span class="truncate max-w-56 text-text-base hidden sm:inline">{props.model}</span>
-          </Show>
-          <span class="flex items-center gap-1.5">
-            <span class="inline-block size-1.5 rounded-full" style={{ background: statusColor() }} />
-            {props.status}
-          </span>
-          <SkinSettingsPopover
-            settings={props.settings}
-            update={props.updateSettings}
-            branding={props.source.branding()}
-            search={props.search}
-            onSearch={props.onSearch}
-            gearClass="bg-transparent border border-border-weak-base rounded px-1.5 text-12-mono text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            gearTitle=":set"
-            gearSize="small"
-          />
-        </div>
-      </div>
-    </>
+    <SkinHeader
+      class="h-7 px-3 flex items-center justify-between gap-4 bg-background-stronger border-b border-border-weak-base shrink-0 text-12-mono text-text-weaker font-mono relative z-30"
+      leadClass="flex items-center gap-3 min-w-0"
+      titleClass="text-text-strong truncate"
+      metaClass="flex items-center gap-3 shrink-0"
+      title={view.info()?.title ?? "session"}
+      settingsTrigger={
+        <SkinSettingsPopover
+          settings={props.settings}
+          update={props.updateSettings}
+          branding={props.source.branding()}
+          search={props.search}
+          onSearch={props.onSearch}
+          gearClass="bg-transparent border border-border-weak-base rounded px-1.5 text-12-mono text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+          gearTitle=":set"
+          gearSize="small"
+        />
+      }
+    />
   )
 }
 
-function StatusLine(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
-  const b = () => props.source.branding()
+function StatusLine(_props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
   return (
-    <div class="h-6 px-3 flex items-center justify-between gap-4 bg-background-stronger border-t border-border-weak-base shrink-0 text-12-mono text-text-weaker font-mono">
-      <div class="flex items-center gap-2 min-w-0">
-        <Show when={b().logoUrl}>
-          <img src={b().logoUrl} alt="" class="h-3 rounded-sm" />
-        </Show>
-        <span class="truncate">
-          {b().wordmarkUrl ? "" : `${b().name ? b().name + " · " : ""}Open(code)Share`}
-        </span>
-        {b().wordmarkUrl ? <img src={b().wordmarkUrl} alt="" class="h-3.5" /> : null}
-      </div>
-      <div class="shrink-0 flex items-center gap-3">
-        <span>terminal</span>
-        <a
-          href="https://github.com/Mirrowel/OpenShare"
-          target="_blank"
-          rel="noreferrer"
-          class="text-icon-weaker-base hover:text-icon-strong-base"
-          title="Open(code)Share"
-        >
-          <Icon name="github" size="small" />
-        </a>
-      </div>
-    </div>
+    <SkinFooter
+      class="h-6 px-3 flex items-center justify-between gap-4 bg-background-stronger border-t border-border-weak-base shrink-0 text-12-mono text-text-weaker font-mono"
+      label="terminal"
+    />
   )
 }
 

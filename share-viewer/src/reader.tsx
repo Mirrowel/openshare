@@ -3,13 +3,10 @@
 import { For, Show, createSignal } from "solid-js"
 import { BaseSessionView } from "./views/base-view"
 import { useView } from "./views/view-context"
+import { SkinHeader } from "./views/chrome"
 import type { Skin, SkinWrappers } from "./views/base-view"
 import type { ViewEntry } from "./views/registry"
 import { MetaLine } from "./views/meta-line"
-import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
-import { ProviderIcon } from "@opencode/ui/provider-icon"
-import { sessionModelLabel } from "./views/session-data"
 
 function promptTitle(s: { prompt: string }) {
   return s.prompt.trim().split("\n")[0].slice(0, 60) || "(no prompt)"
@@ -40,36 +37,12 @@ function HoverToc(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
 }
 
 function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const view = useView()
-  const info = view.info
   return (
-    <header class="h-14 px-6 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-      <div class="flex items-center gap-3 min-w-0">
-        <Show when={props.isSub && props.onBack}>
-          <button
-            class="flex items-center gap-1 text-12-regular text-text-weaker hover:text-text-base bg-transparent border-none cursor-pointer shrink-0"
-            onClick={() => props.onBack?.()}
-          >
-            <Icon name="arrow-left" size="small" />
-            main
-          </button>
-        </Show>
-        <h1 class="text-16-medium text-text-strong truncate">{info()?.title ?? "session"}</h1>
-      </div>
-      <div class="flex items-center gap-2.5 shrink-0">
-        <span class="flex items-center gap-1.5 bg-surface-strong px-2 py-0.5 rounded-md shadow-xs-border-base">
-          <Mark class="w-3" />
-          <span class="text-12-mono text-text-base">v{view.version() ?? "?"}</span>
-          <Show when={(info()?.model as any)?.providerID}>
-            <ProviderIcon id={(info()?.model as any).providerID} class="w-3.5 text-icon-base" />
-          </Show>
-          <Show when={props.model}>
-            <span class="text-12-mono text-text-base">{props.model}</span>
-          </Show>
-        </span>
-        <span class="text-12-regular text-text-weaker">{props.status}</span>
-      </div>
-    </header>
+    <SkinHeader
+      class="h-14 px-6 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30"
+      leadClass="flex items-center gap-3 min-w-0"
+      titleClass="text-16-medium text-text-strong truncate"
+    />
   )
 }
 
