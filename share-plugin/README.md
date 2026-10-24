@@ -9,7 +9,7 @@ OpenCode v1 and v2, self-hosted on your own worker.
 |---|---|---|
 | `dist/server.js` | package server entry (opencode.json `plugin` array) | all, unless the TUI is registered |
 | `dist/tui.js` | package TUI entry (tui.json `plugin` array) | its presence flips the server to manual |
-| `ci/openshare.js` | single-file, zero-dependency bundle of the same engine (committed; rebuilt by `npm run build`) | always all — the CI bundle |
+| `ci/openshare.js` | single-file, zero-dependency bundle of the same engine (committed; rebuilt by `npm run build`) | all-mode **by default** — it declares no TUI entry, but an explicit `shareMode` in config/env still wins |
 
 All three are behavior-identical where they overlap — `npm run
 test:regression` proves the single file and the package match the frozen
@@ -105,11 +105,12 @@ stays all-mode.
   preview), Advanced, Config files. Danger rows red, dirty rows green,
   `[i]` panes paged (`## sections`, 1-9 jump), messages wrap in real
   bodies (no clipped one-liners).
-- Sidebar chip — share status next to the session title (`·N` when the
-  session streams to several servers); click copies the link. A share
-  whose page died server-side renders `⊘ gone` — clicking opens the share
-  manager, which verifies every bound server, auto-clears dead entries
-  and offers Share again (see Gone detection in the root README).
+- Sidebar chip (v1 hosts — the v2 TUI context has no slot registry yet) —
+  share status next to the session title (`·N` when the session streams
+  to several servers); click copies the link. A share whose page died
+  server-side renders `⊘ gone` — clicking opens the share manager, which
+  verifies every bound server, auto-clears dead entries and offers
+  Share again (see Gone detection in the root README).
 - Every menu row carries an `[i]` detail pane (what it does, current
   value + source, full URLs/ids); Interface rows set menu width/height
   (host preference store).
@@ -126,39 +127,34 @@ npm run test:quick     # everyday gate (~90s): parity + manual core + TUI + v2 +
 
 Suites (shared machinery in `scripts/suite-lib.mjs`; every run is
 watchdogged, port-swept, and drives real `opencode serve` instances with
-a mock OpenAI-compatible provider — except where noted):
+a mock OpenAI-compatible provider — except where noted). The canonical
+suite table — what each covers, including the big/backends scale suites —
+lives in [`../DEVELOPMENT.md`](../DEVELOPMENT.md#test-suites); the
+commands:
 
 - `test:regression` — parity of legacy / single-file / package across the
-  full lifecycle (create → prompt → completed → delete → 404).
-- `test:manual` — dormancy, flag activation + backfill, restart attach,
-  unshare, re-share, per-session auth opts, all-override, pre-existing
-  gates, undo tombstones, completed debounce, turn-mode drops.
-- `test:tui-flow` — share/unshare flows, config round-trip, connect
-  flow (enroll + persist + rotate), admin console round-trip.
-- `test:v2` — the v2 adapter against a **scripted mock v2 host** (event
-  classification, message conversion, live re-sync, delete).
-- `test:auth` — the **server identity contract** exercised over HTTP/WS
-  (no opencode instance): enrollment, code burn, rotate, freeze (secret
-  dead too), limits, reassign, public mode (48 checks).
-- `test:enroll` — the plugin's enrollment lifecycle end to end (code
-  enroll, token persistence across processes, revoke → re-enroll,
-  blocked path, public zero-config).
-- `test:fanout` — multi-server: v2 bindings, content parity across
-  servers, mid-session join with full-history backfill, per-session
-  opt-outs.
-- `test:cli` — real `opencode run` end to end (single file + package +
-  silenced outputs; mock provider, sandboxed XDG homes) — on demand.
-- `node scripts/npm-e2e.mjs` — the **published** npm package installed
-  by registry spec, end to end — on demand.
-- `test:server-auth` / `test:server-enroll` — the SAME auth/enroll
-  suites against the portable Bun backend (`../share-server`): the
-  two-backends-one-protocol parity guarantee.
+  full lifecycle.
+- `test:manual` — the engine scenarios (dormancy, backfill, tombstones,
+  timers, turn sockets, all-mode gating).
+- `test:tui-flow` — share/manager flows, config write targets, enrollment,
+  admin console, gone detection.
+- `test:v2` — the v2 adapter against a scripted mock v2 host.
+- `test:auth` / `test:server-auth` — the identity contract (52 checks)
+  against the Cloudflare worker and the Bun backend.
+- `test:enroll` / `test:server-enroll`, `test:fanout`, `test:big` /
+  `test:server-big` — enrollment lifecycle, multi-server fan-out,
+  big-session scale (both backends).
+- `test:cli`, `node scripts/npm-e2e.mjs` — real `opencode run` / the
+  published npm package — on demand only.
 
 Layout:
 
 ```
 src/
   config.ts        config load/save (servers group, field-level merge), shareMode, tui.json scan
+  contract.ts      the OpenShare item contract (v: 2 envelope, message/diff
+                   normalization, tombstone shape) — shared truth for plugin,
+                   worker, Bun server, and viewer
   core.ts          the engine: fan-out remotes (socket/spool/rev per server),
                    ws handshake, chunked syncs, backfill, collisions, opt-outs
   server.ts        v1 entry {id, server, setup}

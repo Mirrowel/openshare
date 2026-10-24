@@ -9,12 +9,14 @@ compose the shared pieces, you don't rebuild them.
 ## The whole contract
 
 One file: `src/views/<your-id>.tsx`. You export a `Skin` and register
-it. Nothing else:
+it, plus two lines in `registry.tsx` (import + the registration call)
+that make the module load:
 
 ```tsx
 import { type Skin } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader, SkinFooter } from "./chrome"
+import { SkinSettingsPopover } from "../settings-panel"
 import { registerSkin } from "./registry"
 
 const mySkin: Skin = {
@@ -26,7 +28,15 @@ const mySkin: Skin = {
     Header: (p) => (
       <SkinHeader
         class="h-10 px-4 flex items-center justify-between bg-background-base border-b border-border-weak-base"
-        settingsTrigger={undefined /* the shared popover renders when omitted... see below */}
+        settingsTrigger={
+          <SkinSettingsPopover
+            settings={p.settings}
+            update={p.updateSettings}
+            branding={p.source.branding()}
+            search={p.search}
+            onSearch={p.onSearch}
+          /> /* the shared anchored settings surface - pass it explicitly */
+        }
       />
     ),
     Footer: () => <SkinFooter label="myid" />,

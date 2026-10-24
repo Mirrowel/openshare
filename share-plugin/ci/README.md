@@ -1,8 +1,14 @@
 # Open(code)Share — CI bundle (`openshare.js`)
 
-The single-file, zero-dependency build of the plugin. **Always shares all
-sessions** — this is the headless/CI artifact, behavior-identical to the
-package server (`../dist/server.js`), proven by `npm run test:regression`.
+The single-file, zero-dependency build of the plugin. **All-mode by
+default** — it declares no TUI entry, so presence detection always
+resolves "all" on a CI runner (an explicit `shareMode` in config/env
+still wins). Behavior-identical to the package server
+(`../dist/server.js`), proven by `npm run test:regression`.
+
+If your runner executes the bundle under plain Node (outside
+opencode's runtime), use Node 22+ — the engine relies on the
+`WebSocket`/`fetch` globals.
 
 This folder is deliberately separate from the package root so that loading
 the plugin by directory (`plugin: ["file:///…/share-plugin"]`) can only

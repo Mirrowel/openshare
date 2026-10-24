@@ -48,7 +48,7 @@ then the code — you're both hoster and first user).
 | `PORT` | `8787` | listen port |
 | `CREATE_TOKEN` | *(unset)* | root admin token — required for the admin API and legacy root creates. Enrollment is the normal path for users. |
 | `AUTH_MODE` | `private` | `public` = anyone knowing the host may enroll (rate-limited); `private` = access code required |
-| `OPENSHARE_DB` | `./openshare.db` | SQLite file |
+| `OPENSHARE_DB` | `./openshare.db` next to `server.ts` | SQLite file (resolved relative to `server.ts`, not your cwd) |
 | `VIEWER_DIR` | `../share-viewer/dist` | static viewer build |
 | `MAX_TTL_DAYS` | `90` | per-share TTL cap |
 | `SOCKET_POLICY` | `auto` → `turn` | unlike Cloudflare there is no hibernation — sockets are real fds, so turn-scoped is the sane default here; `persistent` keeps them open |
@@ -95,8 +95,12 @@ test suite is the stronger, lower-friction guarantee).
 
 ## Ops notes
 
-- **Backups**: everything lives in the one SQLite file (WAL mode) — copy
-  it, done. Shares TTL out by the 30s sweeper; nothing else deletes data.
+- **Backups**: everything lives in the one SQLite file (WAL mode) — stop
+  the server and copy `openshare.db` **plus** the `-wal`/`-shm` sidecar
+  files, or run `sqlite3 openshare.db ".backup backup.db"` while it's
+  up (copying only the `.db` mid-run can miss recent writes). Shares TTL
+  out by the 30s sweeper; no other *background* process deletes data —
+  explicit deletes (unshare, admin purge, user delete) do.
 - **Restart**: durable. Bindings/secrets/revs are in the DB; plugins
   re-attach and replay unacked frames from their spools. In-flight viewer
   sockets reconnect and refetch.

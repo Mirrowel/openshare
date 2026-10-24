@@ -9,6 +9,9 @@ share-plugin/          the opencode plugin (@mirrowel/opencode-openshare)
   src/core.ts          the engine: session tracking, fan-out transports,
                        spool/replay, turn lifecycle, tombstones, backfill
   src/config.ts        config chain + servers group + enrollment persistence
+  src/contract.ts      the OpenShare item contract (v: 2 envelope, message/
+                       diff normalization, tombstone shape) — shared truth
+                       for plugin, worker, Bun server, and viewer
   src/server.ts        v1 entry ({ id, server, setup })
   src/tui.tsx          v1 TUI entry  ({ id, tui, setup })
   src/v2-server.ts     v2 adapter: fine-grained events → engine, v2 client → v1 SDK
@@ -24,8 +27,8 @@ share-plugin/          the opencode plugin (@mirrowel/opencode-openshare)
 share-worker/          Cloudflare Worker backend (worker.js, wrangler.toml)
 share-server/          portable Bun backend (server.ts + Dockerfile)
 share-viewer/          vendored upstream share page (vite + solid)
-  src/views/           the registered viewer views (see views/README.md)
-tools/                 agent-side export/decrypt companions
+  src/views/           the viewer views SDK + nine skins (see views/README.md)
+tools/                 agent-side export/local-view companion
 ```
 
 `share-worker/worker.js` and `share-server/server.ts` implement the **same
@@ -79,16 +82,16 @@ Visual verification rig (lives outside the repo; rebuild from this description w
 - **Fingerprint** (`snap`/`diff`): renders all 11 views on the fixture and hashes text + structure — any shared-code refactor must keep every view identical (deliberate unifications are listed in the commit, nothing else moves). Text hashes are blind to pure-layout breaks — pair with the gate's computed-style checks.
 - **Gate**: behavioral assertions (settings schema per view, Ctrl+K, search parity, rail, agent labels, headers-are-flex-rows, zero page errors).
 
-### Diff review view — removed (2026-10-25), optional future
+### Diff review view — removed (2026-10-24), optional future
 
-A diff review panel (per-session changed-files view) existed briefly in classic + all skins and was removed by owner decision. Why: the only reconstructable data is the **per-edit tool-part patches** (`metadata.files[].patch`), so any aggregation is last-write-wins per file — not a true session-cumulative diff. Producing a real cumulative diff requires shipping **full file contents** in the share, which was rejected on privacy grounds. If ever revisited as an optional, opt-in-per-share feature: the v2 host API `session.diff()` (typed, FileDiffInfo[]) is the intended source — v1.18's `client.session.diff` is a hardcoded stub returning `[]` unconditionally (see `upstream-reports/`), and its `session.diff` event only fires on revert/compaction, so v1 hosts can never feed it. The `session_diff` item type remains in the contract; the viewer ignores it.
+A diff review panel (per-session changed-files view) existed briefly in classic + all skins and was removed by owner decision. Why: the only reconstructable data is the **per-edit tool-part patches** (`metadata.files[].patch`), so any aggregation is last-write-wins per file — not a true session-cumulative diff. Producing a real cumulative diff requires shipping **full file contents** in the share, which was rejected on privacy grounds. If ever revisited as an optional, opt-in-per-share feature: the v2 host API `session.diff()` (typed, FileDiffInfo[]) is the intended source — v1.18's `client.session.diff` is a hardcoded stub returning `[]` unconditionally (see `upstream-reports/`), and its `session.diff` event only fires on revert/compaction, so v1 hosts can never feed it. The `session_diff` item type remains in the contract and is still folded into the share data — only the dedicated panel was removed.
 
 ## Release workflow
 
 Lifted from the family (agent-variants/config-studio), adapted to the monorepo (the package lives in `share-plugin/`):
 
 - Conventional commits drive semver (`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:`/`!` → major) — `.github/scripts/compute-version.sh`.
-- Channels: `master` → `latest`; `dev`/`alpha`/`beta`/`rc`/`canary` branches → `0.x.y-<channel>.N` prereleases under the matching npm tag (`main` maps to `latest` too).
+- Channels: `master` → `latest`; `dev`/`alpha`/`beta`/`rc` branches → `0.x.y-<channel>.N` prereleases under the matching npm tag (`main` maps to `latest` too; `canary` is available via manual workflow dispatch, not a push trigger).
 - `share-plugin/.release.json` pins the next intended version (`npm run release:intent -- patch|minor|major`); CI refuses drift.
 - Publishing uses npm trusted publishing (GitHub OIDC) — no tokens stored. First publish was bootstrapped manually; everything after goes through the workflow.
 - Release notes: git-cliff (`.github/cliff.toml`) grouped by commit type.
@@ -111,7 +114,7 @@ Per-turn sequence in `turn` mode: prompt → connect/warm → stream → idle �
 - Plugin loading: server plugins from `opencode.json` layers, TUI plugins from `tui.json` layers — that split **is** the share-mode switch (presence detection scans tui.json layers; no selfwiring). In `opencode run` sandboxes, plugins load via `OPENCODE_CONFIG`; a redirected `XDG_CONFIG_HOME` alone silently loads NO plugins.
 - The package exposes dual entries: `{ id, server, setup }` and `{ id, tui, setup }`; v2 hosts load `./server`'s `default.setup` with the v2 context and auto-discover `./tui` via the `oc-plugin` field in package.json.
 - v1 public session PATCH accepts `title`/`metadata`/…; the share binding lives in `metadata.openshare` (binding v2: a `servers` map; legacy flat bindings migrate at read).
-- The 1.19.x plugin API imports the **v2 SDK** (`@opencode-ai/sdk/v2`) — client calls are flat-args and the path param is `sessionID` (see `src/v2-tui.ts`).
+- The 1.19.x plugin API imports the **v2 SDK** (`@opencode-ai/sdk/v2`) — client calls are flat-args and the path param is `sessionID` (see `src/sidebar.tsx`, the only v2-SDK import; the TUI adapter itself uses structural types, `src/v2-types.ts`).
 - v1 SDK client calls are hey-api shaped (`{path: {id}}` / `{path, body}`) and error envelopes don't throw — check `.error` or you fail silently (live-caught as literal `%7Bid%7D` URLs). The client can hit a foreign server when something else squats the target port — degrade loudly, the spool covers.
 - v1 empirical event facts (1.18.x): `message.info.parentID` = the replied-to message; only session `info.parentID` marks subagent children. Task parts carry `state.metadata.sessionId` (the child session). Resumed sessions may emit the user message BEFORE any `session.*` event — unknown sids are treated as main (children announce first).
 - v2 CLI: `opencode plugin add/remove/list/update` exist on v2 hosts; v1 hosts have only the positional `opencode plugin <module>` (writes opencode.json, not tui.json) — docs therefore teach config-file edits for v1 and the commands for v2.

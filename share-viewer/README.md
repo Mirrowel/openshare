@@ -54,16 +54,19 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 | `src/tool-overrides.tsx` | the FileCard + tool renderers registered over the kit |
 | `src/hover-rail.tsx` | the prompt rail (paging / fast-skip) |
 | `src/settings.ts`, `src/settings-panel.tsx` | settings cookie + the shared gear/Ctrl+K panel |
-| `src/views/` | the views SDK: registry, ViewContext, chrome primitives, and the ten skins — see [`src/views/README.md`](src/views/README.md) |
+| `src/views/` | the views SDK: registry, ViewContext, chrome primitives, and the nine skins — see [`src/views/README.md`](src/views/README.md) |
+| `src/copy-markdown.ts`, `src/subagent-map.ts`, `src/toggle-anchor.ts` | shared helpers (markdown export, agent attribution, disclosure anchoring) |
 | `scripts/build-themes.mjs` | theme CSS build (bundler-safe file URLs) |
 | `scripts/vendor-v2.mjs` / `vendor-solid.mjs` | deterministic vendoring + fork re-application (run via `npm run vendor`) |
+
+(Key files — `reader.tsx` and the smaller view helpers live alongside these.)
 
 ## Vendored components
 
 `vendor/` carries the opencode **v2** kit (`session-ui-v2`, `ui-v2`,
 `client-v2`, `util-v2`) plus a **vendored solid-js** (snapshot-loop fix
-for a re-entrant disposal crash — see DEVELOPMENT.md), all under
-upstream licensing (MIT), modified only where surgical forks require
-it. Regenerate with `npm run vendor`; provenance in
-`vendor/V2-SOURCE.txt`. The theme builder and data source are
-OpenShare's own.
+for a re-entrant disposal crash — see
+[`../DEVELOPMENT.md`](../DEVELOPMENT.md)), all under upstream licensing
+(MIT), modified only where surgical forks require it. Regenerate with
+`npm run vendor`; provenance in `vendor/V2-SOURCE.txt`. The theme
+builder and data source are OpenShare's own.

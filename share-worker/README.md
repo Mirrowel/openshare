@@ -42,6 +42,7 @@ The worker owns the connection rules; the plugin clamps itself into these on con
 | `TURN_GRACE_MS` | `120000` | Turn mode: after a turn settles the socket stays warm this long (typing time for the next prompt), then drops cleanly. Any activity cancels; the next event reconnects on demand and the spool replays the gap. |
 | `IDLE_DROP_MS` | `600000` | Turn mode: no-signal fallback (hosts that never emit idle). |
 | `FINALIZE_AFTER_MS` | `300000` | Plugin socket died WITHOUT a goodbye (kill -9, crash, power cut): after this long the share settles to `interrupted` (never `completed` - the run's truth is unknown). DO alarm on socket close; the daily sweeper backstops silent deaths where even the close never surfaced. Reconnects cancel it. |
+| `MAX_TTL_DAYS` | `90` | Per-share TTL cap (per-token `maxTtlDays` caps below this; the user's `defaultTtlDays` setting is clamped to it). |
 | `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` | `1000` / `60000` | Allowed client sync interval (the clamp window). |
 | `COMPLETED_DELAY_MAX_MS` | `60000` | Allowed client completed-delay. |
 
@@ -121,10 +122,11 @@ agent-switch name.
 Crawler user-agents (Discordbot, TelegramBot, Slackbot, WhatsApp,
 Twitterbot, ...) never run the SPA, so the worker serves them
 `index.html` with `og:`/`twitter:` tags injected from the branding:
-`og:title` = `ogTitle` (or `name · Open(code)Share` — the **deployment**
-identity, never a session title; a link preview must not leak what a
-share contains), `og:description` = `description`, `og:image` =
-`ogImage` (absolute URL, falls back to `logoUrl`). `/s/*` and `/` are
+`og:title` = `ogTitle` (or `name · Open(code)Share` — the
+**deployment** identity, never a session title; a link preview must
+not leak what a share contains), `og:description` = `description`,
+`og:image` = `ogImage` (absolute URL **or** a root-relative path,
+resolved against the deployment origin; falls back to `logoUrl`). `/s/*` and `/` are
 in `run_worker_first` for this; regular browsers pass straight through
 to the static assets, and the viewer injects the same tags client-side
 as a fallback.
@@ -133,33 +135,12 @@ as a fallback.
 
 The gear in the header (or Ctrl+K, in every view) opens the settings
 panel — persisted in a `osh_settings` cookie, applied pre-paint (no
-theme flash):
-
-- **View** — the reading skin: classic, reader, or one of the nine composed views (terminal, casefile, blueprint, cinema, timeline, letterpress, atlas, teletype, grove). Every view is a skin over the same base ([the view contract](../share-viewer/src/views/README.md)).
-- **Theme**: system (default), forced light/dark, plus premades —
-  `mirrobot` (the landing-page paper-terminal look, included by
-  default), `midnight`, `sepia`, `nord`. Forced themes work via
-  attribute-scoped token copies emitted by
-  `share-viewer/scripts/build-themes.mjs` at build time.
-- **Paged mode** (per view) — one prompt at a time with the prompt rail
-  paging, or one continuous scroll where the rail fast-skips. Views
-  without a paging metaphor hide the toggle.
-- **Text size**: compact / normal / roomy (root font scale).
-- **Follow live scroll**: during a live share the view keeps the newest
-  content visible, but only while you are already at the bottom — it
-  never fights your reading position.
-- **Reasoning expanded**: default open instead of collapsed (applies to
-  rendered blocks immediately).
-- **Auto-expand tools**: a checklist (the known host tools plus anything
-  this session used — mcp/custom tools included) picking which tool
-  bodies open on render. Default: none.
-- **Diff layout**: auto (split when it fits) / always split / always
-  unified — the per-card toggle in edit headers writes the same setting.
-- **Long lines in outputs**: horizontal scroll (hidden scrollbar) or
-  wrap; the output width is capped either way.
-- **Background image**: on/off toggle, present only when the deployment
-  sets `backgroundUrl` (rendered under a dark readability overlay).
-- **Session search**: matches prompts AND responses (Ctrl+K).
+theme flash). The canonical list of settings (theme, view, paged mode
+per view, prompt rail, follow-live, text sizes, diff layout, reasoning
+auto-open, auto-expand tools, long-line scroll/wrap, background image,
+search) lives in one place: the
+[viewer README](../share-viewer/README.md#what-the-page-does). Defaults:
+system theme, continuous scroll, nothing auto-expanded.
 
 Header extras: copy session as markdown, `j`/`k` prompt navigation.
 
@@ -185,8 +166,11 @@ Two roles, one secret store (singleton AuthDO, tokens SHA-256-hashed at
 rest):
 
 - **Admin** = the root `CREATE_TOKEN` secret (env, forever-valid
-  bootstrap). Manages everything: users, tokens, codes, shares, policy.
-  No admin *tokens* — root is the only admin in this model.
+  bootstrap). Manages everything operational: users, tokens, codes,
+  shares. (Connection *policy* — socket mode, timers, TTL caps,
+  AUTH_MODE — is deploy-time config in `wrangler.toml`, not an admin
+  API surface.) No admin *tokens* — root is the only admin in this
+  model.
 - **Users** — anyone the hoster lets in. Full control of their OWN
   shares, tokens and settings; nothing else.
 
@@ -211,10 +195,13 @@ token only invalidates that token.
 Per-token limits (enforced server-side at create): `maxLiveShares`,
 `maxTtlDays`, `dailyCreates` (0 = unlimited; defaults via
 `DEFAULT_*` vars). Default-limit knobs users may change themselves:
-`PUT /api/me/settings` (`defaultTtlDays`, clamped by the server).
+`GET`/`PUT /api/me/settings` — `defaultTtlDays` (clamped by the
+server; applied at create when the request omits `ttlDays`, the
+explicit value always wins).
 
 Self-service: `GET /api/me`, `GET /api/me/shares`,
-`POST /api/token/rotate`, `DELETE /api/token` (self-revoke).
+`GET`/`PUT /api/me/settings`, `POST /api/token/rotate`,
+`DELETE /api/token` (self-revoke).
 
 Admin API (Bearer `CREATE_TOKEN`):
 
@@ -230,7 +217,8 @@ Admin API (Bearer `CREATE_TOKEN`):
 - `POST /api/admin/shares/:id/reassign {userId}`
 - `DELETE /api/share/:id` — root may delete any share directly (the
   TUI admin console uses this)
-- `POST /api/admin/purge` (unchanged)
+- `POST /api/admin/purge` — removes EVERY share; details in
+  [Worker API](#worker-api) below
 
 `GET /health` reports `auth.mode` (`public`/`private`) next to the
 socket policy so clients adapt without config.
