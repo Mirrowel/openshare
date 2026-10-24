@@ -233,6 +233,10 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
           skins (ViewEntry.paged === false) never show the rail. */}
       <div class="flex flex-1 min-h-0">
         <Show when={!continuous()}>
+          {/* children MUST be undefined for Nav-less skins: a <Show> element
+              is always truthy, so the rail's fallback never rendered and
+              Nav-less skins got an EMPTY popover (live-caught twice - the
+              second time after the "fix" kept passing the Show) */}
           <HoverRail
             count={visible().length}
             active={active()}
@@ -243,12 +247,10 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             }}
             onSelect={(i) => setActive(i)}
           >
-            <Show when={w.Nav}>
-              {(() => {
-                const NavSkin = w.Nav!
-                return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-              })()}
-            </Show>
+            {w.Nav ? (() => {
+              const NavSkin = w.Nav!
+              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+            })() : undefined}
           </HoverRail>
         </Show>
         <div ref={scroller} data-transcript-scroll class="relative flex-1 min-w-0 overflow-y-auto">

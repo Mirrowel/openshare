@@ -14,6 +14,7 @@ import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { sessionStatus, type ShareData } from "../fold"
 import { armToggleAnchor, settleToggleAnchor } from "../toggle-anchor"
+import { createStore } from "solid-js/store"
 import type { OshSettings } from "../settings"
 import type { ToolEntry } from "./session-data"
 
@@ -32,15 +33,17 @@ export function setVendoredData(d: ShareData | undefined, nav?: VendoredNav) {
   currentNav = nav
 }
 
-// per-entry open state for composed views, module-level so section-window
-// remounts keep it, + toggle anchoring (same discipline as classic)
-const partOpen = new Map<string, boolean | undefined>()
+// per-entry open state for composed views. MUST be a reactive STORE, not a
+// Map: Solid cannot track plain Map reads inside JSX, so onOpenChange(false)
+// never re-rendered and rows could not be collapsed again (live-caught on
+// every composed view after the controlled-open change).
+const [partOpen, setPartOpen] = createStore<Record<string, boolean | undefined>>({})
 armToggleAnchor()
 
 export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; data?: ShareData }) {
   const data = () => props.data ?? currentData
   const entryId = () => String((props.entry.part as any)?.id ?? props.entry.tool + ":" + ((props.entry.part as any)?.time?.created ?? "x"))
-  const open = () => partOpen.get(entryId()) ?? (props.settings.autoExpand.includes(props.entry.tool) || undefined)
+  const open = () => partOpen[entryId()] ?? (props.settings.autoExpand.includes(props.entry.tool) || undefined)
   return (
     <DataProvider
       data={{
@@ -80,7 +83,7 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
               defaultOpen={props.settings.autoExpand.includes(props.entry.tool) || undefined}
               open={open()}
               onOpenChange={(next: boolean) => {
-                partOpen.set(entryId(), next)
+                setPartOpen(entryId(), next)
                 settleToggleAnchor()
               }}
             />

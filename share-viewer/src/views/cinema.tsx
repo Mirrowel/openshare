@@ -204,9 +204,6 @@ function Scene(props: TurnProps) {
 
 export const cinemaSkin: Skin = {
   id: "cinema",
-  // the slugline IS the prompt (uppercased first line) - the raw prompt
-  // body would duplicate it (live-caught)
-  promptInBody: false,
   mode: "composed",
   columnClass: "osh-content max-w-[48rem] mx-auto px-6 pt-10 pb-8",
   wrappers: {
@@ -215,11 +212,11 @@ export const cinemaSkin: Skin = {
     TurnWrap: Scene,
     PromptWrap: (p) => (
       <div class="cinema-action">
+        {/* SCENE label only - the FULL prompt renders as the body below
+            (owner: the truncated slugline was kept instead of the full
+            text - wrong half removed in the previous round) */}
         <h2 class="text-14-mono uppercase tracking-wide text-text-strong">
-          <Show when={!flowing()}>
-            <span class="text-text-weaker">Scene {p.section.index + 1}. </span>
-          </Show>
-          {slugline(p.section.prompt)}
+          <span class="text-text-weaker">Scene {p.section.index + 1}.</span>
         </h2>
         <div class="mt-3 pl-1 sm:pl-3">{p.children}</div>
       </div>
