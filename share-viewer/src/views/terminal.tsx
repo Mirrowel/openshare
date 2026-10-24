@@ -2,16 +2,16 @@
 // statusbars top and bottom, everything monospace, prompts as ^ lines.
 import { Show, createSignal } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import { SkinSettingsPopover } from "../settings-panel"
 import type { ViewEntry } from "./registry"
-import { MetaLine } from "./meta-line"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
-import type { SessionSection } from "./session-data"
 
 function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const statusColor = () =>
     props.status === "live" ? "#4ade80" : props.status === "error" ? "#f87171" : "#7aa2f7"
   return (
@@ -31,7 +31,7 @@ function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
         <div class="flex items-center gap-3 shrink-0">
           <span class="flex items-center gap-1.5">
             <Mark class="h-3" />
-            <span class="text-text-base">v{info()?.version}</span>
+            <span class="text-text-base">v{view.version() ?? ""}</span>
           </span>
           <Show when={props.model}>
             <span class="truncate max-w-56 text-text-base hidden sm:inline">{props.model}</span>

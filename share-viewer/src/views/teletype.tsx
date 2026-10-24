@@ -13,6 +13,7 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import { SettingsBody, restoreSettingsScroll, saveSettingsScroll } from "../settings-panel"
 import { useSessionSections, type ReasoningEntry, type SessionSection, type ToolEntry } from "./session-data"
 import type { ViewEntry } from "./registry"
@@ -94,7 +95,8 @@ function BrandTile(props: { logoUrl?: string }) {
 
 function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const [settingsOpen, setSettingsOpen] = createSignal(false)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const branding = () => props.source.branding()
   const created = () => millis(info()?.time?.created)
   const searching = () => props.search.trim().length > 0
@@ -154,7 +156,7 @@ function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
           </Show>
           <span class="flex items-center gap-1.5 rounded-md border border-border-weak-base px-2 py-1 text-12-mono text-text-base">
             <Mark class="h-3 shrink-0" />
-            v{info()?.version ?? "?"}
+            v{view.version() ?? "?"}
           </span>
           <a
             href={OPENSHARE_REPO}

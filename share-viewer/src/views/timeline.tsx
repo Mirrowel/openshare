@@ -9,6 +9,7 @@
 // with the activity-density strip as its mini-map.
 import { For, Show, createContext, useContext, createEffect, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import { SettingsBody, saveSettingsScroll, restoreSettingsScroll } from "../settings-panel"
 import { useSessionSections, type SessionSection } from "./session-data"
 import type { ViewEntry } from "./registry"
@@ -113,7 +114,8 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
   const [open, setOpen] = createSignal(false)
   const secs = useSessionSections(props.data, props.sessionID)
   createEffect(() => setSharedSections(secs()))
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const brand = () => props.source.branding()
 
   const span = () => {
@@ -204,7 +206,7 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
             </Show>
             <span class="flex items-center gap-1.5 shrink-0 text-12-mono text-text-weaker">
               <Mark class="h-3" />
-              v{info()?.version ?? "?"}
+              v{view.version() ?? "?"}
             </span>
             <div class="relative shrink-0">
               <button

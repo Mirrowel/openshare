@@ -8,6 +8,7 @@ import { DateTime } from "luxon"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import { saveSettingsScroll, restoreSettingsScroll, SettingsBody } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 
@@ -44,7 +45,8 @@ function LeafGlyph(props: { class?: string }) {
 // facts (version, model, status) with settings dropping out of a pill.
 function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const [menuOpen, setMenuOpen] = createSignal(false)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const live = () => props.status === "live"
   return (
     <>
@@ -66,7 +68,7 @@ function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
         <div class="flex items-center gap-1.5 shrink-0">
           <span class="flex items-center gap-1.5 h-7 px-2 rounded-full border border-border-weak-base text-12-mono text-text-weaker">
             <Mark class="h-3 shrink-0" />
-            <span class="text-text-base">v{info()?.version ?? "?"}</span>
+            <span class="text-text-base">v{view.version() ?? "?"}</span>
           </span>
           <Show when={props.model}>
             <span class="hidden lg:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>

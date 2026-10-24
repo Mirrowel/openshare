@@ -17,6 +17,7 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import type { ViewEntry } from "./registry"
 import { setInfoExtra } from "./info-extras"
 import { useSessionSections, type SessionSection } from "./session-data"
@@ -161,7 +162,8 @@ function Masthead(props: HeaderProps) {
   // where the reader was (wired locally; the shared helpers are typed as
   // ref callbacks and cannot serve onScroll)
   let settingsScrollTop = 0
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const b = () => props.source.branding()
   const sections = useSessionSections(props.data, props.sessionID)
   const counts = () => countsOf(sections())
@@ -213,7 +215,7 @@ function Masthead(props: HeaderProps) {
               </span>
               <span class="hidden items-center gap-1.5 rounded-md border border-border-weak-base bg-background-stronger px-1.5 py-0.5 text-12-mono text-text-weaker sm:flex">
                 <Mark class="size-3" />
-                <span>v{info()?.version ?? "0"}</span>
+                <span>v{view.version() ?? "0"}</span>
               </span>
               <Show when={props.model}>
                 <span class="hidden truncate text-12-mono text-text-weaker md:inline max-w-48">{props.model}</span>
@@ -304,7 +306,8 @@ function Masthead(props: HeaderProps) {
 // (the rail is lg and up only), then the brand and end-of-log line
 function SheetFooter(props: FooterProps) {
   const b = () => props.source.branding()
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const sections = useSessionSections(props.data, props.sessionID)
   return (
     <footer class="relative z-10 shrink-0 border-t border-border-weak-base bg-background-base">

@@ -7,10 +7,10 @@
 // Chrome: running head up top, colophon below.
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import { SkinSettingsPopover } from "../settings-panel"
-import { pagedFor } from "../settings"
 import type { ViewEntry, ViewProps } from "./registry"
-import { sessionModelLabel, type SessionSection } from "./session-data"
+import { type SessionSection } from "./session-data"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
@@ -102,7 +102,8 @@ function Fleuron(props: { class?: string }) {
 
 // ------------------------------------------------------- running head ----
 function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const statusTone = () => {
     const s = props.status
     if (s === "live") return "bg-icon-success-base"
@@ -153,7 +154,7 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
           </span>
           <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
             <Mark class="h-3 shrink-0" />
-            <span>v{info()?.version ?? "?"}</span>
+            <span>v{view.version() ?? "?"}</span>
           </span>
           <Show when={props.model}>
             <span class="hidden sm:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
@@ -222,11 +223,11 @@ const leafVolume = (s: SessionSection) =>
   s.response.length +
   s.tools.reduce((n, t) => n + (t.title?.length ?? 0) + (t.output?.length ?? 0), 0)
 
-function FrontMatter(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0] & { ctx: ViewProps }) {
-  const ctx = props.ctx
-  const info = () => (ctx.data.session as any[]).find((s) => s.id === ctx.sessionID)
+function FrontMatter(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
+  const view = useView()
+  const info = view.info
   const providerID = () => (info()?.model as any)?.providerID
-  const model = () => sessionModelLabel(ctx.data, ctx.sessionID)
+  const model = view.model
   const dateLine = () => {
     const created = info()?.time?.created
     return typeof created === "number"
@@ -312,21 +313,23 @@ function FrontMatter(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0] & { 
 }
 
 // ---------------------------------------------------------------- skin ----
-export function letterpressSkin(props: ViewProps): Skin {
-  const continuous = () => !pagedFor(props.settings, "letterpress")
-  return {
-    id: "letterpress",
-    mode: "composed",
-    // one measure for the whole volume: prompt, notes and prose share the
-    // text column, so the leaf reads like a page, not a dashboard
-    columnClass: "mx-auto w-full max-w-[40rem] px-6 lg:px-8 py-10 flex flex-col gap-12",
-    wrappers: {
-      Header: RunningHead,
-      Footer: Colophon,
-      Nav: (nav) => <FrontMatter {...nav} ctx={props} />,
-      TurnWrap: (p) => (
+// a PLAIN Skin (views-SDK phase 1): wrappers read useView() for mode
+// state - no factory, no captured ViewProps
+export const letterpressSkin: Skin = {
+  id: "letterpress",
+  mode: "composed",
+  // one measure for the whole volume: prompt, notes and prose share the
+  // text column, so the leaf reads like a page, not a dashboard
+  columnClass: "mx-auto w-full max-w-[40rem] px-6 lg:px-8 py-10 flex flex-col gap-12",
+  wrappers: {
+    Header: RunningHead,
+    Footer: Colophon,
+    Nav: (nav) => <FrontMatter {...nav} />,
+    TurnWrap: (p) => {
+      const v = useView()
+      return (
         <article data-leaf={p.section.id} class="scroll-mt-24">
-          <Show when={p.index > 0 && !continuous()}>
+          <Show when={p.index > 0 && !v.continuous()}>
             <div
               class="flex items-center justify-center py-9 text-text-weaker opacity-45"
               style={{ "font-family": SERIF }}
@@ -337,55 +340,56 @@ export function letterpressSkin(props: ViewProps): Skin {
           </Show>
           {p.children}
         </article>
-      ),
-      PromptWrap: (p) => {
-        const drop = () => {
-          const ch = p.section.prompt.trim().slice(0, 1)
-          return !continuous() && /[\p{L}]/u.test(ch)
-        }
-        return (
-          <div style={{ "font-family": SERIF_DISPLAY }}>
-            <Show when={!continuous()}>
-              <div class="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                <Sc class="text-12-medium text-text-strong">{`leaf ${roman(p.section.index + 1)}`}</Sc>
-              </div>
-            </Show>
-            <div
-              class={`text-text-strong ${drop() ? DROP_CAP : ""} ${
-                continuous() ? PROMPT_RUNNING : PROMPT_LEAF
-              }`}
-            >
-              {p.children}
-            </div>
-          </div>
-        )
-      },
-      ToolWrap: (p) => (
-        <div class={p.index === 0 ? "mt-4" : "mt-1.5"}>
-          <Show when={p.index === 0}>
-            <div class="mb-1.5 flex items-baseline gap-2 border-b border-border-weaker-base pb-1">
-              <Sc class="text-12-medium text-text-base">notes</Sc>
+      )
+    },
+    PromptWrap: (p) => {
+      const v = useView()
+      const drop = () => {
+        const ch = p.section.prompt.trim().slice(0, 1)
+        return !v.continuous() && /[\p{L}]/u.test(ch)
+      }
+      return (
+        <div style={{ "font-family": SERIF_DISPLAY }}>
+          <Show when={!v.continuous()}>
+            <div class="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+              <Sc class="text-12-medium text-text-strong">{`leaf ${roman(p.section.index + 1)}`}</Sc>
             </div>
           </Show>
-          <div class="flex items-start gap-2">
-            <span
-              class="w-3 shrink-0 select-none pt-1 text-left text-[0.72em] leading-none font-medium text-text-weaker"
-              style={{ "font-family": SERIF }}
-            >
-              {p.index + 1}
-            </span>
-            <div class="min-w-0 flex-1">{p.children}</div>
+          <div
+            class={`text-text-strong ${drop() ? DROP_CAP : ""} ${
+              v.continuous() ? PROMPT_RUNNING : PROMPT_LEAF
+            }`}
+          >
+            {p.children}
           </div>
         </div>
-      ),
-      ReasoningWrap: (p) => <div class={MARGIN_WRAP}>{p.children}</div>,
-      ResponseWrap: (p) => <div class={PROSE_WRAP}>{p.children}</div>,
+      )
     },
-  }
+    ToolWrap: (p) => (
+      <div class={p.index === 0 ? "mt-4" : "mt-1.5"}>
+        <Show when={p.index === 0}>
+          <div class="mb-1.5 flex items-baseline gap-2 border-b border-border-weaker-base pb-1">
+            <Sc class="text-12-medium text-text-base">notes</Sc>
+          </div>
+        </Show>
+        <div class="flex items-start gap-2">
+          <span
+            class="w-3 shrink-0 select-none pt-1 text-left text-[0.72em] leading-none font-medium text-text-weaker"
+            style={{ "font-family": SERIF }}
+          >
+            {p.index + 1}
+          </span>
+          <div class="min-w-0 flex-1">{p.children}</div>
+        </div>
+      </div>
+    ),
+    ReasoningWrap: (p) => <div class={MARGIN_WRAP}>{p.children}</div>,
+    ResponseWrap: (p) => <div class={PROSE_WRAP}>{p.children}</div>,
+  },
 }
 
 export function LetterpressView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={letterpressSkin(props)} />
+  return <BaseSessionView {...props} skin={letterpressSkin} />
 }
 
 export const letterpress: ViewEntry = {

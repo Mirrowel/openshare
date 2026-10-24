@@ -5,6 +5,7 @@
 // the right, an archive-line footer.
 import { Show, createSignal } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import { SettingsBody } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 import type { SessionSection } from "./session-data"
@@ -31,7 +32,8 @@ function filedLine(s: SessionSection) {
 
 function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const [drawer, setDrawer] = createSignal(false)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const stampColor = () =>
     props.status === "live"
       ? "text-icon-strong-base border-icon-strong-base"
@@ -61,7 +63,7 @@ function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
           <div class="flex items-center gap-3 pb-1.5 shrink-0">
             <span class="text-12-mono text-text-weaker flex items-center gap-1.5">
               <Mark class="h-3" />
-              v{info()?.version ?? "?"}
+              v{view.version() ?? "?"}
             </span>
             <span
               class="text-12-mono uppercase tracking-widest border rounded px-1.5 py-0.5 rotate-[-2deg]"

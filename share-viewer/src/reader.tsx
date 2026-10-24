@@ -2,6 +2,7 @@
 // quiet section markers, continuous-leaning single column.
 import { For, Show, createSignal } from "solid-js"
 import { BaseSessionView } from "./views/base-view"
+import { useView } from "./views/view-context"
 import type { Skin, SkinWrappers } from "./views/base-view"
 import type { ViewEntry } from "./views/registry"
 import { MetaLine } from "./views/meta-line"
@@ -14,7 +15,7 @@ function promptTitle(s: { prompt: string }) {
   return s.prompt.trim().split("\n")[0].slice(0, 60) || "(no prompt)"
 }
 
-function HoverToc(props: { sections: { id: string; prompt: string }[]; active: number; onSelect: (i: number) => void }) {
+function HoverToc(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
   return (
     <div class="w-48 flex flex-col gap-0.5">
       <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase mb-2 px-2">prompts</div>
@@ -39,7 +40,8 @@ function HoverToc(props: { sections: { id: string; prompt: string }[]; active: n
 }
 
 function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   return (
     <header class="h-14 px-6 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
       <div class="flex items-center gap-3 min-w-0">
@@ -57,7 +59,7 @@ function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
       <div class="flex items-center gap-2.5 shrink-0">
         <span class="flex items-center gap-1.5 bg-surface-strong px-2 py-0.5 rounded-md shadow-xs-border-base">
           <Mark class="w-3" />
-          <span class="text-12-mono text-text-base">v{info()?.version ?? "?"}</span>
+          <span class="text-12-mono text-text-base">v{view.version() ?? "?"}</span>
           <Show when={(info()?.model as any)?.providerID}>
             <ProviderIcon id={(info()?.model as any).providerID} class="w-3.5 text-icon-base" />
           </Show>
@@ -77,7 +79,7 @@ export const readerSkin: Skin = {
   columnClass: "max-w-[46rem] mx-auto px-6 py-8 flex flex-col gap-10",
   wrappers: {
     Header: ReaderHeader,
-    Nav: HoverToc as any,
+    Nav: HoverToc,
     PromptWrap: (p) => (
       <div class="pt-4 border-t border-border-weak-base first:border-none first:pt-0">
         <div class="flex items-baseline gap-3 mb-1">

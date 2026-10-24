@@ -14,6 +14,7 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import type { ViewEntry } from "./registry"
 import { sessionModelLabel, useSessionSections, type SessionSection } from "./session-data"
 import { SettingsBody } from "../settings-panel"
@@ -49,7 +50,8 @@ function Elbow(props: { solid?: boolean; top?: string }) {
 // drafting strip header: title block fields, status stamp, settings drawer
 function DraftingHeader(props: HeaderProps) {
   const [drawer, setDrawer] = createSignal(false)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const b = () => props.source.branding()
   const dwgNo = () => (props.sessionID.replace(/^ses_/, "").slice(0, 8) || "00000000").toUpperCase()
   const stampClass = () =>
@@ -160,7 +162,7 @@ function DraftingHeader(props: HeaderProps) {
         </a>
         <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker shrink-0">
           <Mark class="h-3" />
-          v{info()?.version}
+          v{view.version() ?? ""}
         </span>
         <Show when={props.model}>
           <span class="hidden md:inline text-12-mono text-text-weaker truncate max-w-48 shrink-0">{props.model}</span>
@@ -222,7 +224,8 @@ function TitleBlockCell(props: { label: string; children: JSX.Element; span?: bo
 
 function TitleBlockFooter(props: FooterProps) {
   const sections = useSessionSections(props.data, props.sessionID)
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const b = () => props.source.branding()
   const issued = () => DateTime.fromMillis(info()?.time?.created ?? Date.now()).toFormat("dd MMM yyyy HH:mm")
   const drawnBy = () => sessionModelLabel(props.data, props.sessionID) || "n/a"

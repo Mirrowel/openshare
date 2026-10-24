@@ -11,6 +11,7 @@ import { Title } from "@solidjs/meta"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { useView } from "./view-context"
 import type { ViewEntry } from "./registry"
 import { useSessionSections, type SessionSection } from "./session-data"
 import { SkinSettingsPopover } from "../settings-panel"
@@ -60,7 +61,8 @@ function castName(model?: { providerID?: string; modelID?: string }): string {
 function CinemaHeader(props: HeaderProps) {
   const sections = useSessionSections(props.data, props.sessionID)
   createComputed(() => setFlowing(!pagedFor(props.settings, "cinema")))
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const info = view.info
   const b = () => props.source.branding()
   createComputed(() => {
     const i = info()
@@ -105,7 +107,7 @@ function CinemaHeader(props: HeaderProps) {
         <div class="flex items-center gap-3 shrink-0">
           <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
             <Mark class="h-3" />
-            v{info()?.version ?? "?"}
+            v{view.version() ?? "?"}
           </span>
           <Show when={props.model}>
             <span class="hidden md:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
