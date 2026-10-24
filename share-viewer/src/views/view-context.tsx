@@ -45,6 +45,8 @@ export type ViewContextValue = {
   status: () => string
   /** navigate back to the main session page */
   back: () => void
+  /** copy this session as markdown to the clipboard */
+  copyMarkdown: () => Promise<void>
   /** is a subagent (/N) page */
   isSub: () => boolean
   /** virtualization cache prefix for this session mount */

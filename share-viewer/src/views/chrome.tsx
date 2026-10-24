@@ -56,6 +56,8 @@ export function SkinHeader(props: {
   trailing?: JSX.Element
   /** hide the GitHub repo link (rare) */
   noGithub?: boolean
+  /** hide the copy-as-markdown button (rare) */
+  noCopy?: boolean
   /** custom status presentation (default: StatusReadout) */
   statusRender?: (status: string) => JSX.Element
   /** custom title text (default: session title) */
@@ -88,6 +90,15 @@ export function SkinHeader(props: {
         </Show>
         {props.statusRender ? props.statusRender(view.status()) : <StatusReadout status={view.status()} />}
         {props.trailing}
+        <Show when={!props.noCopy}>
+          <button
+            class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
+            title="copy session as markdown"
+            onClick={() => void view.copyMarkdown()}
+          >
+            <Icon name="copy" size="small" />
+          </button>
+        </Show>
         <Show when={!props.noGithub}>
           <a href={OPENSHARE_REPO} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
             <Icon name="github" size="small" />

@@ -4,11 +4,10 @@
 // stylings - the structure (back, title, version, model, status, GitHub,
 // settings) is written once in chrome.tsx.
 import { Show } from "solid-js"
-import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
+import { type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader, SkinFooter } from "./chrome"
 import { SkinSettingsPopover } from "../settings-panel"
-import type { ViewEntry } from "./registry"
 import { DateTime } from "luxon"
 
 function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
@@ -47,7 +46,6 @@ function StatusLine(_props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) 
 
 export const terminalSkin: Skin = {
   id: "terminal",
-  mode: "composed",
   columnClass: "max-w-[72rem] mx-auto px-5 py-4 font-mono flex flex-col gap-5",
   wrappers: {
     Header: StatusBar,
@@ -69,12 +67,3 @@ export const terminalSkin: Skin = {
   },
 }
 
-export function TerminalView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={terminalSkin} />
-}
-
-export const terminal = {
-  id: "terminal",
-  label: "terminal",
-  component: TerminalView,
-}

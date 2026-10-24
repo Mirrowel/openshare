@@ -8,7 +8,6 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader, SkinFooter } from "./chrome"
 import { SkinSettingsPopover } from "../settings-panel"
-import type { ViewEntry } from "./registry"
 import type { SessionSection } from "./session-data"
 import { Icon } from "@opencode/ui/icon"
 import { DateTime } from "luxon"
@@ -86,7 +85,6 @@ function ArchiveLine(_props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0])
 
 export const casefileSkin: Skin = {
   id: "casefile",
-  mode: "composed",
   columnClass: "max-w-[52rem] mx-auto px-6 py-6",
   wrappers: {
     Header: CasefileHeader,

@@ -12,7 +12,6 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinSettingsPopover } from "../settings-panel"
 import { useSessionSections, type SessionSection } from "./session-data"
-import type { ViewEntry } from "./registry"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
@@ -466,7 +465,6 @@ function ResponseWrapComp(p: { text: string; children: JSX.Element }) {
 
 export const timelineSkin: Skin = {
   id: "timeline",
-  mode: "composed",
   columnClass: "osh-content max-w-[52rem] mx-auto px-4 sm:px-6 pt-6 pb-10",
   wrappers: {
     Header: TimelineHeader,

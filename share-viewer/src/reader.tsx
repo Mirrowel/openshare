@@ -48,7 +48,6 @@ function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
 
 export const readerSkin: Skin = {
   id: "reader",
-  mode: "composed",
   columnClass: "max-w-[46rem] mx-auto px-6 py-8 flex flex-col gap-10",
   wrappers: {
     Header: ReaderHeader,

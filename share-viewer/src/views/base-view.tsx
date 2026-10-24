@@ -1,21 +1,16 @@
 // The shared base every view rides. ONE logic source: the same components
 // classic uses (the vendored tool pipeline via VendoredPart, the reasoning
-// block, MetaLine, the review column, the nav) with per-view SKINS that
-// only arrange and restyle them. Skins may override pieces (discouraged
-// but possible); they never reimplement data handling.
-//
-// Two content modes:
-//  - "pipeline": the vendored SessionTurn renders a turn (maximum classic
-//    fidelity - grouping, diffs, todos, everything)
-//  - "composed": the base lays out prompt / ordered entries / response
-//    itself from the shared section model, skin wrappers around each
-//    element kind (current experimental views map here)
-import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js"
-import { Dynamic } from "solid-js/web"
+// block, MetaLine, the nav) with per-view SKINS that only arrange and
+// restyle them. Skins may override pieces (discouraged but possible);
+// they never reimplement data handling. The base lays out prompt / ordered
+// entries / response from the shared section model, skin wrappers around
+// each element kind.
+import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { HoverRail } from "../hover-rail"
 import { viewSupportsPaged } from "./registry"
 import { ViewProvider, type ViewContextValue } from "./view-context"
+import { copySessionMarkdown } from "../copy-markdown"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -24,7 +19,6 @@ import type { ViewProps } from "./registry"
 import { pagedFor, type OshSettings } from "../settings"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
-import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { sessionModelLabel } from "./session-data"
 
 // ---------------------------------------------------------------- skin ----
@@ -36,11 +30,6 @@ export type SkinWrappers = {
   ResponseWrap?: Component<{ text: string; settings: OshSettings; children: JSX.Element }>
   Header?: Component<ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean }>
   Footer?: Component<ViewProps>
-  /** a persistent RIGHT-side panel beside the transcript (lg and up),
-   *  like the classic info panel - the skin's identity chrome, visible in
-   *  BOTH modes (atlas's legend + coordinates). Self-contained: reads its
-   *  own state (atlas uses a module feed published by its Header). */
-  Rail?: Component
   Nav?: Component<{
     sections: SessionSection[]
     active: number
@@ -50,7 +39,6 @@ export type SkinWrappers = {
 
 export type Skin = {
   id: string
-  mode: "pipeline" | "composed"
   /** false when the skin renders the prompt itself (cinema's slugline,
    *  teletype's wire headline): base-view then renders ONLY the meta line
    *  inside PromptWrap - without this the prompt text appears twice
@@ -72,7 +60,6 @@ function wrappersOf(skin: Skin): Required<SkinWrappers> {
     ResponseWrap: skin.wrappers.ResponseWrap ?? Identity,
     Header: skin.wrappers.Header ?? DefaultHeader,
     Footer: skin.wrappers.Footer ?? DefaultFooter,
-    Rail: skin.wrappers.Rail,
     Nav: skin.wrappers.Nav,
   }
 }
@@ -241,6 +228,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     model: () => model(),
     status: () => props.source.status(),
     back: () => back(),
+    copyMarkdown: () => copySessionMarkdown(props.data, props.sessionID),
     isSub: () => isSub(),
     cachePrefix,
   }
@@ -299,16 +287,6 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
             </Show>
           </div>
-          {/* the skin's right rail: a real panel like the classic info view
-              (atlas's legend + coordinates), NOT a CSS-grid column of the
-              scrolling sheet - the grid version put station 1 in the 13rem
-              column via auto-placement and the legend inline before the
-              first prompt (live-caught). Visible in BOTH modes; lg and up. */}
-          <Show when={w.Rail}>
-            <aside class="hidden lg:flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-l border-border-weak-base bg-background-base px-4 py-5">
-              <Dynamic component={w.Rail!} />
-            </aside>
-          </Show>
         </div>
         <w.Footer {...props} />
       </div>

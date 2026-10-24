@@ -10,7 +10,7 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader } from "./chrome"
 import { SkinSettingsPopover } from "../settings-panel"
-import type { ViewEntry, ViewProps } from "./registry"
+import type { ViewProps } from "./registry"
 import { type SessionSection } from "./session-data"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { Title } from "@solidjs/meta"
@@ -302,7 +302,6 @@ function FrontMatter(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
 // state - no factory, no captured ViewProps
 export const letterpressSkin: Skin = {
   id: "letterpress",
-  mode: "composed",
   // one measure for the whole volume: prompt, notes and prose share the
   // text column, so the leaf reads like a page, not a dashboard
   columnClass: "mx-auto w-full max-w-[40rem] px-6 lg:px-8 py-10 flex flex-col gap-12",

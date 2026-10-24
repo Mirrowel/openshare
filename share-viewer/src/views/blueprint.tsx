@@ -15,7 +15,6 @@ import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader } from "./chrome"
-import type { ViewEntry } from "./registry"
 import { sessionModelLabel, useSessionSections, type SessionSection } from "./session-data"
 import { SkinSettingsPopover } from "../settings-panel"
 
@@ -303,7 +302,6 @@ function DetailBox(props: ToolProps) {
 
 export const blueprintSkin: Skin = {
   id: "blueprint",
-  mode: "composed",
   columnClass:
     "bp-sheet bp-grid relative w-full max-w-[56rem] mx-auto px-4 sm:px-8 py-8 flex flex-col gap-8 border border-border-base",
   wrappers: {

@@ -18,7 +18,6 @@ import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
-import type { ViewEntry } from "./registry"
 import { setInfoExtra } from "./info-extras"
 import { useSessionSections, type SessionSection } from "./session-data"
 import { SkinSettingsPopover } from "../settings-panel"
@@ -596,7 +595,6 @@ function FieldNote(props: ResponseProps) {
 
 export const atlasSkin: Skin = {
   id: "atlas",
-  mode: "composed",
   // the sheet: a single clean column (the margin rail is a real right-side
   // PANEL via the Rail wrapper - base-view renders it beside the scroller
   // like the classic info view, in BOTH modes; the old CSS-grid column put

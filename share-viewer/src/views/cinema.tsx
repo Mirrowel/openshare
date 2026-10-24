@@ -11,7 +11,6 @@ import { Title } from "@solidjs/meta"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader, SkinFooter } from "./chrome"
-import type { ViewEntry } from "./registry"
 import { useSessionSections, type SessionSection } from "./session-data"
 import { SkinSettingsPopover } from "../settings-panel"
 import { pagedFor } from "../settings"
@@ -171,7 +170,6 @@ function Scene(props: TurnProps) {
 
 export const cinemaSkin: Skin = {
   id: "cinema",
-  mode: "composed",
   columnClass: "osh-content max-w-[48rem] mx-auto px-6 pt-10 pb-8",
   wrappers: {
     Header: CinemaHeader,

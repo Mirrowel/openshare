@@ -10,7 +10,6 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader } from "./chrome"
 import { SkinSettingsPopover } from "../settings-panel"
-import type { ViewEntry } from "./registry"
 
 const pad = (n: number) => String(n).padStart(2, "0")
 
@@ -112,7 +111,6 @@ function GroveFooter(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) 
 // ---------------------------------------------------------------- skin ----
 export const groveSkin: Skin = {
   id: "grove",
-  mode: "composed",
   columnClass: "osh-content mx-auto w-full max-w-[38rem] px-6 pt-10 pb-8 flex flex-col xl:max-w-[62rem]",
   wrappers: {
     Header: CanopyHeader,
