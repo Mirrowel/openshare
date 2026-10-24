@@ -11,6 +11,7 @@ import { createVirtualizer } from "@tanstack/solid-virtual"
 import { createEffect, createMemo, createSignal, onCleanup, Show, createRoot, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
+import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
 import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "@opencode/session-ui/timeline/row"
@@ -109,6 +110,9 @@ export function VirtualTimeline(props: {
     readDisclosure(props.sessionKey),
   )
   onCleanup(() => writeDisclosure(props.sessionKey, toolOpen))
+  // document-level click capture: records the toggled row key (used by the
+  // compensation predicate above); idempotent
+  armToggleAnchor()
   const renderer = createSessionTimelineRowRenderer({
     sessionID: () => props.doc.sessionID,
     status: () => props.doc.status,
@@ -162,9 +166,13 @@ export function VirtualTimeline(props: {
     initialMeasurementsCache,
   })
   // keep the reader's anchor when a row above the viewport is re-measured
-  // (the option is a Virtualizer field, not an option in this version)
+  // (the option is a Virtualizer field, not an option in this version).
+  // NEVER compensate the row the user just toggled: its growth should
+  // extend downward from its own trigger (the anchor the user cares
+  // about), not push the trigger up out of view - live-caught as the
+  // near-the-top expansion bug.
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
-    item.start < (instance.scrollOffset ?? 0)
+    item.key !== getLastToggledRowKey() && item.start < (instance.scrollOffset ?? 0)
 
   // measure through tanstack's own measureElement (it owns the resize
   // observer and writes real heights back per index). The old hand-rolled

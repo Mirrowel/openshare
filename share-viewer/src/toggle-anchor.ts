@@ -18,6 +18,20 @@ let lastTrigger: HTMLElement | undefined
 let lastViewportTop = 0
 let armed = false
 
+/** the virtualizer row key of the row the user last toggled (captured at
+ *  click time from the trigger's [data-row-key] ancestor). tanstack's
+ *  size-compensation must SKIP this row: compensating the row the user
+ *  is expanding scrolls by its growth delta and shoves its own trigger
+ *  up out of view (the near-the-top expansion bug - live-caught). The
+ *  key TTLs after 1.5s so genuine later re-measures behave normally. */
+let lastToggledRowKey: string | undefined
+let lastToggledAt = 0
+
+export function getLastToggledRowKey(): string | undefined {
+  if (Date.now() - lastToggledAt > 1500) return undefined
+  return lastToggledRowKey
+}
+
 export function armToggleAnchor() {
   if (armed) return
   armed = true
@@ -29,8 +43,11 @@ export function armToggleAnchor() {
       if (t instanceof HTMLElement) {
         lastTrigger = t
         lastViewportTop = t.getBoundingClientRect().top
+        lastToggledRowKey = t.closest("[data-row-key]")?.getAttribute("data-row-key") ?? undefined
+        lastToggledAt = Date.now()
       } else {
         lastTrigger = undefined
+        lastToggledRowKey = undefined
       }
     },
     { capture: true },

@@ -696,11 +696,12 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   white-space: nowrap;
 }
 
-/* the prompt-rail margin (owner round 2026-10-24 night): the content's
-   existing left indent grown by ~20% (24px -> ~29px) so the floating
-   pill sits in the margin without shifting layout */
+/* the prompt-rail margin (owner round 2026-10-25): the content's
+   existing left indent grown just enough to clear the floating pill
+   (1.5rem * 0.96 = ~23px; the pill spans ~8-30px at the viewport edge
+   and rests at 40% opacity) */
 .osh-indent {
-  padding-left: calc(1.5rem * 1.2) !important;
+  padding-left: calc(1.5rem * 0.96) !important;
 }
 
 /* HoverRail v4: floating pill (no gutter column). Popover opens only
