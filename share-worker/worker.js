@@ -300,7 +300,7 @@ export default {
         }
         const chk = await authCall(env, "/create-check", { token: auth ?? "" })
         if (!chk.body?.ok) return json(chk.body?.httpStatus ?? 401, { error: chk.body?.error ?? "bad create token" })
-        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0)
+        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0)
       }
 
       if (req.method === "POST" && op === "/sync") {
@@ -391,10 +391,10 @@ async function authCall(env, route, body) {
   }
 }
 
-async function httpCreate(env, json, body, ownerId, ttlMax) {
+async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0) {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
   const newId = randomId()
-  const ttlDays = clampTtl(body.ttlDays, env, ttlMax)
+  const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), env, ttlMax)
   const r = await shareStub(env, newId).fetch("https://do/init", {
     method: "POST",
     body: JSON.stringify({
@@ -605,14 +605,18 @@ export class ControlDO {
           // limits enforced server-side), or anonymous on public servers
           let ownerId = null
           let ttlMax = 0
+          let ownerDefault = 0
           if (!(this.token && this.env.CREATE_TOKEN && this.token === this.env.CREATE_TOKEN)) {
             const chk = await this.authCall("/create-check", { token: this.token ?? "" })
             if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
             ownerId = chk.userId ?? null
             ttlMax = chk.ttlMaxDays ?? 0
+            ownerDefault = chk.defaultTtlDays ?? 0
           }
           const id = randomId()
-          const ttlDays = clampTtl(frame.create.ttlDays, this.env, ttlMax)
+          // explicit ttlDays wins; otherwise the owner's stored default
+          // (PUT /api/me/settings), re-clamped against token+server caps
+          const ttlDays = clampTtl(frame.create.ttlDays ?? (ownerDefault || undefined), this.env, ttlMax)
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/init", {
             method: "POST",
             body: JSON.stringify({
@@ -1349,7 +1353,7 @@ export class AuthDO {
       if (n >= t.limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
       await this.state.storage.put(key, n + 1)
     }
-    return { ok: true, userId: t.userId, ttlMaxDays: t.limits.maxTtlDays || 0 }
+    return { ok: true, userId: t.userId, ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0 }
   }
 
   // ---- enrollment + lifecycle ----------------------------------------------

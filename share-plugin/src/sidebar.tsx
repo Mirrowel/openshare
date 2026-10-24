@@ -16,13 +16,6 @@
 // proven consumer returns box-rooted trees (opencode's own default
 // children, magic-context's sidebar, the host's slot self-test); text
 // nodes stay LEAVES here — string content only.
-//
-// TEMPORARY crash-hunt instrumentation (owner-approved 2026-10-19): every
-// render logs its inputs (with TYPES), the computed locals, and a dump of
-// the returned element tree to %TEMP%/openshare-tui-debug.log via
-// synchronous appends, so a crash mid-render still leaves evidence. Any
-// throw inside the renderer is logged with its stack, then rethrown.
-// Remove once the live crash is cornered.
 
 import type { JSX } from "@opentui/solid"
 import { bindingsOf, bindingOf, verifyShare } from "./share-flow.js"
@@ -43,23 +36,6 @@ export function dbg(v: unknown, depth = 0): string {
     return `obj{${keys.slice(0, 8).join(",")}}` + (depth < 2 ? `{${keys.slice(0, 8).map((k) => `${k}=${dbg((v as Record<string, unknown>)[k], depth + 1)}`).join(",")}}` : "")
   } catch {
     return "obj:?}"
-  }
-}
-
-/** shallow structural dump of a rendered element tree (type names, children kinds) */
-function dbgEl(el: unknown, depth = 0): string {
-  if (el === null || el === undefined || typeof el === "string" || typeof el === "number" || typeof el === "boolean") return dbg(el)
-  if (Array.isArray(el)) return `[${el.map((x) => dbgEl(x, depth)).join(",")}]`
-  if (typeof el === "function") return "fn-node"
-  if (depth >= 4) return "…"
-  try {
-    const rec = el as Record<string, unknown>
-    const t = dbg(rec.t ?? rec.type, 2)
-    const kids = rec.children
-    const props = Object.keys(rec).filter((k) => !["t", "type", "children"].includes(k))
-    return `<${t} ${props.join(" ")}>${kids === undefined ? "" : dbgEl(kids, depth + 1)}</${t}>`
-  } catch (e) {
-    return `el?-${dbg(e)}`
   }
 }
 

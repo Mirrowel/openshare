@@ -209,6 +209,23 @@ try {
   ok("T16e secret delete frees slot", (await req(W1, "DELETE", `/api/share/${c1.json.id}`, { body: { secret: c1.json.secret } })).json?.ok === true)
   ok("T16f create passes after free", (await req(W1, "POST", CREATE, { token: B, body: { sessionID: "ses_c4" } })).json?.ok === true)
 
+  // T16g-j — user defaultTtlDays applies when create omits ttlDays (explicit wins)
+  const u5 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "def-ttl" } })
+  const U5 = u5.json?.userId ?? ""
+  const u5tok = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U5, limits: { maxTtlDays: 30 } } })
+  const E = u5tok.json?.token ?? ""
+  ok("T16g user settings persist", (await req(W1, "PUT", "/api/me/settings", { token: E, body: { defaultTtlDays: 7 } })).json?.settings?.defaultTtlDays === 7)
+  const d1 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl" } })
+  ok("T16h default TTL applied on create", d1.json?.ttlDays === 7, String(d1.json?.ttlDays))
+  const d2 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl2", ttlDays: 3 } })
+  ok("T16i explicit ttlDays beats default", d2.json?.ttlDays === 3, String(d2.json?.ttlDays))
+  const ws6 = wsSession(W1, E)
+  await ws6.open()
+  ws6.send({ op: "init", create: { sessionID: "ses_defttlws" } })
+  const ws6init = await ws6.wait("init")
+  ok("T16j ws create applies default TTL", ws6init.ok === true && ws6init.ttlDays === 7, JSON.stringify(ws6init).slice(0, 120))
+  ws6.close()
+
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)
   const frozenSecretSync = await req(W1, "POST", `/api/share/${U1_SHARE}/sync`, { body: { secret: U1_SECRET, data: [{ type: "message", data: { id: "msg_frozen", role: "user" } }] } })

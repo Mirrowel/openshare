@@ -176,7 +176,7 @@ async function checkToken(token: string): Promise<{ kind: "none" | "root" } | { 
   return { kind: "user", token: row, userId: row.userId }
 }
 
-async function createCheck(token: string): Promise<{ ok: true; userId?: string; ttlMaxDays?: number } | { ok: false; error: string; httpStatus: number }> {
+async function createCheck(token: string): Promise<{ ok: true; userId?: string; ttlMaxDays?: number; defaultTtlDays?: number } | { ok: false; error: string; httpStatus: number }> {
   const chk = await checkToken(token)
   if (chk.kind === "root") return { ok: true }
   if (chk.kind === "none") {
@@ -194,7 +194,9 @@ async function createCheck(token: string): Promise<{ ok: true; userId?: string; 
     if ((row?.n ?? 0) >= limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
     db.query("INSERT INTO dcreates (k, n) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET n = n + 1").run(k)
   }
-  return { ok: true, userId: chk.userId, ttlMaxDays: limits.maxTtlDays || 0 }
+  const u = db.query("SELECT settings FROM users WHERE id = ?").get(chk.userId) as { settings: string } | undefined
+  const defaultTtlDays = Number(JSON.parse(u?.settings ?? "{}").defaultTtlDays) || 0
+  return { ok: true, userId: chk.userId, ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays }
 }
 
 async function mint(userId: string, label: string, limits: unknown): Promise<{ value: string; id: string }> {
@@ -397,7 +399,7 @@ async function httpHandler(req: Request): Promise<Response> {
     if (auth && CREATE_TOKEN && auth === CREATE_TOKEN) return httpCreate(await bodyJson(req), null, 0)
     const chk = await createCheck(auth)
     if (!chk.ok) return json(chk.httpStatus, { error: chk.error })
-    return httpCreate(await bodyJson(req), chk.userId ?? null, chk.ttlMaxDays ?? 0)
+    return httpCreate(await bodyJson(req), chk.userId ?? null, chk.ttlMaxDays ?? 0, chk.defaultTtlDays ?? 0)
   }
   if (req.method === "POST" && op === "/sync") {
     const body = await bodyJson(req)
@@ -434,9 +436,10 @@ async function resolveIdentity(req: Request, body: { secret?: string }): Promise
   return chk.kind === "user" ? { ownerId: chk.userId, root: false } : { ownerId: null, root: false }
 }
 
-async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number): Promise<Response> {
+async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number, ownerDefault = 0): Promise<Response> {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
-  const ttlDays = clampTtl(body.ttlDays, ttlMax)
+  // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
+  const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), ttlMax)
   const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""))
   return json(200, { ok: true, id, secret, ttlDays })
 }
@@ -729,7 +732,7 @@ type ControlData = {
   attachRoot?: boolean
   earlySyncs: Frame[]
 }
-type ViewerData = { kind: "viewer"; shareId: string }
+type ViewerData = { kind: "viewer"; shareId: string; since?: string }
 type WsData = ControlData | ViewerData
 
 async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
@@ -741,7 +744,8 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
       if (frame.create) {
         const chk = await createCheck(data.token)
         if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
-        const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays, chk.ttlMaxDays ?? 0)
+        // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
+        const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays ?? (chk.defaultTtlDays || undefined), chk.ttlMaxDays ?? 0)
         const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""))
         data.attachId = id
         data.attachSecret = secret
@@ -853,7 +857,7 @@ const server = Bun.serve<WsData>({
     if (wm && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return httpHandler(req).then((res) => {
         if (res.status !== 200) return res
-        if (srv.upgrade(req, { data: { kind: "viewer", shareId: wm[1] } satisfies ViewerData })) return
+        if (srv.upgrade(req, { data: { kind: "viewer", shareId: wm[1], since: url.searchParams.get("since") ?? undefined } satisfies ViewerData })) return
         return new Response("upgrade failed", { status: 400 })
       })
     }
@@ -867,7 +871,14 @@ const server = Bun.serve<WsData>({
         set.add(ws)
         const share = q.share(ws.data.shareId)
         if (share) {
-          try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: redactItems(shareData(share)) })) } catch {}
+          // `since` handshake (worker parity): a viewer that just loaded
+          // /data at rev N gets an empty frame until the next broadcast
+          const since = Number(ws.data.since)
+          if (Number.isFinite(since) && since === share.rev) {
+            try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: [] })) } catch {}
+          } else {
+            try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: redactItems(shareData(share)) })) } catch {}
+          }
         }
       }
     },
