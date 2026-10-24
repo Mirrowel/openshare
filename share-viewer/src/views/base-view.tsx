@@ -251,7 +251,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             </Show>
           </HoverRail>
         </Show>
-        <div ref={scroller} class="relative flex-1 min-w-0 overflow-y-auto">
+        <div ref={scroller} data-transcript-scroll class="relative flex-1 min-w-0 overflow-y-auto">
           <WindowedSections
             sections={visible()}
             scroller={() => scroller}

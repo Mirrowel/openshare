@@ -11,6 +11,7 @@ import { createVirtualizer } from "@tanstack/solid-virtual"
 import { createEffect, createMemo, createSignal, onCleanup, Show, createRoot, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
+import { armToggleAnchor, settleToggleAnchor } from "./toggle-anchor"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
 import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "@opencode/session-ui/timeline/row"
@@ -105,6 +106,7 @@ export function VirtualTimeline(props: {
     readDisclosure(props.sessionKey),
   )
   onCleanup(() => writeDisclosure(props.sessionKey, toolOpen))
+  armToggleAnchor()
   const renderer = createSessionTimelineRowRenderer({
     sessionID: () => props.doc.sessionID,
     status: () => props.doc.status,
@@ -119,6 +121,9 @@ export function VirtualTimeline(props: {
       set: (key, open) => {
         setToolOpen(key, open)
         writeDisclosure(props.sessionKey, toolOpen)
+        // pin the toggled trigger's viewport position (close = collapse
+        // toward the trigger, no clamp-fling)
+        settleToggleAnchor()
       },
     },
     // drives per-row default-open (Tool outputs / Expanded reasoning)

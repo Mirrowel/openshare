@@ -13,6 +13,7 @@ import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
 import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { sessionStatus, type ShareData } from "../fold"
+import { armToggleAnchor, settleToggleAnchor } from "../toggle-anchor"
 import type { OshSettings } from "../settings"
 import type { ToolEntry } from "./session-data"
 
@@ -31,8 +32,15 @@ export function setVendoredData(d: ShareData | undefined, nav?: VendoredNav) {
   currentNav = nav
 }
 
+// per-entry open state for composed views, module-level so section-window
+// remounts keep it, + toggle anchoring (same discipline as classic)
+const partOpen = new Map<string, boolean | undefined>()
+armToggleAnchor()
+
 export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; data?: ShareData }) {
   const data = () => props.data ?? currentData
+  const entryId = () => String((props.entry.part as any)?.id ?? props.entry.tool + ":" + (props.entry.part as any)?.time?.created ?? "x")
+  const open = () => partOpen.get(entryId()) ?? (props.settings.autoExpand.includes(props.entry.tool) || undefined)
   return (
     <DataProvider
       data={{
@@ -66,8 +74,15 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
                     : ((props.entry.state?.error as any)?.message ?? "Failed")
                   : undefined
               }
-              // the per-tool natural-open rule + the toggle on top
+              // the per-tool natural-open rule + the toggle on top;
+              // CONTROLLED open (module store) so remounts keep it and the
+              // toggle anchors (close collapses toward the trigger)
               defaultOpen={props.settings.autoExpand.includes(props.entry.tool) || undefined}
+              open={open()}
+              onOpenChange={(next: boolean) => {
+                partOpen.set(entryId(), next)
+                settleToggleAnchor()
+              }}
             />
           </DialogProvider>
         </FileComponentProvider>

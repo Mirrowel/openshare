@@ -1,0 +1,64 @@
+// Toggle anchoring (owner round 2026-10-24): opening a tool/thought near
+// the top pushed its title UP (Chrome's scroll anchoring picked an anchor
+// INSIDE the growing body), and closing a tall block whose bottom passed
+// the viewport clamped scrollTop and flung the view up ("the bigger the
+// element, the more it pushes you up").
+//
+// Two mechanisms:
+// 1. CSS: overflow-anchor:none inside collapsible bodies (app.css) - the
+//    browser can no longer anchor inside growing content, so opening
+//    extends downward and the title stays put.
+// 2. This module: armAnchor() captures the trigger + its viewport Y at
+//    click time (document capture, once); settleAnchor() runs after the
+//    state write and reflows, pinning the trigger back to its viewport
+//    position in whatever scroller contains it (transcript scroller or
+//    window). Closing then collapses toward the trigger instead of
+//    letting the clamp fling the reader.
+let lastTrigger: HTMLElement | undefined
+let lastViewportTop = 0
+let armed = false
+
+export function armToggleAnchor() {
+  if (armed) return
+  armed = true
+  document.addEventListener(
+    "click",
+    (e) => {
+      const el = e.target instanceof Element ? e.target : null
+      const t = el?.closest("[data-slot='collapsible-trigger']")
+      if (t instanceof HTMLElement) {
+        lastTrigger = t
+        lastViewportTop = t.getBoundingClientRect().top
+      } else {
+        lastTrigger = undefined
+      }
+    },
+    { capture: true },
+  )
+}
+
+/** call right after a disclosure state write triggered by a user click */
+export function settleToggleAnchor() {
+  const trigger = lastTrigger
+  const wasTop = lastViewportTop
+  if (!trigger) return
+  lastTrigger = undefined
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!trigger.isConnected) return
+      const scroller = trigger.closest<HTMLElement>("[data-transcript-scroll]")
+      const nowTop = trigger.getBoundingClientRect().top
+      const delta = nowTop - wasTop
+      if (Math.abs(delta) < 2) return
+      if (scroller && scroller.scrollHeight > scroller.clientHeight) {
+        const max = scroller.scrollHeight - scroller.clientHeight
+        const target = Math.max(0, Math.min(max, scroller.scrollTop + delta))
+        scroller.scrollTop = target
+      } else {
+        const max = document.documentElement.scrollHeight - window.innerHeight
+        const target = Math.max(0, Math.min(max, window.scrollY + delta))
+        window.scrollTo({ top: target })
+      }
+    })
+  })
+}

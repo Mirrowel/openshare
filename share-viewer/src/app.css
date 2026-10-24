@@ -679,6 +679,16 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   white-space: pre-wrap;
 }
 
+/* Toggle anchoring: the browser may not pick scroll anchors INSIDE
+   collapsible bodies - growing content (a diff accordion opening near the
+   top) then pushed its own title up out of view (live-caught). With no
+   anchor inside the growing subtree, growth extends downward and the
+   viewport stays. Close-side compensation lives in toggle-anchor.ts. */
+[data-slot="collapsible-content"],
+[data-slot="collapsible-content"] * {
+  overflow-anchor: none;
+}
+
 /* grep/glob/list row meta (match counts) */
 [data-slot="osh-tool-meta"] {
   font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
