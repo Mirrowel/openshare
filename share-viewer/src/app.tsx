@@ -385,12 +385,33 @@ function SessionView(props: {
                 </div>
               )
 
-              // settings-filtered search: user-turn text (v2 messages carry
-              // it inline)
+              // search: prompts AND responses (owner decision 2026-10-25 -
+              // unified with the skins' semantics; a turn matches when its
+              // prompt text or any of its responses' text/reasoning/tool
+              // titles contain the query)
               const filtered = createMemo(() => {
                 const q = props.search.trim().toLowerCase()
                 if (!q) return userTurns()
-                return userTurns().filter((m: any) => typeof m?.text === "string" && m.text.toLowerCase().includes(q))
+                return userTurns().filter((m: any) => {
+                  if (typeof m?.text === "string" && m.text.toLowerCase().includes(q)) return true
+                  // the turn's span: this user message until the next one
+                  const all = messages()
+                  const start = all.findIndex((x: any) => x.id === m.id)
+                  if (start < 0) return false
+                  for (let i = start + 1; i < all.length; i++) {
+                    const msg: any = all[i]
+                    if (msg?.type === "user") break
+                    if (msg?.type === "assistant") {
+                      for (const c of msg?.content ?? []) {
+                        const text =
+                          c?.type === "text" || c?.type === "reasoning" ? c.text :
+                          c?.type === "tool" ? `${c.name} ${typeof c.state?.input?.prompt === "string" ? c.state.input.prompt : ""}` : ""
+                        if (typeof text === "string" && text.toLowerCase().includes(q)) return true
+                      }
+                    }
+                  }
+                  return false
+                })
               })
               const searching = createMemo(() => props.search.trim().length > 0)
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")

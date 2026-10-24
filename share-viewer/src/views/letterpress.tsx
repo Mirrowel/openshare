@@ -373,12 +373,3 @@ export const letterpressSkin: Skin = {
   },
 }
 
-export function LetterpressView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={letterpressSkin} />
-}
-
-export const letterpress: ViewEntry = {
-  id: "letterpress",
-  label: "letterpress",
-  component: LetterpressView,
-}

@@ -9,7 +9,7 @@ import { Icon } from "@opencode/ui/icon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader } from "./chrome"
-import { saveSettingsScroll, restoreSettingsScroll, SettingsBody } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 
 const pad = (n: number) => String(n).padStart(2, "0")
@@ -44,7 +44,6 @@ function LeafGlyph(props: { class?: string }) {
 // the canopy: SkinHeader structure + the grove identity (ring glyph,
 // pill status). The settings pill keeps its bespoke dropdown below.
 function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [menuOpen, setMenuOpen] = createSignal(false)
   const view = useView()
   const live = () => props.status === "live"
   return (
@@ -68,31 +67,17 @@ function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
           </span>
         )}
         settingsTrigger={
-          <button
-            class="flex items-center gap-1 h-7 px-2.5 rounded-full border border-border-weak-base bg-background-stronger text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            onClick={() => setMenuOpen(!menuOpen())}
-          >
-            <span class="hidden sm:block">settings</span>
-            <Icon name="chevron-down" size="small" classList={{ "rotate-180": menuOpen() }} />
-          </button>
-        }
-      />
-
-      <Show when={menuOpen()}>
-        <div
-          class="fixed top-10 right-4 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-          onScroll={(e) => saveSettingsScroll(e.currentTarget)}
-          ref={restoreSettingsScroll}
-        >
-          <SettingsBody
+          <SkinSettingsPopover
             settings={props.settings}
             update={props.updateSettings}
             branding={props.source.branding()}
             search={props.search}
             onSearch={props.onSearch}
+            gearClass="flex items-center gap-1 h-7 px-2.5 rounded-full border border-border-weak-base bg-background-stronger text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            gearLabel="settings"
           />
-        </div>
-      </Show>
+        }
+      />
     </>
   )
 }
@@ -216,12 +201,3 @@ export const groveSkin: Skin = {
   },
 }
 
-export function GroveView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={groveSkin} />
-}
-
-export const grove: ViewEntry = {
-  id: "grove",
-  label: "grove",
-  component: GroveView,
-}

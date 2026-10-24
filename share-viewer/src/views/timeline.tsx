@@ -10,7 +10,7 @@
 import { For, Show, createContext, useContext, createEffect, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
-import { SettingsBody, saveSettingsScroll, restoreSettingsScroll } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import { useSessionSections, type SessionSection } from "./session-data"
 import type { ViewEntry } from "./registry"
 import { Icon } from "@opencode/ui/icon"
@@ -111,7 +111,6 @@ function SpacerRow(props: { h: string }) {
 // ------------------------------------------------------- header/footer ----
 
 function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [open, setOpen] = createSignal(false)
   const secs = useSessionSections(props.data, props.sessionID)
   createEffect(() => setSharedSections(secs()))
   const view = useView()
@@ -208,29 +207,15 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
               <Mark class="h-3" />
               v{view.version() ?? "?"}
             </span>
-            <div class="relative shrink-0">
-              <button
-                class="flex items-center gap-1 h-7 px-2 rounded-md border border-border-weak-base text-12-mono text-text-weaker hover:text-text-base cursor-pointer transition-colors duration-150"
-                onClick={() => setOpen(!open())}
-              >
-                settings
-              </button>
-              <Show when={open()}>
-                <div
-                  class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                  onScroll={saveSettingsScroll as any}
-                  ref={restoreSettingsScroll}
-                >
-                  <SettingsBody
-                    settings={props.settings}
-                    update={props.updateSettings}
-                    branding={brand()}
-                    search={props.search}
-                    onSearch={props.onSearch}
-                  />
-                </div>
-              </Show>
-            </div>
+            <SkinSettingsPopover
+              settings={props.settings}
+              update={props.updateSettings}
+              branding={brand() as any}
+              search={props.search}
+              onSearch={props.onSearch}
+              gearClass="flex items-center gap-1 h-7 px-2 rounded-md border border-border-weak-base text-12-mono text-text-weaker hover:text-text-base bg-transparent cursor-pointer transition-colors duration-150"
+              gearLabel="settings"
+            />
           </div>
           <div class="flex items-center gap-3 pt-1.5 pb-2.5 overflow-x-auto no-scrollbar">
             <Show when={range()} fallback={<span class="shrink-0 text-12-mono text-text-weaker">no timestamps</span>}>
@@ -495,12 +480,3 @@ export const timelineSkin: Skin = {
   },
 }
 
-export function TimelineView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={timelineSkin} />
-}
-
-export const timeline: ViewEntry = {
-  id: "timeline",
-  label: "timeline",
-  component: TimelineView,
-}

@@ -204,8 +204,3 @@ export const cinemaSkin: Skin = {
   },
 }
 
-export const cinema: ViewEntry = {
-  id: "cinema",
-  label: "cinema",
-  component: (p) => <BaseSessionView {...p} skin={cinemaSkin} />,
-}

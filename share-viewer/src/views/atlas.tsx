@@ -21,7 +21,7 @@ import { useView } from "./view-context"
 import type { ViewEntry } from "./registry"
 import { setInfoExtra } from "./info-extras"
 import { useSessionSections, type SessionSection } from "./session-data"
-import { SettingsBody } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import { pagedFor } from "../settings"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
@@ -157,11 +157,6 @@ function StatusStamp(props: { status: string }) {
 // graticule layer behind the sheet is rendered here and pinned by CSS to
 // the whole view; the masthead also publishes the rail feed.
 function Masthead(props: HeaderProps) {
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
-  // dropdown scroll memory: the sheet outlives the dropdown, remember
-  // where the reader was (wired locally; the shared helpers are typed as
-  // ref callbacks and cannot serve onScroll)
-  let settingsScrollTop = 0
   const view = useView()
   const info = view.info
   const b = () => props.source.branding()
@@ -230,42 +225,15 @@ function Masthead(props: HeaderProps) {
                 <Icon name="github" size="small" />
               </a>
 {/* the legend lives in the global Session info popup now (setInfoExtra) */}
-              <div class="relative flex items-center rounded-md border border-border-weak-base bg-background-base p-0.5">
-                <button
-                  class="flex items-center gap-1 h-6 px-1.5 text-12-mono text-text-weaker hover:text-text-base cursor-pointer bg-transparent border-none"
-                  onClick={() => setSettingsOpen(!settingsOpen())}
-                >
-                  <span class="hidden sm:inline">settings</span>
-                  <span
-                    class="text-icon-weaker-base transition-transform duration-200 ease-out"
-                    classList={{ "rotate-180": settingsOpen() }}
-                  >
-                    <Icon name="chevron-down" size="small" />
-                  </span>
-                </button>
-                <Show when={settingsOpen()}>
-                  <div
-                    class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                    ref={(el) => {
-                      const top = settingsScrollTop
-                      queueMicrotask(() => {
-                        if (top) el.scrollTop = top
-                      })
-                    }}
-                    onScroll={(e) => {
-                      settingsScrollTop = e.currentTarget.scrollTop
-                    }}
-                  >
-                    <SettingsBody
-                      settings={props.settings}
-                      update={props.updateSettings}
-                      branding={b()}
-                      search={props.search}
-                      onSearch={props.onSearch}
-                    />
-                  </div>
-                </Show>
-              </div>
+              <SkinSettingsPopover
+                settings={props.settings}
+                update={props.updateSettings}
+                branding={b() as any}
+                search={props.search}
+                onSearch={props.onSearch}
+                gearClass="flex items-center gap-1 h-6 px-1.5 rounded-md border border-border-weak-base bg-background-base text-12-mono text-text-weaker hover:text-text-base cursor-pointer transition-colors duration-150"
+                gearLabel="settings"
+              />
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border-weak-base py-2 text-12-mono text-text-weaker">
@@ -646,8 +614,3 @@ export const atlasSkin: Skin = {
   },
 }
 
-export const atlas: ViewEntry = {
-  id: "atlas",
-  label: "atlas",
-  component: (p) => <BaseSessionView {...p} skin={atlasSkin} />,
-}

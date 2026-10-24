@@ -62,3 +62,9 @@ export function useView(): ViewContextValue {
   if (!v) throw new Error("useView() outside BaseSessionView - a skin surface rendered outside its provider")
   return v
 }
+
+/** non-throwing variant for shared surfaces that live BOTH inside a view
+ *  (skins) and inside the classic chrome (no provider there) */
+export function tryView(): ViewContextValue | undefined {
+  return useContext(ViewContext)
+}

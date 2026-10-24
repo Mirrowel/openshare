@@ -17,7 +17,7 @@ import { useView } from "./view-context"
 import { SkinHeader } from "./chrome"
 import type { ViewEntry } from "./registry"
 import { sessionModelLabel, useSessionSections, type SessionSection } from "./session-data"
-import { SettingsBody } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
 type FooterProps = Parameters<NonNullable<SkinWrappers["Footer"]>>[0]
@@ -49,7 +49,6 @@ function Elbow(props: { solid?: boolean; top?: string }) {
 
 // drafting strip header: title block fields, status stamp, settings drawer
 function DraftingHeader(props: HeaderProps) {
-  const [drawer, setDrawer] = createSignal(false)
   const view = useView()
   const info = view.info
   const b = () => props.source.branding()
@@ -161,40 +160,17 @@ function DraftingHeader(props: HeaderProps) {
           </span>
         )}
         settingsTrigger={
-          <button
-            class="flex items-center gap-1.5 shrink-0 bg-transparent border border-border-weak-base px-2 py-1 text-12-mono uppercase tracking-wider text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            onClick={() => setDrawer(true)}
-          >
-            <Icon name="settings-gear" size="small" />
-            <span class="hidden sm:inline">params</span>
-          </button>
+          <SkinSettingsPopover
+            settings={props.settings}
+            update={props.updateSettings}
+            branding={b() as any}
+            search={props.search}
+            onSearch={props.onSearch}
+            gearClass="flex items-center gap-1.5 shrink-0 bg-transparent border border-border-weak-base px-2 py-1 text-12-mono uppercase tracking-wider text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            gearLabel="params"
+          />
         }
       />
-      <Show when={drawer()}>
-        <div class="fixed inset-0 z-40" onClick={(e) => e.target === e.currentTarget && setDrawer(false)}>
-          <div
-            class="absolute top-0 right-0 bottom-0 w-[19rem] max-w-[85vw] overflow-y-auto border-l border-border-base bg-background-base p-4"
-            style={{ animation: "osh-slide-in 180ms ease-out" }}
-          >
-            <div class="flex items-center justify-between pb-2 border-b border-border-weak-base">
-              <span class="text-12-mono uppercase tracking-widest text-text-weaker">sheet parameters</span>
-              <button
-                class="bg-transparent border-none cursor-pointer text-icon-weaker-base hover:text-icon-strong-base p-1"
-                onClick={() => setDrawer(false)}
-              >
-                <Icon name="close-small" size="small" />
-              </button>
-            </div>
-            <SettingsBody
-              settings={props.settings}
-              update={props.updateSettings}
-              branding={b()}
-              search={props.search}
-              onSearch={props.onSearch}
-            />
-          </div>
-        </div>
-      </Show>
     </>
   )
 }
@@ -372,8 +348,3 @@ export const blueprintSkin: Skin = {
   },
 }
 
-export const blueprint: ViewEntry = {
-  id: "blueprint",
-  label: "blueprint",
-  component: (p) => <BaseSessionView {...p} skin={blueprintSkin} />,
-}

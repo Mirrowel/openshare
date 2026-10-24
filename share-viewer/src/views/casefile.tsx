@@ -7,7 +7,7 @@ import { Show, createSignal } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
 import { SkinHeader, SkinFooter } from "./chrome"
-import { SettingsBody } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 import type { SessionSection } from "./session-data"
 import { Icon } from "@opencode/ui/icon"
@@ -31,7 +31,6 @@ function filedLine(s: SessionSection) {
 }
 
 function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [drawer, setDrawer] = createSignal(false)
   const view = useView()
   const info = view.info
   const stampColor = () =>
@@ -62,40 +61,17 @@ function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
           </span>
         )}
         settingsTrigger={
-          <button
-            class="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            onClick={() => setDrawer(true)}
-          >
-            <Icon name="bullet-list" size="small" />
-            index
-          </button>
+          <SkinSettingsPopover
+            settings={props.settings}
+            update={props.updateSettings}
+            branding={props.source.branding()}
+            search={props.search}
+            onSearch={props.onSearch}
+            gearClass="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            gearLabel="index"
+          />
         }
       />
-      <Show when={drawer()}>
-        <div class="fixed inset-0 z-40" onClick={(e) => e.target === e.currentTarget && setDrawer(false)}>
-          <div
-            class="absolute top-0 right-0 bottom-0 w-[19rem] max-w-[85vw] overflow-y-auto border-l border-border-weak-base bg-background-base shadow-xl p-4"
-            style={{ animation: "osh-slide-in 180ms ease-out" }}
-          >
-            <div class="flex items-center justify-between pb-2">
-              <span class="text-14-medium text-text-strong">Index</span>
-              <button
-                class="bg-transparent border-none cursor-pointer text-icon-weaker-base hover:text-icon-strong-base p-1"
-                onClick={() => setDrawer(false)}
-              >
-                <Icon name="close-small" size="small" />
-              </button>
-            </div>
-            <SettingsBody
-              settings={props.settings}
-              update={props.updateSettings}
-              branding={props.source.branding()}
-              search={props.search}
-              onSearch={props.onSearch}
-            />
-          </div>
-        </div>
-      </Show>
     </>
   )
 }
@@ -150,12 +126,3 @@ export const casefileSkin: Skin = {
   },
 }
 
-export function CasefileView(props: Parameters<ViewEntry["component"]>[0]) {
-  return <BaseSessionView {...props} skin={casefileSkin} />
-}
-
-export const casefile = {
-  id: "casefile",
-  label: "casefile",
-  component: CasefileView,
-}
