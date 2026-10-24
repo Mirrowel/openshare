@@ -88,6 +88,7 @@ function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
             <span class="hidden sm:block">settings</span>
             <Icon name="chevron-down" size="small" classList={{ "rotate-180": menuOpen() }} />
           </button>
+          {props.reviewToggle}
         </div>
       </header>
 

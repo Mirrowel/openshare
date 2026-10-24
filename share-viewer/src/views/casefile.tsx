@@ -76,6 +76,7 @@ function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
               <Icon name="bullet-list" size="small" />
               index
             </button>
+            {props.reviewToggle}
           </div>
         </div>
       </header>

@@ -213,6 +213,7 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
               >
                 settings
               </button>
+              {props.reviewToggle}
               <Show when={open()}>
                 <div
                   class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"

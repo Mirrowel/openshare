@@ -15,6 +15,9 @@ export type OshSettings = {
   /** the prompt rail in CONTINUOUS mode (paged always shows it - it is
    *  the only mouse pager). false hides the fast-skip pill. */
   showRail?: boolean
+  /** the diff review panel (owner round 2026-10-25): a header toggle
+   *  shows/closes it in every view. Absent/true = shown (default). */
+  reviewOpen?: boolean
   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
@@ -44,6 +47,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   theme: "system",
   continuous: false,
   showRail: true,
+  reviewOpen: true,
   followLive: true,
   textSize: "normal",
   readText: "normal",

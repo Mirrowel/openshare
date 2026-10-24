@@ -33,6 +33,7 @@ import { Tabs } from "@opencode/ui/tabs"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 import { Icon } from "@opencode/ui/icon"
+import { ReviewToggle } from "./review"
 import { createEffect, createMemo, createSignal, ErrorBoundary, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
@@ -435,7 +436,9 @@ function SessionView(props: {
                 </Show>
               )
 
-              const wide = createMemo(() => diffs().length === 0)
+              // wide = full-width transcript: no diffs, or the review
+              // panel closed via the header toggle (owner 2026-10-25)
+              const wide = createMemo(() => diffs().length === 0 || props.settings.reviewOpen === false)
 
               return (
                 <div class="relative bg-background-stronger w-screen h-screen overflow-hidden flex flex-col">
@@ -477,6 +480,13 @@ function SessionView(props: {
                         onSearch={props.onSearch}
                         sessionTools={sessionToolNames()}
                       />
+                      <Show when={diffs().length > 0 && props.settings.view !== "reader"}>
+                        <ReviewToggle
+                          count={diffs().length}
+                          open={props.settings.reviewOpen !== false}
+                          onToggle={() => props.updateSettings({ reviewOpen: props.settings.reviewOpen === false })}
+                        />
+                      </Show>
                     </div>
                   </header>
                   <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">
@@ -566,7 +576,7 @@ function SessionView(props: {
                           </Show>
                         </div>
                       </div>
-                      <Show when={diffs().length > 0}>
+                      <Show when={diffs().length > 0 && props.settings.reviewOpen !== false}>
                         <div class="@container relative pt-6 flex-1 basis-2/5 min-w-0 min-h-0 border-l border-border-weak-base">
                           <SessionReview
                             diffs={diffs() as any}
@@ -580,7 +590,7 @@ function SessionView(props: {
                       </Show>
                     </div>
                     <Switch>
-                      <Match when={diffs().length > 0}>
+                      <Match when={diffs().length > 0 && props.settings.reviewOpen !== false}>
                         <Tabs classList={{ "md:hidden": wide(), "lg:hidden": !wide() }}>
                           <Tabs.List>
                             <Tabs.Trigger value="session" class="w-1/2" classes={{ button: "w-full" }}>

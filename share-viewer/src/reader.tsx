@@ -66,6 +66,7 @@ function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
           </Show>
         </span>
         <span class="text-12-regular text-text-weaker">{props.status}</span>
+        {props.reviewToggle}
       </div>
     </header>
   )

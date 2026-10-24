@@ -241,6 +241,7 @@ function Masthead(props: HeaderProps) {
                     <Icon name="chevron-down" size="small" />
                   </span>
                 </button>
+                {props.reviewToggle}
                 <Show when={settingsOpen()}>
                   <div
                     class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"

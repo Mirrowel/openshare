@@ -180,6 +180,7 @@ function DraftingHeader(props: HeaderProps) {
           <Icon name="settings-gear" size="small" />
           <span class="hidden sm:inline">params</span>
         </button>
+        {props.reviewToggle}
       </header>
       <Show when={drawer()}>
         <div class="fixed inset-0 z-40" onClick={(e) => e.target === e.currentTarget && setDrawer(false)}>
