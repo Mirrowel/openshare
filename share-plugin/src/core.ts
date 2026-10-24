@@ -109,6 +109,10 @@ type RemoteState = {
   initTimer: ReturnType<typeof setTimeout> | null
   initWasAttach: boolean
   backoff: number
+  /** deferred backoff reset: released after 30s of socket stability or a
+   * second acked sync — never right after init (init-then-drop servers
+   * would cycle at 1/s otherwise) */
+  backoffResetTimer: ReturnType<typeof setTimeout> | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   intentionalClose: boolean
   connectQueued: boolean
@@ -431,6 +435,7 @@ export function createEngine(deps: EngineDeps): Engine {
         initTimer: null,
         initWasAttach: false,
         backoff: 1000,
+        backoffResetTimer: null,
         reconnectTimer: null,
         intentionalClose: false,
         connectQueued: false,
@@ -1227,7 +1232,9 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const scheduleReconnect = (st: SessionState, r: RemoteState) => {
     if (st.closed || r.reconnectTimer) return
-    const wait = r.backoff
+    // jitter (±20%) so fan-out remotes and multiple sessions never sync
+    // their retry storms onto the same second
+    const wait = Math.max(250, Math.round(r.backoff * (0.8 + Math.random() * 0.4)))
     r.backoff = Math.min(r.backoff * 2, 60000)
     r.reconnectTimer = setTimeout(() => {
       r.reconnectTimer = null
@@ -1425,7 +1432,16 @@ export function createEngine(deps: EngineDeps): Engine {
         clearTimeout(r.initTimer)
         r.initTimer = null
       }
-      r.backoff = 1000
+      // backoff reset is DEFERRED until the socket proves stable: a
+      // server that accepts init then immediately drops would otherwise
+      // reconnect once per second forever (~1 cycle/s per session-server
+      // pair, live-caught in the optimization audit). 30s alive (socket
+      // still ready, no reconnect pending) or a second acked sync.
+      if (r.backoffResetTimer) clearTimeout(r.backoffResetTimer)
+      r.backoffResetTimer = setTimeout(() => {
+        r.backoffResetTimer = null
+        if (r.wsReady && !r.reconnectTimer) r.backoff = 1000
+      }, 30000)
       st.everConnected = true
       if (frame.policy) applyPolicy(frame.policy, r.url)
       r.intentionalClose = false
@@ -1459,6 +1475,13 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     if (frame.op === "ack") {
       r.ackedRev = (frame.rev as number) ?? r.ackedRev
+      // a second acked sync also proves the socket stable — release the
+      // backoff reset timer early (complements the 30s-alive timer)
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer)
+        r.backoffResetTimer = null
+        r.backoff = 1000
+      }
       // seq-scoped retirement: an ack identifies the chunk it applied.
       // An ack WITHOUT seq = old server: legacy clear-all (correct there —
       // old servers acked the whole pending batch together).
@@ -1993,6 +2016,10 @@ export function createEngine(deps: EngineDeps): Engine {
       if (r.initTimer) {
         clearTimeout(r.initTimer)
         r.initTimer = null
+      }
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer)
+        r.backoffResetTimer = null
       }
       if (r.reconnectTimer) {
         clearTimeout(r.reconnectTimer)

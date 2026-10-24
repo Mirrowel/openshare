@@ -361,16 +361,64 @@ function broadcast(shareId: string, frame: unknown) {
 
 // per-rev /data render cache (worker parity): a polling viewer hits /data
 // every 5s — rebuilding + re-serializing the full share per request is
-// pure CPU burn when nothing changed. Single slot per share (bounded by
-// share count); applySync bumps the rev so the slot self-invalidates.
-// Oversized shares (> 25 MB, matching the worker's cap) skip caching.
-const dataCache = new Map<string, { rev: number; status: string; json: string }>()
+// pure CPU burn when nothing changed. One slot per share holding BOTH
+// envelopes (/data body + WS first frame), items serialized ONCE and
+// both envelopes built by concatenation (worker renderCache parity —
+// two full serializations held two copies of the body in memory).
+// applySync bumps the rev so the slot self-invalidates; removeShare
+// drops it. Oversized shares (> 25 MB) skip caching. Bounded by a
+// global byte budget: an unbounded Map would hold ~1 GB+ resident with
+// a hundred large polled shares (audit N9). Map insertion order doubles
+// as the LRU (re-set on hit).
+const DATA_CACHE_MAX_BYTES = 128 * 1024 * 1024
+const dataCache = new Map<string, { rev: number; status: string; dataJson: string; frameJson: string; bytes: number }>()
+let dataCacheBytes = 0
+function dataCacheTrim() {
+  for (const [k, v] of dataCache) {
+    if (dataCacheBytes <= DATA_CACHE_MAX_BYTES) break
+    dataCache.delete(k)
+    dataCacheBytes -= v.bytes
+  }
+}
+function dataCacheSet(share: ShareRow, dataJson: string, frameJson: string) {
+  const hit = dataCache.get(share.id)
+  if (hit) dataCacheBytes -= hit.bytes
+  dataCache.delete(share.id)
+  dataCache.set(share.id, { rev: share.rev, status: share.status, dataJson, frameJson, bytes: dataJson.length + frameJson.length })
+  dataCacheBytes += dataJson.length + frameJson.length
+  dataCacheTrim()
+}
+/** Cached /data body for the share at its current rev. */
 function renderData(share: ShareRow): string {
   const hit = dataCache.get(share.id)
-  if (hit && hit.rev === share.rev && hit.status === share.status) return hit.json
-  const payload = JSON.stringify({ v: 2, data: redactItems(shareData(share)), status: share.status, rev: share.rev })
-  if (payload.length <= 25_000_000) dataCache.set(share.id, { rev: share.rev, status: share.status, json: payload })
-  return payload
+  if (hit && hit.rev === share.rev && hit.status === share.status) {
+    // LRU touch: reinsertion moves the key to the freshest position
+    dataCache.delete(share.id)
+    dataCache.set(share.id, hit)
+    return hit.dataJson
+  }
+  const body = JSON.stringify(redactItems(shareData(share)))
+  const dataJson = `{"v":2,"data":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev}}`
+  const frameJson = `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${body}}`
+  if (dataJson.length <= 25_000_000) dataCacheSet(share, dataJson, frameJson)
+  else if (hit) {
+    dataCache.delete(share.id)
+    dataCacheBytes -= hit.bytes
+  }
+  return dataJson
+}
+/** Cached WS first-frame body (same slot, same rev). */
+function renderFrame(share: ShareRow): string {
+  const hit = dataCache.get(share.id)
+  if (hit && hit.rev === share.rev && hit.status === share.status) {
+    dataCache.delete(share.id)
+    dataCache.set(share.id, hit)
+    return hit.frameJson
+  }
+  // populate the shared slot via renderData, then read it back
+  renderData(share)
+  const fresh = dataCache.get(share.id)
+  return fresh ? fresh.frameJson : `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${JSON.stringify(redactItems(shareData(share)))}}`
 }
 
 function json(code: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -512,7 +560,11 @@ function removeShare(id: string) {
   broadcast(id, { op: "frame", status: "gone", rev: 1, items: [] })
   db.query("DELETE FROM shares WHERE id = ?").run(id)
   db.query("DELETE FROM items WHERE shareId = ?").run(id)
-  dataCache.delete(id)
+  const cached = dataCache.get(id)
+  if (cached) {
+    dataCacheBytes -= cached.bytes
+    dataCache.delete(id)
+  }
   // close viewer sockets: the gone frame already told them; closing moves
   // them onto the poll path, where the 404 renders the gone page (parity
   // with the worker, where the DO dies and takes the sockets with it)
@@ -1043,7 +1095,7 @@ const server = Bun.serve<WsData>({
           if (Number.isFinite(since) && since === share.rev) {
             try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: [] })) } catch {}
           } else {
-            try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: redactItems(shareData(share)) })) } catch {}
+            try { ws.send(renderFrame(share)) } catch {}
           }
         }
       }

@@ -14,6 +14,10 @@ MAX_TTL_DAYS = "90"
 # AUTH_MODE: private (default — enrollment needs an access code) | public
 #            (anyone knowing the hostname can enroll; rate-limited per IP)
 # AUTH_MODE = "private"
+# Global cap on anonymous (ownerless) share creations per rolling hour,
+# ALL anonymous visitors combined — public mode only. Each create costs
+# a Durable Object + one KV write.
+# ANON_CREATE_HOURLY = "100"
 # Per-token default limits for newly enrolled users (0 = unlimited):
 #   DEFAULT_MAX_LIVE_SHARES — max non-swept shares owned at once
 #   DEFAULT_MAX_TTL_DAYS    — extra cap on per-share ttlDays

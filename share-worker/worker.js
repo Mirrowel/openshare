@@ -516,6 +516,7 @@ export class ControlDO {
     this.attachRoot = false
     this.token = ""
     this.earlySyncs = [] // syncs that raced init (each webSocketMessage runs concurrently)
+    this.earlyBytes = 0 // byte budget beside the count cap (OOM guard)
     this.initSeen = false // first exchange (init/attach) authenticates itself; revalidation is for long-lived sockets
   }
 
@@ -588,6 +589,7 @@ export class ControlDO {
     this.attachOwner = null
     this.attachRoot = false
     this.earlySyncs = []
+    this.earlyBytes = 0
     try {
       await this.state.storage.delete("attach")
     } catch {}
@@ -597,10 +599,15 @@ export class ControlDO {
    * ShareDO (concurrent webSocketMessage invocations). */
   async flushEarlySyncs(send) {
     const queued = this.earlySyncs
+    const queuedBytes = this.earlyBytes
     this.earlySyncs = []
+    this.earlyBytes = 0
     for (const frame of queued) {
       if (this.attachId === undefined) {
+        // init never landed: restore the buffer (bytes included) — the
+        // next flush attempt replays them
         this.earlySyncs = queued
+        this.earlyBytes = queuedBytes
         return
       }
       try {
@@ -728,9 +735,14 @@ export class ControlDO {
           // high enough that a full backfill burst fits (frames are
           // chunk-sized client-side); if it ever overflows, error the
           // socket so the plugin reconnects and replays from its spool
-          // instead of silently dropping the frame.
-          if (this.earlySyncs.length < 1000) this.earlySyncs.push(frame)
-          else {
+          // instead of silently dropping the frame. Byte budget beside
+          // the count: 1000 × 512KB frames would OOM a 128MB isolate
+          // long before the count trips (audit N10).
+          const frameBytes = String(message).length
+          if (this.earlySyncs.length < 1000 && this.earlyBytes + frameBytes < 8_000_000) {
+            this.earlySyncs.push(frame)
+            this.earlyBytes += frameBytes
+          } else {
             send({ op: "error", error: "early-sync buffer full" })
             try { ws.close(4004, "early-sync overflow") } catch {}
           }
@@ -911,8 +923,12 @@ export class ShareDO {
     const rev = meta.rev ?? 0
     if (this._cache && this._cache.rev === rev && this._cache.status === meta.status) return this._cache
     const items = redactItems(await this.loadItems())
-    const frameStr = JSON.stringify({ v: 2, op: "frame", status: meta.status, rev, items })
-    const dataStr = JSON.stringify({ v: 2, data: items, status: meta.status, rev })
+    // serialize the items ONCE and build both envelopes by concatenation —
+    // two full serializations held two copies of the same body in isolate
+    // memory (up to 2×25MB per ShareDO) and doubled the rebuild CPU
+    const body = JSON.stringify(items)
+    const frameStr = `{"v":2,"op":"frame","status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
+    const dataStr = `{"v":2,"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
     if (frameStr.length <= MAX_CACHE_JSON) {
       this._cache = { rev, status: meta.status, frameStr, dataStr }
       return this._cache
@@ -1710,8 +1726,11 @@ export class AuthDO {
 
   /** Global anonymous-create limiter (public mode): unlike per-IP enroll
    * limiting, this one cannot be dodged by rotating source addresses —
-   * anonymous creates are ownerless and cost a ShareDO + KV key each. */
+   * anonymous creates are ownerless and cost a ShareDO + KV key each.
+   * Cap is per rolling hour, ALL anonymous users combined; configurable
+   * via ANON_CREATE_HOURLY (default 100). */
   async anonCreateLimit() {
+    const cap = Math.max(1, Number(this.env.ANON_CREATE_HOURLY ?? 100) || 100)
     const key = "rl:anon-creates"
     const now = Date.now()
     const rl = await this.state.storage.get(key)
@@ -1719,7 +1738,7 @@ export class AuthDO {
       await this.state.storage.put(key, { n: 1, resetAt: now + 3600000 })
       return true
     }
-    if (rl.n >= 100) return false
+    if (rl.n >= cap) return false
     rl.n += 1
     await this.state.storage.put(key, rl)
     return true
@@ -2133,9 +2152,11 @@ export class SweeperDO {
           }
           // backstop: "live" shares whose plugin has been silent past the
           // finalize window (silent socket deaths where even the close
-          // never surfaced) settle to interrupted; /finalize no-ops when
-          // the plugin is around or the share already settled
-          if (meta.status === "live") {
+          // never surfaced) settle to interrupted. /meta already carried
+          // pluginSeen — calling /finalize for a freshly-seen plugin is a
+          // pure no-op DO request per live share per day, so gate on it
+          const finalizeAfterMs = resolvePolicy(this.env).finalizeAfterMs
+          if (meta.status === "live" && finalizeAfterMs > 0 && (meta.pluginSeen ?? 0) + finalizeAfterMs < Date.now()) {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/finalize", { method: "POST" })
             budget--
           }

@@ -7,7 +7,7 @@
 //             everything resumes exactly as before.
 //   local   — served by the decrypt tool's localhost server at /s/<id>:
 //             window.__MIRROBOT_SNAPSHOT__ carries {items, sessionID} inline.
-import { createSignal } from "solid-js"
+import { createMemo, createSignal } from "solid-js"
 import { fold, readPrefs, type ShareData } from "./fold"
 
 export type Branding = {
@@ -149,11 +149,16 @@ export function useShareSource(): Source {
     setStatus("cached")
     const all = () => Array.from(items().values())
     const sessionID = () => embedded.sessionID
+    // memoized fold: data() was a plain function called many times per
+    // update (8-10 call sites), each a full O(N) fold of every item —
+    // the single largest viewer CPU item during live sessions. The memo
+    // computes once per change epoch of its inputs.
+    const dataMemo = createMemo(() => fold(all(), sessionID(), shareID, status()))
     return {
       mode: "local",
       shareID,
       sub,
-      data: () => fold(all(), sessionID(), shareID, status()),
+      data: dataMemo,
       ready: () => all().some((i) => i.type === "session"),
       status,
       rev,
@@ -205,6 +210,7 @@ function liveSource(ctx: any): Source {
       let frame: any
       try { frame = JSON.parse(ev.data) } catch { return }
       if (frame.op !== "frame") return
+      lastFrameAt = Date.now()
       const isFull = firstFrame
       firstFrame = false
       if (isFull && (frame.items ?? []).length > 0) replaceFull(frame.items)
@@ -316,17 +322,38 @@ function liveSource(ctx: any): Source {
     }
   }
 
+  let lastFrameAt = 0
   tick().then(wire)
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && !stopped && !needsAuth() && ws?.readyState !== WebSocket.OPEN) tick()
+    if (document.hidden || stopped || needsAuth()) return
+    // heal on user intent: a socket that is OPEN but silently dead (no
+    // close event — sleep/wake, NAT timeout) freezes the page, because
+    // polling is stopped while a socket is open. No background watchdog:
+    // an always-on timer would bill idle pages (completed shares
+    // legitimately never frame again) — the tab coming back to focus is
+    // the free signal that it's time to check.
+    if (ws?.readyState !== WebSocket.OPEN) {
+      tick()
+      return
+    }
+    if (lastFrameAt && Date.now() - lastFrameAt > 60000) {
+      // stale open socket: force a poll + fresh wire; the since-handshake
+      // makes the poll cheap (empty on unchanged rev)
+      tick()
+      try { ws.close() } catch {}
+      wire()
+    }
   })
 
   const all = ctx.all
+  // memoized fold (see the local-source twin): one fold per change epoch
+  // instead of one per call site per update
+  const dataMemo = createMemo(() => fold(all(), ctx.sessionID(), shareID, status()))
   return {
     mode: "live" as const,
     shareID,
     sub,
-    data: () => fold(all(), ctx.sessionID(), shareID, status()),
+    data: dataMemo,
     ready: () => all().some((i: any) => i.type === "session"),
     status,
     rev,
