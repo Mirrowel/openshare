@@ -9,11 +9,9 @@
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
-import { continuousFor, setContinuousFor, type OshSettings } from "./settings"
+import type { OshSettings } from "./settings"
 import { setDiffMode } from "./settings"
-import { viewSupportsPaged } from "./views/registry"
 import type { Branding } from "./data-source"
-import { VIEW_OPTIONS } from "./views/registry"
 
 const [panelOpen, setPanelOpen] = createSignal(false)
 // auto-expand picker sub-view inside the settings panel
@@ -45,21 +43,6 @@ const THEMES: { id: OshSettings["theme"]; label: string; bg: string; fg: string 
   { id: "sepia", label: "sepia", bg: "#f4ecd8", fg: "#8a6d3b" },
   { id: "nord", label: "nord", bg: "#2e3440", fg: "#88c0d0" },
 ]
-
-// a visual signature per view for the selector grid
-const VIEW_MARKS: Record<string, string> = {
-  classic: "▣",
-  reader: "≡",
-  terminal: "❯",
-  casefile: "◫",
-  blueprint: "⊞",
-  cinema: "⬒",
-  timeline: "⋮",
-  letterpress: "A",
-  atlas: "△",
-  teletype: "≣",
-  grove: "❧",
-}
 
 function SectionLabel(props: { children: string }) {
   return <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase">{props.children}</div>
@@ -120,7 +103,7 @@ function Segmented<T extends string>(props: {
   )
 }
 
-function Switch(props: { on: boolean; label: string; hint?: string; onChange: () => void }) {
+function Toggle(props: { on: boolean; label: string; hint?: string; onChange: () => void }) {
   return (
     <button
       class="flex items-center justify-between gap-3 w-full py-1 bg-transparent border-none cursor-pointer text-left group"
@@ -174,29 +157,6 @@ export function SettingsBody(props: {
   }
   return (
     <div class="flex flex-col gap-1">
-      <Section label="view">
-        <div class="grid grid-cols-2 gap-1.5">
-          <For each={VIEW_OPTIONS}>
-            {(v) => (
-              <button
-                title={v.label}
-                class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer transition-colors duration-150"
-                classList={{
-                  "border-icon-strong-base bg-surface-base": props.settings.view === v.id,
-                  "border-border-weak-base hover:border-border-strong-base bg-transparent": props.settings.view !== v.id,
-                }}
-                onClick={() => props.update({ view: v.id })}
-              >
-                <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
-                  {VIEW_MARKS[v.id] ?? v.label[0]}
-                </span>
-                <span class="text-12-regular text-text-base truncate">{v.label}</span>
-              </button>
-            )}
-          </For>
-        </div>
-      </Section>
-
       <Section label="theme">
         <div class="grid grid-cols-2 gap-1.5">
           <For each={THEMES}>
@@ -245,35 +205,23 @@ export function SettingsBody(props: {
 
       <Section label="behavior">
         <div class="flex flex-col">
-          <Show when={viewSupportsPaged(props.settings.view)}>
-            <Switch
-              label="Continuous"
-              hint="every prompt in one scroll (per view)"
-              on={continuousFor(props.settings, props.settings.view)}
-              onChange={() =>
-                props.update(
-                  setContinuousFor(props.settings, props.settings.view, !continuousFor(props.settings, props.settings.view)),
-                )
-              }
-            />
-          </Show>
-          <Switch
+          <Toggle
             label="Center content"
             on={props.settings.centerContent}
             onChange={() => props.update({ centerContent: !props.settings.centerContent })}
           />
-          <Switch
+          <Toggle
             label="Follow live"
             hint="keep the newest content visible while you are at the bottom"
             on={props.settings.followLive}
             onChange={() => props.update({ followLive: !props.settings.followLive })}
           />
-          <Switch
+          <Toggle
             label="Expanded reasoning"
             on={props.settings.reasoningOpen}
             onChange={() => props.update({ reasoningOpen: !props.settings.reasoningOpen })}
           />
-          <Switch
+          <Toggle
             label="Tool call info"
             hint="invocation titles and queries"
             on={props.settings.toolInfo}
@@ -348,10 +296,7 @@ export function SettingsBody(props: {
               }}
             />
           </div>
-          {/* grouping only applies to the classic timeline; views have
-              their own composition */}
-          <Show when={props.settings.view === "classic"}>
-            <Switch
+            <Toggle
               label="Group tool calls"
               hint="collapse a response's tool calls into summary rows"
               on={props.settings.toolGrouping}
@@ -373,24 +318,8 @@ export function SettingsBody(props: {
                 </div>
               </div>
             </Show>
-          </Show>
-          {/* grove owns its own composition: reasoning sits with the tools
-              on the left by default; this flips it to the reading column */}
-          <Show when={props.settings.view === "grove"}>
-            <div class="pl-3 pb-1.5">
-              <div class="text-12-regular text-text-weaker pb-1">Thinking</div>
-              <Segmented
-                value={props.settings.groveThinking}
-                options={[
-                  { id: "left" as const, label: "left, with tools" },
-                  { id: "right" as const, label: "right, with prompts" },
-                ]}
-                onChange={(groveThinking) => props.update({ groveThinking })}
-              />
-            </div>
-          </Show>
           <Show when={props.branding.backgroundUrl}>
-            <Switch
+            <Toggle
               label="Background image"
               on={props.settings.backgroundOn}
               onChange={() => props.update({ backgroundOn: !props.settings.backgroundOn })}

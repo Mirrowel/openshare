@@ -3,14 +3,7 @@
 import { createSignal } from "solid-js"
 
 export type OshSettings = {
-  view: string
   theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
-  /** DEFAULT for views without their own choice (owner directive
-   *  2026-10-24: the paged/continuous choice is remembered PER VIEW) */
-  continuous: boolean
-  /** per-view override of `continuous`, keyed by view id ("classic",
-   * "terminal", "casefile", ...). Absent key = use the default */
-  continuousByView?: Record<string, boolean>
   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
@@ -27,8 +20,6 @@ export type OshSettings = {
   toolGrouping: boolean
   /** what grouping covers: v1 scope (reads/searches only) or every tool */
   toolGroupingScope: "context" | "all"
-  /** grove only: keep reasoning on the left (with tools) or move it right */
-  groveThinking: "left" | "right"
   /** how tool OUTPUTS overflow long lines: wrap them, or scroll the output
    * horizontally (hidden scrollbar, VSCode-style). The width is hard-capped
    * either way - this only picks the overflow behavior */
@@ -36,9 +27,7 @@ export type OshSettings = {
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
-  view: "classic",
   theme: "system",
-  continuous: false,
   followLive: true,
   textSize: "normal",
   readText: "normal",
@@ -50,7 +39,6 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   autoExpand: [],
   toolGrouping: true,
   toolGroupingScope: "context",
-  groveThinking: "left",
   outputOverflow: "scroll",
 }
 
@@ -85,25 +73,6 @@ export function readSettings(): OshSettings {
 export function writeSettings(s: OshSettings) {
   // not HttpOnly by design: the viewer reads its own settings cookie
   document.cookie = `${COOKIE}=${encodeURIComponent(JSON.stringify(s))}; Path=/; Max-Age=31536000; SameSite=Lax`
-}
-
-/** the paged/continuous choice FOR A VIEW: per-view override first, the
- *  global default second (owner directive: each view remembers its own
- *  mode - terminal can stay continuous while classic pages). Views that
- *  do not support paging (ViewEntry.paged === false) are always
- *  continuous regardless of any stored choice. */
-export function continuousFor(s: OshSettings, view: string, supportsPaged = true): boolean {
-  if (!supportsPaged) return true
-  const per = s.continuousByView?.[view]
-  return typeof per === "boolean" ? per : s.continuous
-}
-
-/** write a view's mode choice (per-view map; keeps other views' choices) */
-export function setContinuousFor(prev: OshSettings, view: string, value: boolean): OshSettings {
-  return {
-    ...prev,
-    continuousByView: { ...(prev.continuousByView ?? {}), [view]: value },
-  }
 }
 
 // Apply to <html>: theme attribute + scale attributes. Called pre-paint.

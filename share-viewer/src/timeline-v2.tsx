@@ -8,7 +8,7 @@
 // Drives the vendored session-ui projection + row renderer, so rendering
 // is identical to the non-virtualized timeline.
 import { createVirtualizer } from "@tanstack/solid-virtual"
-import { createEffect, createMemo, createSignal, onCleanup, Show, createRoot, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, createRoot, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import { armToggleAnchor, settleToggleAnchor } from "./toggle-anchor"
@@ -88,10 +88,9 @@ export function VirtualTimeline(props: {
   header?: JSX.Element
   footer?: JSX.Element
   class?: string
-  /** "end" (default): continuous mode — start pinned to the bottom and
-   * follow live content. "start": paged turns and static docs — open at
-   * the top, no follow-live. */
-  anchor?: "end" | "start"
+  followLive?: boolean
+  onReady?: (controls: { scrollToMessage: (id: string) => void }) => void
+  onActiveMessageChange?: (id: string) => void
 }): JSX.Element {
   const projection = createReactiveTimelineProjection({
     sessionMessages: () => props.doc.messages,
@@ -131,7 +130,9 @@ export function VirtualTimeline(props: {
   })
 
   let scrollElement: HTMLDivElement | undefined
-  const [pinned, setPinned] = createSignal(props.anchor !== "start")
+  let headerElement: HTMLDivElement | undefined
+  const [headerHeight, setHeaderHeight] = createSignal(0)
+  const [pinned, setPinned] = createSignal(false)
   const rows = projection.rows
   const rowKeys = createMemo(() => (rows() ?? []).map(TimelineRow.key))
 
@@ -154,6 +155,7 @@ export function VirtualTimeline(props: {
     overscan: 40,
     getItemKey: (index: number) => rowKeys()[index] ?? `row:${index}`,
     initialMeasurementsCache,
+    get scrollMargin() { return headerHeight() },
   })
   // keep the reader's anchor when a row above the viewport is re-measured
   // (the option is a Virtualizer field, not an option in this version)
@@ -175,8 +177,39 @@ export function VirtualTimeline(props: {
     if (!el) return
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON
     if (atEnd !== pinned()) setPinned(atEnd)
+    const item = virtualizer.getVirtualItemForOffset(el.scrollTop + 24)
+    const row = item && projection.rows()[item.index]
+    if (row) props.onActiveMessageChange?.(row.userMessageID)
     saveSnapshot()
   }
+
+  onMount(() => {
+    const observer = new ResizeObserver(() => setHeaderHeight(headerElement?.offsetHeight ?? 0))
+    if (headerElement) {
+      setHeaderHeight(headerElement.offsetHeight)
+      observer.observe(headerElement)
+    }
+    props.onReady?.({
+      scrollToMessage: (id) => {
+        const index = projection.rows().findIndex((row) => row._tag === "UserMessage" && row.userMessageID === id)
+        if (index < 0) return
+        setPinned(false)
+        virtualizer.scrollToIndex(index, { align: "start" })
+        requestAnimationFrame(() => {
+          if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
+          const target = scrollElement?.querySelector<HTMLElement>(`[data-row-key="user-message:${CSS.escape(id)}"] [data-slot="user-message-text"]`)
+          if (!target) return
+          target.getAnimations().forEach((animation) => animation.cancel())
+          target.animate([
+            { backgroundColor: "var(--surface-base-interactive-active)", boxShadow: "0 0 0 2px var(--border-strong-base)" },
+            { backgroundColor: getComputedStyle(target).backgroundColor, boxShadow: "0 0 0 0 transparent" },
+          ], { duration: 900, easing: "ease-out" })
+        })
+      },
+    })
+    onCleanup(() => observer.disconnect())
+    requestAnimationFrame(onScroll)
+  })
 
   // debounced snapshot of measured rows + offset (restores exact layout)
   let saveTimer: ReturnType<typeof setTimeout> | undefined
@@ -197,11 +230,10 @@ export function VirtualTimeline(props: {
   let lastCount = 0
   createEffect(() => {
     const count = rowKeys().length
-    const grew = count > lastCount
+    virtualizer.getTotalSize()
     const first = lastCount === 0
     lastCount = count
-    if (first && restored) return
-    if (!grew || !pinned() || count === 0 || !scrollElement) return
+    if (first || !pinned() || !props.followLive || props.doc.status.type !== "busy" || count === 0 || !scrollElement) return
     queueMicrotask(() => {
       const el = scrollElement
       if (el) el.scrollTop = el.scrollHeight
@@ -247,6 +279,7 @@ export function VirtualTimeline(props: {
           const node = (
             <div
               data-row-key={key}
+              data-turn-id={projection.rowByKey().get(key)?.userMessageID}
               ref={(el) => {
                 // tanstack's measureElement early-returns when the index
                 // is outside the computed range, and at ref time the range
@@ -279,10 +312,19 @@ export function VirtualTimeline(props: {
         })
         entry = { el, dispose }
         rowEls.set(key, entry)
-        h.appendChild(el)
       }
       entry.el.dataset.index = String(item.index)
-      entry.el.style.transform = `translateY(${item.start}px)`
+      entry.el.style.transform = `translateY(${item.start - headerHeight()}px)`
+      if (entry.el.parentElement !== h) {
+        h.appendChild(entry.el)
+        requestAnimationFrame(() => {
+          if (entry.el.isConnected) virtualizer.measureElement(entry.el)
+        })
+      }
+    }
+    // Keep keyed component state without measuring or rendering off-window rows.
+    for (const [key, entry] of rowEls) {
+      if (!inWindow.has(key)) entry.el.remove()
     }
     // evict off-window entries when the cache grows past cap (scrolled-
     // away rows keep their components otherwise)
@@ -348,8 +390,9 @@ export function VirtualTimeline(props: {
       {/* header/footer live in the scroll flow (normal flow, not absolute):
           the title scrolls away with the transcript and the footer is the
           last thing in the session — never pinned */}
-      <Show when={props.header}>{props.header}</Show>
+      <div ref={headerElement}><Show when={props.header}>{props.header}</Show></div>
       <div
+        data-transcript-content
         ref={(el) => (host = el)}
         style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
       />

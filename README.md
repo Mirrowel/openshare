@@ -63,7 +63,7 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share (per-token caps enforced server-side).
 - **Branding** — your deployment's logo, wordmark, accent, background — config only, no code.
-- **Viewer settings** — themes, text size, continuous mode, live-follow, reasoning expanded, prompt search — persisted per visitor.
+- **Viewer settings**: themes, text size, live-follow, reasoning expansion and prompt search, persisted per visitor.
 
 ## Quick start
 
@@ -250,11 +250,11 @@ Full semantics: [share-worker/README — Identity & enrollment](share-worker/REA
 Each share serves a self-contained page at `<worker>/s/<id>` (and `/s/<id>/<sub>` for a subagent's sub-page — task rows link there, new-tab behavior configurable). The page is static asset hosting that ships with the backend — you build it once at deploy (or use the Docker image, which builds it in).
 
 - **Live updates** — the page attaches over WebSocket and merges frames client-side (keyed, idempotent; message tombstones remove undone work the same way opencode does). If the socket drops, it falls back to 5-second polling and re-attaches automatically — a refresh is never required. The WS opens with a `since` rev handshake, so a fresh page load transfers the item set exactly once.
-- **Big sessions** — the viewer is built on the opencode v2 component kit (session-ui + ui, vendored) and the continuous mode uses a virtualized timeline: rows render as you scroll, so a multi-thousand-message share costs the same DOM as a small one. Paged mode renders one turn at a time.
+- **Big sessions**: the viewer uses a virtualized, scrollable conversation built on the vendored opencode v2 component kit. A prompt navigator jumps between turns and highlights your reading position. Focus on turn temporarily isolates one prompt and its responses; returning restores your scroll position.
 - **Status badges** — `live`, `completed`, `error`, `interrupted` (plugin vanished without goodbye — finalized server-side after the grace window), `gone` (deleted or TTL-expired; the final frame says so).
 - **Multi-session shares** — a share that carries subagent sessions lists them; each opens its own sub-page with the parent linked back. Folded undone turns stay folded (the revert pointer is honored), diffs render unified or split.
 - **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer renders a login form, exchanges it for a 7-day cookie, and locks out after repeated failures (429). The gate never grants write access.
-- **Reader settings** (gear icon, persisted in a 1-year cookie): themes, continuous scroll or paged, follow-live, text and reading sizes, unified/split diffs, reasoning auto-open, tool info/output visibility, tool grouping, content centering.
+- **Reader settings** (gear icon, persisted in a 1-year cookie): themes, follow-live, text and reading sizes, unified/split diffs, reasoning auto-open, tool info/output visibility, tool grouping, content centering.
 
 Viewer internals, branding, and the vendored components: [`share-viewer/README.md`](share-viewer/README.md).
 

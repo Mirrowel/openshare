@@ -498,7 +498,7 @@ const EditTool = (props: ToolProps) => {
                 <Dynamic
                   component={fileComponent as any}
                   mode="diff"
-                  virtualize={false}
+                  virtualize={(fileDiff()?.unifiedLineCount ?? countLines(oldText()) + countLines(newText())) > 500}
                   diffStyle="split"
                   {...(fileDiff()
                     ? { fileDiff: fileDiff() }
@@ -510,7 +510,7 @@ const EditTool = (props: ToolProps) => {
                 <Dynamic
                   component={fileComponent as any}
                   mode="diff"
-                  virtualize={false}
+                  virtualize={(fileDiff()?.unifiedLineCount ?? countLines(oldText()) + countLines(newText())) > 500}
                   diffStyle="unified"
                   {...(fileDiff()
                     ? { fileDiff: fileDiff() }

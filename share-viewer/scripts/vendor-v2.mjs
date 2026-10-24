@@ -598,6 +598,41 @@ $2`,
     }
   }
 }
+// Inline line virtualization must use the transcript's bounded viewport.
+{
+  let p = join(ROOT, "vendor/session-ui-v2/src/pierre/virtualizer.ts")
+  let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+  const patch = (from, to) => {
+    const next = s.replace(from, to)
+    if (next === s) throw new Error(`vendor-v2: transcript viewport anchor missing in ${p}`)
+    s = next
+  }
+  if (!s.includes("openshare fork: use the transcript viewport")) {
+    patch(
+      "function scrollRoot(container: HTMLElement) {",
+      `export function scrollRoot(container: HTMLElement) {
+  // openshare fork: use the transcript viewport, not horizontal tool wrappers.
+  const transcript = container.closest<HTMLElement>("[data-transcript-scroll]")
+  if (transcript) return transcript`,
+    )
+    patch(
+      `root.querySelector("[role='log']")`,
+      `root.querySelector("[data-transcript-content], [role='log']")`,
+    )
+    writeFileSync(p, s)
+  }
+
+  p = join(ROOT, "vendor/session-ui-v2/src/components/file.tsx")
+  s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+  if (!s.includes("scrollRoot as scrollParent")) {
+    patch(
+      `import { acquireVirtualizer, virtualMetrics } from "../pierre/virtualizer"`,
+      `import { acquireVirtualizer, scrollRoot as scrollParent, virtualMetrics } from "../pierre/virtualizer"`,
+    )
+    patch(/function scrollParent\(el: HTMLElement\): HTMLElement \| undefined \{[\s\S]+?\n\}\n\n/, "")
+    writeFileSync(p, s)
+  }
+}
 writeFileSync(
   join(ROOT, "vendor/session-ui-v2/package.json"),
   JSON.stringify(

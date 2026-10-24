@@ -6,7 +6,7 @@ import path from "node:path"
 // Client-only build of the upstream share page. Two data modes at runtime
 // (see src/data-source.ts): live worker (polls /api/share/:id/data) and
 // embedded (window.__MIRROBOT_SNAPSHOT__ set by the local server).
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [solid(), tailwindcss()],
   // solid-js resolves to the VENDORED copy carrying the cleanNode
   // re-entrant-disposal hardening (scripts/vendor-solid.mjs); node_modules
@@ -15,7 +15,7 @@ export default defineConfig({
     alias: [
       // exact match only - solid-js/web & friends keep resolving to the
       // real package (a plain string alias would also match subpaths)
-      { find: /^solid-js$/, replacement: path.resolve(__dirname, "vendor/solid/solid.js") },
+      { find: /^solid-js$/, replacement: path.resolve(__dirname, `vendor/solid/${command === "build" ? "solid" : "dev"}.js`) },
     ],
   },
   build: {
@@ -31,4 +31,4 @@ export default defineConfig({
   server: {
     fs: { allow: [path.resolve(__dirname), path.resolve(__dirname, "vendor")] },
   },
-})
+}))
