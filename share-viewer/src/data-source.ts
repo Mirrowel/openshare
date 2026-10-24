@@ -9,6 +9,7 @@
 //             window.__MIRROBOT_SNAPSHOT__ carries {items, sessionID} inline.
 import { createSignal } from "solid-js"
 import { fold, readPrefs, type ShareData } from "./fold"
+import { demoSnapshot } from "./demo"
 
 export type Branding = {
   name?: string
@@ -59,7 +60,7 @@ async function fetchBranding(): Promise<Branding> {
 
 export function useShareSource(): Source {
   const { shareID, sub } = parsePath()
-  const embedded = (window as any).__MIRROBOT_SNAPSHOT__ as
+  const embedded = import.meta.env.DEV && new URLSearchParams(location.search).has("demo") ? demoSnapshot : (window as any).__MIRROBOT_SNAPSHOT__ as
     | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string }
     | undefined
 
@@ -114,7 +115,7 @@ export function useShareSource(): Source {
     const sessionID = () => embedded.sessionID
     return {
       mode: "local",
-      shareID,
+      shareID: shareID || embedded.sessionID,
       sub,
       data: () => fold(all(), sessionID(), shareID, status()),
       ready: () => all().some((i) => i.type === "session"),

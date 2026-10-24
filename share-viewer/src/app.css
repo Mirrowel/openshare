@@ -84,10 +84,89 @@ html[data-osh-read-text="large"] .osh-content {
   --font-size-x-large: 22px;
 }
 
-/* reader/view drawers */
-@keyframes osh-slide-in {
-  from { transform: translateX(16px); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+.osh-turn-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 0.5rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-base);
+  font: inherit;
+  cursor: pointer;
+}
+.osh-turn-button:hover:not(:disabled) { background: var(--surface-base); }
+.osh-turn-button:disabled { opacity: 0.4; cursor: default; }
+
+[data-slot="session-review-actions"] > button {
+  width: 8rem;
+}
+[data-slot="session-review-header"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  height: auto;
+  min-height: 40px;
+}
+[data-slot="session-review-actions"] {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+[data-slot="session-review-actions"] .session-review-diff-style {
+  flex: 1 0 9rem;
+  min-width: 9rem;
+}
+
+.osh-turn-tick {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 20px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.osh-turn-tick-line {
+  height: 2px;
+  width: 12px;
+  border-radius: 2px;
+  background: var(--icon-weak-base);
+  transition: width 150ms, background-color 150ms;
+}
+.osh-turn-tick-line[data-major] { width: 20px; }
+.osh-turn-tick:hover .osh-turn-tick-line,
+.osh-turn-tick[aria-current="step"] .osh-turn-tick-line {
+  width: 28px;
+  background: var(--icon-strong-base);
+}
+.osh-turn-tick[aria-current="step"] .osh-turn-tick-line { height: 3px; }
+.osh-turns-toggle {
+  position: absolute;
+  top: 12px;
+  right: -14px;
+  z-index: 50;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-weak-base);
+  background: var(--background-base);
+  box-shadow: 0 1px 3px var(--border-weak-base);
+}
+.osh-review-resize { z-index: 130; }
+[data-component="resize-handle"]:focus-visible::after,
+[data-component="resize-handle"]:hover::after { background: var(--border-strong-base); opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .osh-turn-tick-line { transition: none; }
 }
 
 .no-scrollbar { scrollbar-width: none; }
@@ -380,16 +459,6 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   display: none;
 }
 
-/* --- section/entry virtualization (composed views) --------------------
-   Spacers stand in for unrendered sections/entries; in column layouts
-   like grove's 2-column grid they must span the FULL row or they would
-   distort the column rhythm. */
-.osh-win-spacer {
-  flex: none;
-  width: 100%;
-  grid-column: 1 / -1;
-}
-
 /* file cards: the expanded body opens with a title bar - icon, file name,
    directory muted; then the content. width hugs the content so the diff
    never stretches empty columns across the page. */
@@ -604,15 +673,6 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 [data-component="osh-agent-switch"] .osh-as-label .osh-as-agent {
   color: var(--accent, var(--text-strong));
 }
-/* entry slots are transparent under skins that need direct grid children
-   (grove's 2-column turn body; atlas's sheet grid - without this the
-   wrapper divs become the grid's direct children, auto-placement
-   alternates them across columns and the rail lands inline before the
-   first station - live-caught); everywhere else they are plain blocks */
-[data-view="grove"] .osh-entry-slot,
-[data-view="atlas"] .osh-entry-slot {
-  display: contents;
-}
 
 /* The kit's expanded tool-group header is position:sticky (its own scroll
    flow). Inside our absolutely-positioned virtualized rows the sticky
@@ -694,26 +754,6 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
   color: var(--text-weaker);
   white-space: nowrap;
-}
-
-/* HoverRail v3: the animated popover (opens only from the always-visible
-   gutter; scale+slide in from the rail, 150ms). The pill's opacity is
-   inline (50% rest / full near). */
-@keyframes osh-rail-pop-in {
-  from {
-    opacity: 0;
-    transform: translateY(-50%) translateX(-6px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(-50%) translateX(0) scale(1);
-  }
-}
-.osh-rail-pop {
-  animation: osh-rail-pop-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
-}
-.osh-rail-pill-open {
-  border-color: var(--border-strong-base) !important;
 }
 
 /* shell output card hugs too (the kit hardcodes width:100% on

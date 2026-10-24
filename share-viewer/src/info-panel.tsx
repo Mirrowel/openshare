@@ -1,11 +1,8 @@
-// Session info panel: the metadata no view is obliged to show - token
-// accounting, cost, counts, timing, identity. A floating trigger owned at
-// app level so it works in every view (classic included); the panel is a
-// right-hand slide-over.
+// Session metadata, usage and timing.
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
-import type { ShareData } from "../fold"
-import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-data"
+import type { ShareData } from "./fold"
+import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-usage"
 
 const [open, setOpen] = createSignal(false)
 export const toggleInfoPanel = () => setOpen((v) => !v)

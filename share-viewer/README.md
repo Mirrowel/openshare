@@ -1,6 +1,6 @@
 # Open(code)Share viewer
 
-The share page your viewers open — the vendored upstream opencode share page (built on `@opencode-ai/session-ui`), adapted for the OpenShare protocol. One build serves two jobs: **live** pages on the share worker, and **local** snapshots via the export tool. Same rendering, same views, same settings either way.
+The share page your viewers open, built on the vendored opencode session UI and adapted for the OpenShare protocol. One build serves live pages on the share worker and local snapshots via the export tool, with the same rendering and settings.
 
 ## How it runs
 
@@ -17,12 +17,15 @@ Everything renders one shape: the share `Data[]` items — the same items the pl
 
 ## What the page does
 
-- **Conversation views** — classic and reader layouts plus the session-ui full-page views; syntax highlighting (shiki), KaTeX, markdown and diff workers all bundled — the dist is ~22 MB and self-contained, no CDN.
-- **Multi-session shares** — subagent sessions appear in the share; each gets its own sub-page (`/s/<id>/<N>`) linked from task rows (new-tab behavior is a plugin setting), parent linked back; in-page navigation uses the URL sub-segment (popstate).
+- **Conversation**: one scrollable, virtualized transcript with a prompt navigator. Selecting a prompt jumps to its turn and briefly highlights it. The navigator tracks the current turn as you scroll. On mobile, a compact turn picker replaces the sidebar. Syntax highlighting, KaTeX, markdown and diff workers are bundled, with no CDN.
+- **Focus on turn**: use a prompt entry's actions menu or right-click it to show only that prompt and its responses. Previous/next controls move between turns. Back to conversation, or Escape, restores the previous reading position.
+- **Collapsible panels**: the desktop Turns sidebar folds into a centered tick rail with prompt and response previews. The Session changes panel collapses from its own header and resizes by dragging its left edge. Its width stays between 320 and 800 pixels, with a lower maximum on smaller screens to leave room for the conversation. The divider also supports arrow keys and Home/End. Phones keep the turn picker and Session/Files tabs.
+- **Multi-session shares**: the turn navigator lists only the current session's prompts. A subagent's navigator adds one parent-turn link above its own prompts; that link and Back to parent return to the spawning prompt. Task-row links open sub-pages (`/s/<id>/<N>`) and respect the new-tab preference. Subagent status and the parent action sit on the right of the session header.
 - **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer swaps to a login form, exchanges credentials for a 7-day cookie, and resumes; repeated failures lock out (429 → "locked"). The gate never grants write access.
-- **Reader settings** (gear panel, `osh_settings` cookie, 1 year, read pre-paint so there's no theme flash): theme (system/light/dark/mirrobot/midnight/sepia/nord), view, continuous vs paged, follow-live, text and reading sizes, unified/split diffs, reasoning auto-open, tool info/output visibility, content centering, plus view-scoped controls: **classic** - group tool calls on/off and what grouping covers (reads & searches only, the original scope, or every call); **grove** - whether reasoning sits left with the tools or right with the prompts.
+- **Reader settings** (gear panel, `osh_settings` cookie, 1 year): theme (system/light/dark/mirrobot/midnight/sepia/nord), follow-live, text and reading sizes, automatic/split/unified diffs, reasoning auto-open, per-tool auto-expansion, tool info visibility, content centering, and tool grouping for reads/searches or all calls. Search filters the prompt navigator without removing responses from the transcript.
 - **Tool rendering** - read/write/edit/patch show their content (read: the file body; edit/write: the annotation above a collapsible diff with +added/−removed), grep/glob/list render preformatted output on a surface (no markdown paragraph inflation), and todo lists render as checklists. Edits default to collapsed so a long diff never eats the page.
-- **Scroll behaviour** - the title and footer live in the transcript flow (the title scrolls away, the footer is the last thing in the session); tool outputs contain their own wheel scrolling; changing a setting keeps the reader exactly where they were (measured row snapshot + offset); the continuous view virtualizes rows and never shows unpainted pop-in blocks.
+- **Large inline diffs**: diffs over 500 lines render only the viewport and a surrounding buffer using Pierre's line virtualization. The full scroll height is preserved, and small diffs keep their existing renderer. The diff virtualizer uses the transcript scroll container rather than the tool's horizontal-scroll wrapper.
+- **Scroll behaviour**: the title and footer scroll with the transcript. Long tool outputs scroll horizontally without trapping vertical wheel scrolling. Row measurements and scroll snapshots preserve the reading position through settings changes and focus/return.
 - **Branding** — self-hosters can rebrand: the worker serves `/branding` (name + wordmark image) and the page renders it in the footer/title when present.
 
 ## Building
@@ -32,11 +35,10 @@ npm install
 npm run build   # vite build + scripts/build-themes.mjs → dist/
 ```
 
-`npm run dev` starts the vite dev server for UI iteration — note it has
-**no API proxy**: pages render from local state, but `/data` and the
-WebSocket call the origin and fail unless you wire a live worker in
-`src/data-source.ts`. For a realistic local page, prefer
-`python tools/view-export.py` (serves the built dist with real data).
+`npm run dev` starts the Vite dev server. Open `/?demo=1` for a sample
+conversation without a backend. Live shares need a backend at the same
+origin; there is no API proxy. To preview an exported session, use
+`python tools/view-export.py` with the built viewer.
 
 Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../share-viewer/dist` as assets. Rebuild after changing viewer code, then deploy.
 
@@ -45,12 +47,13 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 | File | Role |
 |---|---|
 | `src/entry.tsx` | pre-paint settings read (no theme flash), mount |
-| `src/app.tsx` | page shell, item → renderer mapping, views, branding |
+| `src/app.tsx` | conversation shell, focused turns, file review, branding |
+| `src/turn-nav.tsx` | desktop prompt rail, mobile picker, turn actions |
+| `src/timeline-v2.tsx` | virtualized rows, prompt jumps, active turn tracking, live-follow |
 | `src/data-source.ts` | live vs local sources, WS attach + poll fallback, auth flow |
 | `src/fold.ts` | item merging, revert-pointer folding, the `Data[]` contract |
-| `src/reader.tsx` | reader layout |
 | `src/settings.ts`, `src/settings-panel.tsx` | settings cookie + gear panel |
-| `src/views/` | the registered conversation views (atlas, blueprint, casefile, cinema, grove, letterpress, teletype, terminal, timeline; `classic` is the built-in chrome layout, not a registered view) — see [`src/views/README.md`](src/views/README.md) for the view contract |
+| `src/info-panel.tsx`, `src/session-usage.ts` | session metadata and usage |
 | `scripts/build-themes.mjs` | theme CSS build (bundler-safe file URLs) |
 
 ## Vendored components

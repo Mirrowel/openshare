@@ -10,8 +10,8 @@ import { I18nProvider, pluralCategory, pluralKey, type UiI18nParams } from "@ope
 import { dict as uiEn } from "@opencode/ui/i18n/en"
 import { Suspense } from "solid-js"
 import { App } from "./app"
+import "./tool-overrides"
 import "./app.css"
-import "./views/skins.css"
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge

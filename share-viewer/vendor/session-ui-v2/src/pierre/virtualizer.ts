@@ -23,7 +23,10 @@ function scrollable(value: string) {
   return value === "auto" || value === "scroll" || value === "overlay"
 }
 
-function scrollRoot(container: HTMLElement) {
+export function scrollRoot(container: HTMLElement) {
+  // openshare fork: use the transcript viewport, not horizontal tool wrappers.
+  const transcript = container.closest<HTMLElement>("[data-transcript-scroll]")
+  if (transcript) return transcript
   let node = container.parentElement
 
   while (node) {
@@ -53,7 +56,7 @@ function target(container: HTMLElement): Target | undefined {
   const root = scrollRoot(container)
 
   if (root) {
-    const content = root.querySelector("[role='log']")
+    const content = root.querySelector("[data-transcript-content], [role='log']")
 
     return {
       key: root,
