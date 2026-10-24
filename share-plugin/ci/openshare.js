@@ -806,10 +806,14 @@ function createEngine(deps) {
       if (b && typeof b === "object" && b.policy) {
         applyPolicy(b.policy, url);
       }
+      if (b && typeof b === "object" && b.frameAuth) {
+        frameAuthUrls.add(url);
+      }
     }).catch(() => {
       policyAsked.delete(url);
     });
   };
+  const frameAuthUrls = new Set;
   const wsUrl = (url) => url.replace(/^http/, "ws");
   let spoolRoot = spoolDirFor(cfg);
   try {
@@ -1073,23 +1077,24 @@ function createEngine(deps) {
         r.secret = meta.secret;
         r.ackedRev = meta.ackedRev ?? 0;
       }
+    } catch {}
+    try {
       if (existsSync2(queuePath(st, r.url))) {
-        r.pending = [];
+        const disk = [];
         for (const line of readFileSync2(queuePath(st, r.url), "utf8").split(`
 `)) {
           if (!line.trim())
             continue;
           try {
-            r.pending.push(JSON.parse(line));
+            disk.push(JSON.parse(line));
           } catch {
             log(`spool load: dropped torn tail line for ${st.sid.slice(0, 18)}`);
             break;
           }
         }
+        r.pending = disk;
       }
-    } catch {
-      r.pending = [];
-    }
+    } catch {}
     if (!r.shareId && targets[0]?.url === r.url) {
       try {
         const meta = JSON.parse(readFileSync2(legacyMetaPath(st), "utf8"));
@@ -1112,6 +1117,7 @@ function createEngine(deps) {
       rmSync(queuePath(st, r.url), { force: true });
     } catch {}
   };
+  let nextSeq = 0;
   const wsSend = (r, obj) => {
     if (debugEvents)
       log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send ${obj?.op} (ready=${r.wsReady})`);
@@ -1142,9 +1148,9 @@ function createEngine(deps) {
   };
   const sendSync = (r, f) => {
     if (!f.items.length)
-      return wsSend(r, { op: "sync", items: [], status: f.status });
+      return wsSend(r, { op: "sync", items: [], status: f.status, seq: f.seq });
     for (const chunk of chunkItems(f.items, 200, 512 * 1024)) {
-      wsSend(r, { op: "sync", items: chunk, status: f.status });
+      wsSend(r, { op: "sync", items: chunk, status: f.status, seq: f.seq });
     }
     return true;
   };
@@ -1287,7 +1293,8 @@ function createEngine(deps) {
         logError(`sharing to ${r.url} disabled (no credential): ${cred.error}`);
         return;
       }
-      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws?token=${encodeURIComponent(token ?? "")}`);
+      const useFrameAuth = !!token && frameAuthUrls.has(r.url);
+      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws${useFrameAuth ? "" : `?token=${encodeURIComponent(token ?? "")}`}`);
       r.ws = ws;
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000);
@@ -1323,6 +1330,8 @@ function createEngine(deps) {
         if (!st.closed)
           scheduleReconnect(st, r);
       });
+      if (useFrameAuth)
+        wsSend(r, { op: "auth", token });
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
@@ -1433,6 +1442,8 @@ function createEngine(deps) {
     }
   };
   const handleFrame = async (st, r, frame) => {
+    if (frame.op === "authed")
+      return;
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "");
@@ -1529,12 +1540,39 @@ function createEngine(deps) {
     }
     if (frame.op === "ack") {
       r.ackedRev = frame.rev ?? r.ackedRev;
-      r.pending = [];
+      if (typeof frame.seq === "number") {
+        r.pending = r.pending.filter((p) => p.seq !== frame.seq);
+      } else {
+        r.pending = [];
+      }
       spoolSave(st, r);
       scheduleBindingWrite(st);
       return;
     }
     if (frame.op === "nack" || frame.op === "error") {
+      const errText = String(frame.error ?? "");
+      if (frame.op === "nack") {
+        if (/not found|gone/i.test(errText)) {
+          logError(`${r.url}: share vanished server-side (nack: ${errText}) - recreating`);
+          deleteAbandoned(r);
+          r.shareId = null;
+          r.secret = null;
+          r.ackedRev = 0;
+          try {
+            r.ws?.close(4000, "share gone");
+          } catch {}
+          if (!st.closed)
+            queueConnect(st, r);
+          return;
+        }
+        if (/frozen/i.test(errText)) {
+          r.frozenRemote = true;
+          r.pending = [];
+          spoolSave(st, r);
+          logError(`${r.url}: share frozen by the hoster - edits refused; contact the server admin`);
+          return;
+        }
+      }
       logError(`${r.url}: worker refused frame:`, JSON.stringify(frame).slice(0, 200));
       if (frame.op === "error" && r.wsReady && !st.closed) {
         r.wsReady = false;
@@ -1577,14 +1615,23 @@ function createEngine(deps) {
     const f = frameFrom(st);
     if (!f)
       return;
+    const chunks = f.items.length ? chunkItems(f.items, 200, 512 * 1024) : [[]];
     let httpWork;
     for (const r of st.remotes.values()) {
-      r.pending.push(f);
-      spoolAppend(st, r, f);
+      if (r.frozenRemote)
+        continue;
+      const fresh = [];
+      for (const chunk of chunks) {
+        const cf = { items: chunk, status: f.status, seq: ++nextSeq };
+        fresh.push(cf);
+        r.pending.push(cf);
+        spoolAppend(st, r, cf);
+      }
       if (r.ws && !r.wsReady)
         continue;
       if (r.wsReady) {
-        sendSync(r, f);
+        for (const cf of fresh)
+          sendSync(r, cf);
         continue;
       }
       const viaHttp = flushViaHttp(st, r);
@@ -1593,6 +1640,8 @@ function createEngine(deps) {
     }
     if (st.remotes.size)
       st.lastFlushAt = Date.now();
+    if (httpWork)
+      httpWork.catch((e) => logError("http flush error", e?.message || e));
     return httpWork;
   };
   const flushViaHttp = async (st, r) => {
@@ -1631,7 +1680,9 @@ function createEngine(deps) {
       st.timer = null;
       if (debugEvents)
         log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} remotes=${st.remotes.size}`);
-      chain = chain.then(() => flush(st)).catch((e) => logError("flush error", e?.message || e));
+      chain = chain.then(() => {
+        flush(st);
+      }).catch((e) => logError("flush error", e?.message || e));
     }, wait);
   };
   const enqueue = (st, entry) => {
@@ -1646,6 +1697,7 @@ function createEngine(deps) {
     scheduleFlush(st);
   };
   const msgIndex = new Map;
+  const tombstoned = new Set;
   const indexMessage = (entry) => {
     if (entry.item.type !== "message")
       return;
@@ -1667,6 +1719,8 @@ function createEngine(deps) {
   };
   const sessionStateOf = (sid) => sessions.get(childToParent.get(sid) ?? sid);
   const reEnqueueMessage = (m) => {
+    if (tombstoned.has(`${m.sid}:${m.data.id}`))
+      return;
     const st = sessionStateOf(m.sid);
     if (st)
       enqueue(st, itemFor("message", m.data, m.sid));
@@ -1907,6 +1961,8 @@ function createEngine(deps) {
   };
   const dropMergedMessage = (st, messageID) => {
     st.merged.delete(messageID);
+    msgIndex.delete(`${st.sid}:${messageID}`);
+    tombstoned.add(`${st.sid}:${messageID}`);
   };
   const dropMergedPart = (st, sid, messageID, partID) => {
     const e = st.merged.get(messageID);
@@ -1943,9 +1999,21 @@ function createEngine(deps) {
         clearTimeout(r.idleDropTimer);
         r.idleDropTimer = null;
       }
-      if (r.wsReady)
+      if (r.wsReady && r.shareId) {
         wsSend(r, { op: "delete" });
-      else if (r.shareId && r.secret) {
+        if (r.shareId && r.secret) {
+          const sid = r.shareId;
+          const sec = r.secret;
+          setTimeout(() => {
+            fetch(`${r.url}/api/share/${sid}`, {
+              method: "DELETE",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ secret: sec }),
+              signal: AbortSignal.timeout(8000)
+            }).catch(() => {});
+          }, 2000);
+        }
+      } else if (r.shareId && r.secret) {
         fetch(`${r.url}/api/share/${r.shareId}`, {
           method: "DELETE",
           headers: { "content-type": "application/json" },
@@ -2021,6 +2089,9 @@ function createEngine(deps) {
       if (nextBefore === before)
         break;
       before = nextBefore;
+    }
+    if (out.length >= MAX_PAGES * PAGE_SIZE) {
+      logError(`backfill truncated at ${out.length} messages (page cap) for ${sid.slice(0, 18)} — oldest history not shared`);
     }
     return out;
   }

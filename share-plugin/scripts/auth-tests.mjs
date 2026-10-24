@@ -42,8 +42,8 @@ function ok(name, cond, detail = "") {
   }
 }
 
-async function req(url, method, path, { token, body } = {}) {
-  const headers = { "content-type": "application/json" }
+async function req(url, method, path, { token, body, headers: extra } = {}) {
+  const headers = { "content-type": "application/json", ...(extra ?? {}) }
   if (token) headers.authorization = `Bearer ${token}`
   const r = await fetch(url + path, {
     method,
@@ -53,7 +53,7 @@ async function req(url, method, path, { token, body } = {}) {
   })
   let json = null
   try { json = await r.json() } catch {}
-  return { status: r.status, json }
+  return { status: r.status, json, res: r }
 }
 
 /** Open a plugin control socket, send frames, collect replies until an
@@ -225,6 +225,53 @@ try {
   const ws6init = await ws6.wait("init")
   ok("T16j ws create applies default TTL", ws6init.ok === true && ws6init.ttlDays === 7, JSON.stringify(ws6init).slice(0, 120))
   ws6.close()
+
+  // T21 — DELETE auth enforcement (Bun once trusted raw-body root/ownerId:
+  // any viewer could delete any share by id). Spoofed identity must 403;
+  // the real secret must work.
+  const d3 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_spoof" } })
+  ok("T21 share staged", d3.json?.ok === true)
+  const spoofRoot = await req(W1, "DELETE", `/api/share/${d3.json.id}`, { body: { root: true } })
+  ok("T21b spoofed root rejected", spoofRoot.status === 403, `${spoofRoot.status} ${spoofRoot.json?.error}`)
+  const spoofOwner = await req(W1, "DELETE", `/api/share/${d3.json.id}`, { body: { ownerId: U5 } })
+  ok("T21c spoofed ownerId rejected", spoofOwner.status === 403, `${spoofOwner.status}`)
+  ok("T21d share survived the spoofs", (await req(W1, "GET", `/api/share/${d3.json.id}/data`)).status === 200)
+  ok("T21e real secret deletes", (await req(W1, "DELETE", `/api/share/${d3.json.id}`, { body: { secret: d3.json.secret } })).json?.ok === true)
+
+  // T22 — read auth end-to-end: login mints a cookie token that /data and
+  // the WS actually accept (Bun once compared the token hash against the
+  // PASSWORD hash — gated shares were unviewable forever)
+  const gated = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_gated", authLogin: "view", authPassword: "pw123" } })
+  ok("T22 gated share created", gated.json?.ok === true, JSON.stringify(gated.json).slice(0, 120))
+  await req(W1, "POST", `/api/share/${gated.json.id}/sync`, { body: { secret: gated.json.secret, data: [{ type: "message", data: { id: "msg_gated", role: "user", content: [{ type: "text", text: "secret text" }] } }] } })
+  ok("T22b unauthenticated data 401", (await req(W1, "GET", `/api/share/${gated.json.id}/data`)).status === 401)
+  const login = await req(W1, "POST", `/api/share/${gated.json.id}/auth`, { body: { login: "view", password: "pw123" } })
+  const setCookie = login.res?.headers?.get?.("set-cookie") ?? ""
+  const cookieToken = /osh_[0-9a-f]+=([^;]+)/.exec(setCookie)?.[1] ?? ""
+  ok("T22c login mints cookie", login.status === 200 && cookieToken.length > 20, `${login.status} ${setCookie.slice(0, 40)}`)
+  const withCookie = await req(W1, "GET", `/api/share/${gated.json.id}/data`, { headers: { cookie: `osh_${gated.json.id}=${cookieToken}` } })
+  ok("T22d cookie token reads data", withCookie.status === 200 && (withCookie.json?.data ?? []).some((i) => i?.data?.id === "msg_gated"), `${withCookie.status} items=${withCookie.json?.data?.length}`)
+  const wrongCookie = await req(W1, "GET", `/api/share/${gated.json.id}/data`, { headers: { cookie: `osh_${gated.json.id}=deadbeef` } })
+  ok("T22e wrong cookie rejected", wrongCookie.status === 401)
+  ok("T22f cleanup", (await req(W1, "DELETE", `/api/share/${gated.json.id}`, { body: { secret: gated.json.secret } })).json?.ok === true)
+
+  // T23 — route shape: share-referencing paths need a real 32-hex id
+  ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)
+  ok("T23b junk id 404s", (await req(W1, "POST", `/api/share/zzzz/sync`, { body: {} })).status === 404)
+
+  // T24 — WS sync acks echo the client frame seq (the plugin tracks
+  // pending per-chunk; an unsequenced ack would fall back to clear-all)
+  const ws7 = wsSession(W1, E)
+  await ws7.open()
+  ws7.send({ op: "init", create: { sessionID: "ses_seq" } })
+  await ws7.wait("init")
+  ws7.send({ op: "sync", seq: 41, items: [{ type: "message", data: { id: "msg_seq", role: "user", content: [{ type: "text", text: "hi" }] } }] })
+  const ws7ack = await ws7.wait("ack")
+  ok("T24 ack echoes seq", ws7ack.seq === 41, JSON.stringify(ws7ack).slice(0, 120))
+  ws7.close()
+  ok("T24b seq share cleanup", (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares?.some((s) => s.sessionID === "ses_seq"))
+  const seqShare = (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares?.find((s) => s.sessionID === "ses_seq")
+  if (seqShare) await req(W1, "DELETE", `/api/share/${seqShare.id}`, { token: CREATE_TOKEN })
 
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)

@@ -115,6 +115,35 @@ export function useShareSource(): Source {
     })
   }
 
+  // FULL-SET replace: /data responses and a WS socket's first frame carry
+  // the COMPLETE live item set - they must prune keys the server no
+  // longer has. A merge-only consumer keeps items deleted while its
+  // socket was down (tombstones are not stored server-side), so an
+  // undone turn resurrected on every reconnect until a hard reload
+  // (live-caught). Delta frames keep using merge().
+  const replaceFull = (incoming: any[]) => {
+    setItems((prev) => {
+      const next = new Map<string, any>()
+      for (const it of incoming ?? []) {
+        const key = it.type === "session" ? `session/${it.data?.id ?? ""}`
+          : it.type === "message" ? `message/${it.sessionID ?? it.data?.sessionID ?? ""}/${it.data?.id ?? ""}`
+          : it.type === "model" ? `model/${it.sessionID ?? ""}`
+          : it.type === "prefs" ? "prefs"
+          : it.type === "session_diff" ? `session_diff/${it.sessionID ?? ""}`
+          : null
+        if (key && !it.del) next.set(key, it)
+      }
+      if (next.size === prev.size) {
+        let same = true
+        for (const [k, v] of next) {
+          if (prev.get(k) !== v) { same = false; break }
+        }
+        if (same) return prev
+      }
+      return next
+    })
+  }
+
   if (embedded) {
     merge(embedded.items ?? [])
     setStatus("cached")
@@ -137,7 +166,7 @@ export function useShareSource(): Source {
     }
   }
   return liveSource({
-    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge,
+    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull,
     setItems, setStatus, setRev, setError, setNeedsAuth, setAuthState, setBrand,
     all: () => Array.from(items().values()),
     sessionID: () => {
@@ -148,11 +177,14 @@ export function useShareSource(): Source {
 }
 
 function liveSource(ctx: any): Source {
-  const { shareID, sub, status, rev, error, needsAuth, authState, brand, merge, setNeedsAuth, setStatus, setRev, setError, setAuthState } = ctx
+  const { shareID, sub, status, rev, error, needsAuth, authState, brand, merge, replaceFull, setNeedsAuth, setStatus, setRev, setError, setAuthState } = ctx
   let stopped = false
   let ws: WebSocket | undefined
   let pollTimer: any
   let wsRetryTimer: any
+  // a socket's FIRST frame is the full item set (or the empty since-hit);
+  // every later frame is a delta - full frames replace, deltas merge
+  let firstFrame = true
 
   const wire = () => {
     if (needsAuth()) return
@@ -172,7 +204,10 @@ function liveSource(ctx: any): Source {
       let frame: any
       try { frame = JSON.parse(ev.data) } catch { return }
       if (frame.op !== "frame") return
-      merge(frame.items ?? [])
+      const isFull = firstFrame
+      firstFrame = false
+      if (isFull && (frame.items ?? []).length > 0) replaceFull(frame.items)
+      else merge(frame.items ?? [])
       setRev(frame.rev ?? 0)
       if (frame.status === "gone") {
         setStatus("gone")
@@ -223,7 +258,15 @@ function liveSource(ctx: any): Source {
         return
       }
       const body = await r.json()
-      merge(body.data ?? [])
+      // /data is the FULL live set: replace, so items deleted while we
+      // were disconnected (tombstones are server-side deletes, not
+      // markers) get pruned instead of resurrecting until a hard reload
+      if (typeof body.rev === "number" && body.rev === (typeof rev === "function" ? rev() : -1) && (body.data ?? []).length >= 0) {
+        // rev unchanged: nothing server-side changed since our last
+        // view - keep the container identity (no refold)
+      } else {
+        replaceFull(body.data ?? [])
+      }
       setRev(body.rev ?? 0)
       setStatus(body.status ?? "live")
     } catch (e) {

@@ -39,8 +39,10 @@ from pathlib import Path
 
 
 # ----------------------------------------------------------------------------
-# export JSON -> share Data[] items (the one data contract: the same items the
-# live plugin streams, the viewer renders, and the passive artifacts carry)
+# export JSON -> share Data[] items (contract v2: the OpenShare envelope
+# carries opencode-v2-profile items; messages embed their content — the
+# `part` item type no longer exists, so v1 parts must be folded in here,
+# mirroring share-plugin/src/contract.ts normalizeV1Message)
 # ----------------------------------------------------------------------------
 
 def format_label(template: str, model: dict) -> str:
@@ -55,29 +57,208 @@ def format_label(template: str, model: dict) -> str:
             .replace("$model", model.get("modelID") or ""))
 
 
+TOOL_NAME_MAP = {"bash": "shell", "task": "subagent"}
+INPUT_KEY_MAP = {"filePath": "path", "subagent_type": "agent"}
+
+
+def _tool_input(state: dict) -> dict:
+    out = {}
+    for k, v in (state.get("input") or {}).items():
+        out[INPUT_KEY_MAP.get(k, k)] = v
+    title = state.get("title")
+    if isinstance(title, str) and "description" not in out:
+        out["description"] = title
+    return out
+
+
+def _tool_metadata(state: dict) -> dict:
+    out = {}
+    for k, v in (state.get("metadata") or {}).items():
+        if k == "filediff":
+            out["files"] = [v]
+        elif k == "sessionId":
+            out["sessionID"] = v
+        else:
+            out[k] = v
+    return out
+
+
+def _tool_state(state: dict) -> dict:
+    status = str(state.get("status") or "pending")
+    if status == "pending":
+        raw = state.get("raw")
+        return {"status": "streaming",
+                "input": raw if isinstance(raw, str) else json.dumps(state.get("input") or {})}
+    if status == "running":
+        return {"status": "running", "input": _tool_input(state), "metadata": _tool_metadata(state)}
+    if status == "completed":
+        output = state.get("output")
+        text = output if isinstance(output, str) else ""
+        return {"status": "completed", "input": _tool_input(state),
+                "content": [{"type": "text", "text": text or " "}],
+                "metadata": _tool_metadata(state)}
+    err = state.get("error")
+    return {"status": "error", "input": _tool_input(state),
+            "error": {"type": "unknown",
+                      "message": err if isinstance(err, str) else "tool failed"},
+            "metadata": _tool_metadata(state)}
+
+
+def _normalize_file_part(p: dict):
+    url = p.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    inline = url.startswith("data:")
+    comma = url.find(",")
+    out = {"data": url[comma + 1:] if inline else url,
+           "mime": p.get("mime") if isinstance(p.get("mime"), str) else "application/octet-stream",
+           "source": {"type": "inline"} if inline else {"type": "uri", "uri": url}}
+    if isinstance(p.get("filename"), str):
+        out["name"] = p["filename"]
+    return out
+
+
+def _time_ms(t, key):
+    try:
+        v = (t or {}).get(key)
+        return int(v) if isinstance(v, (int, float)) else None
+    except Exception:
+        return None
+
+
+def normalize_v1_message(minfo: dict, parts: list):
+    """v1 {info, parts} -> v2 message dict, or ("refill", parentID, summary)
+    for the compaction summary assistant, or None."""
+    mid = minfo.get("id")
+    if not isinstance(mid, str):
+        return None
+    t = minfo.get("time") or {}
+    created = t.get("created") if isinstance(t.get("created"), (int, float)) else 0
+
+    if minfo.get("role") == "user":
+        compaction = next((p for p in parts if p.get("type") == "compaction"), None)
+        if compaction is not None:
+            return {"id": mid, "type": "compaction", "status": "completed",
+                    "reason": "manual" if compaction.get("auto") is False else "auto",
+                    "summary": "", "recent": "", "time": {"created": created}}
+        text = "\n".join(p["text"] for p in parts
+                         if p.get("type") == "text" and isinstance(p.get("text"), str))
+        message = {"id": mid, "type": "user", "time": {"created": created}, "text": text}
+        files = [f for f in (_normalize_file_part(p) for p in parts
+                             if p.get("type") == "file") if f is not None]
+        if files:
+            message["files"] = files
+        agents = [{"name": str(p["name"])} for p in parts
+                  if p.get("type") == "agent" and p.get("name")]
+        if agents:
+            message["agents"] = agents
+        meta = {}
+        if minfo.get("agent") is not None:
+            meta["agent"] = str(minfo["agent"])
+        model = minfo.get("model")
+        if isinstance(model, dict):
+            meta["model"] = {"id": str(model.get("modelID") or ""),
+                             "providerID": str(model.get("providerID") or "")}
+        message["metadata"] = meta
+        return message
+
+    if minfo.get("role") == "assistant":
+        if minfo.get("summary") is True and minfo.get("mode") == "compaction":
+            summary = "\n".join(p["text"] for p in parts
+                                if p.get("type") == "text" and isinstance(p.get("text"), str))
+            return ("refill", str(minfo.get("parentID") or ""), summary)
+
+        content = []
+        cost = minfo.get("cost") if isinstance(minfo.get("cost"), (int, float)) else 0
+        tokens = None
+        retry = None
+        for p in parts:
+            ptype = p.get("type")
+            if ptype == "text":
+                content.append({"type": "text", "text": str(p.get("text") or "")})
+            elif ptype == "reasoning":
+                rt = p.get("time") or {}
+                content.append({"type": "reasoning", "text": str(p.get("text") or ""),
+                                "time": {"created": rt.get("start"), "completed": rt.get("end")}})
+            elif ptype == "tool":
+                st = p.get("state") or {}
+                tt = st.get("time") or {}
+                tool = str(p.get("tool") or "unknown")
+                content.append({"type": "tool", "id": str(p.get("id") or ""),
+                                "name": TOOL_NAME_MAP.get(tool, tool),
+                                "state": _tool_state(st),
+                                "time": {"created": tt.get("start"), "completed": tt.get("end")}})
+            elif ptype == "retry":
+                err = p.get("error") or {}
+                retry = {"attempt": int(p.get("attempt") or 0),
+                         "at": (p.get("time") or {}).get("created") or 0,
+                         "error": {"type": "unknown",
+                                   "message": str(err.get("message") or err.get("name") or "retry")}}
+            elif ptype == "step-finish":
+                if isinstance(p.get("cost"), (int, float)):
+                    cost += p["cost"]
+                if isinstance(p.get("tokens"), dict):
+                    tokens = p["tokens"]
+
+        message = {"id": mid, "type": "assistant",
+                   "agent": str(minfo.get("agent") or "build"),
+                   "model": {"id": str(minfo.get("modelID") or ""),
+                             "providerID": str(minfo.get("providerID") or "")},
+                   "time": {"created": created,
+                            "streamed": t.get("started"),
+                            "completed": t.get("completed")},
+                   "content": content, "cost": cost}
+        if tokens is not None:
+            message["tokens"] = tokens
+        if isinstance(minfo.get("finish"), str):
+            message["finish"] = minfo["finish"]
+        err = minfo.get("error")
+        if isinstance(err, dict):
+            message["error"] = {"type": str(err.get("name") or "UnknownError"),
+                                "message": str(err.get("message") or "turn failed")}
+        if retry is not None:
+            message["retry"] = retry
+        return message
+    return None
+
+
 def export_to_data(export: dict, session_id: str, label_template: str) -> list[dict]:
-    """v1 {info, messages:[{info, parts[]}]} -> [{type, data}] items."""
+    """v1 {info, messages:[{info, parts[]}]} -> contract-v2 items
+    (content-embedded messages, model items; parts are folded in)."""
     items: list[dict] = []
     info = export.get("info")
     if info:
         items.append({"type": "session", "data": info})
+    # first pass: normalize every message; compaction summaries refill
+    # their parent compaction message
+    normalized: list[dict] = []
+    refills: dict[str, str] = {}
     for m in export.get("messages") or []:
         minfo = m.get("info") or {}
-        items.append({"type": "message", "data": minfo})
-        if minfo.get("role") == "user" and minfo.get("model"):
+        result = normalize_v1_message(minfo, m.get("parts") or [])
+        if result is None:
+            continue
+        if isinstance(result, tuple):
+            _, parent_id, summary = result
+            if parent_id:
+                refills[parent_id] = summary
+            continue
+        if result["type"] == "user" and minfo.get("model"):
             model = minfo["model"]
-            label = format_label(label_template, model)
             items.append({
                 "type": "model",
                 "sessionID": session_id,
                 "data": [{
                     "id": model.get("modelID"),
                     "providerID": model.get("providerID"),
-                    "name": label,
+                    "name": format_label(label_template, model),
                 }],
             })
-        for part in m.get("parts") or []:
-            items.append({"type": "part", "data": part})
+        normalized.append(result)
+    for message in normalized:
+        if message.get("type") == "compaction" and refills.get(message["id"]):
+            message["summary"] = refills[message["id"]]
+        items.append({"type": "message", "data": message})
     return items
 
 
@@ -224,6 +405,13 @@ def serve(dist: Path, snapshot_json: str, main_id: str, port: int) -> None:
                     pass
 
         def _route(self, path):
+            # DNS-rebinding guard: a hostile page resolved to 127.0.0.1
+            # must not read the exported session — only our own localhost
+            # origins may talk to this server
+            host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+            if host not in ("127.0.0.1", "localhost", "[::1]", "::1"):
+                self._send(403, "text/plain", b"forbidden host")
+                return
             if path in ("/", "/index.html", "/s", "/s/"):
                 self.send_response(302)
                 self.send_header("location", f"/s/{main_id}")

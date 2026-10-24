@@ -229,6 +229,12 @@ export function createV2ServerSetup() {
     // the client adapter and feed them into the engine as the v1 events it
     // understands (session.updated / message.updated / message.part.updated).
     // The engine's keyed queue makes repeated re-syncs idempotent.
+    // NOTE: no content-hash dedupe here — a refresh that runs while the
+    // session is still dormant (pre-flag) would poison the cache without
+    // emitting anything, and the flag-time refresh would then SKIP the
+    // unchanged messages (live-caught in the v2 mock suite: the share's
+    // first assistant content arrived only as the next change). The dedupe
+    // belongs engine-side, where dormancy is known, if it's ever needed.
     const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
     const refresh = (sessionID: string) => {
       let timer = pendingRefresh.get(sessionID)
