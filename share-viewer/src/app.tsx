@@ -101,7 +101,7 @@ function FullPageView(props: {
 }
 import { children, sessionStatus, visibleMessages, type ShareData } from "./fold"
 import { setSubagentData } from "./subagent-map"
-import { applySettings, continuousFor, readSettings, writeSettings, type OshSettings } from "./settings"
+import { applySettings, pagedFor, readSettings, writeSettings, type OshSettings } from "./settings"
 
 // scroll memory for in-page session switching: restore on return
 const scrollMemory = new Map<string, number>()
@@ -264,6 +264,11 @@ function SessionView(props: {
               function setActiveMessage(message: any) {
                 setStore("messageId", message ? message.id : undefined)
               }
+              // continuous-mode fast-skip: the rail's jump target for the
+              // VirtualTimeline (nonce so repeat jumps to the same message
+              // re-fire)
+              let jumpNonce = 1
+              const [jumpTarget, setJumpTarget] = createSignal<{ id: string; nonce: number }>()
               // the model of the ACTIVE turn: user metadata first (stamped
               // at ingestion), else the following assistant's model
               const provider = createMemo(() => {
@@ -485,23 +490,29 @@ function SessionView(props: {
                     >
                       <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
                         <div class="flex items-start justify-start h-full min-h-0 w-full">
-                          <Show when={!continuousFor(props.settings, "classic") && userTurns().length > 1}>
-                            {/* paged prompt switcher: the shared FLOATING
-                                rail (fixed to the viewport, proximity
-                                reveal) instead of the persistent
-                                MessageNav column that ate width */}
+                          {/* the prompt rail v4: ALWAYS present with >1 user
+                              message, both modes (owner round 2026-10-24) -
+                              paged pages, continuous fast-skips (jumps to the
+                              user message row). Paged ignores the hide
+                              setting (it is the only mouse pager). */}
+                          <Show when={userTurns().length > 1 && (pagedFor(props.settings, "classic") || props.settings.showRail !== false)}>
                             <HoverRail
                               count={userTurns().length}
-                              active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                              active={pagedFor(props.settings, "classic") ? userTurns().findIndex((m: any) => m.id === activeMessage()?.id) : undefined}
+                              mode={pagedFor(props.settings, "classic") ? "paged" : "continuous"}
+                              onHide={() => props.updateSettings({ showRail: false })}
                               label={(i) => {
                                 const t = userTurns()[i]?.text
                                 return typeof t === "string" ? t.trim().split("\n")[0] : undefined
                               }}
-                              onSelect={(i) => setActiveMessage(userTurns()[i])}
+                              onSelect={(i) => {
+                                if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
+                                else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++ })
+                              }}
                             />
                           </Show>
                           <Show
-                            when={continuousFor(props.settings, "classic")}
+                            when={!pagedFor(props.settings, "classic")}
                             fallback={
                               // paged: ONE turn, windowed row-by-row through the
                               // same virtualizer as continuous (a giant turn
@@ -525,14 +536,15 @@ function SessionView(props: {
                                     <PageFooter branding={props.source.branding()} class="px-6" />
                                   </div>
                                 }
-                                class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow h-full min-h-0"}
+                                class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow h-full min-h-0 osh-indent"}
                               />
                             }
                           >
-                            <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col"}>
+                            <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col osh-indent"}>
                               <VirtualTimeline
                                 doc={timelineDoc() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID()}
+                                scrollTarget={jumpTarget()}
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={false}
                   editToolDefaultOpen={false}

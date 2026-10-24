@@ -8,7 +8,7 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { SkinSettingsPopover } from "../settings-panel"
-import { continuousFor } from "../settings"
+import { pagedFor } from "../settings"
 import type { ViewEntry, ViewProps } from "./registry"
 import { sessionModelLabel, type SessionSection } from "./session-data"
 import { Icon } from "@opencode/ui/icon"
@@ -313,7 +313,7 @@ function FrontMatter(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0] & { 
 
 // ---------------------------------------------------------------- skin ----
 export function letterpressSkin(props: ViewProps): Skin {
-  const continuous = () => continuousFor(props.settings, "letterpress")
+  const continuous = () => !pagedFor(props.settings, "letterpress")
   return {
     id: "letterpress",
     mode: "composed",

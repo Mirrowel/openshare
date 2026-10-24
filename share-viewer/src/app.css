@@ -696,17 +696,24 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   white-space: nowrap;
 }
 
-/* HoverRail v3: the animated popover (opens only from the always-visible
-   gutter; scale+slide in from the rail, 150ms). The pill's opacity is
-   inline (50% rest / full near). */
+/* the prompt-rail margin (owner round 2026-10-24 night): the content's
+   existing left indent grown by ~20% (24px -> ~29px) so the floating
+   pill sits in the margin without shifting layout */
+.osh-indent {
+  padding-left: calc(1.5rem * 1.2) !important;
+}
+
+/* HoverRail v4: floating pill (no gutter column). Popover opens only
+   from the pill, scale+slide in from it, 150ms. Rest opacity is inline
+   (0.4 rest / 1 near). */
 @keyframes osh-rail-pop-in {
   from {
     opacity: 0;
-    transform: translateY(-50%) translateX(-6px) scale(0.96);
+    transform: translateX(-6px) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateY(-50%) translateX(0) scale(1);
+    transform: translateX(0) scale(1);
   }
 }
 .osh-rail-pop {

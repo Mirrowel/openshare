@@ -20,7 +20,7 @@ import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
 import { useSessionSections, type SessionSection, type ToolEntry, type ReasoningEntry, type TextEntry } from "./session-data"
 import type { ViewProps } from "./registry"
-import { continuousFor, type OshSettings } from "../settings"
+import { pagedFor, type OshSettings } from "../settings"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
@@ -139,7 +139,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   const [active, setActive] = createSignal(0)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const model = () => sessionModelLabel(props.data, props.sessionID)
-  const continuous = () => continuousFor(props.settings, props.skin.id, viewSupportsPaged(props.skin.id))
+  const continuous = () => !pagedFor(props.settings, props.skin.id, viewSupportsPaged(props.skin.id))
   const cachePrefix = props.source.shareID + ":" + props.sessionID
 
   // search filter
@@ -223,42 +223,46 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   return (
     <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
       <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
-      {/* paged prompt switcher: the ALWAYS-VISIBLE gutter rail (owner
-          directive v3) - a permanent ~28px column with the prompt pill;
-          content shifts right by the gutter. Paged = one section at a
-          time for EVERY skin (Nav or not - Nav-less skins previously
-          rendered all sections in both modes, live-caught as "the toggle
-          does nothing"). Skins with a Nav render it INSIDE the popover;
-          Nav-less skins get the default numbered list. Continuous-only
-          skins (ViewEntry.paged === false) never show the rail. */}
+      {/* the prompt rail v4 (owner round 2026-10-24 night): ALWAYS present
+          with >1 prompt, both modes - paged pages, continuous fast-skips by
+          scrolling to the section. Paged ignores the hide setting (it is
+          the pager); continuous hides when showRail === false. children
+          MUST be undefined for Nav-less skins (a <Show> element is always
+          truthy - the empty-popover bug, live-caught twice). */}
+      <Show when={visible().length > 1 && (!continuous() || props.settings.showRail !== false)}>
+        <HoverRail
+          count={visible().length}
+          active={continuous() ? undefined : active()}
+          title={props.skin.id}
+          mode={continuous() ? "continuous" : "paged"}
+          onHide={() => props.updateSettings({ showRail: false })}
+          label={(i) => {
+            const p = visible()[i]?.prompt
+            return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+          }}
+          onSelect={(i) => {
+            if (continuous()) {
+              const sc = scroller as unknown as HTMLDivElement | undefined
+              const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+              el?.scrollIntoView({ behavior: "smooth", block: "start" })
+              return
+            }
+            setActive(i)
+          }}
+        >
+          {w.Nav ? (() => {
+            const NavSkin = w.Nav!
+            return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+          })() : undefined}
+        </HoverRail>
+      </Show>
       <div class="flex flex-1 min-h-0">
-        <Show when={!continuous()}>
-          {/* children MUST be undefined for Nav-less skins: a <Show> element
-              is always truthy, so the rail's fallback never rendered and
-              Nav-less skins got an EMPTY popover (live-caught twice - the
-              second time after the "fix" kept passing the Show) */}
-          <HoverRail
-            count={visible().length}
-            active={active()}
-            title={props.skin.id}
-            label={(i) => {
-              const p = visible()[i]?.prompt
-              return typeof p === "string" ? p.trim().split("\n")[0] : undefined
-            }}
-            onSelect={(i) => setActive(i)}
-          >
-            {w.Nav ? (() => {
-              const NavSkin = w.Nav!
-              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-            })() : undefined}
-          </HoverRail>
-        </Show>
         <div ref={scroller} data-transcript-scroll class="relative flex-1 min-w-0 overflow-y-auto">
           <WindowedSections
             sections={visible()}
             scroller={() => scroller}
             cachePrefix={cachePrefix}
-            class={props.skin.columnClass ?? "max-w-3xl mx-auto px-6 py-6 flex flex-col gap-8"}
+            class={props.skin.columnClass ?? "max-w-3xl mx-auto osh-indent px-6 py-6 flex flex-col gap-8"}
             render={(s, i) => (
               <Show when={continuous()} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>
                 <TurnBody section={s} index={i} />

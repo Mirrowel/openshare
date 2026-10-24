@@ -9,7 +9,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
-import { continuousFor, setContinuousFor, type OshSettings } from "./settings"
+import { pagedFor, setPagedFor, type OshSettings } from "./settings"
 import { setDiffMode } from "./settings"
 import { viewSupportsPaged } from "./views/registry"
 import type { Branding } from "./data-source"
@@ -247,16 +247,22 @@ export function SettingsBody(props: {
         <div class="flex flex-col">
           <Show when={viewSupportsPaged(props.settings.view)}>
             <Switch
-              label="Continuous"
-              hint="every prompt in one scroll (per view)"
-              on={continuousFor(props.settings, props.settings.view)}
+              label="Paged mode"
+              hint="one prompt at a time, the rail switcher pages (per view; off = one continuous scroll)"
+              on={pagedFor(props.settings, props.settings.view)}
               onChange={() =>
                 props.update(
-                  setContinuousFor(props.settings, props.settings.view, !continuousFor(props.settings, props.settings.view)),
+                  setPagedFor(props.settings, props.settings.view, !pagedFor(props.settings, props.settings.view)),
                 )
               }
             />
           </Show>
+          <Switch
+            label="Prompt rail"
+            hint="the fast-skip pill beside the transcript in scroll mode (paged mode always shows it - it is the pager)"
+            on={props.settings.showRail !== false}
+            onChange={() => props.update({ showRail: props.settings.showRail === false })}
+          />
           <Switch
             label="Center content"
             on={props.settings.centerContent}

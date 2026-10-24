@@ -20,7 +20,7 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import type { ViewEntry } from "./registry"
 import { useSessionSections, type SessionSection } from "./session-data"
 import { SettingsBody } from "../settings-panel"
-import { continuousFor } from "../settings"
+import { pagedFor } from "../settings"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
 type FooterProps = Parameters<NonNullable<SkinWrappers["Footer"]>>[0]
@@ -176,7 +176,7 @@ function Masthead(props: HeaderProps) {
       info: info(),
       counts: counts(),
       noteLines: noteLines(),
-      continuous: continuousFor(props.settings, "atlas"),
+      continuous: !pagedFor(props.settings, "atlas"),
     })
   })
 

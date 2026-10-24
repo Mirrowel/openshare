@@ -92,6 +92,10 @@ export function VirtualTimeline(props: {
    * follow live content. "start": paged turns and static docs — open at
    * the top, no follow-live. */
   anchor?: "end" | "start"
+  /** continuous-mode fast-skip: when this changes to a message id, scroll
+   *  to that user message's row (the rail's jump target). nonce makes
+   *  repeat jumps to the same message re-fire. */
+  scrollTarget?: { id: string; nonce: number }
 }): JSX.Element {
   const projection = createReactiveTimelineProjection({
     sessionMessages: () => props.doc.messages,
@@ -167,6 +171,23 @@ export function VirtualTimeline(props: {
   // only (classic boxes are adjacent) — live-caught 2026-10-21.
   onCleanup(() => {
     if (measurementCache.size > 4000) measurementCache.clear()
+  })
+
+  // continuous-mode fast-skip: jump to a user message row by id
+  createEffect(() => {
+    const target = props.scrollTarget
+    if (!target) return
+    const rows = projection.rows()
+    const idx = rows.findIndex((row) => {
+      const k = String((row as any)?._tag === "UserMessage" ? `user-message:${(row as any).userMessageID}` : "")
+      return k === `user-message:${target.id}`
+    })
+    if (idx < 0) return
+    const el = scrollElement
+    if (!el) return
+    // tanstack's own offset math (estimate-based; the measurement pass
+    // corrects around the jump)
+    virtualizer.scrollToIndex(idx, { align: "start" })
   })
 
   // pin state: at end → pinned (follows new content); nudge up → unpinned

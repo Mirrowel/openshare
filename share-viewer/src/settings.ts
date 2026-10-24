@@ -5,12 +5,16 @@ import { createSignal } from "solid-js"
 export type OshSettings = {
   view: string
   theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
-  /** DEFAULT for views without their own choice (owner directive
-   *  2026-10-24: the paged/continuous choice is remembered PER VIEW) */
   continuous: boolean
-  /** per-view override of `continuous`, keyed by view id ("classic",
-   * "terminal", "casefile", ...). Absent key = use the default */
+  /** legacy storage (continuous-by-view) - read for migration only,
+   *  stripped on the next write */
   continuousByView?: Record<string, boolean>
+  /** per-view PAGED choice, keyed by view id ("classic", "terminal",
+   *  ...). Absent key = continuous (default). */
+  pagedByView?: Record<string, boolean>
+  /** the prompt rail in CONTINUOUS mode (paged always shows it - it is
+   *  the only mouse pager). false hides the fast-skip pill. */
+  showRail?: boolean
   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
@@ -39,6 +43,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   view: "classic",
   theme: "system",
   continuous: false,
+  showRail: true,
   followLive: true,
   textSize: "normal",
   readText: "normal",
@@ -87,22 +92,28 @@ export function writeSettings(s: OshSettings) {
   document.cookie = `${COOKIE}=${encodeURIComponent(JSON.stringify(s))}; Path=/; Max-Age=31536000; SameSite=Lax`
 }
 
-/** the paged/continuous choice FOR A VIEW: per-view override first, the
- *  global default second (owner directive: each view remembers its own
- *  mode - terminal can stay continuous while classic pages). Views that
- *  do not support paging (ViewEntry.paged === false) are always
- *  continuous regardless of any stored choice. */
-export function continuousFor(s: OshSettings, view: string, supportsPaged = true): boolean {
-  if (!supportsPaged) return true
-  const per = s.continuousByView?.[view]
-  return typeof per === "boolean" ? per : s.continuous
+/** the paged/continuous choice FOR A VIEW, in PAGED terms (owner round
+ *  2026-10-24: the toggle is now "Paged mode", ON = paged; default OFF =
+ *  continuous). Migrates the old continuousByView storage; views that do
+ *  not support paging (ViewEntry.paged === false) are always continuous
+ *  regardless of any stored choice. */
+export function pagedFor(s: OshSettings, view: string, supportsPaged = true): boolean {
+  if (!supportsPaged) return false
+  const paged = s.pagedByView?.[view]
+  if (typeof paged === "boolean") return paged
+  // migration: the old flag was continuous-by-view (true = continuous)
+  const legacy = s.continuousByView?.[view]
+  if (typeof legacy === "boolean") return !legacy
+  return false
 }
 
-/** write a view's mode choice (per-view map; keeps other views' choices) */
-export function setContinuousFor(prev: OshSettings, view: string, value: boolean): OshSettings {
+/** write a view's paged choice (per-view map; keeps other views' choices) */
+export function setPagedFor(prev: OshSettings, view: string, value: boolean): OshSettings {
+  const { continuousByView, ...rest } = prev as OshSettings & { continuousByView?: Record<string, boolean> }
+  void continuousByView
   return {
-    ...prev,
-    continuousByView: { ...(prev.continuousByView ?? {}), [view]: value },
+    ...rest,
+    pagedByView: { ...(prev.pagedByView ?? {}), [view]: value },
   }
 }
 
