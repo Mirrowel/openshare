@@ -8,15 +8,13 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
+import { SkinHeader } from "./chrome"
 import { SkinSettingsPopover } from "../settings-panel"
 import type { ViewEntry, ViewProps } from "./registry"
 import { type SessionSection } from "./session-data"
-import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { Title } from "@solidjs/meta"
 
-const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the text face and the display face: old-style serifs first, then broad
 // platform coverage so a Linux viewer still gets a real book
@@ -115,17 +113,13 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
   return (
     <>
       <Title>{`${info()?.title ?? "session"} | ${props.source.branding().name || "openshare"}`}</Title>
-      <header class="h-11 px-5 lg:px-10 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-        <div class="flex items-center gap-3 min-w-0">
-          <Show when={props.isSub && props.onBack}>
-            <button
-              class="flex items-center gap-1 text-12-regular text-text-weaker hover:text-text-base bg-transparent border-none cursor-pointer shrink-0 transition-colors duration-150"
-              onClick={() => props.onBack?.()}
-            >
-              <Icon name="arrow-left" size="small" />
-              main
-            </button>
-          </Show>
+      <SkinHeader
+        class="h-11 px-5 lg:px-10 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30"
+        leadClass="flex items-center gap-3 min-w-0"
+        titleClass="min-w-0 truncate text-12-regular text-text-weaker italic"
+        titleStyle={{ "font-family": SERIF }}
+        metaClass="flex items-center gap-3 shrink-0"
+        afterBack={
           <Show
             when={props.source.branding().linkUrl}
             fallback={<div class={`${BRAND_BOX} shrink-0`}><BrandMark branding={props.source.branding()} /></div>}
@@ -142,32 +136,23 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
               </a>
             )}
           </Show>
-          {/* the verso carries the book */}
-          <span class="min-w-0 truncate text-12-regular text-text-weaker italic" style={{ "font-family": SERIF }}>
-            {info()?.title ?? "session"}
-          </span>
-        </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
-            <span class={`inline-block size-1.5 rounded-full shrink-0 ${statusTone()}`} />
-            {props.status}
-          </span>
-          <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
-            <Mark class="h-3 shrink-0" />
-            <span>v{view.version() ?? "?"}</span>
-          </span>
-          <Show when={props.model}>
-            <span class="hidden sm:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
-          </Show>
-          <a
-            href={OPENSHARE_REPO}
-            target="_blank"
-            rel="noreferrer"
-            title="Open(code)Share"
-            class="text-icon-weaker-base transition-colors duration-150 hover:text-icon-strong-base"
-          >
-            <Icon name="github" size="small" />
-          </a>
+        }
+        statusRender={(status) => {
+          const tone = () => {
+            if (status === "live") return "bg-icon-success-base"
+            if (status === "error") return "bg-icon-critical-base"
+            if (status === "waiting" || status === "login required") return "bg-icon-warning-base"
+            if (status === "gone") return "bg-border-strong-base"
+            return "bg-icon-info-base"
+          }
+          return (
+            <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
+              <span class={`inline-block size-1.5 rounded-full shrink-0 ${tone()}`} />
+              {status}
+            </span>
+          )
+        }}
+        settingsTrigger={
           <SkinSettingsPopover
             settings={props.settings}
             update={props.updateSettings}
@@ -176,8 +161,8 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
             onSearch={props.onSearch}
             gearLabel="settings"
           />
-        </div>
-      </header>
+        }
+      />
     </>
   )
 }

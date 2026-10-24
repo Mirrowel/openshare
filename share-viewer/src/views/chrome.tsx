@@ -41,6 +41,8 @@ export function SkinHeader(props: {
   leadClass?: string
   /** title text classes */
   titleClass?: string
+  /** title inline styles (font-family identity for themed skins) */
+  titleStyle?: Record<string, string>
   /** meta cluster classes (version, model, status) */
   metaClass?: string
   /** the skin's settings trigger (popover button / drawer button);
@@ -48,6 +50,8 @@ export function SkinHeader(props: {
   settingsTrigger?: JSX.Element
   /** extra content after the title (skin flavor) */
   afterTitle?: JSX.Element
+  /** content between the back button and the title (branding logo etc) */
+  afterBack?: JSX.Element
   /** extra content at the far right, before GitHub */
   trailing?: JSX.Element
   /** hide the GitHub repo link (rare) */
@@ -70,7 +74,8 @@ export function SkinHeader(props: {
             main
           </button>
         </Show>
-        <span class={props.titleClass ?? "text-13-medium text-text-strong truncate"}>{props.title ?? view.info()?.title ?? "session"}</span>
+        {props.afterBack}
+        <span class={props.titleClass ?? "text-13-medium text-text-strong truncate"} style={props.titleStyle}>{props.title ?? view.info()?.title ?? "session"}</span>
         {props.afterTitle}
       </div>
       <div class={props.metaClass ?? "flex items-center gap-3"}>

@@ -14,12 +14,12 @@ import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
+import { OPENSHARE_REPO } from "./chrome"
 import { SettingsBody, restoreSettingsScroll, saveSettingsScroll } from "../settings-panel"
 import { useSessionSections, type ReasoningEntry, type SessionSection, type ToolEntry } from "./session-data"
 import type { ViewEntry } from "./registry"
 import { visibleMessages } from "../fold"
 
-const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the desk's file number: the wire copy this session was filed under
 const fileNo = (sessionID: string) =>

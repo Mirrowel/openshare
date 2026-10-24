@@ -11,10 +11,10 @@
 import { For, Show, createSignal, type JSX } from "solid-js"
 import { Title } from "@solidjs/meta"
 import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import { useView } from "./view-context"
+import { SkinHeader } from "./chrome"
 import type { ViewEntry } from "./registry"
 import { sessionModelLabel, useSessionSections, type SessionSection } from "./session-data"
 import { SettingsBody } from "../settings-panel"
@@ -134,55 +134,42 @@ function DraftingHeader(props: HeaderProps) {
         }
       `}</style>
       <Title>{info()?.title ?? "session"} | {b().name || "openshare"}</Title>
-      <header class="h-10 px-4 flex items-center gap-3 bg-background-stronger border-b border-border-base shrink-0 relative z-30">
-        <Show when={props.isSub && props.onBack}>
-          <button
-            class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base shrink-0"
-            onClick={() => props.onBack?.()}
+      <SkinHeader
+        class="h-10 px-4 flex items-center gap-3 bg-background-stronger border-b border-border-base shrink-0 relative z-30"
+        leadClass="flex items-center gap-3 min-w-0 flex-1"
+        titleClass="min-w-0 flex-1 truncate text-14-medium text-text-strong"
+        metaClass="flex items-center gap-3 shrink-0"
+        afterBack={
+          <>
+            <Show when={b().logoUrl}>
+              <a href={b().linkUrl || "#"} class="shrink-0 flex items-center">
+                <img src={b().logoUrl} alt="" class="h-4 w-auto" />
+              </a>
+            </Show>
+            <span class="hidden sm:inline text-12-mono text-text-weaker shrink-0">DWG {dwgNo()}</span>
+            <span class="hidden sm:block h-4 w-px bg-border-weak-base shrink-0" />
+          </>
+        }
+        statusRender={(status) => (
+          <span
+            class={`flex items-center gap-1.5 border px-1.5 py-0.5 text-12-mono uppercase tracking-widest shrink-0 ${stampClass()}`}
           >
-            <Icon name="arrow-left" size="small" />
-            main
+            <Show when={status === "live"}>
+              <span class="size-1.5 rounded-full bg-icon-success-base animate-pulse" aria-hidden="true" />
+            </Show>
+            {status}
+          </span>
+        )}
+        settingsTrigger={
+          <button
+            class="flex items-center gap-1.5 shrink-0 bg-transparent border border-border-weak-base px-2 py-1 text-12-mono uppercase tracking-wider text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            onClick={() => setDrawer(true)}
+          >
+            <Icon name="settings-gear" size="small" />
+            <span class="hidden sm:inline">params</span>
           </button>
-        </Show>
-        <Show when={b().logoUrl}>
-          <a href={b().linkUrl || "#"} class="shrink-0 flex items-center">
-            <img src={b().logoUrl} alt="" class="h-4 w-auto" />
-          </a>
-        </Show>
-        <span class="hidden sm:inline text-12-mono text-text-weaker shrink-0">DWG {dwgNo()}</span>
-        <span class="hidden sm:block h-4 w-px bg-border-weak-base shrink-0" />
-        <h1 class="min-w-0 flex-1 truncate text-14-medium text-text-strong">{info()?.title ?? "session"}</h1>
-        <a
-          href="https://github.com/Mirrowel/OpenShare"
-          target="_blank"
-          rel="noreferrer"
-          class="shrink-0 text-icon-weaker-base hover:text-icon-strong-base"
-        >
-          <Icon name="github" size="small" />
-        </a>
-        <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker shrink-0">
-          <Mark class="h-3" />
-          v{view.version() ?? ""}
-        </span>
-        <Show when={props.model}>
-          <span class="hidden md:inline text-12-mono text-text-weaker truncate max-w-48 shrink-0">{props.model}</span>
-        </Show>
-        <span
-          class={`flex items-center gap-1.5 border px-1.5 py-0.5 text-12-mono uppercase tracking-widest shrink-0 ${stampClass()}`}
-        >
-          <Show when={props.status === "live"}>
-            <span class="size-1.5 rounded-full bg-icon-success-base animate-pulse" aria-hidden="true" />
-          </Show>
-          {props.status}
-        </span>
-        <button
-          class="flex items-center gap-1.5 shrink-0 bg-transparent border border-border-weak-base px-2 py-1 text-12-mono uppercase tracking-wider text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-          onClick={() => setDrawer(true)}
-        >
-          <Icon name="settings-gear" size="small" />
-          <span class="hidden sm:inline">params</span>
-        </button>
-      </header>
+        }
+      />
       <Show when={drawer()}>
         <div class="fixed inset-0 z-40" onClick={(e) => e.target === e.currentTarget && setDrawer(false)}>
           <div
