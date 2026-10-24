@@ -426,18 +426,55 @@ export function SettingsPanel(props: {
   sessionTools?: string[]
 }) {
   return (
-    <div class="relative">
+    <SkinSettingsPopover
+      settings={props.settings}
+      update={props.update}
+      branding={props.branding}
+      search={props.search}
+      onSearch={props.onSearch}
+      sessionTools={props.sessionTools}
+      gearClass="osh-gear-settings p-1 rounded text-icon-weaker-base hover:text-icon-strong-base bg-transparent border-none cursor-pointer"
+      gearTitle="settings"
+      gearSize="small"
+    />
+  )
+}
+
+/** The ONE skin settings surface (owner directive: no bespoke centered
+ *  modals): a gear button + an ANCHORED popover under it (top-8 right-0,
+ *  opaque, scroll-preserving). letterpress/terminal/cinema each shipped a
+ *  centered fixed modal - "settings show up in the middle of the page"
+ *  (live-caught); every skin now uses this instead. */
+export function SkinSettingsPopover(props: {
+  settings: OshSettings
+  update: (patch: Partial<OshSettings>) => void
+  branding: Branding
+  search: string
+  onSearch: (v: string) => void
+  sessionTools?: string[]
+  gearClass?: string
+  gearTitle?: string
+  gearSize?: "small" | "normal"
+  gearLabel?: string
+}) {
+  return (
+    <div class="relative flex items-center">
       <button
-        class="osh-gear-settings p-1 rounded text-icon-weaker-base hover:text-icon-strong-base bg-transparent border-none cursor-pointer"
-        title="settings"
+        class={props.gearClass ?? "flex items-center gap-1.5 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base transition-colors duration-150"}
+        title={props.gearTitle ?? "settings"}
         onClick={togglePanel}
       >
-        <Icon name="settings-gear" size="small" />
+        <Show when={props.gearLabel}>
+          <span class="hidden sm:inline">{props.gearLabel}</span>
+        </Show>
+        <Icon name="settings-gear" size={props.gearSize ?? "small"} />
       </button>
       <Show when={panelOpen()}>
-        <div data-osh-panel-scroll class="absolute top-9 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
+        <div data-osh-panel-scroll class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-6rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
           onScroll={saveSettingsScroll as any}
-          ref={restoreSettingsScroll}>
+          ref={restoreSettingsScroll}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div class="flex items-center justify-between pb-1">
             <div class="text-14-medium text-text-strong">Settings</div>
             <button

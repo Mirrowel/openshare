@@ -2,8 +2,7 @@
 // statusbars top and bottom, everything monospace, prompts as ^ lines.
 import { Show, createSignal } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SettingsBody } from "../settings-panel"
-import { saveSettingsScroll, restoreSettingsScroll } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 import { MetaLine } from "./meta-line"
 import { Icon } from "@opencode/ui/icon"
@@ -12,7 +11,6 @@ import { DateTime } from "luxon"
 import type { SessionSection } from "./session-data"
 
 function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [menuOpen, setMenuOpen] = createSignal(false)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const statusColor = () =>
     props.status === "live" ? "#4ade80" : props.status === "error" ? "#f87171" : "#7aa2f7"
@@ -42,42 +40,18 @@ function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
             <span class="inline-block size-1.5 rounded-full" style={{ background: statusColor() }} />
             {props.status}
           </span>
-          <button
-            class="bg-transparent border border-border-weak-base rounded px-1.5 text-12-mono text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            onClick={() => setMenuOpen(!menuOpen())}
-          >
-            :set
-          </button>
+          <SkinSettingsPopover
+            settings={props.settings}
+            update={props.updateSettings}
+            branding={props.source.branding()}
+            search={props.search}
+            onSearch={props.onSearch}
+            gearClass="bg-transparent border border-border-weak-base rounded px-1.5 text-12-mono text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            gearTitle=":set"
+            gearSize="small"
+          />
         </div>
       </div>
-      <Show when={menuOpen()}>
-        <div
-          class="fixed inset-0 z-40 bg-black/40 flex items-start justify-center pt-[8vh]"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setMenuOpen(false)
-          }}
-        >
-          <div class="w-[19rem] max-h-[75vh] overflow-y-auto rounded-lg border border-border-weak-base bg-background-base shadow-xl">
-            <div class="px-4 pt-3">
-              <SettingsBody
-                settings={props.settings}
-                update={props.updateSettings}
-                branding={props.source.branding()}
-                search={props.search}
-                onSearch={props.onSearch}
-              />
-            </div>
-            <div class="px-4 pb-3 pt-1 border-t border-border-weak-base mt-2">
-              <button
-                class="w-full text-left bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base py-1 transition-colors duration-150"
-                onClick={() => setMenuOpen(false)}
-              >
-                :q — close settings
-              </button>
-            </div>
-          </div>
-        </div>
-      </Show>
     </>
   )
 }

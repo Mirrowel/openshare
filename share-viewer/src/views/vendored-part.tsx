@@ -39,7 +39,7 @@ armToggleAnchor()
 
 export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; data?: ShareData }) {
   const data = () => props.data ?? currentData
-  const entryId = () => String((props.entry.part as any)?.id ?? props.entry.tool + ":" + (props.entry.part as any)?.time?.created ?? "x")
+  const entryId = () => String((props.entry.part as any)?.id ?? props.entry.tool + ":" + ((props.entry.part as any)?.time?.created ?? "x"))
   const open = () => partOpen.get(entryId()) ?? (props.settings.autoExpand.includes(props.entry.tool) || undefined)
   return (
     <DataProvider

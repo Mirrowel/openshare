@@ -7,7 +7,7 @@
 // Chrome: running head up top, colophon below.
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SettingsBody, saveSettingsScroll, restoreSettingsScroll } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import { continuousFor } from "../settings"
 import type { ViewEntry, ViewProps } from "./registry"
 import { sessionModelLabel, type SessionSection } from "./session-data"
@@ -102,7 +102,6 @@ function Fleuron(props: { class?: string }) {
 
 // ------------------------------------------------------- running head ----
 function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [open, setOpen] = createSignal(false)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const statusTone = () => {
     const s = props.status
@@ -168,46 +167,16 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
           >
             <Icon name="github" size="small" />
           </a>
-          <button
-            class="flex items-center gap-1.5 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base transition-colors duration-150"
-            onClick={() => setOpen(!open())}
-          >
-            <Sc class="hidden sm:inline">settings</Sc>
-            <Icon name="settings-gear" size="small" />
-          </button>
+          <SkinSettingsPopover
+            settings={props.settings}
+            update={props.updateSettings}
+            branding={props.source.branding()}
+            search={props.search}
+            onSearch={props.onSearch}
+            gearLabel="settings"
+          />
         </div>
       </header>
-      <Show when={open()}>
-        <div
-          class="fixed inset-0 z-40 bg-black/40 flex items-start justify-center pt-[8vh]"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setOpen(false)
-          }}
-        >
-          <div class="w-[19rem] max-h-[75vh] overflow-y-auto rounded-lg border border-border-weak-base bg-background-base shadow-xl"
-            onScroll={(e) => saveSettingsScroll(e.currentTarget)}
-            ref={restoreSettingsScroll}
-          >
-            <div class="px-4 pt-3">
-              <SettingsBody
-                settings={props.settings}
-                update={props.updateSettings}
-                branding={props.source.branding()}
-                search={props.search}
-                onSearch={props.onSearch}
-              />
-            </div>
-            <div class="px-4 pb-3 pt-1 border-t border-border-weak-base mt-2">
-              <button
-                class="w-full text-left bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base py-1 transition-colors duration-150"
-                onClick={() => setOpen(false)}
-              >
-                <Sc>close the apparatus</Sc>
-              </button>
-            </div>
-          </div>
-        </div>
-      </Show>
     </>
   )
 }

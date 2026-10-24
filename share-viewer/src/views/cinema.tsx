@@ -13,7 +13,7 @@ import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import type { ViewEntry } from "./registry"
 import { useSessionSections, type SessionSection } from "./session-data"
-import { SettingsBody } from "../settings-panel"
+import { SkinSettingsPopover } from "../settings-panel"
 import { continuousFor } from "../settings"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
@@ -56,9 +56,8 @@ function castName(model?: { providerID?: string; modelID?: string }): string {
 
 // production strip and title card: back-to-main, the session title as
 // the picture title, version, model and status as the production slug,
-// settings in a drawer from the right
+// settings: the shared anchored popover (was a bespoke right drawer)
 function CinemaHeader(props: HeaderProps) {
-  const [drawer, setDrawer] = createSignal(false)
   const sections = useSessionSections(props.data, props.sessionID)
   createComputed(() => setFlowing(continuousFor(props.settings, "cinema")))
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
@@ -117,13 +116,15 @@ function CinemaHeader(props: HeaderProps) {
           >
             {props.status}
           </span>
-          <button
-            class="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            onClick={() => setDrawer(true)}
-          >
-            <Icon name="settings-gear" size="small" />
-            <span class="hidden sm:inline">settings</span>
-          </button>
+          <SkinSettingsPopover
+            settings={props.settings}
+            update={props.updateSettings}
+            branding={b() as any}
+            search={props.search}
+            onSearch={props.onSearch}
+            gearClass="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
+            gearLabel="settings"
+          />
           <a
             href="https://github.com/Mirrowel/OpenShare"
             target="_blank"
@@ -134,36 +135,6 @@ function CinemaHeader(props: HeaderProps) {
           </a>
         </div>
       </header>
-      <Show when={drawer()}>
-        <div
-          class="fixed inset-0 z-40 bg-black/30"
-          role="dialog"
-          aria-label="settings"
-          onClick={(e) => e.target === e.currentTarget && setDrawer(false)}
-        >
-          <div
-            class="absolute top-0 right-0 bottom-0 w-[19rem] max-w-[85vw] overflow-y-auto border-l border-border-weak-base bg-background-base shadow-xl p-4"
-            style={{ animation: "osh-slide-in 180ms ease-out" }}
-          >
-            <div class="flex items-center justify-between pb-2">
-              <span class="text-14-medium text-text-strong">Settings</span>
-              <button
-                class="bg-transparent border-none cursor-pointer text-icon-weaker-base hover:text-icon-strong-base p-1"
-                onClick={() => setDrawer(false)}
-              >
-                <Icon name="close-small" size="small" />
-              </button>
-            </div>
-            <SettingsBody
-              settings={props.settings}
-              update={props.updateSettings}
-              branding={b() as any}
-              search={props.search}
-              onSearch={props.onSearch}
-            />
-          </div>
-        </div>
-      </Show>
     </>
   )
 }
