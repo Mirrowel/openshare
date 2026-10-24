@@ -170,7 +170,7 @@ function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings;
           onChange={(v) => props.update({ [props.def.key]: v } as Partial<OshSettings>)}
         />
         <Show when={props.def.hint}>
-          <div class="text-11-regular text-text-weaker pt-1">{props.def.hint}</div>
+          <div class="text-12-regular text-text-weaker pt-1">{props.def.hint}</div>
         </Show>
       </div>
     </Show>

@@ -36,6 +36,7 @@ import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
 import { copySessionMarkdown } from "./copy-markdown"
+import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
@@ -110,15 +111,6 @@ const iife = <T,>(fn: () => T): T => fn()
 // the product's own repo (fixed in source — the right header always
 // promotes Open(code)Share; flip on extraction)
 const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/OpenShare"
-
-// Brand-aware mark: configured image or the vendored default
-function BrandMark(props: { branding: Branding; class?: string }) {
-  return (
-    <Show when={props.branding.logoUrl} fallback={null}>
-      <img src={props.branding.logoUrl} alt="" class={props.class} />
-    </Show>
-  )
-}
 
 // Page footer: thin rule + brand name + product wordmark (theme tokens so
 // it reads on every theme; wordmark image overrides the text)
@@ -460,6 +452,11 @@ function SessionView(props: {
                   <Show when={props.source.branding().backgroundUrl && props.settings.backgroundOn}>
                     <div class="osh-bg" style={{ "background-image": `url(${props.source.branding().backgroundUrl})` }} />
                   </Show>
+                  {/* the chrome bar is hidden for reader: reader's own
+                      SkinHeader carries the full row once (branding,
+                      title, version/model/status, copy, GitHub, settings)
+                      - both bars rendered duplicated (live-caught) */}
+                  <Show when={props.settings.view !== "reader"}>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
                     <Show
                       when={props.source.branding().linkUrl}
@@ -497,6 +494,7 @@ function SessionView(props: {
                       />
                     </div>
                   </header>
+                  </Show>
                   <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">
                     <Show when={props.settings.view !== "reader"}>
                     <div

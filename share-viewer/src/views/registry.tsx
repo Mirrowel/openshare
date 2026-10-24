@@ -138,6 +138,6 @@ registerSkin(groveSkin, {
   label: "grove",
   mark: "❧",
   settings: [
-    { kind: "segmented", key: "groveThinking", label: "Thinking", hint: "grove owns its own composition: reasoning sits with the tools on the left by default; this flips it to the reading column", options: [{ id: "left", label: "left, with tools" }, { id: "right", label: "right, with prompts" }] },
+    { kind: "segmented", key: "groveThinking", label: "Thinking", hint: "thinking sits with the tools on the left; flip it to the reading column", options: [{ id: "left", label: "left, with tools" }, { id: "right", label: "right, with prompts" }] },
   ],
 })

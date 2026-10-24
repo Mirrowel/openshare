@@ -6,6 +6,9 @@ import { useView } from "./views/view-context"
 import { SkinHeader } from "./views/chrome"
 import type { Skin, SkinWrappers } from "./views/base-view"
 import type { ViewEntry } from "./views/registry"
+import { SkinSettingsPopover } from "./settings-panel"
+import { sessionToolNamesOf } from "./views/session-data"
+import { BrandMark } from "./views/chrome"
 import { MetaLine } from "./views/meta-line"
 
 function promptTitle(s: { prompt: string }) {
@@ -36,12 +39,40 @@ function HoverToc(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
   )
 }
 
+// reader owns the FULL header (the classic chrome bar is hidden for
+// reader - it duplicated this row, live-caught): branding mark, title,
+// version/model/status, copy, GitHub and the settings trigger all ride
+// SkinHeader once
 function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
+  const view = useView()
+  const b = () => view.source.branding()
   return (
     <SkinHeader
-      class="h-14 px-6 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30"
+      class="h-14 px-6 self-stretch bg-background-base border-b border-border-weak-base relative z-30"
       leadClass="flex items-center gap-3 min-w-0"
       titleClass="text-16-medium text-text-strong truncate"
+      afterBack={
+        <Show
+          when={b().linkUrl}
+          fallback={<span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base"><BrandMark branding={b()} class="h-5 rounded" /></span>}
+        >
+          {(href) => (
+            <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={b().name || ""}>
+              <BrandMark branding={b()} class="h-5 rounded" />
+            </a>
+          )}
+        </Show>
+      }
+      settingsTrigger={
+        <SkinSettingsPopover
+          settings={view.settings}
+          update={view.updateSettings}
+          branding={b()}
+          search={view.search}
+          onSearch={view.onSearch}
+          sessionTools={sessionToolNamesOf(view.data, view.sessionID)}
+        />
+      }
     />
   )
 }

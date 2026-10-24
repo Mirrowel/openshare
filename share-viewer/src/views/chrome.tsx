@@ -13,6 +13,16 @@ import { Mark } from "@opencode/ui/logo"
 
 export const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
+/** brand-aware mark: configured image or nothing (moved here from app.tsx
+ *  so reader's header can share it without an app↔reader import cycle) */
+export function BrandMark(props: { branding: { logoUrl?: string }; class?: string }) {
+  return (
+    <Show when={props.branding.logoUrl} fallback={null}>
+      <img src={props.branding.logoUrl} alt="" class={props.class} />
+    </Show>
+  )
+}
+
 /** one tone map for share status (token classes, theme-following) */
 export function statusTone(status: string): string {
   if (status === "live") return "text-icon-success-base"
@@ -65,7 +75,11 @@ export function SkinHeader(props: {
 }) {
   const view = useView()
   return (
-    <header class={props.class ?? "h-9 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30"}>
+    // the flex layout is ALWAYS applied (a skin forgetting `flex
+    // items-center justify-between` in its class once stacked the
+    // clusters as plain divs - live-caught on casefile); skin classes
+    // only carry height/padding/border/background/font identity
+    <header class={`${props.class ?? "h-9 px-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30"} flex items-center justify-between gap-3`}>
       <div class={props.leadClass ?? "flex items-center gap-2 min-w-0"}>
         <Show when={view.isSub()}>
           <button
