@@ -50,6 +50,11 @@ export type SkinWrappers = {
 export type Skin = {
   id: string
   mode: "pipeline" | "composed"
+  /** false when the skin renders the prompt itself (cinema's slugline,
+   *  teletype's wire headline): base-view then renders ONLY the meta line
+   *  inside PromptWrap - without this the prompt text appears twice
+   *  (live-caught on cinema/teletype) */
+  promptInBody?: boolean
   wrappers: SkinWrappers
   // content column class (layout identity)
   columnClass?: string
@@ -171,7 +176,9 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     <w.TurnWrap section={p.section} index={p.index} settings={props.settings}>
       <w.PromptWrap section={p.section} settings={props.settings}>
         <div class="py-2">
-          <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{p.section.prompt}</p>
+          <Show when={props.skin.promptInBody !== false}>
+            <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{p.section.prompt}</p>
+          </Show>
           <MetaLine section={p.section} data={props.data} />
         </div>
       </w.PromptWrap>

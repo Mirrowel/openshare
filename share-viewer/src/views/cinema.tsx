@@ -233,6 +233,9 @@ function Scene(props: TurnProps) {
 
 export const cinemaSkin: Skin = {
   id: "cinema",
+  // the slugline IS the prompt (uppercased first line) - the raw prompt
+  // body would duplicate it (live-caught)
+  promptInBody: false,
   mode: "composed",
   columnClass: "osh-content max-w-[48rem] mx-auto px-6 pt-10 pb-8",
   wrappers: {
