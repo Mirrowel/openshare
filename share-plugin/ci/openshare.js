@@ -1066,6 +1066,7 @@ function createEngine(deps) {
       appendFileSync(queuePath(st, r.url), JSON.stringify(f) + `
 `);
     } catch (e) {
+      r.spoolAppendFailed = true;
       logError("spool append failed", e?.message || e);
     }
   };
@@ -1092,7 +1093,16 @@ function createEngine(deps) {
             break;
           }
         }
-        r.pending = disk;
+        for (const f of disk) {
+          if (typeof f.seq !== "number")
+            f.seq = ++nextSeq;
+          else if (f.seq >= nextSeq)
+            nextSeq = f.seq + 1;
+        }
+        if (!r.spoolAppendFailed)
+          r.pending = disk;
+        else
+          r.spoolAppendFailed = false;
       }
     } catch {}
     if (!r.shareId && targets[0]?.url === r.url) {
@@ -1330,8 +1340,27 @@ function createEngine(deps) {
         if (!st.closed)
           scheduleReconnect(st, r);
       });
-      if (useFrameAuth)
+      if (useFrameAuth) {
         wsSend(r, { op: "auth", token });
+        const authed = await new Promise((resolve) => {
+          const t = setTimeout(() => resolve(false), 3000);
+          r.authWaiter = () => {
+            clearTimeout(t);
+            resolve(true);
+          };
+        });
+        r.authWaiter = undefined;
+        if (!authed) {
+          logError(`ws ${r.url.slice(0, 24)}: frame-auth ack timeout - reconnecting with query token`);
+          frameAuthUrls.delete(r.url);
+          try {
+            ws.close(4000, "auth timeout");
+          } catch {}
+          if (!st.closed)
+            scheduleReconnect(st, r);
+          return;
+        }
+      }
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
@@ -1442,8 +1471,11 @@ function createEngine(deps) {
     }
   };
   const handleFrame = async (st, r, frame) => {
-    if (frame.op === "authed")
+    if (frame.op === "authed") {
+      r.authWaiter?.();
+      r.authWaiter = undefined;
       return;
+    }
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "");
@@ -1482,6 +1514,16 @@ function createEngine(deps) {
             queueConnect(st, r);
           return;
         }
+        if (/limit|too many|rate/i.test(err)) {
+          logError(`${r.url}: create refused:`, frame.error, "- retrying with backoff");
+          r.connecting = false;
+          try {
+            r.ws?.close(4000, "rate limited");
+          } catch {}
+          if (!st.closed)
+            scheduleReconnect(st, r);
+          return;
+        }
         logError(`${r.url}: init refused:`, frame.error, "- creating fresh share");
         deleteAbandoned(r);
         r.shareId = null;
@@ -1510,6 +1552,8 @@ function createEngine(deps) {
       r.connecting = false;
       r.initWasAttach = false;
       r.collided = null;
+      if (r.frozenRemote && !frame.error)
+        r.frozenRemote = false;
       if (r.initTimer) {
         clearTimeout(r.initTimer);
         r.initTimer = null;
@@ -1567,8 +1611,6 @@ function createEngine(deps) {
         }
         if (/frozen/i.test(errText)) {
           r.frozenRemote = true;
-          r.pending = [];
-          spoolSave(st, r);
           logError(`${r.url}: share frozen by the hoster - edits refused; contact the server admin`);
           return;
         }
@@ -1649,14 +1691,18 @@ function createEngine(deps) {
       return;
     const items = [];
     let status;
+    const sentSeqs = new Set;
     for (const f of r.pending) {
       for (const it of f.items)
         items.push(it);
       if (f.status)
         status = f.status;
+      if (typeof f.seq === "number")
+        sentSeqs.add(f.seq);
     }
     const cred = credOf(r.url);
-    for (const chunk of chunkItems(items, 500, 4 * 1024 * 1024)) {
+    const chunks = items.length ? chunkItems(items, 500, 4 * 1024 * 1024) : [[]];
+    for (const chunk of chunks) {
       const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
         method: "POST",
         headers: { "content-type": "application/json", ...cred.credential ? { authorization: `Bearer ${cred.credential}` } : {} },
@@ -1668,7 +1714,7 @@ function createEngine(deps) {
       const body = await res.json().catch(() => ({}));
       r.ackedRev = body.rev ?? r.ackedRev;
     }
-    r.pending = [];
+    r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq));
     spoolSave(st, r);
   };
   const scheduleFlush = (st) => {
@@ -1959,10 +2005,11 @@ function createEngine(deps) {
     e.parts.set(part.id, part);
     emitMerged(st, sid, part.messageID);
   };
-  const dropMergedMessage = (st, messageID) => {
+  const dropMergedMessage = (st, messageID, evSid) => {
+    const sid = evSid ?? st.sid;
     st.merged.delete(messageID);
-    msgIndex.delete(`${st.sid}:${messageID}`);
-    tombstoned.add(`${st.sid}:${messageID}`);
+    msgIndex.delete(`${sid}:${messageID}`);
+    tombstoned.add(`${sid}:${messageID}`);
   };
   const dropMergedPart = (st, sid, messageID, partID) => {
     const e = st.merged.get(messageID);
@@ -2337,7 +2384,9 @@ function createEngine(deps) {
             if (st.timer)
               clearTimeout(st.timer);
             st.timer = null;
-            chain = chain.then(() => flush(st)).catch((e) => logError("idle flush error", e?.message || e));
+            chain = chain.then(() => {
+              flush(st);
+            }).catch((e) => logError("idle flush error", e?.message || e));
             const epoch = st.statusEpoch;
             const settle = () => {
               st.status = st.badSignal ? "error" : "completed";
@@ -2345,7 +2394,9 @@ function createEngine(deps) {
               if (st.timer)
                 clearTimeout(st.timer);
               st.timer = null;
-              chain = chain.then(() => flush(st)).then(() => {
+              chain = chain.then(() => {
+                flush(st);
+              }).then(() => {
                 armSettleDrop(st);
               }).catch((e) => logError("settle flush error", e?.message || e));
             };
@@ -2376,8 +2427,8 @@ function createEngine(deps) {
           if (!messageID)
             return;
           if (t === "message.removed") {
-            dropMergedMessage(st, messageID);
-            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(st.sid, messageID) });
+            dropMergedMessage(st, messageID, sid);
+            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(sid, messageID) });
           } else {
             const partID = p.partID;
             if (!partID)

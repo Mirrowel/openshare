@@ -196,17 +196,24 @@ export default {
         m = path.match(/^\/api\/admin\/codes\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/code-disable:" + m[1])))
         if (path === "/api/admin/shares" && req.method === "GET") {
-          // global list straight from the KV index (ownerId rides along)
+          // global list straight from the KV index — the record rides in
+          // key metadata (list() returns it inline; no per-key get = no
+          // KV N+1). Legacy keys with a JSON value fall back to a get.
           const shares = []
           let cursor
           do {
             const page = await env.SHARE_INDEX.list({ cursor })
             for (const k of page.keys) {
               if (!k.name.startsWith("share:")) continue
+              const id = k.name.slice(6)
+              if (k.metadata) {
+                shares.push({ id, ...k.metadata })
+                continue
+              }
               const raw = await env.SHARE_INDEX.get(k.name)
               if (!raw) continue
               // one corrupt value must not 500 the whole admin list
-              try { shares.push({ id: k.name.slice(6), ...JSON.parse(raw) }) } catch {}
+              try { shares.push({ id, ...JSON.parse(raw) }) } catch {}
             }
             cursor = page.list_complete ? undefined : page.cursor
           } while (cursor)
@@ -617,6 +624,12 @@ export class ControlDO {
       // bearer every 5 minutes on ESTABLISHED sockets only — the first
       // exchange (init create/attach) authenticates and answers itself
       // (e.g. frozen attach replies init ok:false, not a bare error).
+      // LIMIT: this is in-memory state — after a hibernation eviction the
+      // recreated instance has no token to re-check (the stored attach
+      // grant still authorizes writes; freeze still severs via meta.frozen
+      // because the ShareDO gate checks it). Shallow by design: full
+      // post-eviction revalidation would need the token persisted per
+      // socket, which trades one secret-at-rest copy for another.
       if (this.initSeen && this.token && Date.now() - (this.tokenCheckedAt ?? 0) > 300000) {
         this.tokenCheckedAt = Date.now()
         const chk = await this.authCall("/check", { token: this.token })
@@ -916,7 +929,11 @@ export class ShareDO {
         attempts: { ips: {}, total: 0, lockUntil: 0 },
       })
       try {
-        await this.env.SHARE_INDEX.put(`share:${body.id}`, JSON.stringify({ createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null }))
+        // record rides in KV key METADATA — list() returns it inline, so
+        // the admin shares view needs no per-key get (KV N+1)
+        await this.env.SHARE_INDEX.put(`share:${body.id}`, "", {
+          metadata: { createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null },
+        })
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
       } catch (e) {
         // KV write failed: without the index key the share is invisible to
@@ -948,6 +965,10 @@ export class ShareDO {
       // attach = the plugin is actively here; keep TTL from expiring a
       // share out from under a live (if quiet) session
       meta.lastActive = Date.now()
+      // a pending index-write retry must survive the finalize cancel —
+      // the retry alarm needs to stay armed or the share stays invisible
+      // to purge + TTL sweeps forever
+      const pendingIndexRetry = await this.state.storage.get("indexRetry")
       const pendingFinalize = await this.state.storage.get("finalizeAt")
       if (pendingFinalize) {
         await this.state.storage.delete("finalizeAt")
@@ -957,6 +978,9 @@ export class ShareDO {
         } catch {
           // this build rejects null: leave the alarm armed — /finalize's
           // pluginSeen freshness check makes the stale fire a no-op
+        }
+        if (pendingIndexRetry) {
+          try { await this.state.storage.setAlarm(Date.now() + 5 * 60000) } catch {}
         }
       } else {
         await this.state.storage.put("meta", meta)
@@ -980,13 +1004,14 @@ export class ShareDO {
         await this.state.storage.put("meta", meta)
       }
 
-      const items = await this.loadItems()
+      // no `data` payload: the plugin backfills from the host and never
+      // reads attach data (full-set transfer per reconnect was pure
+      // waste — Bun already strips it)
       return json(200, {
         ok: true,
         rev: meta.rev ?? 0,
         status: meta.status,
         sessionID: meta.sessionID,
-        data: redactItems(items),
       })
     }
 
@@ -1065,6 +1090,16 @@ export class ShareDO {
       if (!meta) return json(404, { data: [], status: "gone", rev: 0 })
       if (meta.auth && !(await this.validToken(url.searchParams.get("token") ?? ""))) {
         return json(401, { authRequired: true })
+      }
+      // `since` handshake for the poll path (same shape as the WS):
+      // unchanged rev answers an empty set — a polling viewer stops
+      // re-transferring the whole share every 5s. NOTE: only when the
+      // caller actually PASSED since (Number(null) is 0, which would
+      // collide with a fresh share's rev 0)
+      const sinceRaw = url.searchParams.get("since")
+      const since = sinceRaw === null ? NaN : Number(sinceRaw)
+      if (Number.isFinite(since) && since === (meta.rev ?? 0)) {
+        return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0 })
       }
       return new Response((await this.renderCache(meta)).dataStr, { status: 200, headers: { "content-type": "application/json" } })
     }
@@ -1158,7 +1193,7 @@ export class ShareDO {
       meta.frozen = false
       await this.state.storage.put("meta", meta)
       try {
-        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, JSON.stringify({ createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId }))
+        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", { metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId } })
       } catch {}
       return json(200, { ok: true })
     }
@@ -1275,18 +1310,18 @@ export class ShareDO {
 
   // finalize alarm: plugin gone without goodbye past the window
   async alarm() {
-    // finalize backstop OR index-write retry (a failed KV index put at
-    // /init would otherwise orphan the share from purge + TTL sweeps)
+    // index-write retry (a failed KV index put at /init would otherwise
+    // orphan the share from purge + TTL sweeps) — then finalize backstop;
+    // both may be pending, so NO early return after the retry
     const retry = await this.state.storage.get("indexRetry")
     if (retry) {
       try {
-        await this.env.SHARE_INDEX.put(`share:${retry.id}`, JSON.stringify({ createdAt: retry.createdAt, sessionID: retry.sessionID, ownerId: retry.ownerId }))
+        await this.env.SHARE_INDEX.put(`share:${retry.id}`, "", { metadata: { createdAt: retry.createdAt, sessionID: retry.sessionID, ownerId: retry.ownerId } })
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
         await this.state.storage.delete("indexRetry")
-        return
       } catch {
         try { await this.state.storage.setAlarm(Date.now() + 30 * 60000) } catch {}
-        return
+        return // retry still pending: finalize can wait for the next fire
       }
     }
     await this.fetch(new Request("https://do/finalize", { method: "POST" }))
@@ -1358,34 +1393,46 @@ export class AuthDO {
   constructor(state, env) {
     this.state = state
     this.env = env
+    // single-writer serialization for read-modify-write flows (code
+    // budgets, daily counters, rate limits): DO requests interleave at
+    // every await, so two concurrent enrolls on a 1-activation code
+    // could both pass the check before either decremented
+    this.mu = Promise.resolve()
   }
 
-  /** Chunked fan-out continuation + daily hygiene. The fanoutQueue
-   * (freeze/delete over large accounts) processes 35 shares per run; the
-   * hygiene pass deletes expired rate-limit keys (rl:), stale daily-create
-   * counters (dc:), and long-revoked token rows so the singleton's
-   * storage stays bounded. */
+  async withMu(fn) {
+    const run = this.mu.then(() => fn())
+    this.mu = run.catch(() => {})
+    return run
+  }
+
+  /** Chunked fan-out continuation + daily hygiene. The fanoutQueue (a
+   * LIST — several freezes/deletes may pend) processes 35 shares per run;
+   * the hygiene pass deletes expired rate-limit keys (rl:), stale
+   * daily-create counters (dc:), and long-revoked token rows so the
+   * singleton's storage stays bounded. */
   async alarm() {
-    const q = await this.state.storage.get("fanoutQueue")
-    if (q?.shareIds?.length) {
-      const batch = q.shareIds.slice(0, 35)
-      q.shareIds = q.shareIds.slice(35)
+    const queue = await this.state.storage.get("fanoutQueue")
+    if (Array.isArray(queue) && queue.length) {
+      const job = queue[0]
+      const batch = job.shareIds.slice(0, 35)
+      job.shareIds = job.shareIds.slice(35)
+      if (!job.shareIds.length) queue.shift()
+      await this.state.storage.put("fanoutQueue", queue)
       for (const id of batch) {
         try {
-          if (q.action === "set-frozen") {
+          if (job.action === "set-frozen") {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-frozen", {
-              method: "POST", body: JSON.stringify({ frozen: !!q.frozen }),
+              method: "POST", body: JSON.stringify({ frozen: !!job.frozen }),
             })
           } else {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
           }
         } catch {}
       }
-      if (q.shareIds.length) {
-        await this.state.storage.put("fanoutQueue", q)
+      if (queue.length) {
         return void (await this.state.storage.setAlarm(Date.now() + 60 * 1000))
       }
-      await this.state.storage.delete("fanoutQueue")
     }
     // hygiene: bound the singleton's storage growth
     try {
@@ -1489,6 +1536,10 @@ export class AuthDO {
    * limits atomically (single-writer DO). Burns one daily-create slot on
    * success — a subsequent failed ShareDO init wastes at most one slot. */
   async createCheck(body) {
+    return this.withMu(() => this.createCheckInner(body))
+  }
+
+  async createCheckInner(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind === "root") return { ok: true }
     if (chk.kind === "none") {
@@ -1546,6 +1597,10 @@ export class AuthDO {
   }
 
   async enroll(body) {
+    return this.withMu(() => this.enrollInner(body))
+  }
+
+  async enrollInner(body) {
     const mode = authMode(this.env)
     const now = Date.now()
     let code = null
@@ -1759,9 +1814,14 @@ export class AuthDO {
       } catch {}
     }
     if (rest.length) {
-      await this.state.storage.put("fanoutQueue", { action: "set-frozen", frozen: !!freeze, shareIds: rest })
+      const q = (await this.state.storage.get("fanoutQueue")) ?? []
+      q.push({ action: "set-frozen", frozen: !!freeze, shareIds: rest })
+      await this.state.storage.put("fanoutQueue", q)
+      // sooner of (existing alarm, 60s) — a lazy-armed 24h hygiene alarm
+      // must NOT delay a freeze/delete fan-out (the queued shares stay
+      // writable until the freeze lands)
       const cur = await this.state.storage.getAlarm()
-      if (!cur) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+      if (cur === null || cur > Date.now() + 60 * 1000) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
     }
     console.log("[authdo] user", u.id, freeze ? "frozen" : "unfrozen", `(${reg.length} shares${rest.length ? `, ${rest.length} queued` : ""})`)
     return [200, { ok: true, frozen: !!freeze, shares: reg.length, queued: rest.length }]
@@ -1780,9 +1840,11 @@ export class AuthDO {
         } catch {}
       }
       if (rest.length) {
-        await this.state.storage.put("fanoutQueue", { action: "remove-all", shareIds: rest })
+        const q = (await this.state.storage.get("fanoutQueue")) ?? []
+        q.push({ action: "remove-all", shareIds: rest })
+        await this.state.storage.put("fanoutQueue", q)
         const cur = await this.state.storage.getAlarm()
-        if (!cur) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+        if (cur === null || cur > Date.now() + 60 * 1000) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
       }
       const tokens = await this.listPrefix("t:")
       for (const t of tokens.filter((t) => t.userId === userId)) {
@@ -1934,8 +1996,11 @@ export class SweeperDO {
   }
 
   async alarm() {
-    // a completed state means the daily alarm fired: START a fresh pass;
-    // an in-progress pass continues in 60s chunks
+    // daily tick STARTS a fresh pass; an in-progress pass continues in
+    // 60s chunks. NOTE: completion re-arms +24h explicitly — the +24h set
+    // here at start survives a same-invocation completion, but a pass
+    // that finishes during a "busy" continuation would otherwise be
+    // followed by an extra full pass 60s later.
     const st = (await this.state.storage.get("sweepState")) ?? { done: true }
     const busy = !st.done
     if (!busy) {
@@ -1951,7 +2016,10 @@ export class SweeperDO {
   /** One bounded chunk of a sweep/purge pass: at most ~35 DO fetches per
    * invocation (free-tier subrequest cap is 50), cursor + remaining keys
    * persisted in DO storage so the next alarm continues exactly where
-   * this run stopped. purgeAll removes every share instead of expiring. */
+   * this run stopped. purgeAll removes every share instead of expiring.
+   * `done` means the PASS finished (listing exhausted AND all keys
+   * processed) — not merely that the KV listing reached its last page
+   * (keys from that page still need their DO visits, chunked). */
   async pass(first) {
     const st = (await this.state.storage.get("sweepState")) ?? { done: true }
     const purgeAll = !!st.purgeAll
@@ -1961,15 +2029,15 @@ export class SweeperDO {
     try {
       while (budget > 0) {
         if (!st.pageKeys || !st.pageKeys.length) {
-          if (st.done) break
+          if (st.listDone) break
           const page = await this.env.SHARE_INDEX.list({ cursor: st.cursor })
           // KV list pagination: `cursor` + `list_complete` (NOT
           // list_cursor — that typo froze the sweep at page 1 forever)
           st.cursor = page.list_complete ? undefined : page.cursor
-          if (page.list_complete) st.done = true
+          if (page.list_complete) st.listDone = true
           st.pageKeys = page.keys.map((k) => k.name).filter((n) => n.startsWith("share:"))
           if (!st.pageKeys.length) {
-            if (st.done) break
+            if (st.listDone) break
             continue
           }
         }
@@ -2011,9 +2079,17 @@ export class SweeperDO {
         }
       }
     } finally {
-      if (purgeAll && st.done && (!st.pageKeys || !st.pageKeys.length)) st.purgeAll = false
+      // pass done = listing exhausted AND no keys left to visit
+      if (st.listDone && (!st.pageKeys || !st.pageKeys.length)) {
+        st.done = true
+        st.listDone = false
+        if (purgeAll) st.purgeAll = false
+      }
       await this.state.storage.put("sweepState", st)
+      // re-arm 60s whenever work remains (pageKeys pending, or more pages
+      // to list); on completion arm the daily tick
       if (!st.done) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+      else await this.state.storage.setAlarm(Date.now() + 24 * 3600 * 1000)
     }
     console.log(`[sweep] chunk checked=${listed} swept=${swept} done=${st.done}${purgeAll ? " purge" : ""}`)
     return { ok: true, listed, swept, done: st.done }

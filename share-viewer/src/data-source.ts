@@ -188,6 +188,7 @@ function liveSource(ctx: any): Source {
 
   const wire = () => {
     if (needsAuth()) return
+    firstFrame = true // a fresh socket's first frame is the full set (or the empty since-hit)
     try {
       // local http workers (bun server, wrangler dev) speak plain ws://
       const proto = location.protocol === "https:" ? "wss" : "ws"
@@ -239,9 +240,13 @@ function liveSource(ctx: any): Source {
 
   async function tick() {
     try {
-      const r = await fetch(`/api/share/${shareID}/data`, { cache: "no-store" })
-      if (r.status === 401) {
-        const body = await r.json().catch(() => ({}))
+      // `since`: an unchanged rev answers an empty set — the poll stops
+      // re-transferring the whole share every 5s (same handshake as the WS)
+      const r = typeof rev === "function" ? rev() : 0
+      const since = Number.isFinite(r) && r > 0 ? `?since=${r}` : ""
+      const res = await fetch(`/api/share/${shareID}/data${since}`, { cache: "no-store" })
+      if (res.status === 401) {
+        const body = await res.json().catch(() => ({}))
         if (body.authRequired) {
           setNeedsAuth(true)
           setStatus("login required")
@@ -250,20 +255,22 @@ function liveSource(ctx: any): Source {
         }
         return
       }
-      if (r.status === 404) {
+      if (res.status === 404) {
         setStatus("gone")
         setError("not found")
         stopped = true
         cleanup()
         return
       }
-      const body = await r.json()
+      const body = await res.json()
       // /data is the FULL live set: replace, so items deleted while we
       // were disconnected (tombstones are server-side deletes, not
-      // markers) get pruned instead of resurrecting until a hard reload
-      if (typeof body.rev === "number" && body.rev === (typeof rev === "function" ? rev() : -1) && (body.data ?? []).length >= 0) {
-        // rev unchanged: nothing server-side changed since our last
-        // view - keep the container identity (no refold)
+      // markers) get pruned instead of resurrecting until a hard reload.
+      // Same rev = nothing changed server-side since our last view —
+      // keep the container identity (no refold, no traffic-shaped work)
+      const curRev = typeof rev === "function" ? rev() : -1
+      if (typeof body.rev === "number" && body.rev === curRev) {
+        // unchanged
       } else {
         replaceFull(body.data ?? [])
       }

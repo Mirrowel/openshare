@@ -269,9 +269,14 @@ try {
   const ws7ack = await ws7.wait("ack")
   ok("T24 ack echoes seq", ws7ack.seq === 41, JSON.stringify(ws7ack).slice(0, 120))
   ws7.close()
-  ok("T24b seq share cleanup", (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares?.some((s) => s.sessionID === "ses_seq"))
+  // T24b — the seq-test share actually gets cleaned up (root delete, then gone)
   const seqShare = (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares?.find((s) => s.sessionID === "ses_seq")
-  if (seqShare) await req(W1, "DELETE", `/api/share/${seqShare.id}`, { token: CREATE_TOKEN })
+  ok("T24b seq share found for cleanup", !!seqShare, JSON.stringify(seqShare).slice(0, 120))
+  if (seqShare) {
+    ok("T24b2 root delete works", (await req(W1, "DELETE", `/api/share/${seqShare.id}`, { token: CREATE_TOKEN })).json?.ok === true)
+    const after = (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares ?? []
+    ok("T24b3 seq share gone", !after.some((s) => s.id === seqShare.id))
+  }
 
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)

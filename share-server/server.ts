@@ -411,10 +411,10 @@ async function httpHandler(req: Request): Promise<Response> {
   // share-referencing ops need a REAL share id (32 hex); the bare POST
   // create keeps its flexible hex suffix (routing convention)
   const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|)$/)
-  if (!sm) return json(404, { error: "not found" })
+  if (!sm) return staticOr404(req, url)
   const id = sm[1]
   const op = sm[2]
-  if (id.length !== 32 && !(req.method === "POST" && op === "")) return json(404, { error: "not found" })
+  if (id.length !== 32 && !(req.method === "POST" && op === "")) return staticOr404(req, url)
 
   if (req.method === "POST" && op === "") {
     const auth = bearer(req)
@@ -434,6 +434,15 @@ async function httpHandler(req: Request): Promise<Response> {
     if (!share) return json(404, { data: [], status: "gone", rev: 0 })
     if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, id)))) {
       return json(401, { authRequired: true })
+    }
+    // `since` handshake (worker parity): unchanged rev answers an empty
+    // set — a polling viewer stops re-transferring the whole share.
+    // Only when the caller actually PASSED since (Number(null) is 0,
+    // which would collide with a fresh share's rev 0)
+    const sinceRaw = new URL(req.url).searchParams.get("since")
+    const since = sinceRaw === null ? NaN : Number(sinceRaw)
+    if (Number.isFinite(since) && since === share.rev) {
+      return json(200, { v: 2, data: [], status: share.status, rev: share.rev })
     }
     return json(200, { v: 2, data: redactItems(shareData(share)), status: share.status, rev: share.rev })
   }
@@ -844,15 +853,26 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         // attach = the plugin is actively here: cancel finalize, note the
         // contact, and keep TTL from expiring under a live-but-quiet session
         db.query("UPDATE shares SET pluginSeen = ?, lastActive = ?, finalizeAt = NULL WHERE id = ?").run(Date.now(), Date.now(), share.id)
-        // resume retroactively applies/updates/clears the read gate (worker parity)
+        // resume retroactively applies/updates/clears the read gate (worker parity).
+        // The plugin sends BOTH fields on EVERY attach — only rotate when the
+        // credentials actually CHANGED (an unconditional re-hash logged every
+        // viewer out on each turn-mode reconnect)
         const attach = frame.attach as Record<string, unknown>
         if (attach.authLogin !== undefined && attach.authPassword !== undefined) {
           const wantAuth = attach.authLogin && attach.authPassword
-          if (wantAuth) {
-            db.query("UPDATE shares SET auth = ? WHERE id = ?").run(await makeAuth(String(attach.authLogin), String(attach.authPassword)), share.id)
-            db.query("UPDATE shares SET tokens = ? WHERE id = ?").run("[]", share.id) // credentials changed: viewers re-login
-          } else {
+          let sameAuth = false
+          if (wantAuth && share.auth) {
+            const auth = JSON.parse(share.auth) as { salt: string; loginHash: string; passHash: string }
+            sameAuth = auth.loginHash === await pbkdf2(String(attach.authLogin), auth.salt)
+              && auth.passHash === await pbkdf2(String(attach.authPassword), auth.salt)
+          }
+          if (wantAuth && !sameAuth) {
+            db.query("UPDATE shares SET auth = ?, tokens = ?, attempts = ? WHERE id = ?")
+              .run(await makeAuth(String(attach.authLogin), String(attach.authPassword)), "[]", JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), share.id)
+            console.log("[attach] auth updated, tokens rotated")
+          } else if (!wantAuth && share.auth) {
             db.query("UPDATE shares SET auth = NULL WHERE id = ?").run(share.id)
+            console.log("[attach] auth removed (owner action)")
           }
         }
         const updated = q.share(share.id)!

@@ -115,6 +115,8 @@ type RemoteState = {
   authBlocked: boolean
   pending: Array<{ items: unknown[]; status: string; seq?: number }> // chunk-frames awaiting ack (spool)
   frozenRemote?: boolean // server froze the owner mid-session: stop writing
+  spoolAppendFailed?: boolean // last append errored: memory-only frame exists
+  authWaiter?: (() => void) | undefined // frame-auth handshake resolver
   announced: boolean
   settleTimer: ReturnType<typeof setTimeout> | null
   idleDropTimer: ReturnType<typeof setTimeout> | null
@@ -792,10 +794,14 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   // hot path: appending one pending frame must not re-serialize the whole
   // queue (O(n^2) during backfill bursts) — append the line instead
-  const spoolAppend = (st: SessionState, r: RemoteState, f: { items: unknown[]; status: string }) => {
+  const spoolAppend = (st: SessionState, r: RemoteState, f: { items: unknown[]; status: string; seq?: number }) => {
     try {
       appendFileSync(queuePath(st, r.url), JSON.stringify(f) + "\n")
     } catch (e) {
+      // the frame lives ONLY in memory now — flag the remote so the next
+      // spoolLoad does NOT replace in-memory pending with the shorter
+      // disk queue (silent loss otherwise; live-caught class in review)
+      r.spoolAppendFailed = true
       logError("spool append failed", (e as Error)?.message || e)
     }
   }
@@ -832,7 +838,19 @@ export function createEngine(deps: EngineDeps): Engine {
             break
           }
         }
-        r.pending = disk
+        // seq hygiene: re-stamp pre-seq spool lines (an ack without seq
+        // would otherwise clear ALL pending — the H2 wipe, once per
+        // upgrade) and seed the counter past every restored seq (a
+        // restart resetting to 0 would collide new frames with old ones)
+        for (const f of disk) {
+          if (typeof f.seq !== "number") f.seq = ++nextSeq
+          else if (f.seq >= nextSeq) nextSeq = f.seq + 1
+        }
+        // a failed append means the disk queue can be SHORTER than
+        // memory — the disk is only authoritative when every append
+        // landed (otherwise the replace would drop the memory-only frame)
+        if (!r.spoolAppendFailed) r.pending = disk
+        else r.spoolAppendFailed = false
       }
     } catch {}
     // single-server-era spool (no url suffix): belongs to the first target
@@ -1131,7 +1149,30 @@ export function createEngine(deps: EngineDeps): Engine {
         if (!st.closed) scheduleReconnect(st, r)
       })
 
-      if (useFrameAuth) wsSend(r, { op: "auth", token })
+      if (useFrameAuth) {
+        wsSend(r, { op: "auth", token })
+        // the auth and init frames can interleave in the worker's
+        // concurrent webSocketMessage invocations — wait for the authed
+        // ack before authenticating anything (timeout -> fall back to a
+        // query-token reconnect)
+        const authed = await new Promise<boolean>((resolve) => {
+          const t = setTimeout(() => resolve(false), 3000)
+          r.authWaiter = () => {
+            clearTimeout(t)
+            resolve(true)
+          }
+        })
+        r.authWaiter = undefined
+        if (!authed) {
+          logError(`ws ${r.url.slice(0, 24)}: frame-auth ack timeout - reconnecting with query token`)
+          frameAuthUrls.delete(r.url)
+          try {
+            ws.close(4000, "auth timeout")
+          } catch {}
+          if (!st.closed) scheduleReconnect(st, r)
+          return
+        }
+      }
 
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
@@ -1248,7 +1289,15 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   const handleFrame = async (st: SessionState, r: RemoteState, frame: Record<string, unknown>) => {
-    if (frame.op === "authed") return // frame-auth handshake ack
+    if (frame.op === "authed") {
+      // frame-auth handshake ack: release the init (the auth and init
+      // frames can interleave server-side — webSocketMessage invocations
+      // run concurrently — so the init must WAIT for this, else it
+      // authenticates as anonymous/tokenless)
+      r.authWaiter?.()
+      r.authWaiter = undefined
+      return
+    }
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "")
@@ -1302,6 +1351,19 @@ export function createEngine(deps: EngineDeps): Engine {
         // bad base (mismatch protocol). Content REPLAYS to the new share —
         // pending is never dropped on a reset (live-caught: the recreate
         // husk had the title but zero messages).
+        if (/limit|too many|rate/i.test(err)) {
+          // quota/429 ("max shares reached", "daily create limit", the
+          // anonymous caps): an immediate re-init on the same socket is a
+          // hot loop against the server — back off through the normal
+          // reconnect cadence instead
+          logError(`${r.url}: create refused:`, frame.error, "- retrying with backoff")
+          r.connecting = false
+          try {
+            r.ws?.close(4000, "rate limited")
+          } catch {}
+          if (!st.closed) scheduleReconnect(st, r)
+          return
+        }
         logError(`${r.url}: init refused:`, frame.error, "- creating fresh share")
         deleteAbandoned(r)
         r.shareId = null
@@ -1332,6 +1394,9 @@ export function createEngine(deps: EngineDeps): Engine {
       r.connecting = false
       r.initWasAttach = false
       r.collided = null
+      // a successful handshake proves write access: an admin unfreeze
+      // revives the remote from here (frozenRemote is otherwise sticky)
+      if (r.frozenRemote && !frame.error) r.frozenRemote = false
       if (r.initTimer) {
         clearTimeout(r.initTimer)
         r.initTimer = null
@@ -1398,11 +1463,11 @@ export function createEngine(deps: EngineDeps): Engine {
         }
         if (/frozen/i.test(errText)) {
           // owner frozen mid-session: every write is refused. Stop
-          // spooling for this remote (unbounded pending otherwise) and
-          // surface once — un/freeze revives it on the next reconnect.
+          // spooling NEW frames for this remote (unbounded growth) but
+          // KEEP what's already queued — an unfreeze revives the remote
+          // on the next successful handshake (init-ok clears the flag)
+          // and the backlog replays from there.
           r.frozenRemote = true
-          r.pending = []
-          spoolSave(st, r)
           logError(`${r.url}: share frozen by the hoster - edits refused; contact the server admin`)
           return
         }
@@ -1504,16 +1569,22 @@ export function createEngine(deps: EngineDeps): Engine {
     // content loss on reconnect paths).
     const items: unknown[] = []
     let status: string | undefined
+    const sentSeqs = new Set<number>()
     for (const f of r.pending) {
       for (const it of f.items as unknown[]) items.push(it)
       if (f.status) status = f.status
+      if (typeof f.seq === "number") sentSeqs.add(f.seq)
     }
     const cred = credOf(r.url)
     // chunked like WS frames: one unbounded body is a whole-backlog
     // bomb after a mid-backfill socket drop (backfill = full history).
     // Failure stops the loop with pending intact — replaying already-
     // applied chunks is idempotent.
-    for (const chunk of chunkItems(items, 500, 4 * 1024 * 1024)) {
+    // status-only frames (items empty, e.g. the terminal completed
+    // flush in HTTP-only mode) still need ONE request or the status
+    // never lands (the share stays "live" forever)
+    const chunks = items.length ? chunkItems(items, 500, 4 * 1024 * 1024) : [[]]
+    for (const chunk of chunks) {
       const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(cred.credential ? { authorization: `Bearer ${cred.credential}` } : {}) },
@@ -1524,7 +1595,11 @@ export function createEngine(deps: EngineDeps): Engine {
       const body = (await res.json().catch(() => ({}))) as { rev?: number }
       r.ackedRev = body.rev ?? r.ackedRev
     }
-    r.pending = []
+    // retire EXACTLY what this run sent: a concurrent flush may have
+    // queued new frames while our fetches were in flight (the HTTP work
+    // is deliberately detached from the flush chain) — a blanket clear
+    // would erase them before anything transmitted them
+    r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq as number))
     spoolSave(st, r)
   }
 
@@ -1830,12 +1905,15 @@ export function createEngine(deps: EngineDeps): Engine {
     emitMerged(st, sid, part.messageID)
   }
 
-  const dropMergedMessage = (st: SessionState, messageID: string) => {
-    st.merged.delete(messageID)
+  const dropMergedMessage = (st: SessionState, messageID: string, evSid?: string) => {
     // the index corpse must go too: stampsPass iterates msgIndex, and a
-    // re-stamp of a deleted message would re-upsert it (resurrection)
-    msgIndex.delete(`${st.sid}:${messageID}`)
-    tombstoned.add(`${st.sid}:${messageID}`)
+    // re-stamp of a deleted message would re-upsert it (resurrection).
+    // Key by the EVENT's session (children tombstone under their own sid;
+    // the merged map is per main session)
+    const sid = evSid ?? st.sid
+    st.merged.delete(messageID)
+    msgIndex.delete(`${sid}:${messageID}`)
+    tombstoned.add(`${sid}:${messageID}`)
   }
 
   const dropMergedPart = (st: SessionState, sid: string, messageID: string, partID: string) => {
@@ -2274,8 +2352,13 @@ export function createEngine(deps: EngineDeps): Engine {
             // runs still land their final status.
             if (st.timer) clearTimeout(st.timer)
             st.timer = null
+            // detached flush (HTTP fallback off the shared chain — one
+            // black-holing server must not stall the fan-out; same rule
+            // as scheduleFlush)
             chain = chain
-              .then(() => flush(st))
+              .then(() => {
+                flush(st)
+              })
               .catch((e) => logError("idle flush error", (e as Error)?.message || e))
             const epoch = st.statusEpoch
             const settle = () => {
@@ -2284,7 +2367,9 @@ export function createEngine(deps: EngineDeps): Engine {
               if (st.timer) clearTimeout(st.timer)
               st.timer = null
               chain = chain
-                .then(() => flush(st))
+                .then(() => {
+                  flush(st)
+                })
                 .then(() => {
                   armSettleDrop(st)
                 })
@@ -2324,8 +2409,12 @@ export function createEngine(deps: EngineDeps): Engine {
           const messageID = p.messageID as string | undefined
           if (!messageID) return
           if (t === "message.removed") {
-            dropMergedMessage(st, messageID)
-            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(st.sid, messageID) })
+            // key/tombstone by the EVENT's session id (a child's message
+            // must not be keyed onto the parent — the worker deletes the
+            // item but the viewer's tombstone key would miss and the
+            // msgIndex corpse could re-upsert it)
+            dropMergedMessage(st, messageID, sid)
+            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(sid, messageID) })
           } else {
             const partID = p.partID as string | undefined
             if (!partID) return
