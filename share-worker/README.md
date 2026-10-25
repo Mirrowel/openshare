@@ -98,7 +98,9 @@ artifact path, no server involved.
 ## Delivery reliability (no expensive pulls)
 
 - Every accepted sync bumps a monotonic rev; the worker acks it on the
-  socket. The plugin retains unacked frames in a disk spool (temporary
+  socket (seq-tagged — one ack per chunk-frame, so a partial
+  acknowledgment can never retire unsent chunks). The plugin retains
+  unacked frames in a disk spool (temporary
   buffer) and replays them on reconnect.
 - The share binding `{id, secret, rev, url}` is persisted INSIDE
   opencode — session metadata (`metadata.openshare`, written via the
@@ -268,12 +270,24 @@ title/version/model.
 
 ## Worker API
 
-- `GET /api/share/:id/ws` — viewer socket (hibernating; auth cookie)
+- `GET /api/share/:id/ws` — viewer socket (hibernating; auth cookie).
+  Handshake params: `?since=<rev>` (the viewer already holds the share at
+  `<rev>`), optionally `&delta=1` (announces delta-merge capability).
+  First frame cases: `since === rev` → **empty** frame (nothing changed);
+  `since < rev` with `delta=1` → **delta** frame (`kind:"delta"`, only the
+  items touched since, tombstone markers re-emitted so clients delete);
+  anything else (no `since`, or `since > rev` — server rewound/recreated)
+  → **full** frame, the complete live item set, so the client prunes what
+  no longer exists. Later frames are always deltas.
 - `GET /api/ws?token=<user token | CREATE_TOKEN>` — plugin socket:
   `init` (create/attach; user tokens create OWNED shares under their
   limits, the root token creates ownerless legacy shares; attach works
   with the share secret OR — for the socket's own token holder — by
-  ownership), `sync` → ack, `delete`
+  ownership), `sync` → ack, `delete`. Acks are **seq-tagged**: the
+  plugin chunks a logical frame and the ack identifies the chunk it
+  applied, so only that chunk retires from the client's spool. The token
+  may also arrive as a first `auth` frame instead of the query string
+  (keeps it out of proxy logs; `/health` advertises `frameAuth`).
 - Tombstones: a sync item may carry `del: true` (`{type:"message",
   del:true, data:{id}}` / part variant) — the worker deletes the keyed
   item and broadcasts the tombstone so live viewers drop it. Message
@@ -283,8 +297,12 @@ title/version/model.
   CREATE_TOKEN; anonymous ownerless allowed on public servers; the URL
   suffix is required by routing but ignored, the share id is generated
   server-side),
-  `POST /api/share/:id/sync` (secret or Bearer owner token),
-  `GET /api/share/:id/data`,
+  `POST /api/share/:id/sync` (secret or Bearer owner token; bodies over
+  8 MB are refused before parsing),
+  `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
+  when the rev is unchanged, only the items touched since otherwise —
+  same three-case semantics as the WS handshake minus the delta
+  announcement, since the response is always a fresh set to merge),
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
 - `GET /branding` — the deployment's resolved skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl, backgroundUrl, description,
