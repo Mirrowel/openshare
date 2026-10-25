@@ -13,7 +13,6 @@ import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import type { ViewEntry } from "./registry"
 import { useSessionSections, type SessionSection } from "./session-data"
-import { SkinSettingsPopover } from "../settings-panel"
 import { pagedFor } from "../settings"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
@@ -73,68 +72,32 @@ function CinemaHeader(props: HeaderProps) {
       scenes: sections().length,
     })
   })
-  const slugClass = () =>
-    props.status === "live"
-      ? "text-icon-strong-base border-icon-strong-base"
-      : props.status === "error"
-        ? "text-icon-critical-base border-icon-critical-base"
-        : "text-text-weaker border-border-strong-base"
   return (
     <>
       <Title>{info()?.title ?? "session"} | {b().name || "openshare"}</Title>
-      <header class="shrink-0 px-4 py-2 flex items-center justify-between gap-3 bg-background-stronger border-b border-border-weak-base relative z-30">
-        <div class="flex items-center gap-2.5 min-w-0">
+      <div class="shrink-0 h-7 px-4 flex items-center justify-between gap-3 bg-background-stronger border-b border-border-weak-base relative z-20">
+        <div class="flex items-center gap-2 min-w-0">
           <Show when={props.isSub && props.onBack}>
             <button
-              class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base shrink-0 transition-colors duration-150"
+              class="flex items-center gap-1 h-6 px-1.5 rounded-md bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base shrink-0 transition-colors duration-150"
               onClick={() => props.onBack?.()}
             >
               <Icon name="arrow-left" size="small" />
               main
             </button>
           </Show>
-          <Show when={b().logoUrl}>
-            <a href={b().linkUrl ?? "#"} target="_blank" rel="noreferrer" class="shrink-0">
-              <img src={b().logoUrl} alt="" class="h-4 rounded-sm" />
-            </a>
-          </Show>
-          <div class="min-w-0">
-            <div class="text-12-mono uppercase tracking-widest text-text-weaker">shooting script</div>
-          </div>
+          <div class="text-12-mono text-text-weaker">shooting script</div>
         </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
+        <div class="flex items-center gap-3 shrink-0 text-12-mono text-text-weaker">
+          <span class="hidden sm:flex items-center gap-1.5">
             <Mark class="h-3" />
             v{info()?.version ?? "?"}
           </span>
           <Show when={props.model}>
-            <span class="hidden md:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
+            <span class="hidden md:inline truncate max-w-48">{props.model}</span>
           </Show>
-          <span
-            class="text-12-mono uppercase tracking-widest border rounded px-1.5 py-0.5"
-            classList={{ [slugClass()]: true }}
-          >
-            {props.status}
-          </span>
-          <SkinSettingsPopover
-            settings={props.settings}
-            update={props.updateSettings}
-            branding={b() as any}
-            search={props.search}
-            onSearch={props.onSearch}
-            gearClass="flex items-center gap-1.5 bg-transparent border border-border-weak-base rounded px-2 py-1 text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            gearLabel="settings"
-          />
-          <a
-            href="https://github.com/Mirrowel/OpenShare"
-            target="_blank"
-            rel="noreferrer"
-            class="text-icon-weaker-base hover:text-icon-strong-base"
-          >
-            <Icon name="github" size="small" />
-          </a>
         </div>
-      </header>
+      </div>
     </>
   )
 }
@@ -146,7 +109,7 @@ function ScriptFooter(props: FooterProps) {
   return (
     <footer class="shrink-0 bg-background-stronger border-t border-border-weak-base">
       <Show when={sections().length > 0}>
-        <div class="pt-3 text-center text-12-mono uppercase tracking-widest text-text-weaker">
+        <div class="pt-2 text-center text-12-mono text-text-weaker">
           {props.source.status() === "live" ? "continued..." : "fade out."}
         </div>
       </Show>
@@ -181,21 +144,21 @@ const cardMeta = () => {
 function Scene(props: TurnProps) {
   createComputed(() => setCast(props.section.model))
   return (
-    <section classList={{ "pt-3": flowing(), "pt-10": !flowing() }}>
+    <section classList={{ "pt-2": flowing(), "pt-6": !flowing() }}>
       <Show when={props.index === 0}>
-        <div class="pb-10 text-center">
+        <div class="pb-6 text-center">
           <div class="text-12-mono uppercase tracking-widest text-text-weaker">a session, typeset</div>
-          <h1 class="mt-3 text-20-medium uppercase tracking-widest text-text-strong break-words">
+          <h1 class="mt-2 text-20-medium uppercase tracking-wide text-text-strong break-words">
             {card().title ?? "untitled session"}
           </h1>
           <Show when={cardMeta()}>
-            <div class="mt-3 text-12-mono text-text-weaker">{cardMeta()}</div>
+            <div class="mt-2 text-12-mono text-text-weaker">{cardMeta()}</div>
           </Show>
         </div>
-        <div class="pb-4 text-center text-14-mono uppercase text-text-weaker">fade in:</div>
+        <div class="pb-2 text-center text-12-mono uppercase text-text-weaker">fade in:</div>
       </Show>
       <Show when={flowing()}>
-        <div class="pb-3 text-center text-12-mono uppercase tracking-widest text-text-weaker">cut to:</div>
+        <div class="pb-1 text-center text-12-mono uppercase text-text-weaker">cut to:</div>
       </Show>
       {props.children}
     </section>
@@ -205,7 +168,7 @@ function Scene(props: TurnProps) {
 export const cinemaSkin: Skin = {
   id: "cinema",
   mode: "composed",
-  columnClass: "osh-content max-w-[48rem] mx-auto px-6 pt-10 pb-8",
+  columnClass: "osh-content max-w-[48rem] mx-auto px-6 pt-6 pb-6",
   wrappers: {
     Header: CinemaHeader,
     Footer: ScriptFooter,
@@ -218,20 +181,20 @@ export const cinemaSkin: Skin = {
         <h2 class="text-14-mono uppercase tracking-wide text-text-strong">
           <span class="text-text-weaker">Scene {p.section.index + 1}.</span>
         </h2>
-        <div class="mt-3 pl-1 sm:pl-3">{p.children}</div>
+        <div class="mt-1.5 pl-1 sm:pl-3">{p.children}</div>
       </div>
     ),
     ToolWrap: (p) => (
-      <div class="my-1.5 pl-3 sm:pl-8">
+      <div class="my-1 pl-3 sm:pl-8">
         <div class="cinema-paren text-12-mono italic text-text-weaker">({p.entry.tool})</div>
         {p.children}
       </div>
     ),
     ReasoningWrap: (p) => <div class="my-1 pl-3 sm:pl-8 cinema-notes">{p.children}</div>,
     ResponseWrap: (p: ResponseProps) => (
-      <div class="cinema-dialogue mt-4 pl-5 sm:pl-10">
-        <div class="text-12-mono uppercase tracking-widest text-text-weaker">{castName(cast())}</div>
-        <div class="mt-1.5 max-w-[40rem]">{p.children}</div>
+      <div class="cinema-dialogue mt-3 pl-5 sm:pl-10">
+        <div class="text-12-mono uppercase text-text-weaker">{castName(cast())}</div>
+        <div class="mt-1 max-w-[40rem]">{p.children}</div>
       </div>
     ),
   },

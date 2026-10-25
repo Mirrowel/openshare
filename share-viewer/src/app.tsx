@@ -23,29 +23,16 @@ import { Icon } from "@opencode/ui/icon"
 import { createEffect, createMemo, createRenderEffect, createSignal, ErrorBoundary, onCleanup, Show, untrack } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { useShareSource, type Branding } from "./data-source"
-import { SettingsPanel, togglePanel } from "./settings-panel"
+import { togglePanel } from "./settings-panel"
+import { AppHeader } from "./app-header"
 import { TurnNav } from "./turn-nav"
 import { VirtualTimeline } from "./timeline-v2"
-import { ReaderView } from "./reader"
 import { InfoPanel } from "./views/info-panel"
 import { findView } from "./views/registry"
 import { setVendoredData } from "./views/vendored-part"
 import { children, sessionStatus, visibleMessages, type ShareData, type V2Message } from "./fold"
 import { setSubagentData } from "./subagent-map"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
-
-// the product's own repo (fixed in source — the right header always
-// promotes Open(code)Share; flip on extraction)
-const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/OpenShare"
-
-// Brand-aware mark: configured image or the vendored default
-function BrandMark(props: { branding: Branding; class?: string }) {
-  return (
-    <Show when={props.branding.logoUrl} fallback={null}>
-      <img src={props.branding.logoUrl} alt="" class={props.class} />
-    </Show>
-  )
-}
 
 // Page footer: thin rule + brand name + product wordmark (theme tokens so
 // it reads on every theme; wordmark image overrides the text)
@@ -98,32 +85,6 @@ function NotFound(props: { status: string }) {
       <p class="text-14-regular text-text-weaker">
         openshare — the encrypted artifact in the run summary is the permanent record.
       </p>
-    </div>
-  )
-}
-
-const STATUS_DOT: Record<string, string> = {
-  live: "#22c55e",
-  completed: "#3b82f6",
-  error: "#ef4444",
-  interrupted: "#eab308",
-  gone: "#6b7280",
-  cached: "#8b5cf6",
-  waiting: "#eab308",
-  "login required": "#eab308",
-}
-
-function StatusLine(props: { status: string }) {
-  return (
-    <div class="flex items-center gap-1.5 text-12-mono text-text-weak whitespace-nowrap">
-      <span
-        classList={{ "status-dot": props.status === "live", "inline-block": true, "size-1.5": true, "rounded-full": true, "shrink-0": true }}
-        style={props.status === "live" ? undefined : { "background-color": STATUS_DOT[props.status] ?? "#6b7280" }}
-      />
-      <span>{props.status}</span>
-      <Show when={props.status === "live"}>
-        <span class="animate-pulse">·</span>
-      </Show>
     </div>
   )
 }
@@ -225,9 +186,6 @@ function SessionView(props: {
               let timeline: { scrollToMessage: (id: string) => void } | undefined
               const messages = createMemo(() => visibleMessages(props.data, sessionID()))
               const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
-              const sessionToolNames = createMemo(() => [...new Set(messages().flatMap((message) =>
-                (message.content ?? []).filter((part) => part.type === "tool").map((part) => part.name),
-              ))])
               const autoExpandOpen = (tool: { name: string }) => props.settings.autoExpand.includes(tool.name)
               const firstUserMessage = createMemo(() => userTurns().at(0))
               const activeMessage = createMemo(() => userTurns().find((m: any) => m.id === messageId()) ?? firstUserMessage())
@@ -345,7 +303,7 @@ function SessionView(props: {
               const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
               const displayTitle = () => stripSubagentSuffix(info().title ?? "")
               const title = () => (
-                <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-3">
                   <div class="flex flex-wrap items-start justify-between gap-3">
                     <div class="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center sm:min-h-8 justify-start min-w-0">
                       <div class="pl-[2.5px] pr-2 flex items-center gap-1.75 bg-surface-strong shadow-xs-border-base w-fit">
@@ -373,25 +331,25 @@ function SessionView(props: {
                         </button>
                       </div>
                     </div>
+                  </div>
+                  <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
                     <Show when={isSub()}>
-                      <div class="ml-auto flex items-center gap-3 text-12-regular text-text-weaker">
-                        <span>Subagent</span>
-                        <a
-                          href={parentLink()?.href}
-                          class="osh-turn-button no-underline text-text-base"
-                          onClick={(event) => {
-                            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-                            event.preventDefault()
-                            navigateSession(props.data.sessionID, parentTurn()?.id)
-                          }}
-                        >
-                          <Icon name="arrow-left" size="small" />
-                          Back to parent
-                        </a>
-                      </div>
+                      <span class="text-12-regular text-text-weaker">subagent</span>
+                      <a
+                        href={parentLink()?.href}
+                        class="self-center inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-12-regular text-text-weak hover:text-text-strong hover:bg-surface-base no-underline transition-colors duration-150"
+                        onClick={(event) => {
+                          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                          event.preventDefault()
+                          navigateSession(props.data.sessionID, parentTurn()?.id)
+                        }}
+                      >
+                        <Icon name="arrow-left" size="small" />
+                        Back to parent
+                      </a>
                     </Show>
                   </div>
-                  <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
                 </div>
               )
 
@@ -415,7 +373,7 @@ function SessionView(props: {
               }
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
               const Transcript = (p: { sid: string; focusID?: string }) => (
-                <ReaderView active={props.settings.view === "reader"}>
+                <div class="flex flex-col flex-1 min-h-0 min-w-0 w-full">
                 <VirtualTimeline
                   doc={(p.focusID ? pagedDocument() : document()) as any}
                   sessionKey={props.source.shareID + ":" + p.sid + (p.focusID ? ":focus:" + p.focusID : ":conversation")}
@@ -435,11 +393,11 @@ function SessionView(props: {
                     }
                   }}
                   onActiveMessageChange={p.focusID ? undefined : setMessageId}
-                  header={<div class="px-4 py-6 sm:px-6">{title()}</div>}
-                  footer={<div class="px-4 pt-8 pb-8 sm:px-6"><PageFooter branding={props.source.branding()} /></div>}
+                  header={<div class="px-4 py-4 sm:px-6">{title()}</div>}
+                  footer={<div class="px-4 pt-6 pb-6 sm:px-6"><PageFooter branding={props.source.branding()} /></div>}
                   class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow min-h-0 w-full"}
                 />
-                </ReaderView>
+                </div>
               )
               const turns = () => (
                 <Show when={sessionID()} keyed>
@@ -465,7 +423,7 @@ function SessionView(props: {
                     <Show when={focused() ? activeMessage()?.id : undefined} keyed>
                       {(id) => (
                       <div class="absolute inset-0 flex flex-col bg-background-stronger">
-                      <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-b border-border-weak-base text-12-regular text-text-base">
+                      <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-1 border-b border-border-weak-base text-12-regular text-text-base">
                         <button class="osh-turn-button" onClick={() => setFocused(false)}>Back to conversation</button>
                         <div class="flex items-center gap-2">
                           <button class="osh-turn-button" aria-label="Previous turn" disabled={activeIndex() <= 0} onClick={() => setActiveMessage(userTurns()[activeIndex() - 1])}><Icon name="chevron-left" size="small" /></button>
@@ -488,45 +446,15 @@ function SessionView(props: {
                   <Show when={props.source.branding().backgroundUrl && props.settings.backgroundOn}>
                     <div class="osh-bg" style={{ "background-image": `url(${props.source.branding().backgroundUrl})` }} />
                   </Show>
-                  <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-                    <Show when={props.source.branding().logoUrl}>
-                    <Show
-                      when={props.source.branding().linkUrl}
-                      fallback={
-                        <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
-                          <BrandMark branding={props.source.branding()} class="h-5 rounded" />
-                        </span>
-                      }
-                    >
-                      {(href) => (
-                        <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={props.source.branding().name || ""}>
-                          <BrandMark branding={props.source.branding()} class="h-5 rounded" />
-                        </a>
-                      )}
-                    </Show>
-                    </Show>
-                    <StatusLine status={props.source.status()} />
-                    <div class="flex items-center gap-2.5">
-                      <button
-                        class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
-                        title="copy session as markdown"
-                        onClick={() => copySessionMarkdown(props.data, sessionID())}
-                      >
-                        <Icon name="copy" size="small" />
-                      </button>
-                      <a href={OPENSHARE_REPO_URL} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
-                        <Icon name="github" size="small" />
-                      </a>
-                      <SettingsPanel
-                        settings={props.settings}
-                        update={props.updateSettings}
-                        branding={props.source.branding()}
-                        search={props.search}
-                        onSearch={props.onSearch}
-                        sessionTools={sessionToolNames()}
-                      />
-                    </div>
-                  </header>
+                  <AppHeader
+                    data={props.data}
+                    sessionID={sessionID()}
+                    source={props.source}
+                    settings={props.settings}
+                    updateSettings={props.updateSettings}
+                    search={props.search}
+                    onSearch={props.onSearch}
+                  />
                   <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">{turns()}</div>
                 </div>
               )
@@ -556,62 +484,6 @@ function subHref(source: ReturnType<typeof useShareSource>, childSessionID: stri
   const hit = subs.find((s) => s.sessionID === childSessionID)
   return hit ? `/s/${source.shareID}/${hit.index}${location.search}` : undefined
 }
-
-// serialize the visible session to markdown (clipboard)
-async function copySessionMarkdown(data: ShareData, sessionID: string) {
-  const info = data.session.find((s: any) => s.id === sessionID) as any
-  const modelLabel = data.model[sessionID]?.[0]?.name ?? data.model[sessionID]?.[0]?.id ?? ""
-  const parts: string[] = [
-    `# ${info?.title ?? sessionID}`,
-    "",
-    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"} · ${info?.directory ?? ""}_`,
-    "",
-  ]
-  const toolOutputText = (state: any): string => {
-    // our v1 normalization emits content[]; v2 hosts may emit output
-    for (const key of ["content", "output"]) {
-      const v = state?.[key]
-      if (typeof v === "string") return v
-      if (Array.isArray(v)) {
-        const text = v.map((c: any) => (typeof c === "string" ? c : c?.text ?? "")).join("")
-        if (text) return text
-      }
-    }
-    return ""
-  }
-  for (const m of visibleMessages(data, sessionID)) {
-    const msg = m as any
-    if (msg?.type === "user") {
-      if (msg.text) parts.push("## user", "", msg.text, "")
-      continue
-    }
-    if (msg?.type === "compaction") {
-      parts.push("> _compaction — session summarized_", "", String(msg.summary ?? ""), "")
-      continue
-    }
-    if (msg?.type !== "assistant") continue
-    parts.push("## assistant", "")
-    for (const c of msg.content ?? []) {
-      if (c?.type === "text" && c.text) parts.push(c.text, "")
-      else if (c?.type === "reasoning" && c.text) parts.push("<details><summary>thinking</summary>", "", c.text, "", "</details>", "")
-      else if (c?.type === "tool") {
-        const st = c.state ?? {}
-        const input = st.input ?? {}
-        const inv =
-          [input.query, input.command, input.prompt, input.pattern, input.path, input.description]
-            .find((v: unknown) => typeof v === "string" && v.trim()) ??
-          (c.name === "subagent" && Array.isArray(input.prompts) ? String(input.prompts[0] ?? "") : "")
-        let out = toolOutputText(st)
-        if (c.name === "subagent") out = ""
-        if (out.length > 600) out = out.slice(0, 600) + "—"
-        parts.push(`> _tool: ${c.name ?? "tool"}${inv ? ` — ${String(inv).slice(0, 120)}` : ""}_`, "")
-        if (out) parts.push("> ```", out.split("\n").map((l: string) => "> " + l).join("\n"), "> ```", "")
-      }
-    }
-  }
-  await navigator.clipboard.writeText(parts.join("\n"))
-}
-
 
 export function App() {
   const source = useShareSource()
@@ -655,7 +527,7 @@ export function App() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault()
       togglePanel()
-      setTimeout(() => document.querySelector<HTMLInputElement>("input[placeholder^='filter']")?.focus(), 60)
+      setTimeout(() => document.querySelector<HTMLInputElement>("input[data-osh-search]")?.focus(), 60)
     }
   })
 

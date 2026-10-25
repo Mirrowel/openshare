@@ -13,12 +13,10 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SettingsBody, restoreSettingsScroll, saveSettingsScroll } from "../settings-panel"
 import { useSessionSections, type ReasoningEntry, type SessionSection, type ToolEntry } from "./session-data"
 import type { ViewEntry } from "./registry"
 import { visibleMessages } from "../fold"
 
-const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the desk's file number: the wire copy this session was filed under
 const fileNo = (sessionID: string) =>
@@ -93,106 +91,35 @@ function BrandTile(props: { logoUrl?: string }) {
 }
 
 function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
-  const branding = () => props.source.branding()
   const created = () => millis(info()?.time?.created)
   const searching = () => props.search.trim().length > 0
   return (
-    <header class="shrink-0 bg-background-base relative z-30">
-      <div class="flex items-center gap-3 px-4 h-12 border-b-2 border-border-strong-base">
+    <div class="shrink-0 bg-background-base relative z-20">
+      <div class="flex items-center gap-3 px-4 h-7 border-b border-border-strong-base">
         <Show when={props.isSub && props.onBack}>
           <button
-            class="flex items-center gap-1 shrink-0 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base transition-colors duration-150"
+            class="flex items-center gap-1 h-6 px-1.5 rounded-md shrink-0 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base hover:bg-surface-base transition-colors duration-150"
             onClick={() => props.onBack?.()}
           >
             &lt; main
           </button>
         </Show>
-        <Show
-          when={branding().linkUrl}
-          fallback={
-            <span class="flex items-center gap-2 shrink-0">
-              <BrandTile logoUrl={branding().logoUrl} />
-              <span class="hidden sm:inline text-14-medium text-text-strong truncate max-w-40">
-                {branding().name ?? "Open(code)Share"}
-              </span>
-            </span>
-          }
-        >
-          {(href) => (
-            <a
-              href={href()}
-              target="_blank"
-              rel="noreferrer"
-              class="flex items-center gap-2 shrink-0 hover:opacity-90 transition-opacity duration-150"
-              title={branding().name ?? "Open(code)Share"}
-            >
-              <BrandTile logoUrl={branding().logoUrl} />
-              <span class="hidden sm:inline text-14-medium text-text-strong truncate max-w-40">
-                {branding().name ?? "Open(code)Share"}
-              </span>
-            </a>
-          )}
-        </Show>
-        <span class="hidden sm:block h-5 w-px shrink-0 bg-border-weak-base" />
-        <h1 class="flex-1 min-w-0 text-14-medium text-text-base truncate">
+        <h1 class="flex-1 min-w-0 text-14-medium text-text-strong truncate">
           {info()?.title ?? "session"}
         </h1>
-        <div class="flex items-center gap-2 shrink-0">
-          <span
-            class="flex items-center gap-1.5 rounded-md border border-border-weak-base px-2 py-1 text-12-mono text-text-weaker"
-            title="source status"
-          >
-            <span class={"inline-block size-1.5 rounded-full shrink-0 " + statusDot(props.status)} />
-            {props.status}
-          </span>
+        <div class="flex items-center gap-3 shrink-0 text-12-mono text-text-weaker">
           <Show when={props.model}>
-            <span class="max-w-48 truncate rounded-md border border-border-weak-base px-2 py-1 text-12-mono text-text-base">
-              {props.model}
-            </span>
+            <span class="hidden sm:inline max-w-48 truncate">{props.model}</span>
           </Show>
-          <span class="flex items-center gap-1.5 rounded-md border border-border-weak-base px-2 py-1 text-12-mono text-text-base">
+          <span class="flex items-center gap-1.5">
             <Mark class="h-3 shrink-0" />
             v{info()?.version ?? "?"}
           </span>
-          <a
-            href={OPENSHARE_REPO}
-            target="_blank"
-            rel="noreferrer"
-            class="p-1 text-icon-weaker-base hover:text-icon-strong-base transition-colors duration-150"
-            title="Open(code)Share"
-          >
-            <Icon name="github" size="small" />
-          </a>
-          <div class="relative flex items-center gap-1 rounded-md border border-border-weak-base pl-2 pr-1 py-0.5 text-12-mono text-text-weaker hover:border-border-strong-base transition-colors duration-150">
-            <button
-              class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base p-0"
-              onClick={() => setSettingsOpen(!settingsOpen())}
-            >
-              <span class="hidden sm:inline">settings</span>
-              <Icon name="chevron-down" size="small" />
-            </button>
-            <Show when={settingsOpen()}>
-              <div
-                class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                onScroll={(e) => saveSettingsScroll(e.currentTarget)}
-                ref={restoreSettingsScroll}
-              >
-                <SettingsBody
-                  settings={props.settings}
-                  update={props.updateSettings}
-                  branding={props.source.branding()}
-                  search={props.search}
-                  onSearch={props.onSearch}
-                />
-              </div>
-            </Show>
-          </div>
         </div>
       </div>
       {/* edition band */}
-      <div class="flex items-center gap-2.5 px-4 h-8 border-b border-border-weak-base text-12-mono text-text-weaker">
+      <div class="flex items-center gap-2.5 px-4 h-7 border-b border-border-weak-base text-12-mono text-text-weaker">
         <span class="shrink-0">wire {fileNo(props.sessionID)}</span>
         <Show when={created()}>
           {(t) => (
@@ -207,7 +134,7 @@ function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
           <span class="shrink-0 truncate">filter "{props.search.trim()}"</span>
         </Show>
       </div>
-    </header>
+    </div>
   )
 }
 
@@ -237,7 +164,7 @@ function Ticker(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
   })
   return (
     <footer class="shrink-0 border-t border-border-strong-base bg-background-base">
-      <div class="flex items-center gap-3 px-4 h-9 overflow-x-auto no-scrollbar whitespace-nowrap text-12-mono text-text-weaker">
+      <div class="flex items-center gap-3 px-4 h-7 overflow-x-auto no-scrollbar whitespace-nowrap text-12-mono text-text-weaker">
         <span class="flex items-center gap-2 shrink-0">
           <Show when={branding().logoUrl}>
             <img src={branding().logoUrl} alt="" class="h-4 rounded-sm" />
@@ -326,9 +253,9 @@ function WireIndex(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
 type Kicker = { label: string; tone: "critical" | "strong" | "weak" }
 
 const KICKER_TONE: Record<Kicker["tone"], string> = {
-  critical: "border-icon-critical-base text-icon-critical-base",
-  strong: "border-border-strong-base text-text-base",
-  weak: "border-border-weak-base text-text-weaker",
+  critical: "text-icon-critical-base",
+  strong: "text-text-base",
+  weak: "text-text-weaker",
 }
 
 // what the wire calls a tool part: urgent when it broke, developing while
@@ -352,7 +279,7 @@ function correspondent(section: SessionSection): string | undefined {
 // only closing signal in nav mode, where no next dispatch draws the rule)
 function Dispatch(props: { section: SessionSection; index: number; children: JSX.Element }) {
   return (
-    <article class="pt-8 first:pt-2 border-t border-border-strong-base first:border-none">
+    <article class="pt-5 first:pt-1 border-t border-border-strong-base first:border-none">
       {props.children}
       <div class="pt-1 pb-2 text-12-mono text-text-weaker opacity-60 select-none">-30-</div>
     </article>
@@ -367,7 +294,7 @@ function Slug(props: { section: SessionSection; children: JSX.Element }) {
       {/* dateline slug: number, wordmark, received time, ruled off to the edge */}
       <div class="flex items-center gap-2.5 text-12-mono text-text-weaker">
         <span class="text-text-strong">{pad(props.section.index)}</span>
-        <span class="uppercase">dispatch</span>
+        <span>dispatch</span>
         <Show when={clock(props.section.at)}>{(t) => <span>{t()}</span>}</Show>
         <span class="flex-1 border-t border-border-weak-base" />
       </div>
@@ -384,7 +311,7 @@ function Slug(props: { section: SessionSection; children: JSX.Element }) {
           <Show when={props.section.model?.providerID}>
             {(id) => <ProviderIcon id={id()} class="size-3.5 shrink-0 text-icon-strong-base" />}
           </Show>
-          <span class="uppercase">correspondent</span>
+          <span>correspondent</span>
           <span class="text-text-base truncate">{model()}</span>
         </div>
       </Show>
@@ -401,13 +328,13 @@ function WireUpdate(props: { entry: ToolEntry; children: JSX.Element }) {
   const start = () => millis(props.entry.part.state?.time?.start)
   const held = () => holdTime(start(), millis(props.entry.part.state?.time?.end))
   return (
-    <div class="my-2 flex items-start gap-2.5">
+    <div class="my-1 flex items-start gap-2">
       {/* stamped rail: kicker chip over the time the wire item crossed
           and how long it was held */}
-      <div class="flex flex-col items-center gap-1 shrink-0 pt-1 w-22">
+      <div class="flex flex-col items-end shrink-0 pt-1 w-16">
         <span
           class={
-            "w-full text-center rounded-xs border px-1.5 text-12-mono uppercase " +
+            "text-12-mono " +
             KICKER_TONE[kicker().tone]
           }
         >
@@ -434,7 +361,7 @@ function EditorNote(props: { entry: ReasoningEntry; children: JSX.Element }) {
   const meta = () => [clockSec(start()), held()].filter(Boolean).join(" · ")
   return (
     <aside
-      class="mt-1 rounded-md border border-dashed border-border-weak-base px-3 py-2"
+      class="mt-0.5 rounded-md border border-dashed border-border-weak-base px-2 py-1"
       style={meta() ? ({ "--note-meta": ` " · ${meta()}"` } as JSX.CSSProperties) : undefined}
     >
       {props.children}
@@ -453,7 +380,7 @@ export const teletypeSkin: Skin = {
   // duplicate them (live-caught, same class as cinema's slugline)
   promptInBody: false,
   mode: "composed",
-  columnClass: "max-w-[54rem] mx-auto px-4 sm:px-6 py-6 osh-content flex flex-col",
+  columnClass: "max-w-[54rem] mx-auto px-4 sm:px-6 py-4 osh-content flex flex-col",
   wrappers: {
     Header: Masthead,
     Footer: Ticker,

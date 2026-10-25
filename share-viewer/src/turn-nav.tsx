@@ -39,7 +39,7 @@ export function TurnNav(props: {
           <HoverCard.Trigger as="button"
             role="button"
             type="button"
-            class={compact() ? "osh-turn-tick" : "flex items-center gap-2 flex-1 min-w-0 min-h-11 px-2 text-left text-12-regular text-text-base bg-transparent border-none cursor-pointer rounded-md"}
+            class={compact() ? "osh-turn-tick" : "flex items-center gap-2 flex-1 min-w-0 min-h-7 px-2 text-left text-12-regular text-text-base bg-transparent border-none cursor-pointer rounded-md"}
             aria-current={props.current === p.message.id ? "step" : undefined}
             aria-label={compact() ? `Turn ${p.number}: ${label()}` : undefined}
             title={compact() ? undefined : label()}
@@ -61,9 +61,9 @@ export function TurnNav(props: {
           </HoverCard.Trigger>
           <Show when={compact()}>
             <HoverCard.Portal>
-              <HoverCard.Content class="osh-turn-preview z-[80] w-80 max-w-[calc(100vw-5rem)] p-4 rounded-xl border border-border-weak-base bg-background-base shadow-lg">
+              <HoverCard.Content class="osh-turn-preview z-[80] w-72 max-w-[calc(100vw-5rem)] p-3 rounded-lg border border-border-weak-base bg-background-base shadow-lg">
                 <div class="text-14-medium text-text-strong line-clamp-2">{label()}</div>
-                <Show when={props.getPreview(p.message.id)}>{(preview) => <div class="pt-1 text-12-regular text-text-weak line-clamp-3">{preview()}</div>}</Show>
+                <Show when={props.getPreview(p.message.id)}>{(preview) => <div class="pt-0.5 text-12-regular text-text-weak line-clamp-3">{preview()}</div>}</Show>
               </HoverCard.Content>
             </HoverCard.Portal>
           </Show>
@@ -83,12 +83,12 @@ export function TurnNav(props: {
     )
   }
   const list = () => (
-    <nav aria-label="Conversation turns" class="overflow-y-auto min-h-0" classList={{ "p-2": !compact(), "flex-1 flex flex-col": compact() }}>
+    <nav aria-label="Conversation turns" class="overflow-y-auto min-h-0" classList={{ "p-1.5": !compact(), "flex-1 flex flex-col": compact() }}>
       <Show when={props.parent} keyed>
         {(parent) => (
           <a
             href={parent.href}
-            class="flex items-center gap-2 px-2 min-h-11 rounded-md text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base no-underline"
+            class="flex items-center gap-2 px-2 min-h-7 rounded-md text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base no-underline"
             aria-label={`Back to parent turn: ${parent.label}`}
             title={parent.label}
             onClick={(event) => {
@@ -103,32 +103,32 @@ export function TurnNav(props: {
           </a>
         )}
       </Show>
-      <ul class="flex flex-col m-0 p-0 list-none" style={compact() ? { "margin-block": "auto" } : undefined} classList={{ "gap-1": !compact(), "ml-3 pl-2 border-l border-border-weak-base": !!props.parent && !compact() }}>
+      <ul class="flex flex-col m-0 p-0 list-none" style={compact() ? { "margin-block": "auto" } : undefined} classList={{ "gap-0.5": !compact(), "ml-3 pl-2 border-l border-border-weak-base": !!props.parent && !compact() }}>
         <For each={props.filtered}>
           {(message) => <li><TurnEntry message={message} number={props.messages.indexOf(message) + 1} /></li>}
         </For>
       </ul>
       <Show when={props.filtered.length === 0}>
-        <p class="p-2 text-12-regular text-text-weaker" classList={{ "sr-only": compact() }}>{props.messages.length ? "No prompts match." : "No prompts yet."}</p>
+        <p class="px-2 py-1 text-12-regular text-text-weaker" classList={{ "sr-only": compact() }}>{props.messages.length ? "No prompts match." : "No prompts yet."}</p>
       </Show>
     </nav>
   )
   return (
     <Show when={desktop()} fallback={
       <Popover open={open()} onOpenChange={setOpen} placement="bottom-start" gutter={4}>
-        <Popover.Trigger class="osh-turn-button justify-between w-full px-4 border-b border-border-weak-base rounded-none" aria-label="Choose a turn">
+        <Popover.Trigger class="osh-turn-button justify-between w-full px-3 border-b border-border-weak-base rounded-none" aria-label="Choose a turn">
           <span>{props.focused ? "Focused" : "Turn"} {currentIndex() + 1} of {props.messages.length}</span>
           <Icon name="chevron-down" size="small" />
         </Popover.Trigger>
         <Popover.Portal>
-          <Popover.Content class="z-50 w-80 max-w-[calc(100vw-2rem)] max-h-[60dvh] overflow-y-auto rounded-lg border border-border-weak-base bg-background-base shadow-lg" aria-label="Conversation turns">
+          <Popover.Content class="z-50 w-72 max-w-[calc(100vw-2rem)] max-h-[60dvh] overflow-y-auto rounded-lg border border-border-weak-base bg-background-base shadow-lg" aria-label="Conversation turns">
             {list()}
           </Popover.Content>
         </Popover.Portal>
       </Popover>
     }>
-      <aside aria-label="Turns" class="relative shrink-0 min-h-0 flex flex-col border-r border-border-weak-base" style={{ width: props.collapsed ? "48px" : "208px" }}>
-        <Show when={!props.collapsed}><div class="flex items-center h-11 shrink-0 pl-4 text-12-medium text-text-weaker">Turns</div></Show>
+      <aside aria-label="Turns" class="relative shrink-0 min-h-0 flex flex-col border-r border-border-weak-base" style={{ width: props.collapsed ? "40px" : "192px" }}>
+        <Show when={!props.collapsed}><div class="flex items-center h-8 shrink-0 pl-3 text-12-medium text-text-weaker">Turns</div></Show>
         <button class="osh-turn-button osh-turns-toggle" aria-label={props.collapsed ? "Expand Turns" : "Collapse Turns"} title={props.collapsed ? "Expand Turns" : "Collapse Turns"} aria-expanded={!props.collapsed} onClick={props.onToggle}>
           <Icon name={props.collapsed ? "chevron-right" : "chevron-left"} size="small" />
         </button>

@@ -37,6 +37,8 @@ export type OshSettings = {
    * horizontally (hidden scrollbar, VSCode-style). The width is hard-capped
    * either way - this only picks the overflow behavior */
   outputOverflow: "wrap" | "scroll"
+  /** how user prompts render in classic: right-aligned bubble or flat text */
+  promptStyle: "bubble" | "flat"
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -57,6 +59,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   toolGroupingScope: "context",
   groveThinking: "left",
   outputOverflow: "scroll",
+  promptStyle: "bubble",
 }
 
 const COOKIE = "osh_settings"
@@ -76,6 +79,11 @@ export function readSettings(): OshSettings {
         // old semantics: shell tools expanded)
         if (typeof parsed.toolOutput === "boolean" && !Array.isArray(parsed.autoExpand)) {
           parsed.autoExpand = parsed.toolOutput ? ["shell"] : []
+        }
+        // the Reader view became a classic setting: flat prompts
+        if (parsed.view === "reader") {
+          parsed.view = "classic"
+          parsed.promptStyle ??= "flat"
         }
         delete parsed.diffStyle
         delete parsed.toolOutput
@@ -196,6 +204,7 @@ export function applySettings(s: OshSettings) {
   html.dataset.oshToolGrouping = s.toolGrouping === false ? "off" : "on"
   // tool output overflow: wrap vs hidden-scrollbar horizontal scroll
   html.dataset.oshOverflow = s.outputOverflow === "wrap" ? "wrap" : "scroll"
+  html.dataset.oshPrompts = s.promptStyle === "flat" ? "flat" : "bubble"
 }
 
 export const TEXT_SIZES: Record<string, string> = {

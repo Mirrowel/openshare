@@ -40,7 +40,7 @@ export const myView: ViewEntry = {
 ## Features every view must support
 
 - **Theme**: use the design tokens (`bg-background-base`,
-  `text-text-base`, `border-border-weak-base`, `text-icon-weaker-base`,
+  `text-text-base`, `border-border-weak-base`, `text-icon-base`,
   the `text-12-mono`-family utilities...). Never raw hex. Themes
   (light/dark/mirrobot/nord/...) then work for free.
 - **settings.toolInfo** — hide tool invocation titles/queries when false.

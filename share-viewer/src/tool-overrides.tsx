@@ -16,6 +16,7 @@ import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useData } from "@opencode/session-ui/context"
 import { useFileComponent } from "@opencode/ui/context"
+import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow } from "./settings"
@@ -66,7 +67,7 @@ const dirname = (path: string) => {
   const clean = path.split(/[/\\]/).filter(Boolean)
   return clean.slice(0, -1).join("/")
 }
-const countLines = (text: string) => (text ? text.split("\n").length : 0)
+const countLines = (text: string) => (text ? text.replace(/\n$/, "").split("\n").length : 0)
 
 /** v1 read rows said which slice of the file they took ("from 284"). */
 function readRange(props: ToolProps, lines: number): string {
@@ -103,15 +104,15 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Auto/forced unified-split (owner spec): `diffMode` setting = auto |
- * split | unified. Split width is CONTENT-DERIVED (longest diff line),
- * clamped to the measured available space (viewport - card left - margin)
- * so a split card never overflows the page and never sprawls half-empty
- * (live-caught both ways). Panes scroll horizontally with a hidden
- * scrollbar. The settle race (identical edits rendering different modes -
- * measured mid-animation) dies via re-check after Kobalte's spring; the
- * <Show keyed> branch pair re-creates the File when the mode flips
- * (Dynamic has no remount API - a `key` prop does nothing). */
+/** Diff layout (settings `diffMode` = auto | split | unified). The card is
+ * ONE fixed width in every mode (CSS: min(100%, 52rem), the prose measure),
+ * so U/A/S only change what is inside it. Split needs room for two panes:
+ * auto picks it when the longest diff line fits a pane, forced split when
+ * the card is at least SPLIT_MIN wide; otherwise unified. Long lines scroll
+ * inside the card (hidden scrollbar). The <Show keyed> branch pair in
+ * DiffCard re-creates the File when the mode flips (Dynamic has no remount
+ * API - a `key` prop does nothing). */
+const SPLIT_MIN = 600
 // mono char width at the kit's 12px code size (measured once, lazily)
 let monoCharWidth = 0
 function measureMonoChar(): number {
@@ -129,57 +130,33 @@ function measureMonoChar(): number {
 }
 
 function useSplitFit(contentChars?: () => number) {
-  const [maxPx, setMaxPx] = createSignal(0)
+  const [cardPx, setCardPx] = createSignal(0)
   const ref = (el: HTMLDivElement) => {
-    // edit-content itself hugs (fit-content); measure the CARD (its
-    // parent osh-file-body, full column width) and its left edge
+    // the card is the parent osh-file-body (fixed width, so measuring it
+    // cannot feed back into its own size)
     const card = el.parentElement ?? el
-    const measure = () => {
-      const rect = card.getBoundingClientRect()
-      const avail = window.innerWidth - rect.left - 24
-      const col = rect.width || 0
-      let cap = avail
-      // skin sheets (atlas): a split card must not jut past the sheet's
-      // right edge into the page margin (live-caught on atlas with the
-      // widened sheet)
-      const sheet = card.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet") ?? card.closest(".atlas-sheet")
-      if (sheet) {
-        const sr = sheet.getBoundingClientRect()
-        cap = Math.min(cap, Math.max(0, sr.right - rect.left - 24))
-      }
-      setMaxPx(Math.max(0, Math.min(col * 2, cap)))
-    }
+    const measure = () => setCardPx(card.getBoundingClientRect().width || 0)
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(card)
     // ONE delayed re-check past the expand spring (a mid-spring
-    // measurement can be transiently wrong). The old t2=1100ms +
-    // transitionend listeners raced the spring: a late split()/unified
-    // flip remounted the File and shifted layout AGAIN, after every
-    // compensator had settled - live-caught as flicker + pushed-up titles
-    // on the 3-edit cluster (headless skips springs, automation never
-    // saw it). One check, past the spring, is bounce-proof.
+    // measurement can be transiently wrong); a late flip would remount
+    // the File and shift layout after every compensator settled
     const t1 = setTimeout(measure, 450)
     onCleanup(() => {
       clearTimeout(t1)
       ro.disconnect()
     })
   }
-  const mode = () => diffModeSignal()
-  // the width the split card actually wants: longest line x2 panes +
-  // gutter allowance, clamped to [780, maxPx]
-  const splitWidth = createMemo(() => {
-    const chars = contentChars?.() ?? 0
-    if (chars <= 0) return maxPx()
-    const wanted = Math.ceil(chars * measureMonoChar()) * 2 + 140
-    return Math.max(780, Math.min(wanted, maxPx() || wanted))
-  })
   const split = createMemo(() => {
-    const m = mode()
-    if (m === "unified") return false
-    return splitWidth() >= 780 && maxPx() >= 600
+    const m = diffModeSignal()
+    if (m === "unified" || cardPx() < SPLIT_MIN) return false
+    if (m === "split") return true
+    const chars = contentChars?.() ?? 0
+    // two panes + gutters (140px) must fit the card
+    return chars <= 0 || Math.ceil(chars * measureMonoChar()) * 2 + 140 <= cardPx()
   })
-  return { ref, split, width: splitWidth, maxPx }
+  return { ref, split }
 }
 
 /** One header for every file tool: label, directory, filename, meta. */
@@ -191,7 +168,9 @@ function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) 
         <Show when={dirname(props.path)}>
           <span data-slot="osh-tool-dir">{dirname(props.path)}/</span>
         </Show>
-        <span data-slot="osh-tool-file">{basename(props.path)}</span>
+        <Show when={props.path}>
+          <span data-slot="osh-tool-file">{basename(props.path)}</span>
+        </Show>
         {props.meta}
       </div>
     </div>
@@ -203,10 +182,9 @@ function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) 
  * row away, the card still says what you are reading. */
 function FileTitle(props: { path: string }) {
   const name = basename(props.path)
-  const ext = name.includes(".") ? name.split(".").at(-1)!.slice(0, 4) : "file"
   return (
     <div data-slot="osh-file-title">
-      <span class="osh-file-icon osh-file-ext">{ext}</span>
+      <FileIcon node={{ path: props.path, type: "file" }} class="osh-file-icon size-4 shrink-0" />
       <span class="osh-file-name">{name}</span>
       <Show when={dirname(props.path)}>
         <span class="osh-file-dir">{dirname(props.path).split("/").at(-1)}</span>
@@ -304,7 +282,7 @@ function FileCard(props: {
             <Dynamic
               component={fileComponent as any}
               mode="text"
-              file={{ name: props.path, contents: props.contents }}
+              file={{ name: props.path, contents: props.contents.replace(/\n$/, "") }}
               overflow="scroll"
               onRendered={() => {
                 settle()
@@ -316,7 +294,7 @@ function FileCard(props: {
             <Dynamic
               component={fileComponent as any}
               mode="text"
-              file={{ name: props.path, contents: props.contents }}
+              file={{ name: props.path, contents: props.contents.replace(/\n$/, "") }}
               overflow="scroll"
               onRendered={() => props.onRendered?.()}
             />
@@ -327,16 +305,43 @@ function FileCard(props: {
   )
 }
 
+/** Diff layout (U | A | S) - lives in the expanded card's title bar, so it
+ *  only exists while a diff is actually showing. Writes the global setting. */
+function DiffModeToggle() {
+  const options = [
+    { id: "unified", label: "U", title: "Unified (forced)" },
+    { id: "auto", label: "A", title: "Auto (split when it fits)" },
+    { id: "split", label: "S", title: "Split (forced, needs width)" },
+  ] as const
+  return (
+    <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
+      <For each={options}>
+        {(o) => (
+          <button
+            type="button"
+            class="osh-dm-btn"
+            classList={{ "osh-dm-on": diffModeSignal() === o.id }}
+            title={o.title}
+            onclick={(e) => { e.stopPropagation(); setDiffMode(o.id) }}
+          >{o.label}</button>
+        )}
+      </For>
+    </div>
+  )
+}
+
 /** Shared body frame: tools indent under their trigger. The overflow
- *  toggle rides the title row (expanded only by construction). */
-function FileBody(props: { title?: string; children: JSX.Element }) {
+ *  actions slot rides the title row (expanded only by construction). */
+function FileBody(props: { title?: string; actions?: JSX.Element; children: JSX.Element }) {
   return (
     <div data-component="osh-file-body">
       <div class="osh-file-titlebar">
         <Show when={props.title}>
           <FileTitle path={props.title!} />
         </Show>
-        <OverflowToggle />
+        <Show when={props.actions}>
+          <div class="flex items-center gap-1.5">{props.actions}</div>
+        </Show>
       </div>
       {props.children}
     </div>
@@ -397,36 +402,97 @@ const ReadTool = (props: ToolProps) => {
  * (createTwoFilesPatch default = 4 above/below each change, exactly like
  * opencode's own diff view). Old shares without a patch fall back to
  * before/after reconstruction (numbers from 1). */
-const EditTool = (props: ToolProps) => {
+type PatchFile = { file?: string; patch?: string; status?: string }
+
+/** One file's diff: its own split-fit measurement, title bar and layout
+ *  toggle, so a multi-file patch is just several of these. */
+function DiffCard(props: { path: string; patch?: string; oldText: string; newText: string; onRendered?: () => void }) {
   const fileComponent = useFileComponent()
-  const path = createMemo(() => str((props.input as any).path) || str((props.input as any).filePath))
+  const fileDiff = createMemo(() =>
+    props.patch != null
+      ? // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
+        (resolveFileDiff as any)({ file: props.path || "file", patch: props.patch })
+      : undefined,
+  )
+  // longest diff line (content chars) drives the split width; memos are
+  // EAGER, so this must stay declared after fileDiff (TDZ otherwise)
+  const contentChars = createMemo(() => {
+    const lines = (t: string) => t.split("\n").map((l) => l.length)
+    // from a patch, only hunk lines count (minus their +/-/space marker);
+    // the diff --git / ---/+++ / @@ headers are not content
+    const hunkLines = (p: string) => {
+      const at = p.indexOf("\n@@")
+      return (at < 0 ? p : p.slice(at + 1))
+        .split("\n")
+        .filter((l) => l && !l.startsWith("@@") && !l.startsWith("\\"))
+        .map((l) => l.length - 1)
+    }
+    const all = props.patch != null ? hunkLines(props.patch) : [...lines(props.oldText), ...lines(props.newText)]
+    return all.reduce((a, b) => Math.max(a, b), 0)
+  })
+  const fit = useSplitFit(contentChars)
+  const virtualize = () => (fileDiff()?.unifiedLineCount ?? countLines(props.oldText) + countLines(props.newText)) > 500
+  return (
+    <div data-component="osh-edit-tool" data-osh-split={fit.split() ? "on" : "off"}>
+      <FileBody title={props.path} actions={<DiffModeToggle />}>
+        <div data-component="edit-content" ref={fit.ref}>
+          {/* keyed branch pair: Solid's Dynamic has NO remount API (a
+              `key` prop is passed through, does nothing - live-caught:
+              the first card of a batch rendered split, the rest stayed
+              unified forever). Distinct <Show keyed> branches actually
+              re-create the File when the mode flips. */}
+          <Show when={fit.split()} keyed>
+            <Dynamic
+              component={fileComponent as any}
+              mode="diff"
+              virtualize={virtualize()}
+              diffStyle="split"
+              {...(fileDiff()
+                ? { fileDiff: fileDiff() }
+                : { before: { name: props.path, contents: props.oldText }, after: { name: props.path, contents: props.newText } })}
+              onRendered={() => props.onRendered?.()}
+            />
+          </Show>
+          <Show when={!fit.split()} keyed>
+            <Dynamic
+              component={fileComponent as any}
+              mode="diff"
+              virtualize={virtualize()}
+              diffStyle="unified"
+              {...(fileDiff()
+                ? { fileDiff: fileDiff() }
+                : { before: { name: props.path, contents: props.oldText }, after: { name: props.path, contents: props.newText } })}
+              onRendered={() => props.onRendered?.()}
+            />
+          </Show>
+        </div>
+      </FileBody>
+    </div>
+  )
+}
+
+const STATUS_TAG: Record<string, string> = { added: "new", deleted: "deleted" }
+
+const EditTool = (props: ToolProps) => {
+  const files = createMemo<PatchFile[]>(() => {
+    const raw = (props.metadata as any)?.files
+    return Array.isArray(raw) ? raw.filter((f) => f && typeof f === "object") : []
+  })
+  const multi = createMemo(() => files().length > 1)
+  // single-file path: the call input, else the host's own file entry
+  const path = createMemo(
+    () => str((props.input as any).path) || str((props.input as any).filePath) || str(files()[0]?.file),
+  )
   const oldText = createMemo(() => str((props.input as any).oldString))
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
   // the host's patch: v1 stamps metadata.filediff, v2 stamps metadata.files
   const patch = createMemo(() => {
-    const meta = (props.metadata as any) ?? {}
-    const p1 = meta.filediff?.patch
+    const p1 = (props.metadata as any)?.filediff?.patch
     if (typeof p1 === "string" && p1) return p1
-    const p2 = Array.isArray(meta.files) ? meta.files[0]?.patch : undefined
+    const p2 = files()[0]?.patch
     return typeof p2 === "string" && p2 ? p2 : undefined
   })
-  const fileDiff = createMemo(() =>
-    patch() != null
-      ? // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
-        (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
-      : undefined,
-  )
-  // longest diff line (content chars) drives the split width; from the
-  // host patch when present, else before/after. NOTE: memos are EAGER -
-  // this must be declared after `patch` or it reads a TDZ const
-  // (live-caught: "Cannot access 'patch' before initialization").
-  const contentChars = createMemo(() => {
-    const lines = (t: string) => t.split("\n").map((l) => l.replace(/^[+-@ ]/, "").length)
-    const all = patch() != null ? lines(patch()!) : [...lines(oldText()), ...lines(newText())]
-    return all.reduce((a, b) => Math.max(a, b), 0)
-  })
-  const fit = useSplitFit(contentChars)
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -440,47 +506,25 @@ const EditTool = (props: ToolProps) => {
     for (const line of a) if (!b.has(line)) adds += 1
     return { adds, dels }
   })
+  const tag = () => (multi() ? `${files().length} files` : STATUS_TAG[str(files()[0]?.status)])
   return (
-    <div data-component="osh-edit-tool" data-osh-split={fit.split() ? "on" : "off"}>
+    <div data-component="osh-edit-group">
       <BasicTool
         {...props}
         icon="code-lines"
-        hasContent={!!path() || !!failure()}
+        hasContent={!!path() || multi() || !!failure()}
         defer
         trigger={() => (
           <FileHeader
             label={props.tool === "patch" ? "Patch" : "Edit"}
-            path={path()}
+            path={multi() ? "" : path()}
             meta={
-              <div class="flex items-center gap-2">
+              <>
+                <Show when={tag()}>{(t) => <span data-slot="osh-tool-meta">{t()}</span>}</Show>
                 <Show when={stats().adds || stats().dels}>
                   <ChangeCounts adds={stats().adds} dels={stats().dels} />
                 </Show>
-                {/* per-card diff mode toggle (writes the global setting) */}
-                <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "unified" }}
-                    title="Unified (forced)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("unified") }}
-                  >U</button>
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "auto" }}
-                    title="Auto (split when it fits)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("auto") }}
-                  >A</button>
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "split" }}
-                    title="Split (forced, needs width)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
-                  >S</button>
-                </div>
-              </div>
+              </>
             }
           />
         )}
@@ -489,43 +533,32 @@ const EditTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody title={path()}>
-            <div
-              data-component="edit-content"
-              ref={fit.ref}
-              style={fit.split() ? { width: `${fit.width()}px` } : undefined}
-            >
-              {/* keyed branch pair: Solid's Dynamic has NO remount API (a
-                  `key` prop is passed through, does nothing - live-caught:
-                  the first card of a batch rendered split, the rest stayed
-                  unified forever). Distinct <Show keyed> branches actually
-                  re-create the File when the mode flips. */}
-              <Show when={fit.split()} keyed>
-                <Dynamic
-                  component={fileComponent as any}
-                  mode="diff"
-                  virtualize={(fileDiff()?.unifiedLineCount ?? countLines(oldText()) + countLines(newText())) > 500}
-                  diffStyle="split"
-                  {...(fileDiff()
-                    ? { fileDiff: fileDiff() }
-                    : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
-                  onRendered={() => props.onContentRendered?.()}
-                />
-              </Show>
-              <Show when={!fit.split()} keyed>
-                <Dynamic
-                  component={fileComponent as any}
-                  mode="diff"
-                  virtualize={(fileDiff()?.unifiedLineCount ?? countLines(oldText()) + countLines(newText())) > 500}
-                  diffStyle="unified"
-                  {...(fileDiff()
-                    ? { fileDiff: fileDiff() }
-                    : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
-                  onRendered={() => props.onContentRendered?.()}
-                />
-              </Show>
+          <Show
+            when={multi()}
+            fallback={
+              <DiffCard
+                path={path()}
+                patch={patch()}
+                oldText={oldText()}
+                newText={newText()}
+                onRendered={() => props.onContentRendered?.()}
+              />
+            }
+          >
+            <div class="flex flex-col gap-2">
+              <For each={files()}>
+                {(f) => (
+                  <DiffCard
+                    path={str(f.file)}
+                    patch={f.patch}
+                    oldText=""
+                    newText=""
+                    onRendered={() => props.onContentRendered?.()}
+                  />
+                )}
+              </For>
             </div>
-          </FileBody>
+          </Show>
         </Show>
       </BasicTool>
     </div>

@@ -8,9 +8,8 @@
   background: color-mix(in oklab, var(--background-strong) 55%, transparent);
   border: 1px solid var(--border-weak-base);
   border-radius: 4px;
-  padding: 0.25rem 0.625rem;
-  margin: 0.375rem 0;
-  box-shadow: 1px 1px 0 color-mix(in oklab, var(--border-base) 35%, transparent);
+  padding: 0.125rem 0.5rem;
+  margin: 0.25rem 0;
 }
 [data-view="casefile"] [data-component="tool-trigger"] {
   font-family: ui-monospace, "IBM Plex Mono", monospace;
@@ -26,18 +25,13 @@
   padding-top: 0.25rem;
 }
 [data-view="casefile"] details.reasoning-collapse {
-  border: 1px dashed var(--border-weak-base);
-  border-left: 3px solid var(--border-base);
-  background: color-mix(in oklab, var(--background-strong) 35%, transparent);
-  border-radius: 3px;
-  padding: 0.125rem 0.5rem;
-  margin: 0.375rem 0;
+  border-left: 2px solid var(--border-base);
+  padding: 0 0.5rem;
+  margin: 0.25rem 0;
 }
 [data-view="casefile"] details.reasoning-collapse > summary span {
   font-family: ui-monospace, "IBM Plex Mono", monospace;
-  text-transform: uppercase;
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
+  font-size: 11.5px;
 }
 [data-view="casefile"] .osh-content {
   font-size: var(--font-size-md);
@@ -45,9 +39,7 @@
 [data-view="casefile"] .osh-content h2,
 [data-view="casefile"] .osh-content h3 {
   font-family: ui-monospace, "IBM Plex Mono", monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 [data-view="casefile"] .osh-content table {
   border: 1px solid var(--border-weak-base);
@@ -322,7 +314,6 @@
 [data-view="blueprint"] .bp-req div.text-12-mono {
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  opacity: 0.8;
 }
 [data-view="blueprint"] .bp-req div.text-12-mono::before {
   content: "";
@@ -413,7 +404,6 @@
 /* subagent task card + error card: square the corners */
 [data-view="blueprint"] .bp-tool [data-component="task-tool-card"] {
   border-radius: 0;
-  border: 1px solid var(--border-weak-base);
 }
 [data-view="blueprint"] .bp-tool [data-component="tool-error-card"] {
   border-radius: 0;
@@ -515,7 +505,6 @@
 /* the script supervisor's line under the action (model, time) */
 [data-view="cinema"] .cinema-action .text-12-mono {
   font-style: italic;
-  opacity: 0.75;
 }
 
 /* stage directions: vendored tool rows stripped of card chrome,
@@ -1015,4 +1004,11 @@
   background-color: var(--icon-weak-base);
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23000' d='M8 1.5C12.2 4.2 12.6 9.4 8 14.5 3.4 9.4 3.8 4.2 8 1.5Z'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23000' d='M8 1.5C12.2 4.2 12.6 9.4 8 14.5 3.4 9.4 3.8 4.2 8 1.5Z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* a subagent row already sits in its own boxed entry in these skins, so the
+   kit's tinted card around it is a box in a box: drop its fill and border */
+:is([data-view="casefile"], [data-view="blueprint"], [data-view="atlas"], [data-view="teletype"]) :is([data-component="task-tool-card"], [data-component="task-tool-surface"]) {
+  background: transparent;
+  border: 0;
 }

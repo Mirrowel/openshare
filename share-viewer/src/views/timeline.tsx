@@ -9,7 +9,6 @@
 // with the activity-density strip as its mini-map.
 import { For, Show, createContext, useContext, createEffect, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SettingsBody, saveSettingsScroll, restoreSettingsScroll } from "../settings-panel"
 import { useSessionSections, type SessionSection } from "./session-data"
 import type { ViewEntry } from "./registry"
 import { Icon } from "@opencode/ui/icon"
@@ -110,7 +109,6 @@ function SpacerRow(props: { h: string }) {
 // ------------------------------------------------------- header/footer ----
 
 function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [open, setOpen] = createSignal(false)
   const secs = useSessionSections(props.data, props.sessionID)
   createEffect(() => setSharedSections(secs()))
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
@@ -154,51 +152,24 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
     return { turns: secs().length, tools }
   }
 
-  const statusClass = () =>
-    props.status === "live"
-      ? "text-icon-success-base border-icon-success-base"
-      : props.status === "error"
-        ? "text-icon-critical-base border-icon-critical-base"
-        : "text-text-weaker border-border-strong-base"
-
   return (
     <>
       <Title>
         {info()?.title ?? "session"} | {brand().name || "openshare"}
       </Title>
-      <header class="shrink-0 bg-background-stronger border-b border-border-weak-base relative z-30">
+      <header class="shrink-0 bg-background-stronger border-b border-border-weak-base relative z-20">
         <div class="max-w-[52rem] mx-auto px-4 sm:px-6">
-          <div class="flex items-center gap-3 pt-3">
+          <div class="flex items-center gap-2 h-7">
             <Show when={props.isSub && props.onBack}>
               <button
-                class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base shrink-0 transition-colors duration-150"
+                class="flex items-center gap-1 h-6 px-1.5 rounded-md bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base shrink-0 transition-colors duration-150"
                 onClick={() => props.onBack?.()}
               >
                 <Icon name="arrow-left" size="small" />
                 main
               </button>
             </Show>
-            <Show
-              when={brand().logoUrl}
-              fallback={
-                <Show when={brand().name}>
-                  <a
-                    href={brand().linkUrl || "#"}
-                    class="shrink-0 text-12-mono text-text-weaker hover:text-text-base transition-colors duration-150"
-                  >
-                    {brand().name}
-                  </a>
-                </Show>
-              }
-            >
-              <a href={brand().linkUrl || "#"} class="shrink-0">
-                <img src={brand().logoUrl} alt="" class="h-4.5 w-auto rounded-sm" />
-              </a>
-            </Show>
-            <h1 class="flex-1 min-w-0 truncate text-16-medium text-text-strong">{info()?.title ?? "session"}</h1>
-            <span class={`shrink-0 text-12-mono uppercase tracking-widest border rounded px-1.5 py-0.5 ${statusClass()}`}>
-              {props.status}
-            </span>
+            <h1 class="flex-1 min-w-0 truncate text-14-medium text-text-strong">{info()?.title ?? "session"}</h1>
             <Show when={props.model}>
               <span class="shrink-0 text-12-mono text-text-weaker truncate max-w-48 hidden sm:inline">{props.model}</span>
             </Show>
@@ -206,31 +177,8 @@ function TimelineHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
               <Mark class="h-3" />
               v{info()?.version ?? "?"}
             </span>
-            <div class="relative shrink-0">
-              <button
-                class="flex items-center gap-1 h-7 px-2 rounded-md border border-border-weak-base text-12-mono text-text-weaker hover:text-text-base cursor-pointer transition-colors duration-150"
-                onClick={() => setOpen(!open())}
-              >
-                settings
-              </button>
-              <Show when={open()}>
-                <div
-                  class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                  onScroll={saveSettingsScroll as any}
-                  ref={restoreSettingsScroll}
-                >
-                  <SettingsBody
-                    settings={props.settings}
-                    update={props.updateSettings}
-                    branding={brand()}
-                    search={props.search}
-                    onSearch={props.onSearch}
-                  />
-                </div>
-              </Show>
-            </div>
           </div>
-          <div class="flex items-center gap-3 pt-1.5 pb-2.5 overflow-x-auto no-scrollbar">
+          <div class="flex items-center gap-3 pb-1.5 overflow-x-auto no-scrollbar">
             <Show when={range()} fallback={<span class="shrink-0 text-12-mono text-text-weaker">no timestamps</span>}>
               {(r) => (
                 <>
@@ -269,7 +217,7 @@ function RailEnd(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
     return end
   }
   return (
-    <div class="shrink-0 px-4 sm:px-6 py-3 border-t border-border-weak-base bg-background-base">
+    <div class="shrink-0 px-4 sm:px-6 py-1.5 border-t border-border-weak-base bg-background-base">
       <div class="max-w-[52rem] mx-auto flex items-center justify-between gap-4 text-12-mono text-text-weaker">
         <span class="flex items-center gap-2 min-w-0">
           <Show when={brand().logoUrl}>
@@ -295,14 +243,6 @@ function RailEnd(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
               {(c) => <span class="opacity-70">· {c()}</span>}
             </Show>
           </span>
-          <a
-            href="https://github.com/Mirrowel/OpenShare"
-            target="_blank"
-            rel="noreferrer"
-            class="text-icon-weaker-base hover:text-icon-strong-base"
-          >
-            <Icon name="github" size="small" />
-          </a>
         </span>
       </div>
     </div>
@@ -315,7 +255,7 @@ function TimelineNav(props: { sections: SessionSection[]; active: number; onSele
   const maxTools = () => Math.max(1, ...props.sections.map((s) => s.tools.length))
   return (
     <div class="w-52 shrink-0 flex flex-col">
-      <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase mb-2 px-2">prompts</div>
+      <div class="text-12-medium text-text-weaker mb-1 px-2">prompts</div>
       <For each={props.sections}>
         {(s, i) => (
           <button

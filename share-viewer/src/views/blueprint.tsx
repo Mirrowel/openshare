@@ -16,7 +16,6 @@ import { DateTime } from "luxon"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import type { ViewEntry } from "./registry"
 import { sessionModelLabel, useSessionSections, type SessionSection } from "./session-data"
-import { SettingsBody } from "../settings-panel"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
 type FooterProps = Parameters<NonNullable<SkinWrappers["Footer"]>>[0]
@@ -48,16 +47,9 @@ function Elbow(props: { solid?: boolean; top?: string }) {
 
 // drafting strip header: title block fields, status stamp, settings drawer
 function DraftingHeader(props: HeaderProps) {
-  const [drawer, setDrawer] = createSignal(false)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const b = () => props.source.branding()
   const dwgNo = () => (props.sessionID.replace(/^ses_/, "").slice(0, 8) || "00000000").toUpperCase()
-  const stampClass = () =>
-    props.status === "live"
-      ? "border-icon-success-base text-icon-success-base"
-      : props.status === "error"
-        ? "border-icon-critical-base text-icon-critical-base"
-        : "border-border-strong-base text-text-weaker"
   return (
     <>
       <style>{`
@@ -132,32 +124,19 @@ function DraftingHeader(props: HeaderProps) {
         }
       `}</style>
       <Title>{info()?.title ?? "session"} | {b().name || "openshare"}</Title>
-      <header class="h-10 px-4 flex items-center gap-3 bg-background-stronger border-b border-border-base shrink-0 relative z-30">
+      <div class="h-7 px-4 flex items-center gap-2 bg-background-stronger border-b border-border-base shrink-0 relative z-20">
         <Show when={props.isSub && props.onBack}>
           <button
-            class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base shrink-0"
+            class="flex items-center gap-1 h-6 px-1.5 rounded-md bg-transparent border-none cursor-pointer text-12-mono text-text-weaker hover:text-text-base hover:bg-surface-base shrink-0"
             onClick={() => props.onBack?.()}
           >
             <Icon name="arrow-left" size="small" />
             main
           </button>
         </Show>
-        <Show when={b().logoUrl}>
-          <a href={b().linkUrl || "#"} class="shrink-0 flex items-center">
-            <img src={b().logoUrl} alt="" class="h-4 w-auto" />
-          </a>
-        </Show>
         <span class="hidden sm:inline text-12-mono text-text-weaker shrink-0">DWG {dwgNo()}</span>
         <span class="hidden sm:block h-4 w-px bg-border-weak-base shrink-0" />
         <h1 class="min-w-0 flex-1 truncate text-14-medium text-text-strong">{info()?.title ?? "session"}</h1>
-        <a
-          href="https://github.com/Mirrowel/OpenShare"
-          target="_blank"
-          rel="noreferrer"
-          class="shrink-0 text-icon-weaker-base hover:text-icon-strong-base"
-        >
-          <Icon name="github" size="small" />
-        </a>
         <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker shrink-0">
           <Mark class="h-3" />
           v{info()?.version}
@@ -165,56 +144,16 @@ function DraftingHeader(props: HeaderProps) {
         <Show when={props.model}>
           <span class="hidden md:inline text-12-mono text-text-weaker truncate max-w-48 shrink-0">{props.model}</span>
         </Show>
-        <span
-          class={`flex items-center gap-1.5 border px-1.5 py-0.5 text-12-mono uppercase tracking-widest shrink-0 ${stampClass()}`}
-        >
-          <Show when={props.status === "live"}>
-            <span class="size-1.5 rounded-full bg-icon-success-base animate-pulse" aria-hidden="true" />
-          </Show>
-          {props.status}
-        </span>
-        <button
-          class="flex items-center gap-1.5 shrink-0 bg-transparent border border-border-weak-base px-2 py-1 text-12-mono uppercase tracking-wider text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-          onClick={() => setDrawer(true)}
-        >
-          <Icon name="settings-gear" size="small" />
-          <span class="hidden sm:inline">params</span>
-        </button>
-      </header>
-      <Show when={drawer()}>
-        <div class="fixed inset-0 z-40" onClick={(e) => e.target === e.currentTarget && setDrawer(false)}>
-          <div
-            class="absolute top-0 right-0 bottom-0 w-[19rem] max-w-[85vw] overflow-y-auto border-l border-border-base bg-background-base p-4"
-            style={{ animation: "osh-slide-in 180ms ease-out" }}
-          >
-            <div class="flex items-center justify-between pb-2 border-b border-border-weak-base">
-              <span class="text-12-mono uppercase tracking-widest text-text-weaker">sheet parameters</span>
-              <button
-                class="bg-transparent border-none cursor-pointer text-icon-weaker-base hover:text-icon-strong-base p-1"
-                onClick={() => setDrawer(false)}
-              >
-                <Icon name="close-small" size="small" />
-              </button>
-            </div>
-            <SettingsBody
-              settings={props.settings}
-              update={props.updateSettings}
-              branding={b()}
-              search={props.search}
-              onSearch={props.onSearch}
-            />
-          </div>
-        </div>
-      </Show>
+      </div>
     </>
   )
 }
 
 // title block: the drafting sheet's corner stamp, as page chrome
-function TitleBlockCell(props: { label: string; children: JSX.Element; span?: boolean }) {
+function TitleBlockCell(props: { label: string; children: JSX.Element; span?: boolean; wide?: boolean }) {
   return (
-    <div class="bg-background-base px-3 py-2 min-w-0" classList={{ "sm:col-span-2": props.span }}>
-      <div class="text-12-mono uppercase tracking-widest text-text-weaker">{props.label}</div>
+    <div class="bg-background-base px-3 py-1 min-w-0" classList={{ "sm:col-span-2": props.span, "hidden sm:block": props.wide }}>
+      <div class="text-12-mono text-text-weaker">{props.label}</div>
       <div class="text-12-mono text-text-base truncate">{props.children}</div>
     </div>
   )
@@ -246,8 +185,8 @@ function TitleBlockFooter(props: FooterProps) {
         </span>
       </TitleBlockCell>
       <TitleBlockCell label="issue">{issued()}</TitleBlockCell>
-      <TitleBlockCell label="drawn by">{drawnBy()}</TitleBlockCell>
-      <TitleBlockCell label="sheet">{sections().length} sht · scale nts</TitleBlockCell>
+      <TitleBlockCell label="drawn by" wide>{drawnBy()}</TitleBlockCell>
+      <TitleBlockCell label="sheet" wide>{sections().length} sht · scale nts</TitleBlockCell>
     </div>
   )
 }
@@ -256,11 +195,11 @@ function TitleBlockFooter(props: FooterProps) {
 function BillOfMaterials(props: NavProps) {
   return (
     <div class="w-60 border border-border-weak-base bg-background-base">
-      <div class="flex items-center justify-between gap-3 px-3 py-2 border-b border-border-weak-base bg-background-stronger">
-        <span class="text-12-mono uppercase tracking-widest text-text-weaker">bill of materials</span>
+      <div class="flex items-center justify-between gap-3 px-3 py-1 border-b border-border-weak-base bg-background-stronger">
+        <span class="text-12-mono text-text-weaker">bill of materials</span>
         <span class="text-12-mono text-text-weaker">{props.sections.length}</span>
       </div>
-      <div class="grid grid-cols-[2.75rem_1fr_3rem] gap-2 px-3 py-1 border-b border-border-weak-base text-12-mono uppercase tracking-widest text-text-weaker">
+      <div class="grid grid-cols-[2.75rem_1fr_3rem] gap-2 px-3 py-0.5 border-b border-border-weak-base text-12-mono text-text-weaker">
         <span>no.</span>
         <span>description</span>
         <span class="text-right">det</span>
@@ -268,7 +207,7 @@ function BillOfMaterials(props: NavProps) {
       <For each={props.sections}>
         {(s, i) => (
           <button
-            class="grid grid-cols-[2.75rem_1fr_3rem] items-baseline gap-2 w-full px-3 py-1.5 text-left bg-transparent border-t border-border-weak-base first:border-t-0 cursor-pointer transition-colors duration-150"
+            class="grid grid-cols-[2.75rem_1fr_3rem] items-baseline gap-2 w-full px-3 py-1 text-left bg-transparent border-t border-border-weak-base first:border-t-0 cursor-pointer transition-colors duration-150"
             classList={{
               "bg-surface-base": props.active === i(),
               "hover:bg-surface-base-hover": props.active !== i(),
@@ -295,7 +234,7 @@ function Sheet(props: TurnProps) {
       <Show when={props.index > 0}>
         <div class="absolute -top-6 left-0 right-0 flex items-center gap-3" aria-hidden="true">
           <span class="bp-dim-l flex-1" />
-          <span class="shrink-0 text-12-mono uppercase tracking-widest text-text-weaker">
+          <span class="shrink-0 text-12-mono text-text-weaker">
             sht {pad(props.index)}
           </span>
           <span class="bp-dim-r flex-1" />
@@ -315,20 +254,12 @@ function Sheet(props: TurnProps) {
 // the bar carries the detail number, the tool name, and a REF-style label
 function DetailBox(props: ToolProps) {
   return (
-    <div class="relative my-2">
+    <div class="relative my-1">
       <Elbow solid top="15px" />
       <div class="bp-cut bg-border-weak-base p-px">
-        <div class="bp-cut-in bg-background-base px-3 py-1">
-          <div class="flex items-center gap-2 pb-1 border-b border-border-weak-base">
-            <span class="shrink-0 text-12-mono text-text-strong">D-{pad(props.index)}</span>
-            <span class="min-w-0 flex-1 truncate text-12-mono uppercase tracking-wider text-text-weaker">
-              {props.entry.tool}
-            </span>
-            <span class="shrink-0 text-12-mono uppercase tracking-widest text-text-weaker opacity-70">
-              detail
-            </span>
-          </div>
-          <div class="bp-tool min-w-0 py-1">{props.children}</div>
+        <div class="bp-cut-in bg-background-base px-2 py-0.5 flex items-start gap-2">
+          <span class="shrink-0 w-9 pt-[3px] text-12-mono text-text-weaker">D-{pad(props.index)}</span>
+          <div class="bp-tool min-w-0 flex-1">{props.children}</div>
         </div>
       </div>
     </div>

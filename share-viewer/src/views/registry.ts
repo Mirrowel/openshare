@@ -8,10 +8,9 @@ import { children } from "../fold"
 import type { useShareSource } from "../data-source"
 import type { OshSettings } from "../settings"
 
-// the settings panel lists classic + reader + every registered view
+// the settings panel lists classic + every registered view
 export const VIEW_OPTIONS: { id: string; label: string }[] = [
   { id: "classic", label: "classic" },
-  { id: "reader", label: "reader" },
 ]
 
 export type ViewProps = {
@@ -36,7 +35,7 @@ export type ViewEntry = {
   paged?: boolean
 }
 
-// full-page views (classic and reader live in the standard chrome)
+// full-page views (classic lives in the standard chrome)
 export const VIEWS: ViewEntry[] = []
 
 export function registerView(entry: ViewEntry) {
@@ -51,10 +50,10 @@ export function findView(id: string): ViewEntry | undefined {
 }
 
 
-/** does this view support paged mode? (classic/reader do; registered views
+/** does this view support paged mode? (classic does; registered views
  *  declare it via ViewEntry.paged, default true) */
 export function viewSupportsPaged(id: string): boolean {
-  if (id === "classic" || id === "reader") return true
+  if (id === "classic") return true
   const v = VIEWS.find((x) => x.id === id)
   return v?.paged !== false
 }

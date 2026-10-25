@@ -87,12 +87,13 @@ export function HoverRail(props: {
         aria-label="prompts"
         onMouseEnter={pillEnter}
         onMouseLeave={stripLeave}
+        data-osh-rail
         class="fixed left-2 top-1/2 -translate-y-1/2 z-40"
       >
         {/* the pill: 40% visible at rest, full when near */}
         <button
           type="button"
-          class="relative flex flex-col items-center gap-1 rounded-xl border border-border-weak-base bg-background-base/95 backdrop-blur px-1 py-2.5 cursor-pointer shadow-md"
+          class="relative flex flex-col items-center gap-1 rounded-lg border border-border-weak-base bg-background-base/95 backdrop-blur px-1 py-2 cursor-pointer"
           classList={{ "osh-rail-pill-open": open() }}
           style={{
             opacity: near() ? 1 : 0.4,
@@ -119,13 +120,13 @@ export function HoverRail(props: {
         {/* the popover: anchored to the pill's right edge, animated in */}
         <Show when={open()}>
           <div
-            class="osh-rail-pop absolute left-full bottom-0 z-50 w-80 max-h-[68vh] overflow-y-auto p-2 rounded-xl border border-border-weak-base bg-background-base shadow-2xl"
+            class="osh-rail-pop absolute left-full bottom-0 z-50 w-72 max-h-[68vh] overflow-y-auto p-1.5 rounded-lg border border-border-weak-base bg-background-base shadow-lg"
             style={{ "margin-left": "6px" }}
             role="menu"
             aria-label="prompts"
           >
             <Show when={props.title}>
-              <div class="px-2 pb-1.5 text-11-mono text-text-weaker uppercase tracking-wider">{props.title}</div>
+              <div class="px-2 pb-1 text-11-mono text-text-weaker">{props.title}</div>
             </Show>
             <Show
               when={props.children}
@@ -137,7 +138,7 @@ export function HoverRail(props: {
                         type="button"
                         role="menuitem"
                         classList={{
-                          "group relative text-left text-13-regular pl-5 pr-2 py-1.5 rounded-md border-none cursor-pointer truncate": true,
+                          "group relative text-left text-13-regular pl-5 pr-2 h-7 leading-7 rounded-md border-none cursor-pointer truncate": true,
                           "bg-surface-raised-base text-text-strong": props.active === i,
                           "bg-transparent text-text-base hover:bg-surface-base": props.active !== i,
                         }}
@@ -161,7 +162,7 @@ export function HoverRail(props: {
             >
               {props.children}
             </Show>
-            <div class="pt-1.5 px-2 pb-0.5 flex items-center justify-between text-10-mono text-text-weaker">
+            <div class="pt-1 px-2 pb-0.5 flex items-center justify-between text-10-mono text-text-weaker">
               <Show when={props.active !== undefined} fallback={<span>jump</span>}>
                 <span>
                   {String((props.active ?? 0) + 1).padStart(2, "0")} / {String(props.count).padStart(2, "0")}

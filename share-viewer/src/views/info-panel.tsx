@@ -11,10 +11,12 @@ import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-da
 
 const [open, setOpen] = createSignal(false)
 export const toggleInfoPanel = () => setOpen((v) => !v)
+export const closeInfoPanel = () => setOpen(false)
+export const infoPanelOpen = open
 
 function Row(props: { label: string; value: string | number }) {
   return (
-    <div class="flex items-baseline justify-between gap-4 py-1">
+    <div class="flex items-baseline justify-between gap-4 py-0.5">
       <span class="text-12-regular text-text-weaker shrink-0">{props.label}</span>
       <span class="text-12-mono text-text-base text-right break-all">{props.value}</span>
     </div>
@@ -23,8 +25,8 @@ function Row(props: { label: string; value: string | number }) {
 
 function Group(props: { label: string; children: any }) {
   return (
-    <div class="flex flex-col pt-3 border-t border-border-weak-base first:border-none first:pt-0">
-      <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase pb-1">{props.label}</div>
+    <div class="flex flex-col pt-2 border-t border-border-weak-base first:border-none first:pt-0">
+      <div class="text-12-medium text-text-weaker pb-1">{props.label}</div>
       {props.children}
     </div>
   )
@@ -60,19 +62,12 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; source?: 
   }
   return (
     <div class="relative">
-      <button
-        class="fixed bottom-4 right-4 z-40 size-8 rounded-full border border-border-weak-base bg-background-base text-icon-weaker-base hover:text-icon-strong-base shadow-lg cursor-pointer flex items-center justify-center"
-        title="session info"
-        onClick={toggleInfoPanel}
-      >
-        <Icon name="information" size="small" />
-      </button>
       <Show when={open()}>
-        <div class="fixed bottom-14 right-4 z-50 w-80 max-h-[calc(100vh-6rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl">
+        <div class="fixed top-8 right-3 z-[70] w-72 max-w-[calc(100vw-1.5rem)] max-h-[calc(100vh-3rem)] overflow-y-auto p-3 rounded-lg border border-border-weak-base bg-background-base shadow-lg">
           <div class="flex items-center justify-between pb-2">
             <div class="text-14-medium text-text-strong">Session info</div>
             <button
-              class="text-icon-weaker-base hover:text-icon-strong-base bg-transparent border-none cursor-pointer p-1 rounded hover:bg-surface-base"
+              class="text-icon-base hover:text-icon-strong-base bg-transparent border-none cursor-pointer size-6 flex items-center justify-center rounded-md hover:bg-surface-base"
               onClick={() => setOpen(false)}
             >
               <Icon name="close-small" size="small" />

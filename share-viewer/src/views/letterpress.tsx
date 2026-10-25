@@ -7,7 +7,6 @@
 // Chrome: running head up top, colophon below.
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { SkinSettingsPopover } from "../settings-panel"
 import { pagedFor } from "../settings"
 import type { ViewEntry, ViewProps } from "./registry"
 import { sessionModelLabel, type SessionSection } from "./session-data"
@@ -15,8 +14,6 @@ import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { Title } from "@solidjs/meta"
-
-const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
 // the text face and the display face: old-style serifs first, then broad
 // platform coverage so a Linux viewer still gets a real book
@@ -75,20 +72,6 @@ function Sc(props: { children?: JSX.Element; class?: string }) {
   )
 }
 
-const BRAND_BOX = "flex items-center border border-border-weak-base rounded-sm p-0.5 transition-colors duration-150"
-
-// the deployment mark: the configured logo, else the deployment name in caps
-function BrandMark(props: { branding: ReturnType<ViewProps["source"]["branding"]> }) {
-  return (
-    <Show
-      when={props.branding.logoUrl}
-      fallback={<Sc class="text-12-medium text-text-base px-1">{props.branding.name || "openshare"}</Sc>}
-    >
-      <img src={props.branding.logoUrl} alt="" class="h-5 rounded-xs" />
-    </Show>
-  )
-}
-
 // a rule, a fleuron, a rule
 function Fleuron(props: { class?: string }) {
   return (
@@ -103,80 +86,35 @@ function Fleuron(props: { class?: string }) {
 // ------------------------------------------------------- running head ----
 function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
-  const statusTone = () => {
-    const s = props.status
-    if (s === "live") return "bg-icon-success-base"
-    if (s === "error") return "bg-icon-critical-base"
-    if (s === "waiting" || s === "login required") return "bg-icon-warning-base"
-    if (s === "gone") return "bg-border-strong-base"
-    return "bg-icon-info-base"
-  }
   return (
     <>
       <Title>{`${info()?.title ?? "session"} | ${props.source.branding().name || "openshare"}`}</Title>
-      <header class="h-11 px-5 lg:px-10 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-        <div class="flex items-center gap-3 min-w-0">
+      <div class="h-7 px-5 lg:px-10 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-20">
+        <div class="flex items-center gap-2 min-w-0">
           <Show when={props.isSub && props.onBack}>
             <button
-              class="flex items-center gap-1 text-12-regular text-text-weaker hover:text-text-base bg-transparent border-none cursor-pointer shrink-0 transition-colors duration-150"
+              class="flex items-center gap-1 h-6 px-1.5 rounded-md text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer shrink-0 transition-colors duration-150"
               onClick={() => props.onBack?.()}
             >
               <Icon name="arrow-left" size="small" />
               main
             </button>
           </Show>
-          <Show
-            when={props.source.branding().linkUrl}
-            fallback={<div class={`${BRAND_BOX} shrink-0`}><BrandMark branding={props.source.branding()} /></div>}
-          >
-            {(href) => (
-              <a
-                href={href()}
-                target="_blank"
-                rel="noreferrer"
-                title={props.source.branding().name || ""}
-                class={`${BRAND_BOX} shrink-0 hover:border-border-strong-base`}
-              >
-                <BrandMark branding={props.source.branding()} />
-              </a>
-            )}
-          </Show>
           {/* the verso carries the book */}
           <span class="min-w-0 truncate text-12-regular text-text-weaker italic" style={{ "font-family": SERIF }}>
             {info()?.title ?? "session"}
           </span>
         </div>
-        <div class="flex items-center gap-3 shrink-0">
-          <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
-            <span class={`inline-block size-1.5 rounded-full shrink-0 ${statusTone()}`} />
-            {props.status}
-          </span>
-          <span class="hidden sm:flex items-center gap-1.5 text-12-mono text-text-weaker">
+        <div class="flex items-center gap-3 shrink-0 text-12-mono text-text-weaker">
+          <span class="hidden sm:flex items-center gap-1.5">
             <Mark class="h-3 shrink-0" />
             <span>v{info()?.version ?? "?"}</span>
           </span>
           <Show when={props.model}>
-            <span class="hidden sm:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
+            <span class="hidden sm:inline truncate max-w-48">{props.model}</span>
           </Show>
-          <a
-            href={OPENSHARE_REPO}
-            target="_blank"
-            rel="noreferrer"
-            title="Open(code)Share"
-            class="text-icon-weaker-base transition-colors duration-150 hover:text-icon-strong-base"
-          >
-            <Icon name="github" size="small" />
-          </a>
-          <SkinSettingsPopover
-            settings={props.settings}
-            update={props.updateSettings}
-            branding={props.source.branding()}
-            search={props.search}
-            onSearch={props.onSearch}
-            gearLabel="settings"
-          />
         </div>
-      </header>
+      </div>
     </>
   )
 }
@@ -186,7 +124,7 @@ function Colophon(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
   const b = () => props.source.branding()
   return (
     <footer class="shrink-0 border-t border-border-weak-base bg-background-base">
-      <div class="mx-auto w-full max-w-[64rem] px-5 py-4 lg:px-10">
+      <div class="mx-auto w-full max-w-[64rem] px-5 py-2 lg:px-10">
         <div class="grid grid-cols-[1fr_auto_1fr] items-baseline gap-4">
           <div class="flex min-w-0 items-center gap-2">
             <Show when={b().logoUrl}>

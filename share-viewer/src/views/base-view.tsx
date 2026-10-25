@@ -14,6 +14,7 @@ import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup,
 import { Dynamic } from "solid-js/web"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { HoverRail } from "../hover-rail"
+import { AppHeader } from "../app-header"
 import { viewSupportsPaged } from "./registry"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
@@ -79,7 +80,7 @@ function wrappersOf(skin: Skin): Required<SkinWrappers> {
 // -------------------------------------------------------------- pieces ----
 export function DefaultHeader(props: ViewProps & { model: string; status: string; onBack?: () => void; isSub: boolean }) {
   return (
-    <header class="h-9 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
+    <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-20">
       <div class="flex items-center gap-2 min-w-0">
         <Show when={props.isSub && props.onBack}>
           <button
@@ -100,7 +101,6 @@ export function DefaultHeader(props: ViewProps & { model: string; status: string
         <Show when={props.model}>
           <span class="text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
         </Show>
-        <span class="text-12-regular text-text-weaker">{props.status}</span>
       </div>
     </header>
   )
@@ -108,7 +108,7 @@ export function DefaultHeader(props: ViewProps & { model: string; status: string
 
 export function DefaultFooter(props: ViewProps) {
   return (
-    <div class="px-6 py-6 text-center text-12-mono text-text-weaker select-none">
+    <div class="px-6 py-4 text-center text-12-mono text-text-weaker select-none">
       {(props.source.branding().name ? props.source.branding().name + " · " : "") + "Open(code)Share"}
     </div>
   )
@@ -117,7 +117,7 @@ export function DefaultFooter(props: ViewProps) {
 export function ReasoningBlock(props: { text: string; settings: OshSettings }) {
   return (
     <details class="reasoning-collapse group" open={props.settings.reasoningOpen || undefined}>
-      <summary class="flex items-center gap-2 cursor-pointer list-none select-none py-1">
+      <summary class="flex items-center gap-2 cursor-pointer list-none select-none py-0.5">
         <span class="flex items-center gap-1.5 text-12-medium text-text-weaker group-hover:text-text-base transition-colors duration-150">
           <Icon name="brain" size="small" />
           thinking
@@ -164,10 +164,14 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     window.history.pushState({}, "", `/s/${props.source.shareID}`)
     window.dispatchEvent(new PopStateEvent("popstate"))
   }
+  // follows the session itself (a child has a parentID), so the back button
+  // appears the moment you open a subagent from inside the page, not only on
+  // a fresh load of its URL
   const isSub = () => {
+    if (info()?.parentID) return true
     const parts = location.pathname.split("/").filter(Boolean)
     const i = parts.indexOf("s")
-    return i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2])
+    return i >= 0 && !!parts[i + 2] && /^\d+$/.test(parts[i + 2])
   }
 
   const TurnBody = (p: { section: SessionSection; index: number }) => (
@@ -220,6 +224,15 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
 
   return (
     <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
+      <AppHeader
+        data={props.data}
+        sessionID={props.sessionID}
+        source={props.source}
+        settings={props.settings}
+        updateSettings={props.updateSettings}
+        search={props.search}
+        onSearch={props.onSearch}
+      />
       <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
       {/* the prompt rail v4 (owner round 2026-10-24 night): ALWAYS present
           with >1 prompt, both modes - paged pages, continuous fast-skips by
@@ -277,7 +290,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
             column via auto-placement and the legend inline before the
             first prompt (live-caught). Visible in BOTH modes; lg and up. */}
         <Show when={w.Rail}>
-          <aside class="hidden lg:flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-l border-border-weak-base bg-background-base px-4 py-5">
+          <aside class="hidden lg:flex w-52 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border-weak-base bg-background-base px-3 py-3">
             <Dynamic component={w.Rail!} />
           </aside>
         </Show>

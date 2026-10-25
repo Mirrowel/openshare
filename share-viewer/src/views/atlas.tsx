@@ -20,7 +20,6 @@ import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
 import type { ViewEntry } from "./registry"
 import { setInfoExtra } from "./info-extras"
 import { useSessionSections, type SessionSection } from "./session-data"
-import { SettingsBody } from "../settings-panel"
 import { pagedFor } from "../settings"
 
 type HeaderProps = Parameters<NonNullable<SkinWrappers["Header"]>>[0]
@@ -132,23 +131,6 @@ function BrandChip(props: { logoUrl?: string; linkUrl?: string; title?: string }
   )
 }
 
-function StatusStamp(props: { status: string }) {
-  const live = () => props.status === "live"
-  return (
-    <span class="flex items-center gap-1.5 text-12-mono text-text-weaker whitespace-nowrap">
-      <span
-        class="inline-block size-1.5 rounded-full shrink-0"
-        classList={{
-          "status-dot": live(),
-          "animate-pulse": live(),
-        }}
-        style={live() ? undefined : { "background-color": "var(--border-strong-base)" }}
-      />
-      <span class="uppercase tracking-[0.14em]">{props.status}</span>
-    </span>
-  )
-}
-
 // two row masthead: brand chip, atlas marks, back-to-main, status, version,
 // github, the legend toggle, and the settings dropdown kept at z-[70]
 // inside a relative container. Row two is the sheet strip plus the filter
@@ -156,11 +138,6 @@ function StatusStamp(props: { status: string }) {
 // graticule layer behind the sheet is rendered here and pinned by CSS to
 // the whole view; the masthead also publishes the rail feed.
 function Masthead(props: HeaderProps) {
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
-  // dropdown scroll memory: the sheet outlives the dropdown, remember
-  // where the reader was (wired locally; the shared helpers are typed as
-  // ref callbacks and cannot serve onScroll)
-  let settingsScrollTop = 0
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
   const b = () => props.source.branding()
   const sections = useSessionSections(props.data, props.sessionID)
@@ -184,22 +161,21 @@ function Masthead(props: HeaderProps) {
     <>
       <div class="atlas-graticule" aria-hidden="true" />
       <Title>{`${info()?.title ?? "session"} | ${b().name || "openshare"}`}</Title>
-      <header class="relative z-30 shrink-0 border-b border-border-weak-base bg-background-base">
+      <header class="relative z-20 shrink-0 border-b border-border-weak-base bg-background-base">
         <div class="mx-auto w-full max-w-[76rem] px-5">
-          <div class="flex items-center gap-3 py-2.5">
+          <div class="flex items-center gap-3 h-8">
             <div class="flex min-w-0 items-center gap-3">
               <Show when={props.isSub && props.onBack}>
                 <button
-                  class="flex items-center gap-1 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base shrink-0"
+                  class="flex items-center gap-1 h-6 px-1.5 rounded-md bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base shrink-0"
                   onClick={() => props.onBack?.()}
                 >
                   <Icon name="arrow-left" size="small" />
                   main
                 </button>
               </Show>
-              <BrandChip logoUrl={b().logoUrl} linkUrl={b().linkUrl} title={b().name} />
               <div class="flex min-w-0 items-baseline gap-2">
-                <span class="text-12-mono uppercase tracking-[0.14em] text-text-strong">atlas</span>
+                <span class="text-12-mono text-text-strong">atlas</span>
                 <span class="hidden truncate text-12-mono text-text-weaker md:inline">expedition log</span>
               </div>
               <span class="hidden h-3.5 w-px bg-border-weak-base lg:block" />
@@ -207,77 +183,28 @@ function Masthead(props: HeaderProps) {
                 {info()?.title ?? "untitled session"}
               </h1>
             </div>
-            <div class="ml-auto flex shrink-0 items-center gap-2">
-              <span class="hidden sm:flex">
-                <StatusStamp status={props.status} />
-              </span>
-              <span class="hidden items-center gap-1.5 rounded-md border border-border-weak-base bg-background-stronger px-1.5 py-0.5 text-12-mono text-text-weaker sm:flex">
+            <div class="ml-auto flex shrink-0 items-center gap-3 text-12-mono text-text-weaker">
+              <span class="hidden items-center gap-1.5 sm:flex">
                 <Mark class="size-3" />
                 <span>v{info()?.version ?? "0"}</span>
               </span>
               <Show when={props.model}>
-                <span class="hidden truncate text-12-mono text-text-weaker md:inline max-w-48">{props.model}</span>
+                <span class="hidden truncate md:inline max-w-48">{props.model}</span>
               </Show>
-              <a
-                href="https://github.com/Mirrowel/OpenShare"
-                target="_blank"
-                rel="noreferrer"
-                title="Open(code)Share"
-                class="flex items-center text-icon-weaker-base transition-colors duration-150 hover:text-icon-strong-base"
-              >
-                <Icon name="github" size="small" />
-              </a>
-{/* the legend lives in the global Session info popup now (setInfoExtra) */}
-              <div class="relative flex items-center rounded-md border border-border-weak-base bg-background-base p-0.5">
-                <button
-                  class="flex items-center gap-1 h-6 px-1.5 text-12-mono text-text-weaker hover:text-text-base cursor-pointer bg-transparent border-none"
-                  onClick={() => setSettingsOpen(!settingsOpen())}
-                >
-                  <span class="hidden sm:inline">settings</span>
-                  <span
-                    class="text-icon-weaker-base transition-transform duration-200 ease-out"
-                    classList={{ "rotate-180": settingsOpen() }}
-                  >
-                    <Icon name="chevron-down" size="small" />
-                  </span>
-                </button>
-                <Show when={settingsOpen()}>
-                  <div
-                    class="absolute top-8 right-0 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-                    ref={(el) => {
-                      const top = settingsScrollTop
-                      queueMicrotask(() => {
-                        if (top) el.scrollTop = top
-                      })
-                    }}
-                    onScroll={(e) => {
-                      settingsScrollTop = e.currentTarget.scrollTop
-                    }}
-                  >
-                    <SettingsBody
-                      settings={props.settings}
-                      update={props.updateSettings}
-                      branding={b()}
-                      search={props.search}
-                      onSearch={props.onSearch}
-                    />
-                  </div>
-                </Show>
-              </div>
             </div>
           </div>
-          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border-weak-base py-2 text-12-mono text-text-weaker">
-            <span class="whitespace-nowrap">
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border-weak-base py-1 text-12-mono text-text-weaker">
+            <span class="sm:whitespace-nowrap">
               sheet 01 · {counts().stations} stations · {counts().readings} readings ·{" "}
               {noteLines()} note lines · charted{" "}
               {DateTime.fromMillis(info()?.time?.created ?? Date.now()).toFormat("dd LLL, HH:mm")}
             </span>
             <div class="relative ml-auto w-full sm:w-60">
-              <span class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-icon-weaker-base">
+              <span class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-icon-base">
                 <Icon name="magnifying-glass" size="small" />
               </span>
               <input
-                class="w-full box-border rounded-md border border-border-weak-base bg-background-stronger py-1 pl-7 pr-7 text-12-regular text-text-base outline-none transition-colors duration-150 placeholder:text-text-weaker focus:border-icon-strong-base"
+                class="w-full box-border h-6 rounded-md border border-border-weak-base bg-background-stronger pl-7 pr-7 text-12-regular text-text-base outline-none transition-colors duration-150 placeholder:text-text-weaker focus:border-icon-strong-base"
                 placeholder="filter stations"
                 aria-label="filter stations by prompt or field note"
                 value={props.search}
@@ -285,7 +212,7 @@ function Masthead(props: HeaderProps) {
               />
               <Show when={props.search}>
                 <button
-                  class="absolute right-1 top-1/2 -translate-y-1/2 cursor-pointer rounded bg-transparent border-none p-1 text-icon-weaker-base transition-colors duration-150 hover:text-icon-strong-base"
+                  class="absolute right-1 top-1/2 -translate-y-1/2 cursor-pointer rounded bg-transparent border-none p-1 text-icon-base transition-colors duration-150 hover:text-icon-strong-base"
                   title="clear the filter"
                   onClick={() => props.onSearch("")}
                 >
@@ -309,7 +236,7 @@ function SheetFooter(props: FooterProps) {
   return (
     <footer class="relative z-10 shrink-0 border-t border-border-weak-base bg-background-base">
       <div class="mx-auto w-full max-w-[90rem] px-5">
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 py-1.5">
           <span class="flex min-w-0 items-center gap-2">
             <BrandChip logoUrl={b().logoUrl} linkUrl={b().linkUrl} title={b().name} />
             <Show
@@ -358,7 +285,7 @@ function Legend(props: { counts: Counts; layout?: "stack" | "row" }) {
       when={props.layout === "row"}
       fallback={
         <div class="flex flex-col gap-2.5">
-          <div class="text-12-mono uppercase tracking-[0.14em] text-text-weaker">legend</div>
+          <div class="text-12-mono text-text-weaker">legend</div>
           <For each={items()}>
             {(it) => (
               <div class="flex items-start gap-2">
@@ -377,7 +304,7 @@ function Legend(props: { counts: Counts; layout?: "stack" | "row" }) {
       }
     >
       <div class="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-12-mono text-text-weaker">
-        <span class="uppercase tracking-[0.14em]">legend</span>
+        <span>legend</span>
         <For each={items()}>
           {(it) => (
             <span class="flex items-center gap-1.5">
@@ -412,7 +339,7 @@ function Profile(props: { sections: SessionSection[]; query: string }) {
   return (
     <div>
       <div class="flex items-baseline justify-between gap-2">
-        <span class="text-12-mono uppercase tracking-[0.14em] text-text-weaker">profile</span>
+        <span class="text-12-mono text-text-weaker">profile</span>
         <span class="text-12-mono text-text-weaker whitespace-nowrap">readings / station</span>
       </div>
       <div class="mt-2 flex h-14 items-end gap-px">
@@ -470,11 +397,11 @@ function AtlasInfoExtra() {
   return (
     <>
       <div class="flex flex-col pt-3 border-t border-border-weak-base">
-        <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase pb-1">legend</div>
+        <div class="text-12-medium text-text-weaker pb-1">legend</div>
         <Legend counts={feed().counts} />
       </div>
       <div class="flex flex-col pt-3 border-t border-border-weak-base">
-        <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase pb-1">coordinates</div>
+        <div class="text-12-medium text-text-weaker pb-1">coordinates</div>
         {row("extent", feed().counts.stations + " stations / " + feed().counts.readings + " readings")}
         <Show when={worktree()}>{(dir) => row("worktree", dir())}</Show>
         {row("charted", created())}
@@ -561,20 +488,9 @@ function StationHeading(props: PromptProps) {
 // lines inside this frame
 function Reading(props: ToolProps) {
   return (
-    <div class="my-2.5 overflow-hidden rounded-md border border-border-weak-base bg-background-base">
-      <div class="flex items-baseline gap-2 border-b border-border-weak-base bg-background-stronger px-2.5 py-1">
-        <span class="shrink-0 text-12-mono text-text-weaker">R-{pad2(props.index + 1)}</span>
-        <span class="min-w-0 truncate text-12-mono text-text-base">{props.entry.tool}</span>
-        <Show when={props.entry.output}>
-          <span class="shrink-0 text-12-mono text-text-weaker opacity-70">
-            {countLines(props.entry.output)} ln
-          </span>
-        </Show>
-        <span class="ml-auto shrink-0 text-12-mono uppercase tracking-[0.14em] text-text-weaker">
-          reading
-        </span>
-      </div>
-      <div class="min-w-0 px-2.5 py-1">{props.children}</div>
+    <div class="my-1.5 flex items-start gap-2 overflow-hidden rounded-md border border-border-weak-base bg-background-base px-2 py-0.5">
+      <span class="shrink-0 w-9 pt-[3px] text-12-mono text-text-weaker">R-{pad2(props.index + 1)}</span>
+      <div class="min-w-0 flex-1">{props.children}</div>
     </div>
   )
 }
@@ -583,11 +499,11 @@ function Reading(props: ToolProps) {
 // (skins.css turns the shared block into the dashed quiet trace)
 function Inference(props: ReasoningProps) {
   return (
-    <div class="mt-2.5">
+    <div class="mt-2">
       <div class="flex items-baseline gap-2">
-        <span class="shrink-0 text-12-mono uppercase tracking-[0.14em] text-text-weaker">inference</span>
+        <span class="shrink-0 text-12-mono text-text-weaker">inference</span>
         <Show when={props.entry.text.trim()}>
-          <span class="shrink-0 text-12-mono text-text-weaker opacity-70">
+          <span class="shrink-0 text-12-mono text-text-weaker">
             {countWords(props.entry.text)} words
           </span>
         </Show>
@@ -610,10 +526,10 @@ function FieldNote(props: ResponseProps) {
         </div>
       }
     >
-      <div class="mt-4">
-        <div class="mb-1 flex items-baseline gap-2 text-12-mono uppercase tracking-[0.14em] text-text-weaker">
+      <div class="mt-3">
+        <div class="mb-1 flex items-baseline gap-2 text-12-mono text-text-weaker">
           <span>field note</span>
-          <span class="tracking-normal normal-case opacity-70">
+          <span class="opacity-70">
             {countWords(props.text)} words · {measure(props.text)}
           </span>
         </div>
@@ -631,7 +547,7 @@ export const atlasSkin: Skin = {
   // like the classic info view, in BOTH modes; the old CSS-grid column put
   // station 1 in the 13rem rail via auto-placement and the legend inline
   // before the first prompt - live-caught)
-  columnClass: "atlas-sheet w-full max-w-[90rem] mx-auto px-5 py-5",
+  columnClass: "atlas-sheet w-full max-w-[90rem] mx-auto px-5 py-4",
   wrappers: {
     Header: Masthead,
     Footer: SheetFooter,

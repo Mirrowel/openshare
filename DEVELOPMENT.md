@@ -26,7 +26,6 @@ share-server/          portable Bun backend (server.ts + Dockerfile)
 share-viewer/          vendored upstream share page (vite + solid)
   src/turn-nav.tsx     prompt navigation and focus actions
   src/timeline-v2.tsx  virtualized conversation, prompt jumps and live-follow
-  src/reader.tsx       Reader presentation over the same timeline
   src/views/           existing artistic skins and their shared base
 tools/                 agent-side export/decrypt companions
 ```
@@ -69,7 +68,7 @@ Suite rules of the road (all learned from live failures):
 - **Import vendored code by package specifier only** (`@opencode/session-ui/...`) — a relative path into `vendor/` creates a second module id (bun `file:` symlinks), which means two `createContext` instances and "context must be used within a provider" at runtime.
 - The viewer has its own typecheck gate (`npm run typecheck` in `share-viewer`, via `bunx tsc`) — run it after every viewer change; it caught a missing import the browser only surfaced as an undefined-symbol crash.
 
-Visual verification: use `npm run dev` in `share-viewer` and open `/?demo=1` for a local fixture. Check Classic and Reader at desktop and phone widths in light and dark, capture console errors, and exercise prompt jumps, scroll-driven highlighting, focus/return, search, inline file tools and subagent navigation. For scale, inject a large snapshot and jump to a prompt outside the rendered window. Both default presentations use `src/timeline-v2.tsx`, with measured rows, per-key measurement caches and scroll snapshots. Existing artistic skins retain their shared section renderer; the separate SDK work can build on these fixes.
+Visual verification: use `npm run dev` in `share-viewer` and open `/?demo=1` for a local fixture. Check Classic at desktop and phone widths in light and dark, capture console errors, and exercise prompt jumps, scroll-driven highlighting, focus/return, search, inline file tools and subagent navigation. For scale, inject a large snapshot and jump to a prompt outside the rendered window. Both default presentations use `src/timeline-v2.tsx`, with measured rows, per-key measurement caches and scroll snapshots. Existing artistic skins retain their shared section renderer; the separate SDK work can build on these fixes.
 
 Large inline diffs use Pierre line virtualization above 500 lines. The vendor fork in `pierre/virtualizer.ts` chooses `[data-transcript-scroll]` before generic overflow containers and observes `[data-transcript-content]` for height changes. `components/file.tsx` shares that scroll-root lookup for position preservation. Both changes are reapplied by `scripts/vendor-v2.mjs`. Verify large split and unified diffs at the start, middle and end, plus collapse/reopen, visible-text copy, and small diffs that should stay non-virtualized.
 

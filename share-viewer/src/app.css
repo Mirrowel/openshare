@@ -47,6 +47,19 @@
   margin-bottom: -12px;
 }
 
+/* Code surface: a muted tint of the theme's own text colour over whatever
+   the block sits on, so code reads as its own surface instead of matching
+   the page. Built from --text-base (every theme overrides it), so light,
+   dark and the premade themes all get a tint in their own hue. */
+:root {
+  --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
+}
+/* the kit sets the highlighter block's background inline */
+[data-component="markdown-code"] pre.shiki {
+  background-color: var(--osh-code-bg) !important;
+  border-color: var(--border-weaker-base);
+}
+
 /* === settings-driven bits === */
 /* text scaling via the design system's font-size tokens: the text
    utilities read var(--font-size-*), so overriding the tokens scales
@@ -88,10 +101,10 @@ html[data-osh-read-text="large"] .osh-content {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 0.5rem;
+  gap: 0.375rem;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 0.375rem;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -102,17 +115,15 @@ html[data-osh-read-text="large"] .osh-content {
 .osh-turn-button:hover:not(:disabled) { background: var(--surface-base); }
 .osh-turn-button:disabled { opacity: 0.4; cursor: default; }
 
-.osh-reader {
-  max-width: 46rem;
-  margin-inline: auto;
-}
-:root body .osh-reader [data-slot="user-message-body"] {
+/* prompt style "flat" (setting): prompts as plain medium-weight text, no
+   bubble, instead of the right-aligned grey bubble */
+:root[data-osh-prompts="flat"] body .osh-content [data-slot="user-message-body"] {
   width: 100%;
   max-width: 100%;
   margin-inline-start: 0;
   align-items: flex-start;
 }
-:root body .osh-reader [data-component="user-message"] [data-slot="user-message-text"] {
+:root[data-osh-prompts="flat"] body .osh-content [data-component="user-message"] [data-slot="user-message-text"] {
   background: transparent;
   padding-inline: 0;
   font-weight: 500;
@@ -133,7 +144,7 @@ html[data-osh-read-text="large"] .osh-content {
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 20px;
+  min-height: 18px;
   padding: 0 10px;
   border: none;
   background: transparent;
@@ -155,17 +166,16 @@ html[data-osh-read-text="large"] .osh-content {
 .osh-turn-tick[aria-current="step"] .osh-turn-tick-line { height: 3px; }
 .osh-turns-toggle {
   position: absolute;
-  top: 12px;
-  right: -14px;
+  top: 6px;
+  right: -12px;
   z-index: 50;
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  min-height: 28px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 0;
   border: 1px solid var(--border-weak-base);
   background: var(--background-base);
-  box-shadow: 0 1px 3px var(--border-weak-base);
 }
 @media (prefers-reduced-motion: reduce) {
   .osh-turn-tick-line { transition: none; }
@@ -197,7 +207,7 @@ html[data-osh-read-text="large"] .osh-content {
 .openshare-input {
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: 1px solid var(--v2-border-border-weak-base, #232732);
   border-radius: 6px;
   background: var(--v2-background-background-stronger, #17181d);
@@ -210,7 +220,7 @@ html[data-osh-read-text="large"] .osh-content {
 }
 .openshare-button {
   width: 100%;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: none;
   border-radius: 6px;
   background: var(--openshare-accent, #3b82f6);
@@ -410,9 +420,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 /* --- our tool renderers ---------------------------------------------- */
 .osh-pre {
   margin: 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--surface-base);
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--osh-code-bg);
   border: 1px solid var(--border-weaker-base);
   font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: pre-wrap;
@@ -473,9 +483,8 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
-  border-bottom: 1px solid var(--border-weaker-base);
   color: var(--text-weaker);
 }
 [data-slot="osh-file-title"] .osh-file-icon {
@@ -495,6 +504,10 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding-right: 6px;
+  /* header band: the division between "what this is" and the content below */
+  background: color-mix(in oklab, var(--text-base) 4%, transparent);
+  border-bottom: 1px solid var(--border-weak-base);
 }
 .osh-pre-wrap {
   position: relative;
@@ -518,7 +531,7 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-weaker-base);
-  border-radius: 5px;
+  border-radius: 4px;
   background: var(--surface-raised-base);
   color: var(--text-weaker);
   font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -542,6 +555,19 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
      narrow unified diff) */
   width: fit-content;
   max-width: min(100%, 75vw);
+  /* the card is a surface of its own (the shared code tint), not page */
+  background: var(--osh-code-bg);
+  border: 1px solid var(--border-weaker-base);
+  border-radius: 6px;
+  overflow: hidden;
+  /* the viewer paints its own opaque background (--diffs-bg falls back to
+     background-stronger); this is the kit's hook to let the card show */
+  --opencode-diffs-bg: transparent;
+}
+/* ...and its host element also gets a direct background from the kit's
+   theme sheet; page CSS outranks :host rules, so clear it here */
+[data-component="osh-file-body"] diffs-container {
+  background-color: transparent;
 }
 [data-component="osh-file-body"] > [data-component="file"],
 [data-component="osh-file-body"] > [data-component="edit-content"],
@@ -549,26 +575,6 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   width: auto;
   max-width: 100%;
 }
-/* split escape: the edit card may grow past the 75vw text cap (its width
-   is set inline from content measurement) */
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
-  max-width: calc(100vw - 48px);
-}
-
-/* the file-title extension badge (TS/MD/JSON...) */
-[data-slot="osh-file-title"] .osh-file-ext {
-  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-weaker);
-  background: var(--surface-base);
-  border: 1px solid var(--border-weaker-base);
-  border-radius: 4px;
-  padding: 2px 4px;
-}
-
-
 /* --- tool output overflow (setting: scroll | wrap) --------------------
    Every output surface is hard-capped at min(100%, 75vw) - one long line
    must never stretch a card to page width; the setting only picks how
@@ -601,20 +607,30 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   overflow-x: hidden;
 }
 
-/* --- split diff (VSCode-style) ------------------------------------------
-   The split card's width is set INLINE from measurement (viewport - card
-   left - margin) so it can never overflow the page (the old min(200%,
-   100vw-48) rule overflowed because the card is left-anchored inside a
-   CENTERED column). Panes scroll horizontally, hidden scrollbar, and
-   contain only their X axis so vertical wheel chains to the page. */
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
+/* --- diff cards ---------------------------------------------------------
+   Every diff card is the SAME width in unified, auto and split (the prose
+   measure, capped by the column) - the mode only changes the inside, never
+   the card. Long lines scroll inside it with a hidden scrollbar; only the
+   X axis is contained so vertical wheel still chains to the page. The
+   3-attribute selector beats the generic hug / 75vw rules above. */
+[data-component="osh-edit-group"] [data-component="osh-edit-tool"] [data-component="osh-file-body"] {
+  width: min(100%, 52rem);
+  max-width: none;
+}
+[data-component="osh-edit-tool"] [data-component="edit-content"] {
+  width: 100%;
+  /* flush with the card like read/write: no kit indent, no rounded corner
+     (the kit gives edit-content margin-left 12px + radius 6px, and the
+     row-key rule above indents it again) */
+  margin-left: 0;
+  border-radius: 0;
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
 }
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"]::-webkit-scrollbar {
+[data-component="osh-edit-tool"] [data-component="edit-content"]::-webkit-scrollbar {
   display: none;
 }
 
@@ -622,13 +638,13 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 [data-slot="osh-diff-mode"] {
   display: inline-flex;
   border: 1px solid var(--border-weaker-base);
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
 }
 .osh-dm-btn {
   font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
   font-weight: 700;
-  padding: 3px 7px;
+  padding: 2px 6px;
   border: none;
   background: transparent;
   color: var(--text-weaker);
@@ -650,9 +666,9 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 [data-component="osh-agent-switch"] {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   width: 100%;
-  padding: 10px 0 6px;
+  padding: 6px 0 4px;
 }
 [data-component="osh-agent-switch"]::before,
 [data-component="osh-agent-switch"]::after {
@@ -667,9 +683,7 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   align-items: center;
   gap: 7px;
   font: 11.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 500;
   color: var(--text-weaker);
 }
 [data-component="osh-agent-switch"] .osh-as-label .osh-as-arrow {
@@ -692,41 +706,6 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 [data-timeline-row] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"],
 [data-row-key] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"] {
   position: static;
-}
-
-/* subagent rows: hover says what clicking does (owner directive - the
-   click already opens the child session; the hover just announces it) */
-[data-timeline-row] [data-component="task-tool-surface"],
-[data-row-key] [data-component="task-tool-surface"] {
-  position: relative;
-}
-[data-timeline-row] [data-component="task-tool-surface"]::after,
-[data-row-key] [data-component="task-tool-surface"]::after {
-  content: "open subagent \2197";
-  /* BELOW the card (live-caught: the previous right-side chip sat ON the
-     subtitle text and obscured it) */
-  position: absolute;
-  left: 50%;
-  bottom: -22px;
-  transform: translateX(-50%) translateY(-3px);
-  font: 10.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  letter-spacing: 0.04em;
-  color: var(--text-weaker);
-  background: var(--surface-raised-base);
-  border: 1px solid var(--border-weaker-base);
-  padding: 3px 8px;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 130ms ease, transform 130ms ease;
-  white-space: nowrap;
-  z-index: 5;
-}
-[data-timeline-row] [data-component="task-tool-surface"]:hover::after,
-[data-row-key] [data-component="task-tool-surface"]:hover::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
 }
 
 /* glob/grep/list rows inside a context group render through the kit's
@@ -802,4 +781,33 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   width: fit-content;
   min-width: min(60%, 340px);
   max-width: min(100%, 75vw);
+}
+
+/* skins on a phone: the directory prefix of a file tool row is the first
+   thing to go, so the file name and its counts stay on one line instead of
+   wrapping and clipping at the row edge */
+@media (max-width: 640px) {
+  [data-view] [data-slot="osh-tool-dir"] {
+    display: none;
+  }
+}
+
+/* prompt rail on a phone: the left-edge pill would sit on top of the text, so
+   it moves to the bottom-right corner and its menu opens upward */
+@media (max-width: 640px) {
+  [data-osh-rail] {
+    left: auto !important;
+    right: 8px !important;
+    top: auto !important;
+    bottom: 34px !important;
+    transform: none !important;
+  }
+  [data-osh-rail] .osh-rail-pop {
+    left: auto !important;
+    right: 0 !important;
+    bottom: calc(100% + 6px) !important;
+    margin-left: 0 !important;
+    width: min(18rem, calc(100vw - 16px)) !important;
+    max-height: 60vh !important;
+  }
 }

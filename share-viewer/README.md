@@ -17,7 +17,7 @@ Everything renders one shape: the share `Data[]` items — the same items the pl
 
 ## What the page does
 
-- **Classic and Reader**: two presentations of the same scrollable, virtualized conversation. Reader uses a narrower editorial column and unboxed prompts; both share file rendering, live updates, navigation and disclosure state. The existing artistic skins remain available through the view selector.
+- **Classic**: the scrollable, virtualized conversation, with file rendering, live updates, navigation and disclosure state. Prompts can be shown as a bubble or as flat text (Behavior > Prompts), and the column can be centred. The artistic skins remain available through the view selector and share one app header.
 - **Prompt navigation**: selecting a prompt jumps to its turn and briefly highlights it. The navigator tracks the current turn as you scroll. On mobile, a compact turn picker replaces the sidebar. Syntax highlighting, KaTeX, markdown and diff workers are bundled, with no CDN.
 - **Focus on turn**: use a prompt entry's actions menu or right-click it to show only that prompt and its responses. Previous/next controls move between turns. Back to conversation, or Escape, restores the previous reading position.
 - **Collapsible Turns**: the desktop sidebar folds into a centered tick rail with prompt and response previews. Phones keep the turn picker. File changes appear in their inline tool cards, not a session-wide review panel.
@@ -48,8 +48,7 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 | File | Role |
 |---|---|
 | `src/entry.tsx` | pre-paint settings read (no theme flash), mount |
-| `src/app.tsx` | shared Classic/Reader shell, focused turns, skin routing, branding |
-| `src/reader.tsx` | Reader presentation over the shared timeline |
+| `src/app.tsx` | Classic shell, focused turns, skin routing, branding |
 | `src/turn-nav.tsx` | desktop prompt rail, mobile picker, turn actions |
 | `src/timeline-v2.tsx` | virtualized rows, prompt jumps, active turn tracking, live-follow |
 | `src/data-source.ts` | live vs local sources, WS attach + poll fallback, auth flow |

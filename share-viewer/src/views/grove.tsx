@@ -8,7 +8,6 @@ import { DateTime } from "luxon"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 import { BaseSessionView, type Skin, type SkinWrappers } from "./base-view"
-import { saveSettingsScroll, restoreSettingsScroll, SettingsBody } from "../settings-panel"
 import type { ViewEntry } from "./registry"
 
 const pad = (n: number) => String(n).padStart(2, "0")
@@ -43,80 +42,42 @@ function LeafGlyph(props: { class?: string }) {
 // the canopy: the grove name in a ring, the session title, and the growing
 // facts (version, model, status) with settings dropping out of a pill.
 function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const [menuOpen, setMenuOpen] = createSignal(false)
   const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
-  const live = () => props.status === "live"
   return (
-    <>
-      <header class="h-10 px-4 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-        <div class="flex items-center gap-2 min-w-0">
-          <Show when={props.isSub && props.onBack}>
-            <button
-              class="flex items-center gap-1 shrink-0 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base transition-colors duration-150"
-              onClick={() => props.onBack?.()}
-            >
-              <Icon name="arrow-left" size="small" />
-              main
-            </button>
-          </Show>
-          <RingGlyph class="w-4 h-4 shrink-0 text-icon-weaker-base" />
-          <span class="text-14-medium text-text-strong truncate">{info()?.title ?? "session"}</span>
-        </div>
-
-        <div class="flex items-center gap-1.5 shrink-0">
-          <span class="flex items-center gap-1.5 h-7 px-2 rounded-full border border-border-weak-base text-12-mono text-text-weaker">
-            <Mark class="h-3 shrink-0" />
-            <span class="text-text-base">v{info()?.version ?? "?"}</span>
-          </span>
-          <Show when={props.model}>
-            <span class="hidden lg:inline text-12-mono text-text-weaker truncate max-w-48">{props.model}</span>
-          </Show>
-          <span class="flex items-center gap-1.5 h-7 px-2 rounded-full border border-border-weak-base text-12-regular text-text-weaker">
-            <span
-              classList={{
-                "inline-block size-1.5 shrink-0 rounded-full": true,
-                "status-dot animate-pulse": live(),
-                "bg-icon-weak-base": !live(),
-              }}
-            />
-            {props.status}
-          </span>
+    <div class="h-7 px-4 flex items-center justify-between gap-3 self-stretch bg-background-base border-b border-border-weak-base relative z-20">
+      <div class="flex items-center gap-2 min-w-0">
+        <Show when={props.isSub && props.onBack}>
           <button
-            class="flex items-center gap-1 h-7 px-2.5 rounded-full border border-border-weak-base bg-background-stronger text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150"
-            onClick={() => setMenuOpen(!menuOpen())}
+            class="flex items-center gap-1 h-6 px-1.5 rounded-md shrink-0 bg-transparent border-none cursor-pointer text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base transition-colors duration-150"
+            onClick={() => props.onBack?.()}
           >
-            <span class="hidden sm:block">settings</span>
-            <Icon name="chevron-down" size="small" classList={{ "rotate-180": menuOpen() }} />
+            <Icon name="arrow-left" size="small" />
+            main
           </button>
-        </div>
-      </header>
-
-      <Show when={menuOpen()}>
-        <div
-          class="fixed top-10 right-4 z-[70] w-72 max-h-[calc(100vh-4rem)] overflow-y-auto p-4 rounded-xl border border-border-weak-base bg-background-base shadow-xl"
-          onScroll={(e) => saveSettingsScroll(e.currentTarget)}
-          ref={restoreSettingsScroll}
-        >
-          <SettingsBody
-            settings={props.settings}
-            update={props.updateSettings}
-            branding={props.source.branding()}
-            search={props.search}
-            onSearch={props.onSearch}
-          />
-        </div>
-      </Show>
-    </>
+        </Show>
+        <RingGlyph class="w-4 h-4 shrink-0 text-icon-base" />
+        <span class="text-14-medium text-text-strong truncate">{info()?.title ?? "session"}</span>
+      </div>
+      <div class="flex items-center gap-3 shrink-0 text-12-mono text-text-weaker">
+        <span class="flex items-center gap-1.5">
+          <Mark class="h-3 shrink-0" />
+          v{info()?.version ?? "?"}
+        </span>
+        <Show when={props.model}>
+          <span class="hidden lg:inline truncate max-w-48">{props.model}</span>
+        </Show>
+      </div>
+    </div>
   )
 }
 
 function GroveFooter(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
   const b = () => props.source.branding()
   return (
-    <footer class="px-6 py-10 flex flex-col items-center gap-3 select-none">
+    <footer class="px-6 py-6 flex flex-col items-center gap-2 select-none">
       <div class="flex items-center gap-3 w-full">
         <div class="h-px flex-1 bg-border-weaker-base" />
-        <RingGlyph class="w-4 h-4 text-icon-weaker-base opacity-70" />
+        <RingGlyph class="w-4 h-4 text-icon-base opacity-70" />
         <div class="h-px flex-1 bg-border-weaker-base" />
       </div>
       <Show
@@ -154,10 +115,10 @@ export const groveSkin: Skin = {
       <div class="relative py-8 first:py-0 grove-turn border-l border-border-weaker-base pl-7 xl:border-none xl:pl-0">
         <Show when={p.index === 0}>
           <div class="relative mb-7 grove-right">
-            <span class="absolute right-0 top-0 hidden sm:block text-icon-weaker-base opacity-20" aria-hidden="true">
+            <span class="absolute right-0 top-0 hidden sm:block text-icon-base opacity-20" aria-hidden="true">
               <RingGlyph class="w-14 h-14" />
             </span>
-            <div class="text-12-mono uppercase tracking-widest text-text-weaker">
+            <div class="text-12-mono text-text-weaker">
               grove
               <Show when={p.section.at}>
                 {" · "}
@@ -173,10 +134,10 @@ export const groveSkin: Skin = {
     // a ring threaded on the trunk; the season label sits with the prompt
     PromptWrap: (p) => (
       <div class="relative mb-5 grove-right">
-        <span class="absolute -left-10 -top-1 text-icon-weaker-base grove-ring" aria-hidden="true">
+        <span class="absolute -left-10 -top-1 text-icon-base grove-ring" aria-hidden="true">
           <RingGlyph class="w-6 h-6" />
         </span>
-        <div class="text-12-mono uppercase tracking-widest text-text-weaker">
+        <div class="text-12-mono text-text-weaker">
           ring {pad(p.section.index + 1)}
           <Show when={p.section.at}>
             <span class="normal-case tracking-normal">
@@ -194,7 +155,7 @@ export const groveSkin: Skin = {
     ToolWrap: (p) => (
       <div class="group/root grove-root relative flex items-start my-0.5 xl:pr-3 xl:justify-end">
         <div class="min-w-0 flex-1 xl:flex-initial xl:max-w-full">{p.children}</div>
-        <span class="mt-1.5 shrink-0 text-icon-weaker-base opacity-70 transition-opacity duration-150 group-hover/root:opacity-100">
+        <span class="mt-1.5 shrink-0 text-icon-base opacity-70 transition-opacity duration-150 group-hover/root:opacity-100">
           <LeafGlyph class="w-3 h-3" />
         </span>
         <svg
