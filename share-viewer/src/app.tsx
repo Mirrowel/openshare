@@ -685,6 +685,7 @@ function SessionView(props: {
                                 count={userTurns().length}
                                 active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
                                 variant={props.settings.promptNav}
+                                pillStyle={props.settings.pillVariant}
                                 onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
                                 width={props.settings.turnNavWidth}
                                 onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}
@@ -822,6 +823,7 @@ function SessionView(props: {
                             there, so the mobile branch carries its own */}
                         <Show when={userTurns().length > 1}>
                           <PromptNav
+                            only="narrow"
                             count={userTurns().length}
                             active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
                             variant={props.settings.promptNav}
