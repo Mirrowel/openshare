@@ -251,6 +251,7 @@ Each share serves a self-contained page at `<worker>/s/<id>` (and `/s/<id>/<sub>
 
 - **Live updates** — the page attaches over WebSocket and merges frames client-side (keyed, idempotent; message tombstones remove undone work the same way opencode does). If the socket drops, it falls back to 5-second polling and re-attaches automatically — a refresh is never required. The WS opens with a `since` rev handshake, so a fresh page load transfers the item set exactly once.
 - **Big sessions**: the viewer uses a virtualized, scrollable conversation built on the vendored opencode v2 component kit. A prompt navigator jumps between turns and highlights your reading position. Focus on turn temporarily isolates one prompt and its responses; returning restores your scroll position.
+- **Views**: Classic and Reader share the conversation renderer and navigation. Optional artistic skins remain available in settings.
 - **Status badges** — `live`, `completed`, `error`, `interrupted` (plugin vanished without goodbye — finalized server-side after the grace window), `gone` (deleted or TTL-expired; the final frame says so).
 - **Multi-session shares** — a share that carries subagent sessions lists them; each opens its own sub-page with the parent linked back. Folded undone turns stay folded (the revert pointer is honored), diffs render unified or split.
 - **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer renders a login form, exchanges it for a 7-day cookie, and locks out after repeated failures (429). The gate never grants write access.

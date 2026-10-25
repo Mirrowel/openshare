@@ -3,7 +3,18 @@
 import { createSignal } from "solid-js"
 
 export type OshSettings = {
+  view: string
   theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
+  continuous: boolean
+  /** legacy storage (continuous-by-view) - read for migration only,
+   *  stripped on the next write */
+  continuousByView?: Record<string, boolean>
+  /** per-view PAGED choice, keyed by view id ("classic", "terminal",
+   *  ...). Absent key = continuous (default). */
+  pagedByView?: Record<string, boolean>
+  /** the prompt rail in CONTINUOUS mode (paged always shows it - it is
+   *  the only mouse pager). false hides the fast-skip pill. */
+  showRail?: boolean
   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
@@ -20,6 +31,8 @@ export type OshSettings = {
   toolGrouping: boolean
   /** what grouping covers: v1 scope (reads/searches only) or every tool */
   toolGroupingScope: "context" | "all"
+  /** grove only: keep reasoning on the left (with tools) or move it right */
+  groveThinking: "left" | "right"
   /** how tool OUTPUTS overflow long lines: wrap them, or scroll the output
    * horizontally (hidden scrollbar, VSCode-style). The width is hard-capped
    * either way - this only picks the overflow behavior */
@@ -27,7 +40,10 @@ export type OshSettings = {
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
+  view: "classic",
   theme: "system",
+  continuous: false,
+  showRail: true,
   followLive: true,
   textSize: "normal",
   readText: "normal",
@@ -39,6 +55,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   autoExpand: [],
   toolGrouping: true,
   toolGroupingScope: "context",
+  groveThinking: "left",
   outputOverflow: "scroll",
 }
 
@@ -73,6 +90,31 @@ export function readSettings(): OshSettings {
 export function writeSettings(s: OshSettings) {
   // not HttpOnly by design: the viewer reads its own settings cookie
   document.cookie = `${COOKIE}=${encodeURIComponent(JSON.stringify(s))}; Path=/; Max-Age=31536000; SameSite=Lax`
+}
+
+/** the paged/continuous choice FOR A VIEW, in PAGED terms (owner round
+ *  2026-10-24: the toggle is now "Paged mode", ON = paged; default OFF =
+ *  continuous). Migrates the old continuousByView storage; views that do
+ *  not support paging (ViewEntry.paged === false) are always continuous
+ *  regardless of any stored choice. */
+export function pagedFor(s: OshSettings, view: string, supportsPaged = true): boolean {
+  if (!supportsPaged) return false
+  const paged = s.pagedByView?.[view]
+  if (typeof paged === "boolean") return paged
+  // migration: the old flag was continuous-by-view (true = continuous)
+  const legacy = s.continuousByView?.[view]
+  if (typeof legacy === "boolean") return !legacy
+  return false
+}
+
+/** write a view's paged choice (per-view map; keeps other views' choices) */
+export function setPagedFor(prev: OshSettings, view: string, value: boolean): OshSettings {
+  const { continuousByView, ...rest } = prev as OshSettings & { continuousByView?: Record<string, boolean> }
+  void continuousByView
+  return {
+    ...rest,
+    pagedByView: { ...(prev.pagedByView ?? {}), [view]: value },
+  }
 }
 
 // Apply to <html>: theme attribute + scale attributes. Called pre-paint.

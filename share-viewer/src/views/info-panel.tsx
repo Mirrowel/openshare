@@ -1,8 +1,13 @@
-// Session metadata, usage and timing.
+// Session info panel: the metadata no view is obliged to show - token
+// accounting, cost, counts, timing, identity. A floating trigger owned at
+// app level so it works in every view (classic included); the panel is a
+// right-hand slide-over.
 import { createSignal, For, Show } from "solid-js"
+import { Dynamic } from "solid-js/web"
 import { Icon } from "@opencode/ui/icon"
-import type { ShareData } from "./fold"
-import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-usage"
+import { getInfoExtra } from "./info-extras"
+import type { ShareData } from "../fold"
+import { sessionUsage, sessionModelLabel, type SessionUsage } from "./session-data"
 
 const [open, setOpen] = createSignal(false)
 export const toggleInfoPanel = () => setOpen((v) => !v)
@@ -114,6 +119,11 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; source?: 
                 <Row label="duration" value={dur()} />
               </Show>
             </Group>
+            {/* view-scoped extras (atlas registers legend + coordinates
+                here - one info surface, owner round 2026-10-24 night) */}
+            <Show when={getInfoExtra()}>
+              {(extra) => <Dynamic component={extra()} />}
+            </Show>
           </div>
         </div>
       </Show>

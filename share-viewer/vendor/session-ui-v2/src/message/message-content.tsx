@@ -759,12 +759,6 @@ export function AssistantReasoningContent(props: {
         }
       >
         <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />
-        <Show when={!open() && props.content.text.trim()}>
-          {/* openshare fork: hidden PREWARM copy - expansion finds the cache warm */}
-          <div style={{ display: "none" }} aria-hidden="true">
-            <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />
-          </div>
-        </Show>
       </BasicTool>
     </div>
   )

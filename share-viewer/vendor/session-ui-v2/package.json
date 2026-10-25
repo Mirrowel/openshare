@@ -27,7 +27,6 @@
     "./session-retry": "./src/components/session-retry.tsx",
     "./tool-count-label": "./src/components/tool-count-label.tsx",
     "./tools/tool-renderer": "./src/tools/tool-renderer.tsx",
-    "./tools/agent-registry": "./src/tools/agent-registry.ts",
     "./tool-count-summary": "./src/components/tool-count-summary.tsx",
     "./tool-error-card": "./src/components/tool-error-card.tsx",
     "./tool-status-title": "./src/components/tool-status-title.tsx",

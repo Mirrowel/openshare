@@ -1,4 +1,4 @@
-// Client-only conversation and file review over live or embedded share data.
+// Client-only conversation over live or embedded share data.
 //
 // Identity model (deliberate):
 //   left header    — the DEPLOYMENT (brand logo; links to its git if set)
@@ -9,7 +9,6 @@
 //   footer         — brand wordmark image or styled text ("Open(code)Share"
 //                    by default)
 //
-import { SessionReview } from "@opencode/session-ui/session-review"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
@@ -18,18 +17,19 @@ import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
-import { Tabs } from "@opencode/ui/tabs"
 import { DateTime } from "luxon"
 import { Title } from "@solidjs/meta"
 import { Icon } from "@opencode/ui/icon"
-import { ResizeHandle } from "@opencode/ui/resize-handle"
-import { createEffect, createMemo, createSignal, ErrorBoundary, onCleanup, Show, untrack } from "solid-js"
+import { createEffect, createMemo, createRenderEffect, createSignal, ErrorBoundary, onCleanup, Show, untrack } from "solid-js"
+import { Dynamic } from "solid-js/web"
 import { useShareSource, type Branding } from "./data-source"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { TurnNav } from "./turn-nav"
 import { VirtualTimeline } from "./timeline-v2"
-import { createMediaQuery } from "@solid-primitives/media"
-import { InfoPanel } from "./info-panel"
+import { ReaderView } from "./reader"
+import { InfoPanel } from "./views/info-panel"
+import { findView } from "./views/registry"
+import { setVendoredData } from "./views/vendored-part"
 import { children, sessionStatus, visibleMessages, type ShareData, type V2Message } from "./fold"
 import { setSubagentData } from "./subagent-map"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
@@ -179,6 +179,20 @@ function SessionView(props: {
     href: sessionHref(props.data.sessionID) + (parentTurn() ? `#${encodeURIComponent(parentTurn().id)}` : ""),
   } : undefined)
   const info = createMemo(() => props.data.session[match().index])
+  const navigateToSession = (id: string) => {
+    const href = subHref(props.source, id)
+    if (!href) return
+    if (props.source.prefs().openTasksInNewTab !== false) {
+      window.open(href, "_blank")
+    } else {
+      window.history.pushState({}, "", href)
+      window.dispatchEvent(new PopStateEvent("popstate"))
+    }
+  }
+  createRenderEffect(() => setVendoredData(props.data, {
+    sessionHref: (id) => subHref(props.source, id),
+    navigateToSession,
+  }))
 
   return (
     <>
@@ -200,32 +214,15 @@ function SessionView(props: {
             directory={info().directory}
             sessionID={sessionID()}
             onSessionHref={(id) => subHref(props.source, id)}
-            onNavigateToSession={(id) => {
-              const href = subHref(props.source, id)
-              if (!href) return
-              if (props.source.prefs().openTasksInNewTab !== false) {
-                window.open(href, "_blank")
-              } else {
-                window.history.pushState({}, "", href)
-                window.dispatchEvent(new PopStateEvent("popstate"))
-              }
-            }}
+            onNavigateToSession={navigateToSession}
           >
-            {untrack(() => {
+            <Show when={findView(props.settings.view)} keyed fallback={untrack(() => {
               const [messageId, setMessageId] = createSignal<string>()
               const [focused, setFocused] = createSignal(false)
               const [relativeDate, setRelativeDate] = createSignal(false)
               const [turnsCollapsed, setTurnsCollapsed] = createSignal(false)
-              const [reviewCollapsed, setReviewCollapsed] = createSignal(false)
-              const [reviewWidth, setReviewWidth] = createSignal<number>()
-              const [layoutWidth, setLayoutWidth] = createSignal(window.innerWidth)
-              const reviewMin = 320
-              const reviewMax = () => Math.min(800, Math.max(reviewMin, layoutWidth() - (turnsCollapsed() ? 48 : 208) - 360))
-              const reviewSize = () => Math.min(reviewMax(), Math.max(reviewMin, reviewWidth() ?? layoutWidth() * 0.4))
-              const resizeReview = (width: number) => setReviewWidth(Math.min(reviewMax(), Math.max(reviewMin, width)))
               let pendingMessageID = decodeURIComponent(location.hash.slice(1)) || undefined
               let timeline: { scrollToMessage: (id: string) => void } | undefined
-              const [diffStyle, setDiffStyle] = createSignal<"unified" | "split">(props.settings.diffMode === "split" ? "split" : "unified")
               const messages = createMemo(() => visibleMessages(props.data, sessionID()))
               const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
               const sessionToolNames = createMemo(() => [...new Set(messages().flatMap((message) =>
@@ -317,9 +314,6 @@ function SessionView(props: {
                   tools: { placement: grouped ? "grouped" : "separate", ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}) },
                 } as any
               })
-              // review panel: files default-OPEN (v1 behavior), user-controlled after
-              const [reviewOpen, setReviewOpen] = createSignal<string[]>(diffs().map((d: any) => String(d.file ?? "")))
-
               // the v2 timeline document: full session (continuous mode)
               const document = createMemo(() => ({
                 sessionID: sessionID(),
@@ -420,8 +414,8 @@ function SessionView(props: {
                 return ""
               }
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
-              const showReviewBeside = createMediaQuery("(min-width: 1024px)")
               const Transcript = (p: { sid: string; focusID?: string }) => (
+                <ReaderView active={props.settings.view === "reader"}>
                 <VirtualTimeline
                   doc={(p.focusID ? pagedDocument() : document()) as any}
                   sessionKey={props.source.shareID + ":" + p.sid + (p.focusID ? ":focus:" + p.focusID : ":conversation")}
@@ -430,9 +424,9 @@ function SessionView(props: {
                   editToolDefaultOpen={false}
                   toolDefaultOpen={autoExpandOpen}
                   timelineDetail={timelineDetail() as any}
-                  followLive={props.settings.followLive}
+                  followLive={props.settings.followLive && (!focused() || !!p.focusID)}
                   onReady={(controls) => {
-                    timeline = controls
+                    if (!p.focusID) timeline = controls
                     if (pendingMessageID && userTurns().some((message) => message.id === pendingMessageID)) {
                       const id = pendingMessageID
                       pendingMessageID = undefined
@@ -445,6 +439,7 @@ function SessionView(props: {
                   footer={<div class="px-4 pt-8 pb-8 sm:px-6"><PageFooter branding={props.source.branding()} /></div>}
                   class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow min-h-0 w-full"}
                 />
+                </ReaderView>
               )
               const turns = () => (
                 <Show when={sessionID()} keyed>
@@ -463,8 +458,13 @@ function SessionView(props: {
                     onToggle={() => setTurnsCollapsed((value) => !value)}
                     getPreview={responsePreview}
                   />
-                  <div class="flex flex-col flex-1 min-w-0 min-h-0">
-                    <Show when={focused()}>
+                  <div class="relative flex flex-col flex-1 min-w-0 min-h-0">
+                    <div class="flex flex-1 min-h-0" style={{ visibility: focused() ? "hidden" : undefined }} inert={focused()}>
+                      <Transcript sid={sid} />
+                    </div>
+                    <Show when={focused() ? activeMessage()?.id : undefined} keyed>
+                      {(id) => (
+                      <div class="absolute inset-0 flex flex-col bg-background-stronger">
                       <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-b border-border-weak-base text-12-regular text-text-base">
                         <button class="osh-turn-button" onClick={() => setFocused(false)}>Back to conversation</button>
                         <div class="flex items-center gap-2">
@@ -473,9 +473,9 @@ function SessionView(props: {
                           <button class="osh-turn-button" aria-label="Next turn" disabled={activeIndex() >= userTurns().length - 1} onClick={() => setActiveMessage(userTurns()[activeIndex() + 1])}><Icon name="chevron-right" size="small" /></button>
                         </div>
                       </div>
-                    </Show>
-                    <Show when={focused() ? activeMessage()?.id : undefined} keyed fallback={<Transcript sid={sid} />}>
-                      {(id) => <Transcript sid={sid} focusID={id} />}
+                      <Transcript sid={sid} focusID={id} />
+                      </div>
+                      )}
                     </Show>
                   </div>
                 </div>
@@ -489,6 +489,7 @@ function SessionView(props: {
                     <div class="osh-bg" style={{ "background-image": `url(${props.source.branding().backgroundUrl})` }} />
                   </Show>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
+                    <Show when={props.source.branding().logoUrl}>
                     <Show
                       when={props.source.branding().linkUrl}
                       fallback={
@@ -502,6 +503,7 @@ function SessionView(props: {
                           <BrandMark branding={props.source.branding()} class="h-5 rounded" />
                         </a>
                       )}
+                    </Show>
                     </Show>
                     <StatusLine status={props.source.status()} />
                     <div class="flex items-center gap-2.5">
@@ -525,79 +527,20 @@ function SessionView(props: {
                       />
                     </div>
                   </header>
-                  <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">
-                    <Show when={showReviewBeside() || diffs().length === 0} fallback={
-                      <Tabs class="flex-1 min-h-0">
-                        <Tabs.List>
-                          <Tabs.Trigger value="session" class="w-1/2" classes={{ button: "w-full" }}>Session</Tabs.Trigger>
-                          <Tabs.Trigger value="review" class="w-1/2 !border-r-0" classes={{ button: "w-full" }}>{diffs().length} Files Changed</Tabs.Trigger>
-                        </Tabs.List>
-                        <Tabs.Content value="session" class="!overflow-hidden">{turns()}</Tabs.Content>
-                        <Tabs.Content value="review" class="!overflow-hidden hidden data-[selected]:block">
-                          <div class="h-full overflow-y-auto pt-6">
-                            <SessionReview diffs={diffs() as any} open={reviewOpen()} onOpenChange={setReviewOpen} diffStyle={diffStyle()} onDiffStyleChange={setDiffStyle} classes={{ root: "pb-20", header: "px-4", container: "px-4" }} />
-                          </div>
-                        </Tabs.Content>
-                      </Tabs>
-                    }>
-                    <div class="flex w-full flex-1 min-h-0" ref={(element) => {
-                      const measure = () => setLayoutWidth(element.clientWidth)
-                      measure()
-                      const observer = new ResizeObserver(measure)
-                      observer.observe(element)
-                      onCleanup(() => observer.disconnect())
-                    }}>
-                      <div class="@container relative flex-1 min-w-0 min-h-0">{turns()}</div>
-                      <Show when={diffs().length > 0}>
-                        <aside aria-label="Session changes" class="@container relative flex flex-col shrink-0 min-w-0 min-h-0 border-l border-border-weak-base" style={{ width: reviewCollapsed() ? "48px" : `${reviewSize()}px` }}>
-                          <header class="flex items-center gap-2 h-12 shrink-0">
-                            <button class="osh-turn-button" aria-label={reviewCollapsed() ? "Expand session changes" : "Collapse session changes"} title={reviewCollapsed() ? "Expand session changes" : "Collapse session changes"} aria-expanded={!reviewCollapsed()} onClick={() => setReviewCollapsed((value) => !value)}>
-                              <Icon name={reviewCollapsed() ? "chevron-left" : "chevron-right"} size="small" />
-                            </button>
-                            <Show when={!reviewCollapsed()}><h2 class="m-0 text-16-medium text-text-strong">Session changes</h2></Show>
-                          </header>
-                          <Show when={!reviewCollapsed()}>
-                          <ResizeHandle
-                            class="osh-review-resize"
-                            direction="horizontal"
-                            edge="start"
-                            size={reviewSize()}
-                            min={reviewMin}
-                            max={reviewMax()}
-                            onResize={resizeReview}
-                            role="separator"
-                            aria-label="Resize session changes"
-                            aria-orientation="vertical"
-                            aria-valuemin={reviewMin}
-                            aria-valuemax={reviewMax()}
-                            aria-valuenow={Math.round(reviewSize())}
-                            tabIndex={0}
-                            onKeyDown={(event) => {
-                              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
-                              event.preventDefault()
-                              resizeReview(event.key === "Home" ? reviewMin : event.key === "End" ? reviewMax() : reviewSize() + (event.key === "ArrowLeft" ? 32 : -32))
-                            }}
-                          />
-                          <div class="flex-1 min-h-0">
-                          <SessionReview
-                            title={null}
-                            diffs={diffs() as any}
-                            open={reviewOpen()}
-                            onOpenChange={setReviewOpen}
-                            diffStyle={diffStyle()}
-                            onDiffStyleChange={setDiffStyle}
-                            classes={{ root: "pb-20", header: "px-6", container: "px-6" }}
-                          />
-                          </div>
-                          </Show>
-                        </aside>
-                      </Show>
-                    </div>
-                    </Show>
-                  </div>
+                  <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">{turns()}</div>
                 </div>
               )
-            })}
+            })}>
+              {(entry) => <Dynamic component={entry.component}
+                data={props.data}
+                sessionID={sessionID()}
+                source={props.source}
+                settings={props.settings}
+                updateSettings={props.updateSettings}
+                search={props.search}
+                onSearch={props.onSearch}
+              />}
+            </Show>
           </DataProvider>
           </DialogProvider>
         </FileComponentProvider>
@@ -676,21 +619,14 @@ export function App() {
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
   const [search, setSearch] = createSignal("")
 
-  // the reader's transcript offset, tracked from real scroll events so a
-  // settings-driven reflow can put them back exactly where they were
-  let lastTranscriptOffset: number | undefined
-  const trackTranscriptScroll = (event: Event) => {
-    const el = event.target
-    if (!(el instanceof HTMLElement) || el.dataset.transcriptScroll === undefined) return
-    lastTranscriptOffset = el.scrollTop
-  }
-  document.addEventListener("scroll", trackTranscriptScroll, true)
-
   const updateSettings = (patch: Partial<OshSettings>) => {
     // Grouping and disclosure settings can reflow the virtualized rows.
+    const offsets = [...document.querySelectorAll<HTMLElement>("[data-transcript-scroll]")]
+      .map((element) => [element, element.scrollTop] as const)
     const restore = () => {
-      const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
-      if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
+      for (const [element, offset] of offsets) {
+        if (element.isConnected) element.scrollTop = offset
+      }
     }
     setSettings((prev) => {
       const next = { ...prev, ...patch }

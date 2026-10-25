@@ -25,7 +25,6 @@ import { type SessionSummary, useData } from "../context"
 import { useFileComponent } from "@opencode/ui/context/file"
 import { type UiI18n, useI18n } from "@opencode/ui/context/i18n"
 import { BasicTool, GenericTool } from "../components/basic-tool"
-import { agentFor } from "./agent-registry"
 import { FileIcon } from "@opencode/ui/file-icon"
 import { Icon, type IconProps } from "@opencode/ui/icon"
 import { ToolErrorCard } from "../components/tool-error-card"
@@ -572,9 +571,9 @@ export function CurrentContextToolGroup(props: {
               : part.name === "skill"
                 ? i18n.t("ui.tool.skill")
                 : part.name === "subagent"
-                  // openshare fork: grouped label prefers the plugin-stamped
-                  // registry (call id), then the input fields (old shares)
-                  ? taskAgent(agentFor((part as any).id) ?? (part as any).input?.agent ?? (part as any).input?.subagent_type, undefined).name ?? i18n.t("ui.tool.agent.default")
+                  // openshare fork: grouped label prefers the stamped agent
+                  // (fold rewrites state.input.agent from metadata.agent)
+                  ? taskAgent((part as any).state?.input?.agent ?? (part as any).state?.input?.subagent_type, undefined).name ?? i18n.t("ui.tool.agent.default")
                   : getToolInfo(part.name, undefined, part.name === "websearch" ? currentToolMetadata(part) : undefined)
                       .title,
           ]
@@ -1211,9 +1210,6 @@ function currentContextToolTrigger(tool: SessionMessageAssistantTool, i18n: Retu
 }
 
 export interface ToolProps {
-  /** the tool call's part id (ToolDisplay always passes it) - the agent
-   * registry (openshare) keys authoritative agent stamps by it */
-  id?: string
   input: Record<string, unknown>
   metadata: Record<string, unknown>
   tool: string
@@ -1867,10 +1863,7 @@ ToolRegistry.register({
       return taskSession(props.input, data.sessionID, data.store.session)
     })
 
-    // openshare fork: the agent label resolves from the PLUGIN-stamped
-    // registry first (metadata.agent on the call, keyed by call id) - the
-    // raw input only matters for old shares and unknown tools
-    const agent = createMemo(() => taskAgent(agentFor(props.id) ?? (props.input as any).agent ?? (props.input as any).subagent_type, data.store.agent))
+    const agent = createMemo(() => taskAgent(props.input.agent, data.store.agent))
     const title = createMemo(() => agent().name ?? i18n.t("ui.tool.agent.default"))
     const tone = createMemo(() => agent().color)
     const v2Tone = createMemo(() => agent().v2Color)

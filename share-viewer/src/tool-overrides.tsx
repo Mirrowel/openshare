@@ -138,24 +138,30 @@ function useSplitFit(contentChars?: () => number) {
       const rect = card.getBoundingClientRect()
       const avail = window.innerWidth - rect.left - 24
       const col = rect.width || 0
-      setMaxPx(Math.max(0, Math.min(col * 2, avail)))
+      let cap = avail
+      // skin sheets (atlas): a split card must not jut past the sheet's
+      // right edge into the page margin (live-caught on atlas with the
+      // widened sheet)
+      const sheet = card.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet") ?? card.closest(".atlas-sheet")
+      if (sheet) {
+        const sr = sheet.getBoundingClientRect()
+        cap = Math.min(cap, Math.max(0, sr.right - rect.left - 24))
+      }
+      setMaxPx(Math.max(0, Math.min(col * 2, cap)))
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(card)
-    // The initial measure races Kobalte's collapsible expand spring
-    // (0.35s): during the animation the content wrapper is temporarily
-    // constrained, and cards expanded in a batch mount mid-animation - the
-    // garbage maxPx stuck (live-caught: only the FIRST edit of a batch
-    // rendered split on auto). Re-check past the spring and on settle.
-    const settle = () => measure()
-    const t1 = setTimeout(settle, 450)
-    const t2 = setTimeout(settle, 1100)
-    const host = card.closest("[data-slot='collapsible-content'], [data-component='collapsible']")
-    host?.addEventListener("transitionend", settle, { once: true })
+    // ONE delayed re-check past the expand spring (a mid-spring
+    // measurement can be transiently wrong). The old t2=1100ms +
+    // transitionend listeners raced the spring: a late split()/unified
+    // flip remounted the File and shifted layout AGAIN, after every
+    // compensator had settled - live-caught as flicker + pushed-up titles
+    // on the 3-edit cluster (headless skips springs, automation never
+    // saw it). One check, past the spring, is bounce-proof.
+    const t1 = setTimeout(measure, 450)
     onCleanup(() => {
       clearTimeout(t1)
-      clearTimeout(t2)
       ro.disconnect()
     })
   }

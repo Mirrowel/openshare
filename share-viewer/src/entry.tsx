@@ -12,6 +12,7 @@ import { Suspense } from "solid-js"
 import { App } from "./app"
 import "./tool-overrides"
 import "./app.css"
+import "./views/skins.css"
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge
@@ -27,8 +28,14 @@ function resolveTemplate(text: string, params?: UiI18nParams) {
   })
 }
 
-const t = (key: keyof typeof uiEn, params?: UiI18nParams) => {
-  const value = uiEn[key]
+// merged dictionary: the vendored kit calls at least one key upstream's
+// own en.ts never defines (ui.tool.todos - upstream bug, report filed;
+// live-caught rendering the raw key). Merging here keeps the vendor tree
+// pristine - no i18n fork needed.
+const dict: Record<string, string> = { ...uiEn, "ui.tool.todos": "Todos" }
+
+const t = (key: keyof typeof uiEn | (string & {}), params?: UiI18nParams) => {
+  const value = dict[key as string]
   return resolveTemplate(value ?? String(key), params)
 }
 

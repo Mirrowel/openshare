@@ -17,9 +17,10 @@ Everything renders one shape: the share `Data[]` items — the same items the pl
 
 ## What the page does
 
-- **Conversation**: one scrollable, virtualized transcript with a prompt navigator. Selecting a prompt jumps to its turn and briefly highlights it. The navigator tracks the current turn as you scroll. On mobile, a compact turn picker replaces the sidebar. Syntax highlighting, KaTeX, markdown and diff workers are bundled, with no CDN.
+- **Classic and Reader**: two presentations of the same scrollable, virtualized conversation. Reader uses a narrower editorial column and unboxed prompts; both share file rendering, live updates, navigation and disclosure state. The existing artistic skins remain available through the view selector.
+- **Prompt navigation**: selecting a prompt jumps to its turn and briefly highlights it. The navigator tracks the current turn as you scroll. On mobile, a compact turn picker replaces the sidebar. Syntax highlighting, KaTeX, markdown and diff workers are bundled, with no CDN.
 - **Focus on turn**: use a prompt entry's actions menu or right-click it to show only that prompt and its responses. Previous/next controls move between turns. Back to conversation, or Escape, restores the previous reading position.
-- **Collapsible panels**: the desktop Turns sidebar folds into a centered tick rail with prompt and response previews. The Session changes panel collapses from its own header and resizes by dragging its left edge. Its width stays between 320 and 800 pixels, with a lower maximum on smaller screens to leave room for the conversation. The divider also supports arrow keys and Home/End. Phones keep the turn picker and Session/Files tabs.
+- **Collapsible Turns**: the desktop sidebar folds into a centered tick rail with prompt and response previews. Phones keep the turn picker. File changes appear in their inline tool cards, not a session-wide review panel.
 - **Multi-session shares**: the turn navigator lists only the current session's prompts. A subagent's navigator adds one parent-turn link above its own prompts; that link and Back to parent return to the spawning prompt. Task-row links open sub-pages (`/s/<id>/<N>`) and respect the new-tab preference. Subagent status and the parent action sit on the right of the session header.
 - **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer swaps to a login form, exchanges credentials for a 7-day cookie, and resumes; repeated failures lock out (429 → "locked"). The gate never grants write access.
 - **Reader settings** (gear panel, `osh_settings` cookie, 1 year): theme (system/light/dark/mirrobot/midnight/sepia/nord), follow-live, text and reading sizes, automatic/split/unified diffs, reasoning auto-open, per-tool auto-expansion, tool info visibility, content centering, and tool grouping for reads/searches or all calls. Search filters the prompt navigator without removing responses from the transcript.
@@ -47,13 +48,14 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 | File | Role |
 |---|---|
 | `src/entry.tsx` | pre-paint settings read (no theme flash), mount |
-| `src/app.tsx` | conversation shell, focused turns, file review, branding |
+| `src/app.tsx` | shared Classic/Reader shell, focused turns, skin routing, branding |
+| `src/reader.tsx` | Reader presentation over the shared timeline |
 | `src/turn-nav.tsx` | desktop prompt rail, mobile picker, turn actions |
 | `src/timeline-v2.tsx` | virtualized rows, prompt jumps, active turn tracking, live-follow |
 | `src/data-source.ts` | live vs local sources, WS attach + poll fallback, auth flow |
 | `src/fold.ts` | item merging, revert-pointer folding, the `Data[]` contract |
 | `src/settings.ts`, `src/settings-panel.tsx` | settings cookie + gear panel |
-| `src/info-panel.tsx`, `src/session-usage.ts` | session metadata and usage |
+| `src/views/` | existing artistic skins, shared section model, session info |
 | `scripts/build-themes.mjs` | theme CSS build (bundler-safe file URLs) |
 
 ## Vendored components
