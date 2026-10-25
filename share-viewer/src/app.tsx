@@ -292,6 +292,23 @@ function SessionView(props: {
               }
               // exact date by default, relative on click (title block toggle)
               const [relativeDate, setRelativeDate] = createSignal(false)
+              // focus mode (owner round 2026-10-25): shift+click a prompt ->
+              // one turn as an overlay over the still-mounted transcript.
+              // Replaces paged-vs-continuous as the "read one turn" surface.
+              const [focused, setFocused] = createSignal(false)
+              const focusTurn = (i: number) => {
+                const m = userTurns()[i]
+                if (!m) return
+                setActiveMessage(m)
+                setFocused(true)
+              }
+              const focusIndex = () => userTurns().findIndex((m: any) => m.id === activeMessage()?.id)
+              // Esc exits focus (the bar's back button and Esc both work)
+              const onFocusKey = (e: KeyboardEvent) => {
+                if (e.key === "Escape" && focused()) setFocused(false)
+              }
+              window.addEventListener("keydown", onFocusKey)
+              onCleanup(() => window.removeEventListener("keydown", onFocusKey))
               // continuous-mode fast-skip: the rail's jump target for the
               // VirtualTimeline (nonce so repeat jumps to the same message
               // re-fire)
@@ -599,30 +616,41 @@ function SessionView(props: {
                         "lg:flex": !wide(),
                       }}
                     >
-                       <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
-                         <div class="flex items-stretch justify-start h-full min-h-0 w-full">
-                           {/* PromptNav: ALWAYS present with >1 prompt - the
-                               sidebar column or the floating pill (one of
-                               the two, never neither). Paged pages the turn,
-                               continuous jumps to the user message row. */}
-                           <Show when={userTurns().length > 1}>
-                             <PromptNav
-                               count={userTurns().length}
-                               active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
-                               variant={props.settings.promptNav}
-                               onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
-                               label={(i) => {
-                                 const t = userTurns()[i]?.text
-                                 return typeof t === "string" ? t.trim().split("\n")[0] : undefined
-                               }}
-                               preview={(i) => responsePreview(userTurns()[i]?.id)}
-                               onSelect={(i) => {
-                                 if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
-                                 else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
-                               }}
-                             />
-                           </Show>
-                          <Show
+                        <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
+                          <div class="flex items-stretch justify-start h-full min-h-0 w-full">
+                            {/* PromptNav: ALWAYS present with >1 prompt - the
+                                sidebar column or the floating pill (one of
+                                the two, never neither). Paged pages the turn,
+                                continuous jumps to the user message row;
+                                shift+click focuses the turn. */}
+                            <Show when={userTurns().length > 1}>
+                              <PromptNav
+                                count={userTurns().length}
+                                active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                                variant={props.settings.promptNav}
+                                onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+                                label={(i) => {
+                                  const t = userTurns()[i]?.text
+                                  return typeof t === "string" ? t.trim().split("\n")[0] : undefined
+                                }}
+                                preview={(i) => responsePreview(userTurns()[i]?.id)}
+                                onFocusTurn={focusTurn}
+                                onSelect={(i) => {
+                                  if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
+                                  else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                                }}
+                              />
+                            </Show>
+                           {/* focus mode: the main transcript stays mounted
+                               (hidden, scroll position intact - returning is
+                               instant) while the focused turn renders as an
+                               overlay with its own virtualized timeline */}
+                           <div class="relative flex flex-1 min-w-0 min-h-0">
+                            <div
+                              class="flex flex-1 min-h-0 min-w-0"
+                              style={focused() ? { visibility: "hidden" } : undefined}
+                            >
+                           <Show
                             when={!pagedFor(props.settings, "classic")}
                             fallback={
                               // paged: ONE turn, windowed row-by-row through the
@@ -657,6 +685,7 @@ function SessionView(props: {
                                 sessionKey={props.source.shareID + ":" + sessionID()}
                                 scrollTarget={jumpTarget()}
                                 onActiveMessageChange={(id) => setActiveMessage(userTurns().find((m: any) => m.id === id))}
+                                followLive={props.settings.followLive && !focused()}
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={false}
                   editToolDefaultOpen={false}
@@ -674,11 +703,65 @@ function SessionView(props: {
                                 }
                                 class="grow min-h-0 w-full"
                               />
+                              </div>
+                            </Show>
+                           </div>
+                           {/* the focused turn overlay: bar (back, turn count,
+                               prev/next) over a single-turn virtualized
+                               timeline; Esc and "back to conversation" exit */}
+                           <Show when={focused()}>
+                             <div class="absolute inset-0 z-20 flex flex-col bg-background-stronger">
+                               <div class="flex flex-wrap items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-border-weak-base text-12-regular text-text-base">
+                                 <button
+                                   type="button"
+                                   class="flex items-center gap-1.5 h-6 px-1.5 rounded-md bg-transparent border-none cursor-pointer text-12-regular text-text-weak hover:text-text-strong hover:bg-surface-base"
+                                   onClick={() => setFocused(false)}
+                                 >
+                                   <Icon name="arrow-left" size="small" />
+                                   Back to conversation
+                                 </button>
+                                 <div class="flex items-center gap-2">
+                                   <button
+                                     type="button"
+                                     aria-label="Previous turn"
+                                     class="flex items-center justify-center size-6 rounded-md bg-transparent border-none cursor-pointer text-text-weak hover:text-text-strong hover:bg-surface-base disabled:opacity-40 disabled:cursor-default"
+                                     disabled={focusIndex() <= 0}
+                                     onClick={() => focusTurn(Math.max(0, focusIndex() - 1))}
+                                   >
+                                     <Icon name="chevron-left" size="small" />
+                                   </button>
+                                   <span class="text-12-mono text-text-weaker tabular-nums">
+                                     Turn {focusIndex() + 1} of {userTurns().length}
+                                   </span>
+                                   <button
+                                     type="button"
+                                     aria-label="Next turn"
+                                     class="flex items-center justify-center size-6 rounded-md bg-transparent border-none cursor-pointer text-text-weak hover:text-text-strong hover:bg-surface-base disabled:opacity-40 disabled:cursor-default"
+                                     disabled={focusIndex() >= userTurns().length - 1}
+                                     onClick={() => focusTurn(Math.min(userTurns().length - 1, focusIndex() + 1))}
+                                   >
+                                     <Icon name="chevron-right" size="small" />
+                                   </button>
+                                 </div>
+                               </div>
+                               <VirtualTimeline
+                                 doc={pagedDocument() as any}
+                                 sessionKey={props.source.shareID + ":" + sessionID() + ":focus:" + (activeMessage()?.id ?? "")}
+                                 reasoningMode={reasoningMode() as any}
+                                 shellToolDefaultOpen={false}
+                                 editToolDefaultOpen={false}
+                                 toolDefaultOpen={autoExpandOpen}
+                                 timelineDetail={timelineDetail() as any}
+                                 anchor="start"
+                                 header={<div class="px-6 pt-6">{title()}</div>}
+                                 class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow min-h-0 w-full osh-indent"}
+                               />
                              </div>
                            </Show>
-                         </div>
-                       </div>
-                     </div>
+                          </div>
+                        </div>
+                      </div>
+                      </div>
                       <div classList={{ "!overflow-hidden": true, "md:hidden": wide(), "lg:hidden": !wide() }}>
                         {turns()}
                       </div>

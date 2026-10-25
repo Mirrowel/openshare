@@ -53,6 +53,9 @@ export function PromptNav(props: {
   /** response preview for hover cards; undefined = no preview */
   preview?: (i: number) => string | undefined
   onSelect: (i: number) => void
+  /** shift+click (or the row's hover focus button) opens the turn in
+   *  focus mode - the overlay over the transcript (classic) */
+  onFocusTurn?: (i: number) => void
   /** skin custom rows (replaces the default list). undefined = default */
   children?: JSX.Element
   /** compact heading (skin name etc.) */
@@ -72,13 +75,17 @@ export function PromptNav(props: {
 }
 
 /** one prompt row - shared by the sidebar and the pill popover so both
- *  states read as the same control. number + label + accent marker. */
+ *  states read as the same control. number + label + accent marker;
+ *  shift+click focuses the turn when the host supports it; the sidebar
+ *  variant adds a hover-revealed focus button for discoverability. */
 function NavRow(props: {
   i: number
   active: boolean
   label: string | undefined
   onHover?: (i: number, el: HTMLElement) => void
   onSelect: (i: number) => void
+  onFocus?: (i: number) => void
+  focusAffordance?: boolean
 }) {
   return (
     <button
@@ -91,7 +98,14 @@ function NavRow(props: {
       }}
       aria-current={props.active ? "true" : undefined}
       onMouseEnter={(e) => props.onHover?.(props.i, e.currentTarget)}
-      onClick={() => props.onSelect(props.i)}
+      onClick={(e) => {
+        if (e.shiftKey && props.onFocus) {
+          props.onFocus(props.i)
+          return
+        }
+        props.onSelect(props.i)
+      }}
+      title={props.onFocus ? "click: jump here · shift+click: focus this turn" : undefined}
     >
       <span
         class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full transition-opacity duration-150"
@@ -100,6 +114,22 @@ function NavRow(props: {
       />
       <span class="text-12-mono text-text-weaker w-5 shrink-0 tabular-nums">{String(props.i + 1).padStart(2, "0")}</span>
       <span class="truncate text-13-regular">{props.label ?? "prompt"}</span>
+      <Show when={props.onFocus && props.focusAffordance}>
+        {/* non-interactive affordance (interactive content inside a button
+            is invalid): the icon marks shift+click; the row's title says it */}
+        <span
+          class="ml-auto shrink-0 flex items-center justify-center size-5 text-text-weaker opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none">
+            <circle cx="8" cy="8" r="4.5" stroke="currentColor" stroke-width="1.25" />
+            <line x1="8" y1="0.5" x2="8" y2="3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+            <line x1="8" y1="12.5" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+            <line x1="0.5" y1="8" x2="3.5" y2="8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+            <line x1="12.5" y1="8" x2="15.5" y2="8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+          </svg>
+        </span>
+      </Show>
     </button>
   )
 }
@@ -171,6 +201,8 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
                   label={props.label(i)}
                   onHover={onHover}
                   onSelect={(i) => props.onSelect(i)}
+                  onFocus={props.onFocusTurn}
+                  focusAffordance
                 />
               )}
             </For>
@@ -332,6 +364,11 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                         onHover={onHover}
                         onSelect={(i) => {
                           props.onSelect(i)
+                          setOpen(false)
+                          setPreview(undefined)
+                        }}
+                        onFocus={(i) => {
+                          props.onFocusTurn?.(i)
                           setOpen(false)
                           setPreview(undefined)
                         }}
