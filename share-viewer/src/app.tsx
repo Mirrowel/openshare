@@ -515,8 +515,8 @@ function SessionView(props: {
                         )}
                       </Show>
                     </Show>
-                    <StatusLine status={props.source.status()} />
-                    <div class="flex items-center gap-2.5">
+                    <div class="flex items-center gap-2.5 ml-auto">
+                      <StatusLine status={props.source.status()} />
                       <button
                         class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
                         title="copy session as markdown"

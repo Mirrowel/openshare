@@ -11,7 +11,7 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, createSignal, onCleanup, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, For, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useData } from "@opencode/session-ui/context"
@@ -65,6 +65,26 @@ function displayPath(path: string): string {
 const dirname = (path: string) => {
   const clean = path.split(/[/\\]/).filter(Boolean)
   return clean.slice(0, -1).join("/")
+}
+/** the header's directory display: session-relative inside the session
+ * dir, last-two-segments outside, separators normalized to "/" */
+function displayPathDir(path: string): string {
+  let directory: string | undefined
+  try {
+    directory = (useData() as any)?.directory
+  } catch {
+    directory = undefined
+  }
+  const norm = (p: string) => p.replace(/\\/g, "/")
+  const dir = dirname(path)
+  if (!dir) return ""
+  if (!directory || directory === "/" || directory === "\\") return norm(dir)
+  const base = norm(directory).replace(/\/+$/, "")
+  const nd = norm(dir)
+  if (nd === base) return "."
+  if (nd.startsWith(base + "/")) return nd.slice(base.length + 1)
+  const segs = nd.split("/").filter(Boolean)
+  return segs.length > 2 ? "…" + segs.slice(-2).join("/") : norm(dir)
 }
 const countLines = (text: string) => (text ? text.split("\n").length : 0)
 
@@ -130,28 +150,50 @@ function measureMonoChar(): number {
 
 function useSplitFit(contentChars?: () => number) {
   const [maxPx, setMaxPx] = createSignal(0)
+  let remeasure: (() => void) | undefined
   const ref = (el: HTMLDivElement) => {
-    // edit-content itself hugs (fit-content); measure the CARD (its
-    // parent osh-file-body, full column width) and its left edge
-    const card = el.parentElement ?? el
+    // Availability must be measured from a MODE-INDEPENDENT ancestor.
+    // The card (el.parentElement, hugging) was the old reference and the
+    // decision fed on its own rendered width: a unified pierre body is a
+    // horizontal scroller whose min-content collapses (~260px for some
+    // patches), so card*2 < 600 refused the split forever — reload-proof,
+    // deterministic per patch (live-caught on a share where exactly one
+    // edit card never split no matter the open order).
+    const row = () =>
+      el.closest("[data-timeline-row], [data-row-key], .osh-entry-slot") ??
+      el.closest(".osh-indent") ??
+      el.parentElement ??
+      el
     const measure = () => {
-      const rect = card.getBoundingClientRect()
-      const avail = window.innerWidth - rect.left - 24
-      const col = rect.width || 0
+      // the virtualizer can detach this element between the measure
+      // being scheduled (RO / microtask / timer) and running — measuring
+      // a detached node crashes the render tree
+      if (!el.isConnected) return
+      const r = row().getBoundingClientRect()
+      if (r.width <= 0) return // row not laid out yet — keep the last value
+      const avail = window.innerWidth - r.left - 24
+      const col = r.width
       let cap = avail
       // skin sheets (atlas): a split card must not jut past the sheet's
       // right edge into the page margin (live-caught on atlas with the
       // widened sheet)
-      const sheet = card.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet") ?? card.closest(".atlas-sheet")
+      const sheet = el.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet")
       if (sheet) {
         const sr = sheet.getBoundingClientRect()
-        cap = Math.min(cap, Math.max(0, sr.right - rect.left - 24))
+        cap = Math.min(cap, Math.max(0, sr.right - r.left - 24))
       }
       setMaxPx(Math.max(0, Math.min(col * 2, cap)))
     }
-    measure()
+    remeasure = measure
+    // Solid fires ref DURING element creation, before the node is
+    // attached — closest()/parentElement resolve nothing yet. Defer the
+    // initial wiring one frame so the row exists (observing null threw
+    // and killed the share through the error boundary).
+    const raf = requestAnimationFrame(() => {
+      measure()
+      ro.observe(row())
+    })
     const ro = new ResizeObserver(measure)
-    ro.observe(card)
     // ONE delayed re-check past the expand spring (a mid-spring
     // measurement can be transiently wrong). The old t2=1100ms +
     // transitionend listeners raced the spring: a late split()/unified
@@ -161,10 +203,19 @@ function useSplitFit(contentChars?: () => number) {
     // saw it). One check, past the spring, is bounce-proof.
     const t1 = setTimeout(measure, 450)
     onCleanup(() => {
+      cancelAnimationFrame(raf)
       clearTimeout(t1)
       ro.disconnect()
+      remeasure = undefined
     })
   }
+  // a mode flip (U|A|S) re-evaluates availability: the row is
+  // mode-independent, so this mostly re-reads the same numbers, but it
+  // guarantees the decision never sits on a pre-layout zero
+  createEffect(() => {
+    diffModeSignal()
+    queueMicrotask(() => remeasure?.())
+  })
   const mode = () => diffModeSignal()
   // the width the split card actually wants: longest line x2 panes +
   // gutter allowance, clamped to [780, maxPx]
@@ -182,14 +233,22 @@ function useSplitFit(contentChars?: () => number) {
   return { ref, split, width: splitWidth, maxPx }
 }
 
-/** One header for every file tool: label, directory, filename, meta. */
+/** One header for every file tool: label, directory, filename, meta.
+ * The directory is session-relative (like the v1 viewer): inside the
+ * session dir it shows the sub-path only; the full path appears only
+ * for files outside it. Live-caught: the raw absolute dirname stretched
+ * rows even for same-folder files. */
 function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
+  const dir = createMemo(() => {
+    const shown = displayPathDir(props.path)
+    return shown
+  })
   return (
     <div data-slot="basic-tool-tool-info-structured">
       <div data-slot="basic-tool-tool-info-main">
         <span data-slot="basic-tool-tool-title">{props.label}</span>
-        <Show when={dirname(props.path)}>
-          <span data-slot="osh-tool-dir">{dirname(props.path)}/</span>
+        <Show when={dir()}>
+          <span data-slot="osh-tool-dir">{dir()}/</span>
         </Show>
         <span data-slot="osh-tool-file">{basename(props.path)}</span>
         {props.meta}
@@ -475,8 +534,8 @@ const EditTool = (props: ToolProps) => {
                   <button
                     type="button"
                     class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "split" }}
-                    title="Split (forced, needs width)"
+                    classList={{ "osh-dm-on": diffModeSignal() === "split", "osh-dm-starved": diffModeSignal() === "split" && !fit.split() }}
+                    title={diffModeSignal() === "split" && !fit.split() ? "Split — not enough width for this card; showing unified" : "Split (forced, needs width)"}
                     onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
                   >S</button>
                 </div>

@@ -571,6 +571,11 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   background: var(--surface-raised-base);
   color: var(--text-strong);
 }
+/* forced split that this card cannot fit: the button stays lit but
+   dimmed — it no longer silently claims a layout it refused */
+.osh-dm-btn.osh-dm-starved {
+  opacity: 0.5;
+}
 
 /* --- agent/mode switch: a full-width centered EVENT row ------------------
    Reads like the compaction divider: hairline rules both sides, centered
