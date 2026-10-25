@@ -759,6 +759,8 @@ function createEngine(deps) {
         initTimer: null,
         initWasAttach: false,
         backoff: 1000,
+        backoffResetTimer: null,
+        spoolSaveTimer: null,
         reconnectTimer: null,
         intentionalClose: false,
         connectQueued: false,
@@ -1068,7 +1070,7 @@ function createEngine(deps) {
   const spoolSave = (st, r) => {
     try {
       writeFileSync2(metaPath(st, r.url), JSON.stringify({ shareId: r.shareId, secret: r.secret, ackedRev: r.ackedRev, sid: st.sid, url: r.url }));
-      writeFileSync2(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join(`
+      writeFileSync2(queuePath(st, r.url), r.pending.map((f) => f.wire ?? JSON.stringify(f)).join(`
 `) + (r.pending.length ? `
 ` : ""));
       rmSync(legacyMetaPath(st), { force: true });
@@ -1079,12 +1081,21 @@ function createEngine(deps) {
   };
   const spoolAppend = (st, r, f) => {
     try {
-      appendFileSync(queuePath(st, r.url), JSON.stringify(f) + `
+      appendFileSync(queuePath(st, r.url), (f.wire ?? JSON.stringify(f)) + `
 `);
     } catch (e) {
       r.spoolAppendFailed = true;
       logError("spool append failed", e?.message || e);
     }
+  };
+  const scheduleSpoolSave = (st, r) => {
+    if (r.spoolSaveTimer)
+      return;
+    r.spoolSaveTimer = setTimeout(() => {
+      r.spoolSaveTimer = null;
+      if (!st.closed)
+        spoolSave(st, r);
+    }, 300);
   };
   const spoolLoad = (st, r) => {
     try {
@@ -1139,6 +1150,10 @@ function createEngine(deps) {
   };
   const spoolClear = (st, r) => {
     try {
+      if (r.spoolSaveTimer) {
+        clearTimeout(r.spoolSaveTimer);
+        r.spoolSaveTimer = null;
+      }
       rmSync(metaPath(st, r.url), { force: true });
       rmSync(queuePath(st, r.url), { force: true });
       rmSync(legacyMetaPath(st), { force: true });
@@ -1156,30 +1171,50 @@ function createEngine(deps) {
     }
     return true;
   };
-  const chunkItems = (items, maxItems, maxBytes) => {
+  const chunkedFrames = (items, maxItems, maxBytes) => {
     const chunks = [];
     let cur = [];
+    let curJson = [];
     let curBytes = 0;
     for (const it of items) {
-      const n = (JSON.stringify(it) ?? "null").length;
-      if (cur.length && (cur.length >= maxItems || curBytes + n > maxBytes)) {
-        chunks.push(cur);
+      const j = JSON.stringify(it) ?? "null";
+      if (cur.length && (cur.length >= maxItems || curBytes + j.length > maxBytes)) {
+        chunks.push({ items: cur, json: "[" + curJson.join(",") + "]" });
         cur = [];
+        curJson = [];
         curBytes = 0;
       }
       cur.push(it);
-      curBytes += n;
+      curJson.push(j);
+      curBytes += j.length;
     }
     if (cur.length)
-      chunks.push(cur);
+      chunks.push({ items: cur, json: "[" + curJson.join(",") + "]" });
     return chunks;
+  };
+  const chunkItems = (items, maxItems, maxBytes) => chunkedFrames(items, maxItems, maxBytes).map((c) => c.items);
+  const syncFrameStr = (itemsJson, status, seq) => `{"op":"sync","items":${itemsJson},"status":${JSON.stringify(status)}${seq !== undefined ? `,"seq":${seq}` : ""}}`;
+  const wsSendRaw = (r, s) => {
+    if (debugEvents)
+      log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send raw (${Math.round(s.length / 1024)}KB, ready=${r.wsReady})`);
+    try {
+      r.ws?.send(s);
+    } catch {
+      return false;
+    }
+    return true;
   };
   const sendSync = (r, f) => {
     if (!f.items.length)
       return wsSend(r, { op: "sync", items: [], status: f.status, seq: f.seq });
-    for (const chunk of chunkItems(f.items, 200, 512 * 1024)) {
-      wsSend(r, { op: "sync", items: chunk, status: f.status, seq: f.seq });
+    if (f.wire)
+      return wsSendRaw(r, f.wire);
+    const itemsJson = JSON.stringify(f.items);
+    if (f.items.length <= 200 && itemsJson.length <= 512 * 1024) {
+      return wsSendRaw(r, syncFrameStr(itemsJson, f.status, f.seq));
     }
+    for (const c of chunkedFrames(f.items, 200, 512 * 1024))
+      wsSendRaw(r, syncFrameStr(c.json, f.status, f.seq));
     return true;
   };
   const announceUrl = (st, r) => {
@@ -1407,7 +1442,7 @@ function createEngine(deps) {
   const scheduleReconnect = (st, r) => {
     if (st.closed || r.reconnectTimer)
       return;
-    const wait = r.backoff;
+    const wait = Math.max(250, Math.round(r.backoff * (0.8 + Math.random() * 0.4)));
     r.backoff = Math.min(r.backoff * 2, 60000);
     r.reconnectTimer = setTimeout(() => {
       r.reconnectTimer = null;
@@ -1576,7 +1611,13 @@ function createEngine(deps) {
         clearTimeout(r.initTimer);
         r.initTimer = null;
       }
-      r.backoff = 1000;
+      if (r.backoffResetTimer)
+        clearTimeout(r.backoffResetTimer);
+      r.backoffResetTimer = setTimeout(() => {
+        r.backoffResetTimer = null;
+        if (r.wsReady && !r.reconnectTimer)
+          r.backoff = 1000;
+      }, 30000);
       st.everConnected = true;
       if (frame.policy)
         applyPolicy(frame.policy, r.url);
@@ -1603,12 +1644,17 @@ function createEngine(deps) {
     }
     if (frame.op === "ack") {
       r.ackedRev = frame.rev ?? r.ackedRev;
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer);
+        r.backoffResetTimer = null;
+        r.backoff = 1000;
+      }
       if (typeof frame.seq === "number") {
         r.pending = r.pending.filter((p) => p.seq !== frame.seq);
       } else {
         r.pending = [];
       }
-      spoolSave(st, r);
+      scheduleSpoolSave(st, r);
       scheduleBindingWrite(st);
       return;
     }
@@ -1656,7 +1702,7 @@ function createEngine(deps) {
     queueConnect(st, r);
   };
   const frameFrom = (st) => {
-    stampsPass();
+    stampsPass(st);
     const items = Array.from(st.queue.values());
     st.queue.clear();
     const statusChanged = st.status !== st.lastSentStatus;
@@ -1676,14 +1722,23 @@ function createEngine(deps) {
     const f = frameFrom(st);
     if (!f)
       return;
-    const chunks = f.items.length ? chunkItems(f.items, 200, 512 * 1024) : [[]];
+    const chunks = f.items.length ? chunkedFrames(f.items, 200, 512 * 1024) : [];
     let httpWork;
     for (const r of st.remotes.values()) {
       if (r.frozenRemote)
         continue;
       const fresh = [];
-      for (const chunk of chunks) {
-        const cf = { items: chunk, status: f.status, seq: ++nextSeq };
+      if (chunks.length) {
+        for (const c of chunks) {
+          const seq = ++nextSeq;
+          const cf = { items: c.items, status: f.status, seq, wire: syncFrameStr(c.json, f.status, seq) };
+          fresh.push(cf);
+          r.pending.push(cf);
+          spoolAppend(st, r, cf);
+        }
+      } else {
+        const seq = ++nextSeq;
+        const cf = { items: [], status: f.status, seq };
         fresh.push(cf);
         r.pending.push(cf);
         spoolAppend(st, r, cf);
@@ -1705,20 +1760,48 @@ function createEngine(deps) {
       httpWork.catch((e) => logError("http flush error", e?.message || e));
     return httpWork;
   };
+  const httpDedupeKey = (it) => {
+    if (!it || typeof it !== "object")
+      return null;
+    const o = it;
+    switch (o.type) {
+      case "session":
+        return "session/" + (o.data?.id ?? "");
+      case "session_diff":
+        return "session_diff/" + (o.sessionID ?? o.data?.sessionID ?? "");
+      case "message":
+        return "message/" + (o.data?.id ?? "");
+      case "part":
+        return "part/" + (o.data?.messageID ?? "") + "/" + (o.data?.id ?? "");
+      case "model":
+        return "model/" + (o.sessionID ?? o.data?.sessionID ?? "");
+      case "prefs":
+        return "prefs";
+      default:
+        return null;
+    }
+  };
   const flushViaHttp = async (st, r) => {
     if (!r.shareId || !r.pending.length)
       return;
-    const items = [];
+    const byKey = new Map;
+    const unkeyed = [];
     let status;
     const sentSeqs = new Set;
     for (const f of r.pending) {
-      for (const it of f.items)
-        items.push(it);
+      for (const it of f.items) {
+        const k = httpDedupeKey(it);
+        if (k)
+          byKey.set(k, it);
+        else
+          unkeyed.push(it);
+      }
       if (f.status)
         status = f.status;
       if (typeof f.seq === "number")
         sentSeqs.add(f.seq);
     }
+    const items = [...byKey.values(), ...unkeyed];
     const cred = credOf(r.url);
     const chunks = items.length ? chunkItems(items, 500, 4 * 1024 * 1024) : [[]];
     for (const chunk of chunks) {
@@ -1734,7 +1817,7 @@ function createEngine(deps) {
       r.ackedRev = body.rev ?? r.ackedRev;
     }
     r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq));
-    spoolSave(st, r);
+    scheduleSpoolSave(st, r);
   };
   const scheduleFlush = (st) => {
     if (st.timer)
@@ -1815,15 +1898,7 @@ function createEngine(deps) {
     }
     return;
   };
-  const stampAgentSwitches = () => {
-    const bySession = new Map;
-    for (const m of msgIndex.values()) {
-      const list = bySession.get(m.sid);
-      if (list)
-        list.push(m);
-      else
-        bySession.set(m.sid, [m]);
-    }
+  const stampAgentSwitches = (bySession) => {
     for (const [, list] of bySession) {
       list.sort((a, b) => a.created - b.created);
       const users = list.map((m, i) => m.role === "user" ? i : -1).filter((i) => i >= 0);
@@ -1846,15 +1921,7 @@ function createEngine(deps) {
       }
     }
   };
-  const stampTaskAgents = () => {
-    const bySession = new Map;
-    for (const m of msgIndex.values()) {
-      const list = bySession.get(m.sid);
-      if (list)
-        list.push(m);
-      else
-        bySession.set(m.sid, [m]);
-    }
+  const stampTaskAgents = (bySession) => {
     for (const list of bySession.values())
       list.sort((a, b) => a.created - b.created);
     for (const m of msgIndex.values()) {
@@ -1986,9 +2053,28 @@ function createEngine(deps) {
         reEnqueueMessage(m);
     }
   };
-  const stampsPass = () => {
-    stampAgentSwitches();
-    stampTaskAgents();
+  const stampsPass = (st) => {
+    let any = false;
+    for (const it of st.queue.values()) {
+      if (it.type === "message") {
+        any = true;
+        break;
+      }
+    }
+    if (!any)
+      return;
+    const bySession = new Map;
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid);
+      if (list)
+        list.push(m);
+      else
+        bySession.set(m.sid, [m]);
+    }
+    for (const list of bySession.values())
+      list.sort((a, b) => a.created - b.created);
+    stampAgentSwitches(bySession);
+    stampTaskAgents(bySession);
     stampFileLanguages();
   };
   const mergeEntry = (st, messageID) => {
@@ -2069,6 +2155,10 @@ function createEngine(deps) {
       if (r.initTimer) {
         clearTimeout(r.initTimer);
         r.initTimer = null;
+      }
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer);
+        r.backoffResetTimer = null;
       }
       if (r.reconnectTimer) {
         clearTimeout(r.reconnectTimer);
@@ -2581,6 +2671,13 @@ function createEngine(deps) {
           for (const r of st.remotes.values()) {
             if (!r.wsReady && r.shareId && r.pending.length) {
               await flushViaHttp(st, r).catch(() => {});
+            }
+          }
+          for (const r of st.remotes.values()) {
+            if (r.spoolSaveTimer) {
+              clearTimeout(r.spoolSaveTimer);
+              r.spoolSaveTimer = null;
+              spoolSave(st, r);
             }
           }
           if (st.metaTimer)
