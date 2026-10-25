@@ -7,7 +7,7 @@
 // each element kind.
 import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
-import { HoverRail } from "../hover-rail"
+import { PromptNav } from "../hover-rail"
 import { registerPromptNav } from "../prompt-nav"
 import { viewSupportsPaged } from "./registry"
 import { ViewProvider, type ViewContextValue } from "./view-context"
@@ -261,40 +261,42 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     <ViewProvider value={ctxValue}>
       <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
         <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
-        {/* the prompt rail v4 (owner round 2026-10-24 night): ALWAYS present
-            with >1 prompt, both modes - paged pages, continuous fast-skips by
-            scrolling to the section. Paged ignores the hide setting (it is
-            the pager); continuous hides when showRail === false. children
-            MUST be undefined for Nav-less skins (a <Show> element is always
-            truthy - the empty-popover bug, live-caught twice). */}
-        <Show when={visible().length > 1 && (!continuous() || props.settings.showRail !== false)}>
-          <HoverRail
-            count={visible().length}
-            active={continuous() ? undefined : active()}
-            title={props.skin.id}
-            mode={continuous() ? "continuous" : "paged"}
-            onHide={() => props.updateSettings({ showRail: false })}
-            label={(i) => {
-              const p = visible()[i]?.prompt
-              return typeof p === "string" ? p.trim().split("\n")[0] : undefined
-            }}
-            onSelect={(i) => {
-              if (continuous()) {
-                const sc = scroller as unknown as HTMLDivElement | undefined
-                const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-                el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
-                return
-              }
-              setActive(i)
-            }}
-          >
-            {w.Nav ? (() => {
-              const NavSkin = w.Nav!
-              return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
-            })() : undefined}
-          </HoverRail>
-        </Show>
         <div class="flex flex-1 min-h-0">
+          {/* PromptNav: ALWAYS present with >1 prompt - the sidebar column
+              or the floating pill, never neither (the pill is not
+              removable). Rendered INSIDE the flex row so the sidebar
+              variant sits beside the scroller; the pill variant is fixed
+              and ignores flow. children MUST be undefined for Nav-less
+              skins (a <Show> element is always truthy - the empty-popover
+              bug, live-caught twice). */}
+          <Show when={visible().length > 1}>
+            <PromptNav
+              count={visible().length}
+              active={continuous() ? undefined : active()}
+              title={props.skin.id}
+              variant={props.settings.promptNav}
+              onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+              label={(i) => {
+                const p = visible()[i]?.prompt
+                return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+              }}
+              preview={(i) => visible()[i]?.response || undefined}
+              onSelect={(i) => {
+                if (continuous()) {
+                  const sc = scroller as unknown as HTMLDivElement | undefined
+                  const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+                  el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+                  return
+                }
+                setActive(i)
+              }}
+            >
+              {w.Nav ? (() => {
+                const NavSkin = w.Nav!
+                return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+              })() : undefined}
+            </PromptNav>
+          </Show>
           <div ref={scroller} data-transcript-scroll class="relative flex-1 min-w-0 overflow-y-auto">
             <WindowedSections
               sections={visible()}

@@ -24,7 +24,7 @@ import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
 import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
 import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
-import { HoverRail } from "./hover-rail"
+import { PromptNav } from "./hover-rail"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { Logo, Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
@@ -476,6 +476,20 @@ function SessionView(props: {
                 })
               })
               const searching = createMemo(() => props.search.trim().length > 0)
+              // hover previews for the prompt nav: the first text of the
+              // response that follows the prompt (240 chars)
+              const responsePreview = (messageID: string | undefined) => {
+                if (!messageID) return undefined
+                const all = messages()
+                const index = all.findIndex((message) => message.id === messageID)
+                for (let i = index + 1; i < all.length && (all[i] as any)?.type !== "user"; i++) {
+                  if ((all[i] as any)?.type !== "assistant") continue
+                  for (const part of (all[i] as any).content ?? []) {
+                    if (part.type === "text" && part.text?.trim()) return part.text.trim().slice(0, 240)
+                  }
+                }
+                return undefined
+              }
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
               const timelineDoc = () => (searching() ? { ...document(), messages: messages().filter((m) => (m?.type === "user" ? filtered().some((u) => u.id === m.id) : true)) } : document())
 
@@ -585,29 +599,29 @@ function SessionView(props: {
                         "lg:flex": !wide(),
                       }}
                     >
-                      <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
-                        <div class="flex items-start justify-start h-full min-h-0 w-full">
-                          {/* the prompt rail v4: ALWAYS present with >1 user
-                              message, both modes (owner round 2026-10-24) -
-                              paged pages, continuous fast-skips (jumps to the
-                              user message row). Paged ignores the hide
-                              setting (it is the only mouse pager). */}
-                          <Show when={userTurns().length > 1 && (pagedFor(props.settings, "classic") || props.settings.showRail !== false)}>
-                            <HoverRail
-                              count={userTurns().length}
-                              active={pagedFor(props.settings, "classic") ? userTurns().findIndex((m: any) => m.id === activeMessage()?.id) : undefined}
-                              mode={pagedFor(props.settings, "classic") ? "paged" : "continuous"}
-                              onHide={() => props.updateSettings({ showRail: false })}
-                              label={(i) => {
-                                const t = userTurns()[i]?.text
-                                return typeof t === "string" ? t.trim().split("\n")[0] : undefined
-                              }}
-                              onSelect={(i) => {
-                                if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
-                                else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
-                              }}
-                            />
-                          </Show>
+                       <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
+                         <div class="flex items-stretch justify-start h-full min-h-0 w-full">
+                           {/* PromptNav: ALWAYS present with >1 prompt - the
+                               sidebar column or the floating pill (one of
+                               the two, never neither). Paged pages the turn,
+                               continuous jumps to the user message row. */}
+                           <Show when={userTurns().length > 1}>
+                             <PromptNav
+                               count={userTurns().length}
+                               active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                               variant={props.settings.promptNav}
+                               onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+                               label={(i) => {
+                                 const t = userTurns()[i]?.text
+                                 return typeof t === "string" ? t.trim().split("\n")[0] : undefined
+                               }}
+                               preview={(i) => responsePreview(userTurns()[i]?.id)}
+                               onSelect={(i) => {
+                                 if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
+                                 else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                               }}
+                             />
+                           </Show>
                           <Show
                             when={!pagedFor(props.settings, "classic")}
                             fallback={

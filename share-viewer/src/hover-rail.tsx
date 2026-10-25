@@ -1,37 +1,204 @@
-// HoverRail v4 (owner directive 2026-10-24 night round): NO gutter column,
-// no border - a floating fixed pill at the left edge, vertically centered
-// on the viewport. Three states:
-//   rest        - opacity 0.4 (60% invisible)
-//   near        - an invisible left-edge proximity strip brings the pill to
-//                 FULL opacity WITHOUT expanding
-//   hover pill  - the popover expands, animated (scale+slide 150ms)
-// Always present when there is more than one user message, in BOTH modes:
-//   paged      - selecting pages to that prompt (the only mouse pager; the
-//                hide setting is ignored here)
-//   continuous - selecting JUMPS to that user message (fast-skip); the pill
-//                can be hidden via showRail (settings row + the popover
-//                footer's own "hide" action)
-// Keyboard: [ / ] previous / next, Escape closes.
+// PromptNav (owner round 2026-10-25): ONE prompt navigation control, two
+// states - a sidebar column (192px, content shifts right for it) or the
+// floating pill at the left edge (vertically centered, 40% visible at
+// rest). The setting `promptNav` picks the state; the toggle lives IN the
+// control (sidebar header collapse button / pill popover expand button) -
+// the pill is never removable, one of the two states is always present
+// while a session has more than one prompt.
+//
+// Shared by classic and every skin (BaseSessionView). Selection logic is
+// the caller's: paged pages the turn, continuous jumps the virtualizer
+// (j/k and [ ] dispatch through src/prompt-nav.ts to the same handlers).
+//
+// Hover previews: each row previews its response (first text of the
+// following assistant message / the section's response) in a card anchored
+// to the row's right edge, rendered at the panel level so it never clips
+// in the scrolling list.
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { createMediaQuery } from "@solid-primitives/media"
 
-export function HoverRail(props: {
+const IconPanel = (props: { class?: string }) => (
+  // panel-left glyph: a framed rectangle with a left column bar - drawn,
+  // not fonted, so it renders identically everywhere (no emoji, no ligature)
+  <svg viewBox="0 0 16 16" class={props.class} width="14" height="14" aria-hidden="true" fill="none">
+    <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" stroke-width="1.25" />
+    <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.25" />
+  </svg>
+)
+const IconCollapse = (props: { class?: string }) => (
+  <svg viewBox="0 0 16 16" class={props.class} width="14" height="14" aria-hidden="true" fill="none">
+    <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" stroke-width="1.25" />
+    <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.25" />
+    <polyline points="9 6.5 11.5 8 9 9.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+  </svg>
+)
+
+/** the kbd chip: mono glyph on a hairline chip - the styled replacement
+ *  for raw "[ ] switch" text and link-styled actions */
+function Kbd(props: { children: JSX.Element }) {
+  return (
+    <kbd class="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded border border-border-weak-base bg-surface-base text-10-mono text-text-weaker leading-none">
+      {props.children}
+    </kbd>
+  )
+}
+
+export type PromptNavVariant = "pill" | "sidebar"
+
+export function PromptNav(props: {
   count: number
-  /** currently active prompt index (paged) or undefined */
+  /** currently active prompt index (paged) or undefined (continuous) */
   active?: number
   label: (i: number) => string | undefined
+  /** response preview for hover cards; undefined = no preview */
+  preview?: (i: number) => string | undefined
   onSelect: (i: number) => void
-  /** skin custom content (replaces the default list). undefined = default */
+  /** skin custom rows (replaces the default list). undefined = default */
   children?: JSX.Element
-  /** compact heading for the popover (skin name etc.) */
+  /** compact heading (skin name etc.) */
   title?: string
-  /** "continuous" shows the hide action in the footer (paged never hides) */
-  mode?: "paged" | "continuous"
-  /** the hide action's callback (continuous mode only) */
-  onHide?: () => void
+  variant: PromptNavVariant
+  onSetVariant: (v: PromptNavVariant) => void
 }) {
+  // the sidebar state only applies on desktop widths; below md the control
+  // is always the pill (a 192px column would eat a phone)
+  const desktop = createMediaQuery("(min-width: 768px)")
+  const sidebar = () => props.variant === "sidebar" && desktop()
+  return (
+    <Show when={sidebar()} fallback={<Pill {...props} />}>
+      <Sidebar {...props} />
+    </Show>
+  )
+}
+
+/** one prompt row - shared by the sidebar and the pill popover so both
+ *  states read as the same control. number + label + accent marker. */
+function NavRow(props: {
+  i: number
+  active: boolean
+  label: string | undefined
+  onHover?: (i: number, el: HTMLElement) => void
+  onSelect: (i: number) => void
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      class="osh-pnav-row group relative w-full flex items-center gap-2 min-h-7 px-2 py-1 rounded-md border-none cursor-pointer text-left"
+      classList={{
+        "bg-surface-raised-base text-text-strong": props.active,
+        "bg-transparent text-text-base hover:bg-surface-base": !props.active,
+      }}
+      aria-current={props.active ? "true" : undefined}
+      onMouseEnter={(e) => props.onHover?.(props.i, e.currentTarget)}
+      onClick={() => props.onSelect(props.i)}
+    >
+      <span
+        class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full transition-opacity duration-150"
+        classList={{ "opacity-100": props.active, "opacity-0": !props.active }}
+        style={{ background: "var(--openshare-accent, var(--text-base))" }}
+      />
+      <span class="text-12-mono text-text-weaker w-5 shrink-0 tabular-nums">{String(props.i + 1).padStart(2, "0")}</span>
+      <span class="truncate text-13-regular">{props.label ?? "prompt"}</span>
+    </button>
+  )
+}
+
+/** the hover preview card, anchored past the list's right edge. `top` and
+ *  `left` come from rects (the popover's right edge minus the wrapper's
+ *  left) because `left: 100%` resolves against the WRAPPER - which is
+ *  only pill-wide, painting the preview straight over the rows
+ *  (vision-caught). Rendered at the wrapper level, never inside the
+ *  scrolling list. */
+function PreviewCard(props: { label: string | undefined; text: string; top: number; left: number }) {
+  return (
+    <div
+      class="osh-pnav-preview absolute z-50 w-72 max-w-[calc(100vw-5rem)] p-3 rounded-lg border border-border-weak-base bg-background-base shadow-lg pointer-events-none"
+      style={{ top: `${props.top}px`, left: `${props.left}px` }}
+      role="note"
+    >
+      <div class="text-12-medium text-text-strong line-clamp-2">{props.label ?? "prompt"}</div>
+      <div class="pt-0.5 text-12-regular text-text-weak line-clamp-3">{props.text}</div>
+    </div>
+  )
+}
+
+// ------------------------------------------------------------- sidebar ----
+function Sidebar(props: Parameters<typeof PromptNav>[0]) {
+  const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
+  let panel: HTMLDivElement | undefined
+  let list: HTMLDivElement | undefined
+
+  const onHover = (i: number, el: HTMLElement) => {
+    if (!props.preview || !panel) return setPreview(undefined)
+    const text = props.preview(i)
+    if (!text) return setPreview(undefined)
+    const pr = panel.getBoundingClientRect()
+    const er = el.getBoundingClientRect()
+    setPreview({ i, top: er.top - pr.top, left: pr.width + 8 })
+  }
+
+  return (
+    <aside ref={panel} class="relative flex flex-col h-full w-48 shrink-0 border-r border-border-weak-base bg-background-base" aria-label="prompts">
+      <div class="flex items-center justify-between h-8 px-3 shrink-0">
+        <span class="text-11-mono text-text-weaker uppercase tracking-wider">Prompts</span>
+        <button
+          type="button"
+          class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
+          onClick={() => props.onSetVariant("pill")}
+          title="collapse to the floating pill"
+          aria-label="collapse prompt sidebar"
+        >
+          <IconCollapse />
+        </button>
+      </div>
+      <div
+        ref={list}
+        class="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-0.5"
+        role="menu"
+        aria-label="prompts"
+        onMouseLeave={() => setPreview(undefined)}
+        onScroll={() => setPreview(undefined)}
+      >
+        <Show
+          when={props.children}
+          fallback={
+            <For each={Array.from({ length: props.count }, (_, i) => i)}>
+              {(i) => (
+                <NavRow
+                  i={i}
+                  active={props.active === i}
+                  label={props.label(i)}
+                  onHover={onHover}
+                  onSelect={(i) => props.onSelect(i)}
+                />
+              )}
+            </For>
+          }
+        >
+          {props.children}
+        </Show>
+        <Show when={props.count === 0}>
+          <div class="px-2 py-1 text-12-regular text-text-weaker">no prompts match</div>
+        </Show>
+      </div>
+      <div class="flex items-center justify-between h-7 px-3 shrink-0 text-10-mono text-text-weaker border-t border-border-weak-base/60">
+        <span class="tabular-nums">{String(props.count).padStart(2, "0")} prompts</span>
+        <span class="flex items-center gap-1"><Kbd>J</Kbd><Kbd>K</Kbd></span>
+      </div>
+      <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} />}</Show>
+    </aside>
+  )
+}
+
+// ---------------------------------------------------------------- pill ----
+function Pill(props: Parameters<typeof PromptNav>[0]) {
   const [near, setNear] = createSignal(false)
   const [open, setOpen] = createSignal(false)
+  const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
   let hideTimer: ReturnType<typeof setTimeout> | undefined
+  let panel: HTMLDivElement | undefined
+  let popEl: HTMLDivElement | undefined
 
   const stripEnter = () => {
     if (hideTimer) clearTimeout(hideTimer)
@@ -42,6 +209,7 @@ export function HoverRail(props: {
     hideTimer = setTimeout(() => {
       setNear(false)
       setOpen(false)
+      setPreview(undefined)
     }, 220)
   }
   const pillEnter = () => {
@@ -49,12 +217,11 @@ export function HoverRail(props: {
     setNear(true)
     setOpen(true)
   }
-  // [ ] are handled globally (src/prompt-nav.ts - aliases of j/k with the
-  // active view's registered implementation); the rail only owns Escape
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       setOpen(false)
       setNear(false)
+      setPreview(undefined)
     }
   }
   onMount(() => window.addEventListener("keydown", onKey))
@@ -62,6 +229,18 @@ export function HoverRail(props: {
     window.removeEventListener("keydown", onKey)
     if (hideTimer) clearTimeout(hideTimer)
   })
+
+  const onHover = (i: number, el: HTMLElement) => {
+    if (!props.preview || !panel) return setPreview(undefined)
+    const text = props.preview(i)
+    if (!text) return setPreview(undefined)
+    const wr = panel.getBoundingClientRect()
+    const er = el.getBoundingClientRect()
+    // anchor past the POPOVER's right edge (its rect), not left:100% of the
+    // wrapper - the wrapper is only pill-wide
+    const popRect = popEl?.getBoundingClientRect() ?? wr
+    setPreview({ i, top: er.top - wr.top, left: popRect.right - wr.left + 8 })
+  }
 
   return (
     <>
@@ -77,6 +256,7 @@ export function HoverRail(props: {
       <div
         role="navigation"
         aria-label="prompts"
+        ref={panel}
         onMouseEnter={pillEnter}
         onMouseLeave={stripLeave}
         class="fixed left-2 top-1/2 -translate-y-1/2 z-40"
@@ -93,7 +273,6 @@ export function HoverRail(props: {
           onClick={() => (open() ? stripLeave() : pillEnter())}
           aria-label={`prompts (${props.count})`}
           aria-expanded={open()}
-          title="prompts - [ ] keys switch"
         >
           <span class="text-10-mono text-text-weaker leading-none">{String(props.count).padStart(2, "0")}</span>
           <span class="flex flex-col gap-[3px] py-0.5">
@@ -111,69 +290,73 @@ export function HoverRail(props: {
         {/* the popover: anchored to the pill's right edge, animated in */}
         <Show when={open()}>
           <div
-            class="osh-rail-pop absolute left-full bottom-0 z-50 w-80 max-h-[68vh] overflow-y-auto p-2 rounded-xl border border-border-weak-base bg-background-base shadow-2xl"
+            ref={popEl}
+            class="osh-rail-pop absolute left-full bottom-0 z-50 w-80 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
             style={{ "margin-left": "6px" }}
             role="menu"
             aria-label="prompts"
           >
-            <Show when={props.title}>
-              <div class="px-2 pb-1.5 text-12-mono text-text-weaker uppercase tracking-wider">{props.title}</div>
-            </Show>
-            <Show
-              when={props.children}
-              fallback={
-                <div class="flex flex-col">
+            <div class="flex items-center justify-between h-8 px-3 border-b border-border-weak-base/60">
+              <span class="flex items-center gap-2 min-w-0">
+                <span class="text-11-mono text-text-weaker uppercase tracking-wider truncate">{props.title ?? "Prompts"}</span>
+                <span class="text-10-mono text-text-weaker tabular-nums shrink-0">{String(props.count).padStart(2, "0")}</span>
+              </span>
+              <button
+                type="button"
+                class="flex items-center gap-1.5 h-6 px-1.5 rounded text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
+                onClick={() => {
+                  props.onSetVariant("sidebar")
+                  setOpen(false)
+                }}
+                title="keep prompts as a sidebar column"
+                aria-label="expand to sidebar"
+              >
+                <IconPanel />
+                <span class="hidden sm:inline">sidebar</span>
+              </button>
+            </div>
+            <div
+              class="max-h-[56vh] overflow-y-auto p-1.5 flex flex-col gap-0.5"
+              onMouseLeave={() => setPreview(undefined)}
+              onScroll={() => setPreview(undefined)}
+            >
+              <Show
+                when={props.children}
+                fallback={
                   <For each={Array.from({ length: props.count }, (_, i) => i)}>
                     {(i) => (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        classList={{
-                          "group relative text-left text-13-regular pl-5 pr-2 py-1.5 rounded-md border-none cursor-pointer truncate": true,
-                          "bg-surface-raised-base text-text-strong": props.active === i,
-                          "bg-transparent text-text-base hover:bg-surface-base": props.active !== i,
-                        }}
-                        onClick={() => {
+                      <NavRow
+                        i={i}
+                        active={props.active === i}
+                        label={props.label(i)}
+                        onHover={onHover}
+                        onSelect={(i) => {
                           props.onSelect(i)
                           setOpen(false)
+                          setPreview(undefined)
                         }}
-                      >
-                        <span
-                          class="absolute left-1.5 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full"
-                          classList={{ "opacity-100": props.active === i, "opacity-0": props.active !== i }}
-                          style={{ background: "var(--openshare-accent, var(--text-base))" }}
-                        />
-                        <span class="text-12-mono text-text-weaker mr-2">{String(i + 1).padStart(2, "0")}</span>
-                        {props.label(i) ?? "prompt"}
-                      </button>
+                      />
                     )}
                   </For>
-                </div>
-              }
-            >
-              {props.children}
-            </Show>
-            <div class="pt-1.5 px-2 pb-0.5 flex items-center justify-between text-10-mono text-text-weaker">
+                }
+              >
+                {props.children}
+              </Show>
+            </div>
+            <div class="flex items-center justify-between h-7 px-3 border-t border-border-weak-base/60 text-10-mono text-text-weaker">
               <Show when={props.active !== undefined} fallback={<span>jump</span>}>
-                <span>
+                <span class="tabular-nums">
                   {String((props.active ?? 0) + 1).padStart(2, "0")} / {String(props.count).padStart(2, "0")}
                 </span>
               </Show>
-              <span class="flex items-center gap-2">
-                <Show when={props.mode === "continuous" && props.onHide}>
-                  <button
-                    type="button"
-                    class="bg-transparent border-none cursor-pointer text-text-weaker hover:text-text-base underline decoration-dotted"
-                    onClick={() => props.onHide?.()}
-                    title="hide the rail in scroll mode (settings can bring it back)"
-                  >
-                    hide
-                  </button>
-                </Show>
-                <span>[ ] switch - esc close</span>
+              <span class="flex items-center gap-1">
+                <Kbd>J</Kbd><Kbd>K</Kbd><span class="px-0.5">prompts</span><Kbd>ESC</Kbd><span class="px-0.5">close</span>
               </span>
             </div>
           </div>
+          {/* the hover preview renders at the WRAPPER level: the popover is
+              overflow-hidden (rounded header/footer) and would clip it */}
+          <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} />}</Show>
         </Show>
       </div>
     </>

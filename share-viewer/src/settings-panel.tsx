@@ -278,12 +278,21 @@ export function SettingsBody(props: {
               }
             />
           </Show>
-          <Switch
-            label="Prompt rail"
-            hint="the fast-skip pill beside the transcript in scroll mode (paged mode always shows it - it is the pager)"
-            on={props.settings.showRail !== false}
-            onChange={() => props.update({ showRail: props.settings.showRail === false })}
-          />
+          {/* prompt navigation state: the floating pill or the sidebar
+              column - one of the two is always present; the toggle also
+              lives in the control itself (sidebar collapse / popover
+              "sidebar" button) */}
+          <div class="pl-3 pb-1.5">
+            <div class="text-12-regular text-text-weaker pb-1">Prompt navigation</div>
+            <Segmented
+              value={props.settings.promptNav}
+              options={[
+                { id: "pill" as const, label: "pill" },
+                { id: "sidebar" as const, label: "sidebar" },
+              ]}
+              onChange={(promptNav) => props.update({ promptNav })}
+            />
+          </div>
           <Switch
             label="Center content"
             on={props.settings.centerContent}

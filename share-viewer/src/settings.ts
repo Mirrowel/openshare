@@ -9,13 +9,14 @@ export type OshSettings = {
   /** legacy storage (continuous-by-view) - read for migration only,
    *  stripped on the next write */
   continuousByView?: Record<string, boolean>
-  /** per-view PAGED choice, keyed by view id ("classic", "terminal",
-   *  ...). Absent key = continuous (default). */
-  pagedByView?: Record<string, boolean>
-  /** the prompt rail in CONTINUOUS mode (paged always shows it - it is
-   *  the only mouse pager). false hides the fast-skip pill. */
-  showRail?: boolean
-  followLive: boolean
+   /** per-view PAGED choice, keyed by view id ("classic", "terminal",
+    *  ...). Absent key = continuous (default). */
+   pagedByView?: Record<string, boolean>
+   /** prompt navigation state: the floating pill (default) or the sidebar
+    *  column; one of the two is ALWAYS present with >1 prompt - the pill
+    *  is never fully removable (owner round 2026-10-25) */
+   promptNav: "pill" | "sidebar"
+   followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
   /** diff rendering: auto (split when it fits), or forced (forced split
@@ -50,7 +51,8 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   view: "classic",
   theme: "system",
   continuous: false,
-  showRail: true,
+  pagedByView: {},
+  promptNav: "pill",
   followLive: true,
   textSize: "normal",
   readText: "normal",
@@ -90,6 +92,9 @@ export function readSettings(): OshSettings {
         }
         delete parsed.diffStyle
         delete parsed.toolOutput
+        // showRail is gone: the pill/sidebar pair replaced it and the pill
+        // is no longer removable
+        delete parsed.showRail
         if (!Array.isArray(parsed.autoExpand)) parsed.autoExpand = []
         return { ...SETTINGS_DEFAULTS, ...parsed }
       }
