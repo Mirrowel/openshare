@@ -464,13 +464,23 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   color: var(--text-strong);
   font-weight: 600;
 }
+/* --- file-card sizing (owner round 2026-10-25) --------------------------
+   ONE fixed card width for the whole file family: read, write and
+   unified edit all render at --osh-card (30rem); a split diff renders at
+   exactly 2x, so the first column NEVER changes size when toggling
+   U/S - split only adds the second pane. Every card caps at 100% so
+   narrow columns and skin sheets clamp automatically. Fixed width by
+   construction replaces the per-card measurement machinery (a collapsed
+   pierre scroller used to poison the measurement and refuse the split
+   forever). */
+:root {
+  --osh-card: 30rem;
+}
 [data-component="osh-file-body"] {
-  /* the whole card hugs its content (capped at the column): the titlebar
-     and the overflow toggle then sit on the CONTENT's real edge instead
-     of the page column's (live-caught: the toggle floated far right of a
-     narrow unified diff) */
-  width: fit-content;
-  max-width: min(100%, 75vw);
+  width: min(100%, var(--osh-card));
+}
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
+  width: min(100%, calc(2 * var(--osh-card)));
 }
 [data-component="osh-file-body"] > [data-component="file"],
 [data-component="osh-file-body"] > [data-component="edit-content"],
@@ -478,10 +488,16 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   width: auto;
   max-width: 100%;
 }
-/* split escape: the edit card may grow past the 75vw text cap (its width
-   is set inline from content measurement) */
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
-  max-width: calc(100vw - 48px);
+
+/* card controls stack on the title row's right edge: diff mode (edit
+   only) directly above the wrap/scroll selector */
+.osh-card-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  margin-left: auto;
+  flex: none;
 }
 
 /* the file-title extension badge (TS/MD/JSON...) */
@@ -499,13 +515,11 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 
 
 /* --- tool output overflow (setting: scroll | wrap) --------------------
-   Every output surface is hard-capped at min(100%, 75vw) - one long line
-   must never stretch a card to page width; the setting only picks how
-   long lines behave inside the cap: hidden-scrollbar horizontal scroll
-   (VSCode-style, default) or wrapping. The split diff keeps its own
-   wider-but-capped escape. */
-[data-timeline-row] [data-component="osh-file-body"],
-[data-row-key] [data-component="osh-file-body"],
+    Every text output surface is hard-capped at min(100%, 75vw) - one long
+    line must never stretch a card to page width; the setting only picks
+    how long lines behave inside the cap: hidden-scrollbar horizontal
+    scroll (VSCode-style) or wrapping. File cards have their own fixed
+    width (--osh-card) and are not capped here. */
 [data-timeline-row] .osh-pre,
 [data-row-key] .osh-pre {
   max-width: min(100%, 75vw);
@@ -552,11 +566,9 @@ html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-m
 }
 
 /* --- split diff (VSCode-style) ------------------------------------------
-   The split card's width is set INLINE from measurement (viewport - card
-   left - margin) so it can never overflow the page (the old min(200%,
-   100vw-48) rule overflowed because the card is left-anchored inside a
-   CENTERED column). Panes scroll horizontally, hidden scrollbar, and
-   contain only their X axis so vertical wheel chains to the page. */
+   The split card is exactly 2x --osh-card (CSS above); panes scroll
+   horizontally with a hidden scrollbar and contain only their X axis so
+   the vertical wheel chains to the page. */
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
   overflow-x: auto;
   scrollbar-width: none;

@@ -379,9 +379,10 @@ export function SettingsBody(props: {
             onChange={() => props.update({ smoothScroll: !props.settings.smoothScroll })}
           />
           <div class="pt-1" />
-          {/* diff layout: auto (split when it fits), or forced - forced
-              split still requires the width; the per-card U/A/S toggle in
-              edit headers writes the same setting */}
+          {/* diff layout: auto (split when the column fits two cards), or
+              forced - forced split still needs the width; the per-card
+              U/A/S control sits at the edit card's right edge, above the
+              wrap/scroll selector */}
           <div class="pl-3 pb-1.5">
             <div class="text-12-regular text-text-weaker pb-1">Diff layout</div>
             <Segmented

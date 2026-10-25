@@ -123,114 +123,47 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Auto/forced unified-split (owner spec): `diffMode` setting = auto |
- * split | unified. Split width is CONTENT-DERIVED (longest diff line),
- * clamped to the measured available space (viewport - card left - margin)
- * so a split card never overflows the page and never sprawls half-empty
- * (live-caught both ways). Panes scroll horizontally with a hidden
- * scrollbar. The settle race (identical edits rendering different modes -
- * measured mid-animation) dies via re-check after Kobalte's spring; the
- * <Show keyed> branch pair re-creates the File when the mode flips
- * (Dynamic has no remount API - a `key` prop does nothing). */
-// mono char width at the kit's 12px code size (measured once, lazily)
-let monoCharWidth = 0
-function measureMonoChar(): number {
-  if (monoCharWidth > 0) return monoCharWidth
-  try {
-    const canvas = document.createElement("canvas")
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return 7.2
-    ctx.font = '12px ui-monospace, SFMono-Regular, Consolas, monospace'
-    monoCharWidth = ctx.measureText("0123456789abcdef").width / 16
-  } catch {
-    monoCharWidth = 7.2
+/** File-card sizing (owner round 2026-10-25): one fixed card width for the
+ * whole file family — read, write and unified edit all render at
+ * `--osh-card` (30rem); a split diff renders at exactly 2x that, so the
+ * first column NEVER changes size when toggling U/S — split only adds the
+ * second pane. Widths live in CSS (app.css); JS keeps a single shared
+ * measurement of the transcript column for the auto split decision and
+ * the "forced split but no room" indicator. The old per-card measurement
+ * machinery (spring re-checks, per-card ResizeObservers, mono-char canvas
+ * math) is gone: card width is stable by construction, so the class of
+ * hug-poisons-measurement bugs (a 264px collapsed scroller refusing the
+ * split forever) cannot exist. */
+const [colWidth, setColWidth] = createSignal(0)
+let colEl: HTMLElement | undefined
+let colRO: ResizeObserver | undefined
+function trackColumn(el: HTMLElement) {
+  const host =
+    el.closest<HTMLElement>("[data-transcript-content]") ??
+    el.closest<HTMLElement>("[data-transcript-scroll]") ??
+    el
+  if (host === colEl) {
+    if (colRO) setColWidth(host.clientWidth)
+    return
   }
-  return monoCharWidth
+  colEl = host
+  colRO?.disconnect()
+  colRO = new ResizeObserver(() => setColWidth(host.clientWidth))
+  colRO.observe(host)
+  setColWidth(host.clientWidth)
 }
+const CARD_W = 480 // px — mirrors --osh-card: 30rem in app.css
+const splitFits = () => colWidth() >= CARD_W * 2 + 24
 
-function useSplitFit(contentChars?: () => number) {
-  const [maxPx, setMaxPx] = createSignal(0)
-  let remeasure: (() => void) | undefined
-  const ref = (el: HTMLDivElement) => {
-    // Availability must be measured from a MODE-INDEPENDENT ancestor.
-    // The card (el.parentElement, hugging) was the old reference and the
-    // decision fed on its own rendered width: a unified pierre body is a
-    // horizontal scroller whose min-content collapses (~260px for some
-    // patches), so card*2 < 600 refused the split forever — reload-proof,
-    // deterministic per patch (live-caught on a share where exactly one
-    // edit card never split no matter the open order).
-    const row = () =>
-      el.closest("[data-timeline-row], [data-row-key], .osh-entry-slot") ??
-      el.closest(".osh-indent") ??
-      el.parentElement ??
-      el
-    const measure = () => {
-      // the virtualizer can detach this element between the measure
-      // being scheduled (RO / microtask / timer) and running — measuring
-      // a detached node crashes the render tree
-      if (!el.isConnected) return
-      const r = row().getBoundingClientRect()
-      if (r.width <= 0) return // row not laid out yet — keep the last value
-      const avail = window.innerWidth - r.left - 24
-      const col = r.width
-      let cap = avail
-      // skin sheets (atlas): a split card must not jut past the sheet's
-      // right edge into the page margin (live-caught on atlas with the
-      // widened sheet)
-      const sheet = el.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet")
-      if (sheet) {
-        const sr = sheet.getBoundingClientRect()
-        cap = Math.min(cap, Math.max(0, sr.right - r.left - 24))
-      }
-      setMaxPx(Math.max(0, Math.min(col * 2, cap)))
-    }
-    remeasure = measure
-    // Solid fires ref DURING element creation, before the node is
-    // attached — closest()/parentElement resolve nothing yet. Defer the
-    // initial wiring one frame so the row exists (observing null threw
-    // and killed the share through the error boundary).
-    const raf = requestAnimationFrame(() => {
-      measure()
-      ro.observe(row())
-    })
-    const ro = new ResizeObserver(measure)
-    // ONE delayed re-check past the expand spring (a mid-spring
-    // measurement can be transiently wrong). The old t2=1100ms +
-    // transitionend listeners raced the spring: a late split()/unified
-    // flip remounted the File and shifted layout AGAIN, after every
-    // compensator had settled - live-caught as flicker + pushed-up titles
-    // on the 3-edit cluster (headless skips springs, automation never
-    // saw it). One check, past the spring, is bounce-proof.
-    const t1 = setTimeout(measure, 450)
-    onCleanup(() => {
-      cancelAnimationFrame(raf)
-      clearTimeout(t1)
-      ro.disconnect()
-      remeasure = undefined
-    })
-  }
-  // a mode flip (U|A|S) re-evaluates availability: the row is
-  // mode-independent, so this mostly re-reads the same numbers, but it
-  // guarantees the decision never sits on a pre-layout zero
-  createEffect(() => {
-    diffModeSignal()
-    queueMicrotask(() => remeasure?.())
+/** effective diff layout: forced unified stays unified; forced split needs
+ * the room (falls back unified with the starved indicator); auto splits
+ * exactly when the column fits two cards side by side */
+function effectiveDiffMode(): () => "split" | "unified" {
+  return createMemo<"split" | "unified">(() => {
+    const m = diffModeSignal()
+    if (m === "unified") return "unified"
+    return splitFits() ? "split" : "unified"
   })
-  const mode = () => diffModeSignal()
-  // the width the split card actually wants: longest line x2 panes +
-  // gutter allowance, clamped to [780, maxPx]
-  const splitWidth = createMemo(() => {
-    const chars = contentChars?.() ?? 0
-    if (chars <= 0) return maxPx()
-    const wanted = Math.ceil(chars * measureMonoChar()) * 2 + 140
-    return Math.max(780, Math.min(wanted, maxPx() || wanted))
-  })
-  const split = createMemo(() => {
-    const m = mode()
-    if (m === "unified") return false
-    return splitWidth() >= 780 && maxPx() >= 600
-  })
-  return { ref, split, width: splitWidth, maxPx }
 }
 
 /** One header for every file tool: label, directory, filename, meta.
@@ -386,16 +319,20 @@ function FileCard(props: {
   )
 }
 
-/** Shared body frame: tools indent under their trigger. The overflow
- *  toggle rides the title row (expanded only by construction). */
-function FileBody(props: { title?: string; children: JSX.Element }) {
+/** Shared body frame: tools indent under their trigger. The card controls
+ *  (diff mode when present, overflow toggle always) stack on the title
+ *  row's right edge. */
+function FileBody(props: { title?: string; controls?: JSX.Element; children: JSX.Element }) {
   return (
-    <div data-component="osh-file-body">
+    <div data-component="osh-file-body" ref={(el) => queueMicrotask(() => trackColumn(el))}>
       <div class="osh-file-titlebar">
         <Show when={props.title}>
           <FileTitle path={props.title!} />
         </Show>
-        <OverflowToggle />
+        <div class="osh-card-controls">
+          {props.controls}
+          <OverflowToggle />
+        </div>
       </div>
       {props.children}
     </div>
@@ -476,16 +413,10 @@ const EditTool = (props: ToolProps) => {
         (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
       : undefined,
   )
-  // longest diff line (content chars) drives the split width; from the
-  // host patch when present, else before/after. NOTE: memos are EAGER -
-  // this must be declared after `patch` or it reads a TDZ const
-  // (live-caught: "Cannot access 'patch' before initialization").
-  const contentChars = createMemo(() => {
-    const lines = (t: string) => t.split("\n").map((l) => l.replace(/^[+-@ ]/, "").length)
-    const all = patch() != null ? lines(patch()!) : [...lines(oldText()), ...lines(newText())]
-    return all.reduce((a, b) => Math.max(a, b), 0)
-  })
-  const fit = useSplitFit(contentChars)
+  // fixed card widths (owner round 2026-10-25): the split/unified decision
+  // rides the shared column measurement — no per-card measurement left
+  const effMode = effectiveDiffMode()
+  const starved = () => diffModeSignal() === "split" && !splitFits()
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -500,7 +431,7 @@ const EditTool = (props: ToolProps) => {
     return { adds, dels }
   })
   return (
-    <div data-component="osh-edit-tool" data-osh-split={fit.split() ? "on" : "off"}>
+    <div data-component="osh-edit-tool" data-osh-split={effMode() === "split" ? "on" : "off"}>
       <BasicTool
         {...props}
         icon="code-lines"
@@ -511,35 +442,9 @@ const EditTool = (props: ToolProps) => {
             label={props.tool === "patch" ? "Patch" : "Edit"}
             path={path()}
             meta={
-              <div class="flex items-center gap-2">
-                <Show when={stats().adds || stats().dels}>
-                  <ChangeCounts adds={stats().adds} dels={stats().dels} />
-                </Show>
-                {/* per-card diff mode toggle (writes the global setting) */}
-                <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "unified" }}
-                    title="Unified (forced)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("unified") }}
-                  >U</button>
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "auto" }}
-                    title="Auto (split when it fits)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("auto") }}
-                  >A</button>
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "split", "osh-dm-starved": diffModeSignal() === "split" && !fit.split() }}
-                    title={diffModeSignal() === "split" && !fit.split() ? "Split — not enough width for this card; showing unified" : "Split (forced, needs width)"}
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
-                  >S</button>
-                </div>
-              </div>
+              <Show when={stats().adds || stats().dels}>
+                <ChangeCounts adds={stats().adds} dels={stats().dels} />
+              </Show>
             }
           />
         )}
@@ -548,18 +453,44 @@ const EditTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody title={path()}>
-            <div
-              data-component="edit-content"
-              ref={fit.ref}
-              style={fit.split() ? { width: `${fit.width()}px` } : undefined}
-            >
+          <FileBody
+            title={path()}
+            controls={
+              /* per-card diff mode toggle (writes the global setting) —
+                 right edge of the card, directly above the wrap/scroll
+                 selector (owner round 2026-10-25) */
+              <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
+                <button
+                  type="button"
+                  class="osh-dm-btn"
+                  classList={{ "osh-dm-on": diffModeSignal() === "unified" }}
+                  title="Unified (forced)"
+                  onclick={(e) => { e.stopPropagation(); setDiffMode("unified") }}
+                >U</button>
+                <button
+                  type="button"
+                  class="osh-dm-btn"
+                  classList={{ "osh-dm-on": diffModeSignal() === "auto" }}
+                  title="Auto (split when it fits)"
+                  onclick={(e) => { e.stopPropagation(); setDiffMode("auto") }}
+                >A</button>
+                <button
+                  type="button"
+                  class="osh-dm-btn"
+                  classList={{ "osh-dm-on": diffModeSignal() === "split", "osh-dm-starved": starved() }}
+                  title={starved() ? "Split — not enough width here; showing unified" : "Split (forced, needs width)"}
+                  onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
+                >S</button>
+              </div>
+            }
+          >
+            <div data-component="edit-content">
               {/* keyed branch pair: Solid's Dynamic has NO remount API (a
                   `key` prop is passed through, does nothing - live-caught:
                   the first card of a batch rendered split, the rest stayed
                   unified forever). Distinct <Show keyed> branches actually
                   re-create the File when the mode flips. */}
-              <Show when={fit.split()} keyed>
+              <Show when={effMode() === "split"} keyed>
                 <Dynamic
                   component={fileComponent as any}
                   mode="diff"
@@ -571,7 +502,7 @@ const EditTool = (props: ToolProps) => {
                   onRendered={() => props.onContentRendered?.()}
                 />
               </Show>
-              <Show when={!fit.split()} keyed>
+              <Show when={effMode() === "unified"} keyed>
                 <Dynamic
                   component={fileComponent as any}
                   mode="diff"

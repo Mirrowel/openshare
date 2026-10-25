@@ -63,7 +63,9 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   toolGrouping: true,
   toolGroupingScope: "context",
   groveThinking: "left",
-  outputOverflow: "scroll",
+  // wrap is the default (owner round 2026-10-25); saved cookies keep
+  // their explicit choice
+  outputOverflow: "wrap",
   promptStyle: "bubble",
   smoothScroll: true,
 }
