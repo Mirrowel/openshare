@@ -341,6 +341,46 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: reads no longer MERGE inside a context group. Upstream
+// collapses consecutive reads into one inner array, rendered as the inline
+// CurrentReadToolGroup subtitle row - but our forks bypass that renderer,
+// so the merged array flows into a single ToolDisplay row that shows only
+// group()[0] (live-caught: "Used 4 Read" expanded to one row, three reads
+// invisible). Reads render as individual expandable rows, like every other
+// grouped tool (owner directive: grouping groups individual tools).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: reads no longer merge inside a context group")) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const A = [
+        "      if (",
+        "        currentToolGroupedRead(tool) &&",
+        "        Array.isArray(previous) &&",
+        "        previous[0] &&",
+        "        currentToolGroupedRead(previous[0])",
+        "      ) {",
+        "        previous.push(tool)",
+        "",
+        "        return groups",
+        "      }",
+      ].join(nl)
+      const B = [
+        "      // openshare fork: reads no longer merge inside a context group -",
+        "      // the merged array rendered through one ToolDisplay row showing",
+        "      // only the first tool (live-caught: \"Used 4 Read\" expanded to a",
+        "      // single row). Reads stay individual expandable rows, like every",
+        "      // other grouped tool (owner directive). CurrentReadToolGroup is",
+        "      // bypassed below either way.",
+      ].join(nl)
+      if (!s.includes(A)) throw new Error("vendor-v2: read-merge anchor missing - upstream drifted")
+      s = s.replace(A, B)
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: grouped task rows label the agent that ACTUALLY ran.
 // Upstream's grouped label ignores the task input's agent entirely (it
 // always reads ui.tool.agent.default = "Agent"). The viewer's fold

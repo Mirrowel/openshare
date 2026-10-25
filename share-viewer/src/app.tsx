@@ -515,8 +515,14 @@ function SessionView(props: {
                         )}
                       </Show>
                     </Show>
-                    <div class="flex items-center gap-2.5 ml-auto">
+                    {/* status sits dead-center of the bar regardless of
+                        siblings (brand chip may or may not exist) - the
+                        flex flow put it far left with no branding, then
+                        far right with ml-auto (live-caught both ways) */}
+                    <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
                       <StatusLine status={props.source.status()} />
+                    </div>
+                    <div class="flex items-center gap-2.5 ml-auto">
                       <button
                         class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
                         title="copy session as markdown"
