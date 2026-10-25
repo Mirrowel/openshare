@@ -633,6 +633,20 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="u
   opacity: 0.5;
 }
 
+/* --- conversation layout: row only at 900px+ -----------------------------
+   TurnNav switches to its sidebar at 900px; the container must flip to
+   the row at the SAME width (Tailwind md:flex-row flipped at 768, and in
+   the 768-899px gap the narrow bar rendered inside the stretch row -
+   full-height button, popover anchored at the giant rect's left edge). */
+[data-osh-conv-layout] {
+  flex-direction: column;
+}
+@media (min-width: 900px) {
+  [data-osh-conv-layout] {
+    flex-direction: row;
+  }
+}
+
 /* --- conversation view (TurnNav - ported from the conversation PR) ----- */
 .osh-turn-button {
   display: inline-flex;

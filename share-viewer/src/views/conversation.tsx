@@ -257,7 +257,12 @@ export function ConversationView(props: ViewProps) {
         search={props.search}
         onSearch={props.onSearch}
       />
-      <div class="flex flex-col md:flex-row flex-1 min-h-0 min-w-0">
+      {/* layout direction is driven by [data-osh-conv-layout] in app.css
+          at 900px - aligned with TurnNav's own breakpoint. Tailwind's
+          md:flex-row (768) left the 768-899px gap where the narrow bar
+          rendered inside the row and stretched to its full height, and
+          the popover anchored to that giant rect's left edge */}
+      <div data-osh-conv-layout class="flex flex-col flex-1 min-h-0 min-w-0">
       <TurnNav
         messages={userTurns()}
         filtered={filtered()}
