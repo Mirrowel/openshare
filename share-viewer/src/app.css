@@ -557,6 +557,11 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] {
   justify-content: flex-start !important;
   align-items: flex-start !important;
   text-align: left;
+  /* flat mode's turn separators: a hairline above AND below each prompt
+     (flat mode only) - the prompt delimits the turn without a bubble */
+  border-top: 1px solid var(--border-weak-base);
+  border-bottom: 1px solid var(--border-weak-base);
+  padding-block: 10px;
 }
 html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-body"] {
   width: auto !important;
@@ -710,6 +715,20 @@ html[data-color-scheme="light"] {
      applied), and a reserved gutter is what makes a thumb press a REAL
      scrollbar press that can never start a text selection under it */
   scrollbar-gutter: stable;
+  /* a press on the scroller's own surface (dead margins, the strip under
+     a floating overlay thumb) must never ANCHOR a text selection - the
+     scroller itself is unselectable; content rows re-enable selection
+     below. Without this, a far-right press anchored on the selectable
+     scroller background and the drag extended across whatever selectable
+     surface it crossed (live-diagnosed). */
+  user-select: none;
+}
+/* selection lives on CONTENT only: message/tool rows inside the
+   scroller. Chrome rows (footer, statusline, title) and the scroller's
+   own background stay unselectable. The kit's markdown re-enables
+   user-select per block independently. */
+[data-transcript-scroll] [data-row-key] {
+  user-select: text;
 }
 [data-transcript-scroll]::-webkit-scrollbar {
   width: 12px;
