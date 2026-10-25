@@ -545,19 +545,37 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 }
 
 /* --- prompt style: bubble (default) or flat ------------------------------
-   Flat unhooks the kit's right-aligned chat bubble and renders prompts as
-   plain left-aligned text (the reader skin's look, available everywhere).
-   Unlayered so it beats the kit's @layer rules regardless of specificity. */
+   Flat unhooks the kit's right-aligned chat bubble and renders the prompt
+   as a left-aligned band: a small accent ❯ marker, medium weight, and a
+   very subtle surface background - unmistakably "you said this" without
+   becoming a chat bubble (owner round 2026-10-25: bare text lacked any
+   distinguishing mark). Unlayered so it beats the kit's @layer rules. */
 html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-message-body"] {
   width: auto;
   max-width: none;
   margin-inline-start: 0;
   align-items: flex-start;
 }
-html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-message-text"] {
-  background: transparent;
-  padding: 0;
-  border-radius: 0;
+/* body joins the selector AND the background carries !important: the
+   kit's own bubble tint is :root[data-color-scheme] body
+   [data-component] [data-slot] (4 attributes) and outranks any sane
+   selector we can write. The band color is a 6% tint of --text-strong
+   (dark ink on light, light ink on dark): --surface-base itself is a
+   ~3% TRANSLUCENT tint and renders invisible as a band. */
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"] {
+  background: color-mix(in srgb, var(--text-strong) 6%, transparent) !important;
+}
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"] {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"]::before {
+  content: "❯";
+  color: var(--openshare-accent, var(--text-weak));
+  margin-right: 8px;
+  font-weight: 600;
+  font-size: 0.9em;
 }
 /* skins' base-view prompt (already plain text; nothing to unhook, but the
    wrapper keeps the setting legible if a skin styles its own bubble) */
@@ -667,6 +685,45 @@ html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-m
 }
 @media (prefers-reduced-motion: reduce) {
   .osh-turn-tick-line { transition: none; }
+}
+
+/* --- light-mode readability floor ----------------------------------------
+   The kit's light tokens ship --text-weaker at 1.6:1 on white (meta text
+   nearly invisible - owner-caught). Forced themes carry the fix from
+   build-themes.mjs; this rule covers SYSTEM-light (no forced block). */
+html[data-color-scheme="light"] {
+  --text-weak: #767676;
+  --text-weaker: #9e9e9e;
+}
+
+/* --- transcript scrollbar: classic, space-reserving ---------------------
+   Edge/Chrome on Windows ship Fluent OVERLAY scrollbars by default: the
+   thumb floats over live content without reserving layout space, and
+   dragging it can drive a text selection of the content underneath
+   (owner-caught: scrollbar drag scrolls AND selects text). Any explicit
+   ::-webkit-scrollbar styling opts the element out of overlay mode and
+   reserves the gutter, so presses at the right edge always hit the
+   scrollbar. Subtle themed thumb, transparent track. */
+[data-transcript-scroll] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-weak-base) transparent;
+}
+[data-transcript-scroll]::-webkit-scrollbar {
+  width: 12px;
+}
+[data-transcript-scroll]::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-transcript-scroll]::-webkit-scrollbar-thumb {
+  background: var(--border-weak-base);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+[data-transcript-scroll]::-webkit-scrollbar-thumb:hover {
+  background: var(--text-weaker);
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 
 /* --- agent/mode switch: a full-width centered EVENT row ------------------

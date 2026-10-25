@@ -432,7 +432,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
           aria-label={`turns (${props.count})`}
           aria-expanded={open()}
         >
-          <span class="text-10-mono text-text-weaker leading-none">{props.count}</span>
+          <span class="text-10-mono text-text-weak leading-none">{props.count}</span>
           <span class="flex flex-col gap-[3px] py-0.5">
             <For each={Array.from({ length: Math.min(3, props.count) })}>
               {() => <span class="block h-px w-3.5 rounded-full bg-text-weaker/70" />}

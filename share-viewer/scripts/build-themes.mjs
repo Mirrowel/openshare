@@ -56,6 +56,20 @@ if (!light || !dark) {
   process.exit(1)
 }
 
+// light-mode readability floor (owner-caught): the kit's light tier ships
+// --text-weak #8f8f8f (3.5:1) and --text-weaker #c7c7c7 (1.6:1 - meta text
+// nearly invisible on white). Darken both in the EXTRACTED copy so the
+// forced-light block and light-based premades inherit the fix; premades
+// with explicit overrides keep theirs. Throw when upstream changes the
+// values so this never silently stops applying.
+const patchLight = (s, prop, from, to) => {
+  const re = new RegExp(`${prop}:\\s*${from}`)
+  if (!re.test(s)) throw new Error(`build-themes: light token drift - ${prop} is no longer ${from}`)
+  return s.replace(re, `${prop}:${to}`)
+}
+light = patchLight(light, "--text-weak", "#8f8f8f", "#767676")
+light = patchLight(light, "--text-weaker", "#c7c7c7", "#9e9e9e")
+
 // premade themes: base ("dark"|"light") + property overrides
 // (font-family overrides are legitimate theme content; the chrome pins its
 // own line-heights so fixed-height elements don't shift when fonts swap)
