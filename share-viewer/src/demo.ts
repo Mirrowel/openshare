@@ -101,6 +101,8 @@ export const demoSnapshot = {
     ]),
     { type: "message", sessionID: childID, data: { id: "msg_demo_child_user", sessionID: childID, role: "user", type: "user", text: "Check code blocks, output overflow, and task link sizing on narrow screens.", time: { created: now + 21 * 60_000 } } },
     { type: "message", sessionID: childID, data: { id: "msg_demo_child_assistant", sessionID: childID, role: "assistant", type: "assistant", agent: "explore", model: { providerID: "anthropic", id: "claude-sonnet-4" }, time: { created: now + 22 * 60_000, completed: now + 25 * 60_000 }, content: [text("The parent task row links to this subagent session. At phone widths, keep the link easy to tap, allow preformatted content to scroll inside its own region, and avoid horizontal overflow on the page.")] } },
+    { type: "message", sessionID: childID, data: { id: "msg_demo_child_user_2", sessionID: childID, role: "user", type: "user", text: "Now double-check the sidebar and pill render correctly on this child page too.", time: { created: now + 27 * 60_000 } } },
+    { type: "message", sessionID: childID, data: { id: "msg_demo_child_assistant_2", sessionID: childID, role: "assistant", type: "assistant", agent: "explore", model: { providerID: "anthropic", id: "claude-sonnet-4" }, time: { created: now + 28 * 60_000, completed: now + 29 * 60_000 }, content: [text("Both navigation states mount on child pages the same way as on the parent; the parent row sits above the prompt list so the way back is always one click.")] } },
     { type: "session_diff", sessionID, data: [cssDiff] },
   ],
 }

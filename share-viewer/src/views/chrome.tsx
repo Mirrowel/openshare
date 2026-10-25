@@ -72,6 +72,10 @@ export function SkinHeader(props: {
   statusRender?: (status: string) => JSX.Element
   /** custom title text (default: session title) */
   title?: string
+  /** subagent pages: a RIGHT-side "back to parent" affordance (the
+   *  conversation-view pattern). When omitted, subagent pages keep the
+   *  leftmost back button only */
+  parentLink?: { label: string; onClick: () => void }
 }) {
   const view = useView()
   return (
@@ -103,6 +107,18 @@ export function SkinHeader(props: {
           <span class="text-12-mono text-text-weaker truncate max-w-48">{view.model()}</span>
         </Show>
         {props.statusRender ? props.statusRender(view.status()) : <StatusReadout status={view.status()} />}
+        <Show when={props.parentLink}>
+          {(p) => (
+            <button
+              class="flex items-center gap-1.5 h-6 px-1.5 rounded-md text-12-regular text-text-weak hover:text-text-strong hover:bg-surface-base bg-transparent border-none cursor-pointer transition-colors duration-150 shrink-0"
+              onClick={p().onClick}
+              title={`back to parent: ${p().label}`}
+            >
+              <Icon name="arrow-left" size="small" />
+              <span class="truncate max-w-40">{p().label}</span>
+            </button>
+          )}
+        </Show>
         {props.trailing}
         <Show when={!props.noCopy}>
           <button

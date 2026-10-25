@@ -41,6 +41,7 @@ import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
 import { promptNavKey, registerPromptNav } from "./prompt-nav"
+import { findParentTurn } from "./parent-link"
 import { createMediaQuery } from "@solid-primitives/media"
 import { InfoPanel } from "./views/info-panel"
 import { findView, resolveSessionID } from "./views/registry"
@@ -296,6 +297,23 @@ function SessionView(props: {
               // one turn as an overlay over the still-mounted transcript.
               // Replaces paged-vs-continuous as the "read one turn" surface.
               const [focused, setFocused] = createSignal(false)
+              // the parent turn that spawned this child (subagent pages):
+              // resolves via the plugin's metadata.sessionID stamp on task
+              // tool parts; the back chip and the nav's parent row return
+              // to EXACTLY this turn
+              const parentTurn = () => findParentTurn(props.data, sessionID(), info()?.parentID)
+              // arriving at the parent page with #<messageID> (the
+              // turn-anchored return) jumps to that turn
+              const hashJump = () => {
+                const id = decodeURIComponent(location.hash.slice(1))
+                if (!id || !userTurns().some((m: any) => m.id === id)) return
+                if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns().find((m: any) => m.id === id))
+                else setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior() })
+              }
+              const onHashNav = () => hashJump()
+              window.addEventListener("popstate", onHashNav)
+              onCleanup(() => window.removeEventListener("popstate", onHashNav))
+              queueMicrotask(hashJump)
               const focusTurn = (i: number) => {
                 const m = userTurns()[i]
                 if (!m) return
@@ -422,7 +440,15 @@ function SessionView(props: {
                           <a
                             href={href}
                             class="pl-[2.5px] pr-2 flex items-center gap-1.5 bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base no-underline"
-                            onclick={() => scrollMemory.set(location.pathname, window.scrollY)}
+                            onclick={() => {
+                              scrollMemory.set(location.pathname, window.scrollY)
+                              // turn-anchored return: the parent turn that
+                              // spawned this child, not the session top
+                              const turn = parentTurn()
+                              const hash = turn ? `#${turn.userID}` : ""
+                              window.history.pushState({}, "", `/s/${props.source.shareID}${hash}`)
+                              window.dispatchEvent(new PopStateEvent("popstate"))
+                            }}
                           >
                             ← main
                           </a>
@@ -629,6 +655,7 @@ function SessionView(props: {
                                 active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
                                 variant={props.settings.promptNav}
                                 onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+                                parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: () => { const t = parentTurn()!; window.history.pushState({}, "", `/s/${props.source.shareID}#${t.userID}`); window.dispatchEvent(new PopStateEvent("popstate")) } } : undefined}
                                 label={(i) => {
                                   const t = userTurns()[i]?.text
                                   return typeof t === "string" ? t.trim().split("\n")[0] : undefined

@@ -60,6 +60,9 @@ export function PromptNav(props: {
   children?: JSX.Element
   /** compact heading (skin name etc.) */
   title?: string
+  /** subagent pages: the persistent "back to parent" row pinned above the
+   *  prompt list (sidebar and popover both) */
+  parentLink?: { label: string; onParent: () => void }
   variant: PromptNavVariant
   onSetVariant: (v: PromptNavVariant) => void
 }) {
@@ -153,6 +156,23 @@ function PreviewCard(props: { label: string | undefined; text: string; top: numb
   )
 }
 
+/** the persistent back-to-parent row pinned above the prompt list */
+function ParentRow(props: { label: string; onParent: () => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      class="flex items-center gap-2 w-full min-h-7 px-2 py-1 rounded-md bg-transparent border-none cursor-pointer text-left text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base"
+      onClick={props.onParent}
+      title={`back to parent: ${props.label}`}
+    >
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" class="shrink-0">
+        <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span class="truncate">{props.label}</span>
+    </button>
+  )
+}
+
 // ------------------------------------------------------------- sidebar ----
 function Sidebar(props: Parameters<typeof PromptNav>[0]) {
   const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
@@ -190,6 +210,9 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
         onMouseLeave={() => setPreview(undefined)}
         onScroll={() => setPreview(undefined)}
       >
+        <Show when={props.parentLink}>
+          {(p) => <ParentRow label={p().label} onParent={p().onParent} />}
+        </Show>
         <Show
           when={props.children}
           fallback={
@@ -352,6 +375,9 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               onMouseLeave={() => setPreview(undefined)}
               onScroll={() => setPreview(undefined)}
             >
+              <Show when={props.parentLink}>
+                {(p) => <ParentRow label={p().label} onParent={() => { p().onParent(); setOpen(false) }} />}
+              </Show>
               <Show
                 when={props.children}
                 fallback={

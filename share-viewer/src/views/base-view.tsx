@@ -9,6 +9,7 @@ import { Show, createEffect, createMemo, createSignal, type Component, type JSX 
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { PromptNav } from "../hover-rail"
 import { registerPromptNav } from "../prompt-nav"
+import { findParentTurn } from "../parent-link"
 import { viewSupportsPaged } from "./registry"
 import { ViewProvider, type ViewContextValue } from "./view-context"
 import { copySessionMarkdown } from "../copy-markdown"
@@ -150,9 +151,15 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   })
 
   const back = () => {
-    window.history.pushState({}, "", `/s/${props.source.shareID}`)
+    // turn-anchored return: land on the parent turn that spawned this
+    // child, not the session top (the plugin's metadata.sessionID stamp
+    // resolves it; client-side by construction)
+    const turn = parentTurn()
+    const hash = turn ? `#${turn.userID}` : ""
+    window.history.pushState({}, "", `/s/${props.source.shareID}${hash}`)
     window.dispatchEvent(new PopStateEvent("popstate"))
   }
+  const parentTurn = () => findParentTurn(props.data, props.sessionID, info()?.parentID)
   // skins' prompt-nav: paged steps the active section, continuous smooth-
   // scrolls to the section (j/k and [ ] both dispatch here)
   registerPromptNav({
@@ -276,6 +283,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               title={props.skin.id}
               variant={props.settings.promptNav}
               onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+              parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: back } : undefined}
               label={(i) => {
                 const p = visible()[i]?.prompt
                 return typeof p === "string" ? p.trim().split("\n")[0] : undefined
