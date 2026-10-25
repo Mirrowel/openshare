@@ -285,6 +285,8 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
               width={props.settings.turnNavWidth}
               onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}
+              previewLines={{ prompt: props.settings.previewPromptLines ?? 2, response: props.settings.previewResponseLines ?? 4 }}
+              onSetPreviewLines={({ prompt: previewPromptLines, response: previewResponseLines }) => props.updateSettings({ previewPromptLines, previewResponseLines })}
               parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: back } : undefined}
               label={(i) => {
                 const p = visible()[i]?.prompt
