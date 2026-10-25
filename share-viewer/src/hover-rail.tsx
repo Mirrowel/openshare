@@ -24,14 +24,21 @@ import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Popover } from "@kobalte/core/popover"
+import { Icon } from "@opencode/ui/icon"
 
+// panel-left glyph: a framed rectangle with a left column bar - drawn,
+// not fonted, so it renders identically everywhere (no emoji, no ligature)
 const IconPanel = (props: { class?: string }) => (
-  // panel-left glyph: a framed rectangle with a left column bar - drawn,
-  // not fonted, so it renders identically everywhere (no emoji, no ligature)
   <svg viewBox="0 0 16 16" class={props.class} width="14" height="14" aria-hidden="true" fill="none">
     <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" stroke-width="1.25" />
     <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.25" />
   </svg>
+)
+/** the settings glyph on both nav config triggers (owner round: the old
+ * panel glyph read as a light bulb; the kit's settings-gear is the
+ * settings affordance everywhere else in the viewer) */
+const IconGear = (props: { class?: string }) => (
+  <Icon name="settings-gear" size="small" class={props.class} />
 )
 // collapse (sidebar open): the chevron points LEFT, the direction the
 // panel collapses toward - pointing right read as "expand" (owner-caught)
@@ -105,10 +112,9 @@ export function TurnContextMenu(props: { x: number; y: number; onClose: () => vo
 
 export type PromptNavVariant = "pill" | "sidebar"
 
-// [design-trial: pill rest-state] — the three candidate pill designs:
-// map (tick strip), capsule (count + progress track), ghost (invisible
-// until approached). DELETE with the whole trial after the owner picks.
-export type PillStyle = "map" | "capsule" | "ghost"
+// [design-trial: pill menu] — the four candidate pop-open layouts.
+// DELETE with the whole trial after the owner picks.
+export type PillMenuStyle = "mini" | "map" | "palette" | "annotated"
 
 export function PromptNav(props: {
   count: number
@@ -146,8 +152,12 @@ export function PromptNav(props: {
    * placement passes only="desktop" (sidebar/pill) or only="narrow"
    * (the Turn N of M bar); default renders whichever fits the width. */
   only?: "desktop" | "narrow"
-  /** [design-trial: pill rest-state] which pill design to render */
-  pillStyle?: PillStyle
+  /** ghost mode: the pill rests invisible until approached (pill
+   *  placement only; the config toggle is shared with the sidebar) */
+  pillGhost?: boolean
+  onSetPillGhost?: (v: boolean) => void
+  /** [design-trial: pill menu] which pop-open layout the pill renders */
+  pillMenu?: PillMenuStyle
 }) {
   // the sidebar state only applies on desktop widths; below 900px the
   // control is the compact "Turn N of M" top bar (the conversation view's
@@ -159,7 +169,7 @@ export function PromptNav(props: {
   return (
     <Show when={showNarrow()} fallback={
       <Show when={showDesktopSide()}>
-        <Show when={props.variant === "sidebar"} fallback={<Pill {...props} pillStyle={props.pillStyle ?? "capsule"} />}>
+        <Show when={props.variant === "sidebar"} fallback={<Pill {...props} />}>
           <Sidebar {...props} />
         </Show>
       </Show>
@@ -387,7 +397,14 @@ function LineStepper(props: { label: string; value: number; onSet: (n: number) =
 /** the sidebar's OWN config popover (not the shared settings panel) -
  *  holds the sidebar's own knobs only: hover-preview size for now.
  *  Anchored under the gear, closed by outside pointerdown/Escape. */
-function SidebarConfig(props: { previewLines: { prompt: number; response: number }; onSet: (v: { prompt: number; response: number }) => void; onClose: () => void }) {
+function SidebarConfig(props: {
+  previewLines: { prompt: number; response: number }
+  onSet: (v: { prompt: number; response: number }) => void
+  onClose: () => void
+  ghost?: boolean
+  onSetGhost?: (v: boolean) => void
+  ghostRelevant?: boolean
+}) {
   let panel: HTMLDivElement | undefined
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
   const onDown = (e: PointerEvent) => { if (panel && !panel.contains(e.target as Node)) props.onClose() }
@@ -405,17 +422,45 @@ function SidebarConfig(props: { previewLines: { prompt: number; response: number
       class="absolute top-8 z-30 w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl"
       style={{ left: "calc(100% + 8px)" }}
       role="dialog"
-      aria-label="sidebar settings"
+      aria-label="turn nav settings"
     >
       <div class="text-12-medium text-text-weaker pb-2">Hover preview</div>
       <div class="flex items-center justify-between pb-1.5">
         <span class="text-12-regular text-text-base">prompt lines</span>
         <LineStepper label="prompt lines" value={props.previewLines.prompt} onSet={(prompt) => props.onSet({ ...props.previewLines, prompt })} />
       </div>
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between pb-2">
         <span class="text-12-regular text-text-base">response lines</span>
         <LineStepper label="response lines" value={props.previewLines.response} onSet={(response) => props.onSet({ ...props.previewLines, response })} />
       </div>
+      <Show when={props.onSetGhost}>
+        <div class="border-t border-border-weak-base pt-2">
+          <button
+            type="button"
+            class="flex items-center justify-between gap-2 w-full bg-transparent border-none cursor-pointer text-left"
+            onClick={() => props.onSetGhost!(!props.ghost)}
+            disabled={!props.ghostRelevant}
+            title={props.ghostRelevant ? "pill rests invisible until the cursor approaches" : "ghost mode applies to the pill only"}
+          >
+            <span class="text-12-regular" classList={{ "text-text-base": props.ghostRelevant, "text-text-weaker": !props.ghostRelevant }}>ghost mode</span>
+            <span
+              classList={{
+                "relative shrink-0 w-8 h-4.5 rounded-full transition-colors duration-200": true,
+                "bg-icon-strong-base": props.ghost,
+                "bg-border-strong-base": !props.ghost,
+              }}
+            >
+              <span
+                classList={{
+                  "absolute top-0.5 size-3.5 rounded-full bg-background-base shadow-sm transition-transform duration-200": true,
+                  "translate-x-0.5": !props.ghost,
+                  "translate-x-4": props.ghost,
+                }}
+              />
+            </span>
+          </button>
+        </div>
+      </Show>
     </div>
   )
 }
@@ -463,14 +508,11 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
             type="button"
             class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
             onClick={() => setConfigOpen((v) => !v)}
-            title="sidebar settings"
-            aria-label="sidebar settings"
+            title="turn nav settings"
+            aria-label="turn nav settings"
             aria-expanded={configOpen()}
           >
-            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
-              <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.25" />
-              <path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
-            </svg>
+            <IconGear />
           </button>
           <button
             type="button"
@@ -524,9 +566,12 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
       <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} promptLines={props.previewLines?.prompt} responseLines={props.previewLines?.response} />}</Show>
       <Show when={configOpen() && props.onSetPreviewLines}>
         <SidebarConfig
-          previewLines={props.previewLines ?? { prompt: 2, response: 4 }}
+          previewLines={props.previewLines ?? { prompt: 3, response: 4 }}
           onSet={props.onSetPreviewLines!}
           onClose={() => setConfigOpen(false)}
+          ghost={props.pillGhost}
+          onSetGhost={props.onSetPillGhost ? (v) => props.onSetPillGhost!(v) : undefined}
+          ghostRelevant={props.variant === "pill"}
         />
       </Show>
       {/* the resize handle: a hairline grab zone on the right edge */}
@@ -536,19 +581,21 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
 }
 
 // ---------------------------------------------------------------- pill ----
-function Pill(props: Parameters<typeof PromptNav>[0] & { pillStyle: PillStyle }) {
+function Pill(props: Parameters<typeof PromptNav>[0]) {
   const [near, setNear] = createSignal(false)
   const [open, setOpen] = createSignal(false)
   const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
-  // [design-trial: ghost] first-visit pulse so the invisible pill is
-  // discoverable once; remembered per browser
+  const [configOpen, setConfigOpen] = createSignal(false)
+  const [filter, setFilter] = createSignal("")
+  // ghost mode: first-visit pulse so the invisible pill is discoverable
+  // once; remembered per browser
   const [pulse, setPulse] = createSignal(false)
   let hideTimer: ReturnType<typeof setTimeout> | undefined
   let panel: HTMLDivElement | undefined
   let popEl: HTMLDivElement | undefined
 
   onMount(() => {
-    if (props.pillStyle === "ghost" && !localStorage.getItem("osh_pill_pulse")) {
+    if (props.pillGhost && !localStorage.getItem("osh_pill_pulse")) {
       setPulse(true)
       setTimeout(() => {
         setPulse(false)
@@ -599,6 +646,15 @@ function Pill(props: Parameters<typeof PromptNav>[0] & { pillStyle: PillStyle })
     setPreview({ i, top: er.top - wr.top, left: popRect.right - wr.left + 8 })
   }
 
+  // [design-trial: pill menu] the four pop-open layouts share one shell
+  // (header, footer, config, previews); only the LIST region differs
+  const menu = () => props.pillMenu ?? "mini"
+  const filtered = () => {
+    const q = filter().trim().toLowerCase()
+    if (!q) return Array.from({ length: props.count }, (_, i) => i)
+    return Array.from({ length: props.count }, (_, i) => i).filter((i) => (props.label(i) ?? "").toLowerCase().includes(q) || (props.preview?.(i) ?? "").toLowerCase().includes(q))
+  }
+
   return (
     <>
       {/* invisible proximity strip: NEAR raises opacity only, never
@@ -618,114 +674,70 @@ function Pill(props: Parameters<typeof PromptNav>[0] & { pillStyle: PillStyle })
         onMouseLeave={stripLeave}
         class="fixed left-2 top-1/2 -translate-y-1/2 z-40"
       >
-        {/* the pill: 40% visible at rest, full when near (ghost: 0% at
-            rest - only the proximity strip betrays it, plus a one-time
-            first-visit pulse) */}
+        {/* the capsule pill: 40% visible at rest, full when near (ghost
+            mode: 0% at rest - only the proximity strip betrays it, plus
+            the one-time pulse). Current position on TOP (accent), count
+            at the BOTTOM (owner round 2026-10-26) */}
         <button
           type="button"
           class="relative flex flex-col items-center gap-1 rounded-xl border border-border-weak-base bg-background-base/95 backdrop-blur px-1 py-2.5 cursor-pointer shadow-md"
           classList={{ "osh-rail-pill-open": open(), "osh-pill-pulse": pulse() }}
           style={{
-            opacity: near() ? 1 : props.pillStyle === "ghost" ? 0 : 0.4,
+            opacity: near() ? 1 : props.pillGhost ? 0 : 0.4,
             transition: "opacity 160ms ease, border-color 140ms ease",
           }}
           onClick={() => (open() ? stripLeave() : pillEnter())}
           aria-label={`turns (${props.count})`}
           aria-expanded={open()}
         >
-          {/* [design-trial: pill rest-state] variant button internals;
-              capsule = count + progress track, map = count + tick strip */}
           <Show
-            when={props.pillStyle === "map"}
+            when={props.active !== undefined}
+            fallback={<span class="text-10-mono text-text-weaker leading-none">{props.count}</span>}
+          >
+            <span class="text-10-mono leading-none" style={{ color: "var(--openshare-accent, var(--text-base))" }}>
+              {(props.active ?? 0) + 1}
+            </span>
+          </Show>
+          {/* the capsule track: a dot at the reading position, a filled
+              block while focusing */}
+          <Show
+            when={props.active !== undefined}
             fallback={
-              <>
-                <span class="text-10-mono text-text-weak leading-none">{props.count}</span>
-                <Show
-                  when={props.active !== undefined}
-                  fallback={
-                    <span class="flex flex-col gap-[3px] py-0.5">
-                      <For each={Array.from({ length: Math.min(3, props.count) })}>
-                        {() => <span class="block h-px w-3.5 rounded-full bg-text-weaker/70" />}
-                      </For>
-                    </span>
-                  }
-                >
-                  {/* capsule track: a dot at the reading position, a filled
-                      block while focusing */}
-                  <span class="relative block w-px h-7 rounded-full bg-text-weaker/40">
-                    <span
-                      class="absolute -left-[1px] w-[3px] h-[3px] rounded-full"
-                      style={{
-                        top: `calc(${Math.min(0.97, ((props.active ?? 0) + 0.5) / props.count) * 100}% - 1.5px)`,
-                        background: "var(--openshare-accent, var(--text-base))",
-                      }}
-                    />
-                    <Show when={props.focusedIndex !== undefined}>
-                      <span
-                        class="absolute -left-[1px] w-[3px] h-[7px] rounded-sm"
-                        style={{
-                          top: `calc(${Math.min(0.96, ((props.focusedIndex ?? 0) + 0.5) / props.count) * 100}% - 3.5px)`,
-                          background: "var(--openshare-accent, var(--text-base))",
-                        }}
-                      />
-                    </Show>
-                  </span>
-                </Show>
-                <Show when={props.active !== undefined}>
-                  <span class="text-10-mono leading-none" style={{ color: "var(--openshare-accent, var(--text-base))" }}>
-                    {(props.active ?? 0) + 1}
-                  </span>
-                </Show>
-              </>
+              <span class="flex flex-col gap-[3px] py-0.5">
+                <For each={Array.from({ length: Math.min(3, props.count) })}>
+                  {() => <span class="block h-px w-3.5 rounded-full bg-text-weaker/70" />}
+                </For>
+              </span>
             }
           >
-            {/* map: one tick per turn, spread over the strip - position
-                at a glance without opening anything */}
-            <span class="text-10-mono text-text-weak leading-none">{props.count}</span>
-            <span
-              class="flex flex-col justify-between items-end py-1"
-              style={{ height: `clamp(96px, ${props.count * 7}px, 40vh)` }}
-            >
-              <For each={Array.from({ length: props.count }, (_, i) => i)}>
-                {(i) => (
-                  <span
-                    class="flex items-center justify-end w-4 h-3 cursor-pointer"
-                    onMouseEnter={(e) => onHover(i, e.currentTarget)}
-                    onMouseLeave={() => setPreview(undefined)}
-                    onClick={() => props.onSelect(i)}
-                  >
-                    <span
-                      classList={{
-                        "block bg-text-weaker/70": true,
-                        "w-2.5 h-px": i % 5 !== 4 && props.active !== i && props.focusedIndex !== i,
-                        "w-3.5 h-px": i % 5 === 4 && props.active !== i && props.focusedIndex !== i,
-                        "w-3.5 h-[2px] rounded-full": props.active === i && props.focusedIndex !== i,
-                        "w-3.5 h-[5px] rounded-sm": props.focusedIndex === i,
-                      }}
-                      style={
-                        props.active === i || props.focusedIndex === i
-                          ? { background: "var(--openshare-accent, var(--text-base))" }
-                          : undefined
-                      }
-                    />
-                  </span>
-                )}
-              </For>
-            </span>
-            <span class="text-10-mono leading-none tabular-nums">
-              <Show when={props.active !== undefined} fallback={<span class="text-text-weaker">{props.count}</span>}>
-                <span style={{ color: "var(--openshare-accent, var(--text-base))" }}>{(props.active ?? 0) + 1}</span>
-                <span class="text-text-weaker">/{props.count}</span>
+            <span class="relative block w-px h-7 rounded-full bg-text-weaker/40">
+              <span
+                class="absolute -left-[1px] w-[3px] h-[3px] rounded-full"
+                style={{
+                  top: `calc(${Math.min(0.97, ((props.active ?? 0) + 0.5) / props.count) * 100}% - 1.5px)`,
+                  background: "var(--openshare-accent, var(--text-base))",
+                }}
+              />
+              <Show when={props.focusedIndex !== undefined}>
+                <span
+                  class="absolute -left-[1px] w-[3px] h-[7px] rounded-sm"
+                  style={{
+                    top: `calc(${Math.min(0.96, ((props.focusedIndex ?? 0) + 0.5) / props.count) * 100}% - 3.5px)`,
+                    background: "var(--openshare-accent, var(--text-base))",
+                  }}
+                />
               </Show>
             </span>
           </Show>
+          <span class="text-10-mono text-text-weak leading-none tabular-nums">{props.count}</span>
         </button>
 
         {/* the popover: anchored to the pill's right edge, animated in */}
         <Show when={open()}>
           <div
             ref={popEl}
-            class="osh-rail-pop absolute left-full z-50 w-80 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
+            class="osh-rail-pop absolute left-full z-50 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
+            classList={{ "w-60": menu() === "mini", "w-80": menu() !== "mini" }}
             style={{ "margin-left": "6px" }}
             role="menu"
             aria-label="turns"
@@ -735,58 +747,138 @@ function Pill(props: Parameters<typeof PromptNav>[0] & { pillStyle: PillStyle })
                 <span class="text-12-medium text-text-weaker truncate">{props.title ?? "Turns"}</span>
                 <span class="text-10-mono text-text-weaker tabular-nums shrink-0">{props.count}</span>
               </span>
-              <button
-                type="button"
-                class="flex items-center gap-1.5 h-6 px-1.5 rounded text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
-                onClick={() => {
-                  props.onSetVariant("sidebar")
-                  setOpen(false)
-                }}
-                title="keep turns as a sidebar column"
-                aria-label="expand to sidebar"
-              >
-                <IconPanel />
-                <span class="hidden sm:inline">sidebar</span>
-              </button>
+              <span class="flex items-center gap-1">
+                <Show when={props.onSetPreviewLines}>
+                  <button
+                    type="button"
+                    class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
+                    onClick={() => setConfigOpen((v) => !v)}
+                    title="turn nav settings"
+                    aria-label="turn nav settings"
+                    aria-expanded={configOpen()}
+                  >
+                    <IconGear />
+                  </button>
+                </Show>
+                <button
+                  type="button"
+                  class="flex items-center gap-1.5 h-6 px-1.5 rounded text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
+                  onClick={() => {
+                    props.onSetVariant("sidebar")
+                    setOpen(false)
+                  }}
+                  title="keep turns as a sidebar column"
+                  aria-label="expand to sidebar"
+                >
+                  <IconPanel />
+                  <span class="hidden sm:inline">sidebar</span>
+                </button>
+              </span>
             </div>
+
+            {/* palette: the filter field */}
+            <Show when={menu() === "palette"}>
+              <div class="px-2 pt-2">
+                <input
+                  type="text"
+                  value={filter()}
+                  onInput={(e) => setFilter(e.currentTarget.value)}
+                  placeholder="filter turns…"
+                  class="w-full box-border px-2 py-1 rounded-md border border-border-weak-base bg-background-stronger text-text-base text-12-regular outline-none focus:border-icon-strong-base transition-colors duration-150"
+                  aria-label="filter turns"
+                />
+              </div>
+            </Show>
+
+            {/* the LIST region - one of the four trial layouts */}
             <div
-              class="max-h-[56vh] overflow-y-auto p-1.5 flex flex-col gap-0.5"
+              class="max-h-[56vh] overflow-y-auto p-1.5 flex gap-1"
+              classList={{ "flex-col": menu() !== "map", "flex-row": menu() === "map" }}
               onMouseLeave={() => setPreview(undefined)}
               onScroll={() => setPreview(undefined)}
             >
-              <Show when={props.parentLink}>
-                {(p) => <ParentRow label={p().label} onParent={() => { p().onParent(); setOpen(false) }} />}
-              </Show>
-              <Show
-                when={props.children}
-                fallback={
+              {/* map: the tick column - position at a glance, click jumps */}
+              <Show when={menu() === "map"}>
+                <div class="flex flex-col justify-between items-end py-1 w-6 shrink-0 border-r border-border-weak-base/60 pr-1.5" style={{ "min-height": `${Math.min(props.count, 12) * 26}px` }}>
                   <For each={Array.from({ length: props.count }, (_, i) => i)}>
                     {(i) => (
-                      <NavRow
-                        i={i}
-                        active={props.active === i}
-                        filled={props.focusedIndex === i}
-                        label={props.label(i)}
-                        onHover={onHover}
-                        onSelect={(i) => {
-                          // the popover STAYS OPEN after acting (owner
-                          // round: closing on every click made
-                          // multi-turn hopping needlessly heavy); Esc and
-                          // clicking away still close it
-                          props.onSelect(i)
-                          setPreview(undefined)
-                        }}
-                        onFocus={(i) => {
-                          props.onFocusTurn?.(i)
-                          setPreview(undefined)
-                        }}
-                      />
+                      <span class="flex items-center justify-end w-4 h-4 cursor-pointer" onClick={() => props.onSelect(i)}>
+                        <span
+                          classList={{
+                            "block bg-text-weaker/70": true,
+                            "w-2.5 h-px": i % 5 !== 4 && props.active !== i && props.focusedIndex !== i,
+                            "w-3.5 h-px": i % 5 === 4 && props.active !== i && props.focusedIndex !== i,
+                            "w-3.5 h-[2px] rounded-full": props.active === i && props.focusedIndex !== i,
+                            "w-3.5 h-[5px] rounded-sm": props.focusedIndex === i,
+                          }}
+                          style={props.active === i || props.focusedIndex === i ? { background: "var(--openshare-accent, var(--text-base))" } : undefined}
+                        />
+                      </span>
                     )}
                   </For>
-                }
-              >
-                {props.children}
+                </div>
               </Show>
+
+              <div class="flex flex-col gap-0.5 min-w-0 flex-1 relative">
+                {/* annotated: the progress rail down the list's left edge */}
+                <Show when={menu() === "annotated" && props.active !== undefined}>
+                  <div class="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-border-weak-base/60">
+                    <div
+                      class="absolute left-0 w-[2px] rounded-full"
+                      style={{
+                        top: `${Math.min(0.97, ((props.active ?? 0) + 0.5) / props.count) * 100}%`,
+                        height: "8px",
+                        background: "var(--openshare-accent, var(--text-base))",
+                      }}
+                    />
+                  </div>
+                </Show>
+                <Show when={props.parentLink}>
+                  {(p) => <ParentRow label={p().label} onParent={() => { p().onParent(); setOpen(false) }} />}
+                </Show>
+                <Show
+                  when={props.children}
+                  fallback={
+                    <For each={menu() === "palette" ? filtered() : Array.from({ length: props.count }, (_, i) => i)}>
+                      {(i) => (
+                        <>
+                          <NavRow
+                            i={i}
+                            active={props.active === i}
+                            filled={props.focusedIndex === i}
+                            label={props.label(i)}
+                            onHover={menu() === "palette" ? undefined : onHover}
+                            onSelect={(i) => {
+                              // the popover STAYS OPEN after acting (owner
+                              // round: closing on every click made
+                              // multi-turn hopping needlessly heavy); Esc and
+                              // clicking away still close it
+                              props.onSelect(i)
+                              setPreview(undefined)
+                            }}
+                            onFocus={(i) => {
+                              props.onFocusTurn?.(i)
+                              setPreview(undefined)
+                            }}
+                          />
+                          {/* palette + annotated: the response snippet
+                              INLINE - no hover needed */}
+                          <Show when={(menu() === "palette" || menu() === "annotated") && props.preview?.(i)}>
+                            <div class="pl-9 pr-2 -mt-0.5 mb-0.5 text-12-regular text-text-weaker truncate" aria-hidden="true">
+                              {props.preview!(i)}
+                            </div>
+                          </Show>
+                        </>
+                      )}
+                    </For>
+                  }
+                >
+                  {props.children}
+                </Show>
+                <Show when={menu() === "palette" && filtered().length === 0}>
+                  <div class="px-2 py-1 text-12-regular text-text-weaker">no turns match</div>
+                </Show>
+              </div>
             </div>
             <div class="flex items-center justify-between h-7 px-3 border-t border-border-weak-base/60 text-10-mono text-text-weaker">
               <Show when={props.active !== undefined} fallback={<span>jump</span>}>
@@ -802,6 +894,16 @@ function Pill(props: Parameters<typeof PromptNav>[0] & { pillStyle: PillStyle })
           {/* the hover preview renders at the WRAPPER level: the popover is
               overflow-hidden (rounded header/footer) and would clip it */}
           <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} promptLines={props.previewLines?.prompt} responseLines={props.previewLines?.response} />}</Show>
+          <Show when={configOpen() && props.onSetPreviewLines}>
+            <SidebarConfig
+              previewLines={props.previewLines ?? { prompt: 3, response: 4 }}
+              onSet={props.onSetPreviewLines!}
+              onClose={() => setConfigOpen(false)}
+              ghost={props.pillGhost}
+              onSetGhost={props.onSetPillGhost}
+              ghostRelevant={true}
+            />
+          </Show>
         </Show>
       </div>
     </>

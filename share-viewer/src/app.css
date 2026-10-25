@@ -855,21 +855,22 @@ html[data-color-scheme="light"] {
 }
 
 /* [design-trial: subagent hint] — the "open subagent ↗" hint on task
-   rows. IN-FLOW and room-carving: the hint is a real footer box inside
-   the task card (the card flex-wraps it to its own line), so the space
-   it needs is created by growing the card and everything below slides
-   down - a floating chip painted OUTSIDE the card and clipped into
-   sibling rows (two consecutive subagent cards overlapped). One reveal
-   animation per variant, picked by html[data-osh-hint]; the losers are
-   deleted with the whole trial after the owner picks. */
-[data-timeline-row] [data-component="task-tool-card"],
-[data-row-key] [data-component="task-tool-card"] {
-  flex-wrap: wrap;
+   rows. IN-FLOW and room-carving, but OUTSIDE the bordered card: the
+   hint lives on the card's unbordered trigger wrapper (block flow, the
+   hint is a block child after the card), so making room grows the
+   WRAPPER - everything below slides down and back - while the card's
+   own border box NEVER changes size. An in-card hint grew the card's
+   rectangle (owner-killed); a floating chip clipped into siblings
+   (the original bug). One reveal animation per variant, picked by
+   html[data-osh-hint]. */
+[data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]),
+[data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]) {
+  display: block;
 }
-[data-timeline-row] [data-component="task-tool-card"]::after,
-[data-row-key] [data-component="task-tool-card"]::after {
+[data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"])::after,
+[data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"])::after {
   content: "open subagent \2197";
-  flex-basis: 100%;
+  display: block;
   width: 100%;
   height: 0;
   opacity: 0;
@@ -884,8 +885,8 @@ html[data-color-scheme="light"] {
   /* retract: quick fold-up after a small grace delay */
   transition: height 140ms ease-in 180ms, opacity 120ms ease-in 180ms;
 }
-[data-timeline-row] [data-component="task-tool-card"]:hover::after,
-[data-row-key] [data-component="task-tool-card"]:hover::after {
+[data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after,
+[data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after {
   height: 22px;
   opacity: 1;
   transition: none;
@@ -893,8 +894,8 @@ html[data-color-scheme="light"] {
 
 /* A - flap: a hanging sign unfolding from the top hinge, overshooting
    past vertical, knocking back, settling (the owner's pick to beat) */
-html[data-osh-hint="flap"] [data-timeline-row] [data-component="task-tool-card"]:hover::after,
-html[data-osh-hint="flap"] [data-row-key] [data-component="task-tool-card"]:hover::after {
+html[data-osh-hint="flap"] [data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after,
+html[data-osh-hint="flap"] [data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after {
   transform-origin: top center;
   animation: osh-hint-flap 500ms cubic-bezier(0.2, 0.7, 0.3, 1) 120ms both;
 }
@@ -908,8 +909,8 @@ html[data-osh-hint="flap"] [data-row-key] [data-component="task-tool-card"]:hove
 
 /* B - peel: the card's bottom edge peels open from the right in a
    diagonal wipe, like a lift-to-open sticker */
-html[data-osh-hint="peel"] [data-timeline-row] [data-component="task-tool-card"]:hover::after,
-html[data-osh-hint="peel"] [data-row-key] [data-component="task-tool-card"]:hover::after {
+html[data-osh-hint="peel"] [data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after,
+html[data-osh-hint="peel"] [data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after {
   animation: osh-hint-peel 340ms cubic-bezier(0.2, 0.7, 0.3, 1) 120ms both;
   background:
     linear-gradient(105deg, transparent 82%, color-mix(in srgb, var(--text-weaker) 18%, transparent) 94%, transparent 96%),
@@ -927,8 +928,8 @@ html[data-osh-hint="peel"] [data-row-key] [data-component="task-tool-card"]:hove
    placed on the title row's line and never re-wraps, squeezing the
    title instead of carving room); the reveal is the right-to-left
    wipe + settle of the right-aligned label */
-html[data-osh-hint="plate"] [data-timeline-row] [data-component="task-tool-card"]:hover::after,
-html[data-osh-hint="plate"] [data-row-key] [data-component="task-tool-card"]:hover::after {
+html[data-osh-hint="plate"] [data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after,
+html[data-osh-hint="plate"] [data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after {
   animation: osh-hint-plate 320ms cubic-bezier(0.2, 0.7, 0.3, 1) 120ms both;
   text-align: right;
   padding-right: 10px;
@@ -941,8 +942,8 @@ html[data-osh-hint="plate"] [data-row-key] [data-component="task-tool-card"]:hov
 
 /* D - flapboard: the label snaps down in mechanical steps like a
    split-flap departures board */
-html[data-osh-hint="flapboard"] [data-timeline-row] [data-component="task-tool-card"]:hover::after,
-html[data-osh-hint="flapboard"] [data-row-key] [data-component="task-tool-card"]:hover::after {
+html[data-osh-hint="flapboard"] [data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after,
+html[data-osh-hint="flapboard"] [data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after {
   animation:
     osh-hint-board-height 200ms ease-out 120ms both,
     osh-hint-board-flip 240ms steps(4, end) 120ms both;
@@ -957,8 +958,8 @@ html[data-osh-hint="flapboard"] [data-row-key] [data-component="task-tool-card"]
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html[data-osh-hint] [data-timeline-row] [data-component="task-tool-card"]:hover::after,
-  html[data-osh-hint] [data-row-key] [data-component="task-tool-card"]:hover::after {
+  html[data-osh-hint] [data-timeline-row] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after,
+  html[data-osh-hint] [data-row-key] [data-component="tool-trigger"]:has([data-component="task-tool-card"]):hover::after {
     animation: none;
     transition: height 120ms ease-out, opacity 120ms ease-out;
   }
@@ -1007,7 +1008,15 @@ html[data-osh-hint="flapboard"] [data-row-key] [data-component="task-tool-card"]
    spans 8-38px at the viewport edge. 0.75x = 18px puts the first text at
    42px - pill right (38) + 4px clearance, no free space beyond it */
 .osh-indent {
-  padding-left: calc(1.5rem * 0.75) !important;
+  /* pill mode: the capsule clears the floating pill (measured: pill
+     right edge + a few px). ~35% cut from the old 18px (owner round
+     2026-10-26) */
+  padding-left: 12px !important;
+}
+/* sidebar mode: the sidebar column already displaces the content, so
+   the extra indent is breathing room only (owner round 2026-10-26) */
+html[data-osh-nav="sidebar"] .osh-indent {
+  padding-left: 4px !important;
 }
 
 /* HoverRail v4: floating pill (no gutter column). Popover opens only

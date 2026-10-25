@@ -50,15 +50,18 @@ export type OshSettings = {
    * Long jumps are instant either way (mid-flight measurement
    * corrections stutter across thousands of pixels). */
   smoothScroll: boolean
-  // [design-trial: pill rest-state] — three candidate designs for the
-  // floating turn pill (map = tick strip, capsule = current + progress
-  // track, ghost = hidden until approached). DELETE after the owner
-  // picks: the setting, the panel rows, the CSS, and the unused variant
-  // components all go together.
-  pillVariant: "map" | "capsule" | "ghost"
+  /** [design-trial: pill menu] — four candidate layouts for the pill's
+   * pop-open menu (mini = the sidebar's list, map = tick column + rows,
+   * palette = filter field + inline snippets, annotated = rows with
+   * snippets + progress rail). DELETE after the owner picks. */
+  pillMenu: "mini" | "map" | "palette" | "annotated"
+  /** ghost mode: the pill rests invisible (0 opacity); the proximity
+   * strip wakes it and a one-time pulse carries discoverability */
+  pillGhost: boolean
   // [design-trial: subagent hint] — four candidate reveal animations for
-  // the "open subagent" hint on task rows (in-flow, room-carving; the
-  // old floating chip clipped into sibling rows). DELETE after the pick.
+  // the "open subagent" hint on task rows (in-flow, room-carving at the
+  // unbordered wrapper; the card's rectangle never grows). DELETE after
+  // the pick.
   subagentHint: "flap" | "peel" | "plate" | "flapboard"
 }
 
@@ -68,7 +71,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   continuous: false,
   pagedByView: {},
   promptNav: "sidebar",
-  previewPromptLines: 2,
+  previewPromptLines: 3,
   previewResponseLines: 4,
   followLive: true,
   textSize: "normal",
@@ -87,7 +90,8 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   outputOverflow: "wrap",
   promptStyle: "bubble",
   smoothScroll: true,
-  pillVariant: "capsule",
+  pillMenu: "mini",
+  pillGhost: false,
   subagentHint: "flap",
 }
 
@@ -234,6 +238,10 @@ export function applySettings(s: OshSettings) {
   html.dataset.oshPrompts = s.promptStyle === "flat" ? "flat" : "bubble"
   // [design-trial: subagent hint] variant selector (see OshSettings)
   html.dataset.oshHint = s.subagentHint ?? "flap"
+  // nav state drives the content indent: the floating pill needs room at
+  // the left edge; the sidebar column already displaces content, so its
+  // extra indent shrinks to breathing room
+  html.dataset.oshNav = s.promptNav === "sidebar" ? "sidebar" : "pill"
 }
 
 export const TEXT_SIZES: Record<string, string> = {

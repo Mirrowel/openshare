@@ -394,19 +394,19 @@ export function SettingsBody(props: {
               }}
             />
           </div>
-          {/* [design-trial: pill rest-state] — temporary picker so the
-              owner compares the three candidate pill designs live; the
-              losers (setting + variant code) are deleted after the pick */}
+          {/* [design-trial: pill menu] — temporary picker for the four
+              candidate pop-open layouts; losers deleted after the pick */}
           <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Pill style (trial)</div>
+            <div class="text-12-regular text-text-weaker pb-1">Pill menu (trial)</div>
             <Segmented
-              value={props.settings.pillVariant}
+              value={props.settings.pillMenu}
               options={[
+                { id: "mini" as const, label: "mini" },
                 { id: "map" as const, label: "map" },
-                { id: "capsule" as const, label: "capsule" },
-                { id: "ghost" as const, label: "ghost" },
+                { id: "palette" as const, label: "palette" },
+                { id: "annotated" as const, label: "annotated" },
               ]}
-              onChange={(pillVariant) => props.update({ pillVariant })}
+              onChange={(pillMenu) => props.update({ pillMenu })}
             />
           </div>
           {/* [design-trial: subagent hint] — same trial mechanism for the

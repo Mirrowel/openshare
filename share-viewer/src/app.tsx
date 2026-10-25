@@ -685,7 +685,9 @@ function SessionView(props: {
                                 count={userTurns().length}
                                 active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
                                 variant={props.settings.promptNav}
-                                pillStyle={props.settings.pillVariant}
+                                pillGhost={props.settings.pillGhost}
+                                onSetPillGhost={(pillGhost) => props.updateSettings({ pillGhost })}
+                                pillMenu={props.settings.pillMenu}
                                 onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
                                 width={props.settings.turnNavWidth}
                                 onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}
