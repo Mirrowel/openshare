@@ -710,12 +710,20 @@ function SessionView(props: {
                             }
                           >
                             <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col osh-indent"}>
+                              {/* onActiveMessageChange is gated while
+                                  focused: the HIDDEN main timeline still
+                                  reports its active message when followLive
+                                  flips at focus open, stomping the focused
+                                  turn with the bottom-rest message
+                                  (live-caught: next disabled at overlay
+                                  open, the last turn unreachable). The
+                                  overlay owns the selection while up. */}
                               <VirtualTimeline
                                 doc={timelineDoc() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID()}
                                 scrollTarget={jumpTarget()}
-                                onActiveMessageChange={(id) => setActiveMessage(userTurns().find((m: any) => m.id === id))}
                                 followLive={props.settings.followLive && !focused()}
+                                onActiveMessageChange={focused() ? undefined : (id) => setActiveMessage(userTurns().find((m: any) => m.id === id))}
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={false}
                   editToolDefaultOpen={false}
