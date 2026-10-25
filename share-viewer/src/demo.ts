@@ -71,7 +71,7 @@ export const demoSnapshot = {
     assistant("msg_demo_assistant_1", 1, [
       { type: "reasoning", text: "I should inspect the existing page structure and responsive rules first, then make the smallest useful change.", time: { created: now + 65_000 } },
       tool("tool_demo_glob", "glob", { pattern: "share-viewer/src/**/*" }, "share-viewer/src/app.tsx\nshare-viewer/src/app.css\nshare-viewer/src/turn-nav.tsx\nshare-viewer/src/settings-panel.tsx"),
-      tool("tool_demo_read", "read", { filePath: "share-viewer/src/app.css" }, ":root {\n  --page-gutter: 2rem;\n}\n\n.session-content {\n  max-width: 72rem;\n  margin: 0 auto;\n}\n\n@media (max-width: 640px) {\n  .session-content { padding: 1.5rem; }\n}"),
+      tool("tool_demo_read", "read", { filePath: "share-viewer/src/app.css" }, ":root {\n  --page-gutter: 2rem;\n}\n\n.session-content {\n  max-width: 72rem;\n  margin: 0 auto;\n}\n\n/* one deliberately long line: exercises the wrap vs scroll overflow choice for file cards */\n  --a-very-long-css-custom-property-line: this line is intentionally far longer than the card width so that the overflow behavior (wrap or horizontal scroll) is directly observable in the rendered transcript;\n\n@media (max-width: 640px) {\n  .session-content { padding: 1.5rem; }\n}"),
       text("I found the main issue: the mobile breakpoint keeps desktop-sized padding, and the transcript has no narrow-screen width constraint. I’ll check the component and nearby styles before changing anything."),
     ]),
     user("msg_demo_user_2", "Also make sure code, long tool output, and a subagent link still work after the change.", 5),

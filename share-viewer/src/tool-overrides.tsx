@@ -297,7 +297,7 @@ function FileCard(props: {
               component={fileComponent as any}
               mode="text"
               file={{ name: props.path, contents: props.contents }}
-              overflow="scroll"
+              overflow={overflowSignal()}
               onRendered={() => {
                 settle()
                 props.onRendered?.()
@@ -309,7 +309,7 @@ function FileCard(props: {
               component={fileComponent as any}
               mode="text"
               file={{ name: props.path, contents: props.contents }}
-              overflow="scroll"
+              overflow={overflowSignal()}
               onRendered={() => props.onRendered?.()}
             />
           </Show>
