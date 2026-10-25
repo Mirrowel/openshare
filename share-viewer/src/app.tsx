@@ -307,8 +307,7 @@ function SessionView(props: {
               const hashJump = () => {
                 const id = decodeURIComponent(location.hash.slice(1))
                 if (!id || !userTurns().some((m: any) => m.id === id)) return
-                if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns().find((m: any) => m.id === id))
-                else setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior() })
+                setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior() })
               }
               const onHashNav = () => hashJump()
               window.addEventListener("popstate", onHashNav)
@@ -332,23 +331,22 @@ function SessionView(props: {
               // re-fire)
               let jumpNonce = 1
               const [jumpTarget, setJumpTarget] = createSignal<{ id: string; nonce: number; behavior?: ScrollBehavior }>()
-              // one prompt-nav implementation for classic: paged pages the
-              // turn, continuous jumps the virtualizer (smooth per setting,
-              // long jumps fall back to instant inside the timeline)
+              // one prompt-nav implementation for classic: always jump the
+              // virtualizer (smooth per setting, long jumps fall back to
+              // instant inside the timeline) - classic has no paged mode,
+              // focus mode is the one-turn surface
               const jumpBehavior = () => (props.settings.smoothScroll ? "smooth" as const : "auto" as const)
               const activeIndex = () => userTurns().findIndex((m: any) => m.id === activeMessage()?.id)
               registerPromptNav({
                 next: () => {
                   const i = Math.min(activeIndex() + 1, userTurns().length - 1)
                   if (i === activeIndex()) return
-                  if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
-                  else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
                 },
                 prev: () => {
                   const i = Math.max(activeIndex() - 1, 0)
                   if (i === activeIndex()) return
-                  if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
-                  else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
                 },
               })
               // the model of the ACTIVE turn: user metadata first (stamped
@@ -666,8 +664,7 @@ function SessionView(props: {
                                 onFocusTurn={focusTurn}
                                 focusedIndex={focused() ? focusIndex() : undefined}
                                 onSelect={(i) => {
-                                  if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
-                                  else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
                                 }}
                               />
                             </Show>
@@ -675,41 +672,17 @@ function SessionView(props: {
                                (hidden, scroll position intact - returning is
                                instant) while the focused turn renders as an
                                overlay with its own virtualized timeline */}
-                           <div class="relative flex flex-1 min-w-0 min-h-0">
-                            <div
-                              class="flex flex-1 min-h-0 min-w-0"
-                              style={focused() ? { visibility: "hidden" } : undefined}
-                            >
-                           <Show
-                            when={!pagedFor(props.settings, "classic")}
-                            fallback={
-                              // paged: ONE turn, windowed row-by-row through the
-                              // same virtualizer as continuous (a giant turn
-                              // never renders whole). Header/footer live INSIDE
-                              // the scroll flow: the title scrolls away with the
-                              // transcript and the footer is the last thing in
-                              // the session, never pinned or clipped
-                              <VirtualTimeline
-                                doc={pagedDocument() as any}
-                                sessionKey={props.source.shareID + ":" + sessionID() + ":paged:" + (activeMessage()?.id ?? "")}
-                                reasoningMode={reasoningMode() as any}
-                                shellToolDefaultOpen={false}
-                  editToolDefaultOpen={false}
-                  toolDefaultOpen={autoExpandOpen}
-              
-                                timelineDetail={timelineDetail() as any}
-                                anchor="start"
-                                header={<div class="px-6 pt-6">{title()}</div>}
-                                footer={
-                                  <div class="px-6 pt-8 pb-8">
-                                    <PageFooter branding={props.source.branding()} class="px-6" />
-                                  </div>
-                                }
-                                class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow h-full min-h-0 osh-indent"}
-                              />
-                            }
-                          >
-                            <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col osh-indent"}>
+                            <div class="relative flex flex-1 min-w-0 min-h-0">
+                             <div
+                               class="flex flex-1 min-h-0 min-w-0"
+                               style={focused() ? { visibility: "hidden" } : undefined}
+                             >
+                            {/* classic is continuous-only (focus mode is the
+                                one-turn surface): one virtualized timeline,
+                                header/footer inside the scroll flow - the
+                                title scrolls away with the transcript and the
+                                footer is the last thing in the session */}
+                             <div class={(props.settings.centerContent ? "grow max-w-[52rem] mx-auto " : "grow ") + "h-full min-h-0 flex flex-col osh-indent"}>
                               {/* onActiveMessageChange is gated while
                                   focused: the HIDDEN main timeline still
                                   reports its active message when followLive
@@ -734,7 +707,7 @@ function SessionView(props: {
                                 footer={
                                   <div class="px-6 pt-8 pb-8">
                                     <Show when={searching() && filtered().length === 0}>
-                                      <div class="text-12-regular text-text-weaker">no prompts match.</div>
+                                      <div class="text-12-regular text-text-weaker">no turns match.</div>
                                     </Show>
                                     <PageFooter branding={props.source.branding()} />
                                   </div>
@@ -742,11 +715,10 @@ function SessionView(props: {
                                 class="grow min-h-0 w-full"
                               />
                               </div>
-                            </Show>
-                           </div>
-                           {/* the focused turn overlay: bar (back, turn count,
-                               prev/next) over a single-turn virtualized
-                               timeline; Esc and "back to conversation" exit */}
+                            </div>
+                            {/* the focused turn overlay: bar (back, turn count,
+                                prev/next) over a single-turn virtualized
+                                timeline; Esc and "back to conversation" exit */}
                            <Show when={focused()}>
                              <div class="absolute inset-0 z-20 flex flex-col bg-background-stronger">
                                <div class="flex flex-wrap items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-border-weak-base text-12-regular text-text-base">

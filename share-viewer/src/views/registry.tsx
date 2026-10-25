@@ -102,7 +102,10 @@ export function viewMark(id: string): string {
 /** does this view support paged mode? (classic/reader do; registered views
  *  declare it via ViewEntry.paged, default true) */
 export function viewSupportsPaged(id: string): boolean {
-  if (id === "classic" || id === "reader") return true
+  // classic is continuous + focus mode only (owner round 2026-10-25: the
+  // paged toggle is gone from classic; focus mode is the one-turn surface)
+  if (id === "classic") return false
+  if (id === "reader") return true
   const v = VIEWS.find((x) => x.id === id)
   return v?.paged !== false
 }
