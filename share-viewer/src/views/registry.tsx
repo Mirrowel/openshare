@@ -125,6 +125,18 @@ import { letterpressSkin } from "./letterpress"
 import { atlasSkin } from "./atlas"
 import { teletypeSkin } from "./teletype"
 import { groveSkin } from "./grove"
+import { ConversationView } from "./conversation"
+
+// the second CORE view (conversation-view PR): its own layout - not a
+// BaseSessionView skin - so it registers directly. Continuous-only:
+// focus mode is its one-turn surface, the paged toggle stays hidden.
+registerView({
+  id: "conversation",
+  label: "conversation",
+  mark: "▥",
+  paged: false,
+  component: (props) => <ConversationView {...props} />,
+})
 
 registerSkin(terminalSkin, { label: "terminal", mark: "❯" })
 registerSkin(casefileSkin, { label: "casefile", mark: "◫" })
