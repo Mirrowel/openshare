@@ -631,7 +631,14 @@ function SessionView(props: {
                     </div>
                   </header>
                   </Show>
-                  <div class="osh-content select-text flex flex-col flex-1 min-h-0 relative z-10">
+                  {/* NO select-text here: the whole-column rule made padding
+                      and edges selectable, so a press at the far right
+                      (under Edge's floating overlay thumb) started a text
+                      selection UNDER the scrollbar drag. Selection stays
+                      enabled on the content itself - the kit's markdown
+                      rules re-enable it per block, exactly like the
+                      conversation view (owner round 2026-10-25). */}
+                  <div class="osh-content flex flex-col flex-1 min-h-0 relative z-10">
                     <Show when={props.settings.view !== "reader"}>
                     <div
                       classList={{
@@ -655,6 +662,8 @@ function SessionView(props: {
                                 onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
                                 width={props.settings.turnNavWidth}
                                 onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}
+                                previewLines={{ prompt: props.settings.previewPromptLines ?? 2, response: props.settings.previewResponseLines ?? 4 }}
+                                onSetPreviewLines={({ prompt: previewPromptLines, response: previewResponseLines }) => props.updateSettings({ previewPromptLines, previewResponseLines })}
                                 parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: () => { const t = parentTurn()!; window.history.pushState({}, "", `/s/${props.source.shareID}#${t.userID}`); window.dispatchEvent(new PopStateEvent("popstate")) } } : undefined}
                                 label={(i) => {
                                   const t = userTurns()[i]?.text
@@ -664,6 +673,14 @@ function SessionView(props: {
                                 onFocusTurn={focusTurn}
                                 focusedIndex={focused() ? focusIndex() : undefined}
                                 onSelect={(i) => {
+                                  // while the focus overlay is up, a plain
+                                  // row click switches the focused turn (it
+                                  // must DO something visible - jumping the
+                                  // hidden timeline looked dead)
+                                  if (focused()) {
+                                    focusTurn(i)
+                                    return
+                                  }
                                   setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
                                 }}
                               />

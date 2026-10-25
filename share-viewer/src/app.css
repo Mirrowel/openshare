@@ -545,29 +545,29 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 }
 
 /* --- prompt style: bubble (default) or flat ------------------------------
-   Flat unhooks the kit's right-aligned chat bubble and renders the prompt
-   as a left-aligned band: a small accent ❯ marker, medium weight, and a
-   very subtle surface background - unmistakably "you said this" without
-   becoming a chat bubble (owner round 2026-10-25: bare text lacked any
-   distinguishing mark). Unlayered so it beats the kit's @layer rules. */
-html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-message-body"] {
-  width: auto;
-  max-width: none;
-  margin-inline-start: 0;
-  align-items: flex-start;
+   Flat unhooks the kit's right-aligned chat bubble at the ROW level:
+   every user message renders full-width at the left with an accent
+   chevron marker and medium weight. Row+body both forced (the kit has
+   two user-message variants and a body-only override left half of them
+   right-bound, owner-caught); !important because the kit's own rules
+   are :root[data-color-scheme] body [attr] [attr] (4 attributes).
+   No background band: the marker alone distinguishes a prompt
+   (owner round 2026-10-25). Unlayered so it beats the kit's @layer. */
+html[data-osh-prompts="flat"] body [data-component="user-message"] {
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+  text-align: left;
 }
-/* body joins the selector AND the background carries !important: the
-   kit's own bubble tint is :root[data-color-scheme] body
-   [data-component] [data-slot] (4 attributes) and outranks any sane
-   selector we can write. The band color is a 6% tint of --text-strong
-   (dark ink on light, light ink on dark): --surface-base itself is a
-   ~3% TRANSLUCENT tint and renders invisible as a band. */
-html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"] {
-  background: color-mix(in srgb, var(--text-strong) 6%, transparent) !important;
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-body"] {
+  width: auto !important;
+  max-width: none !important;
+  margin-inline: 0 !important;
+  align-self: flex-start !important;
 }
 html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"] {
-  padding: 6px 12px;
-  border-radius: 8px;
+  padding: 2px 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
   font-weight: 500;
 }
 html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"]::before {
@@ -697,16 +697,19 @@ html[data-color-scheme="light"] {
 }
 
 /* --- transcript scrollbar: classic, space-reserving ---------------------
-   Edge/Chrome on Windows ship Fluent OVERLAY scrollbars by default: the
-   thumb floats over live content without reserving layout space, and
-   dragging it can drive a text selection of the content underneath
-   (owner-caught: scrollbar drag scrolls AND selects text). Any explicit
-   ::-webkit-scrollbar styling opts the element out of overlay mode and
-   reserves the gutter, so presses at the right edge always hit the
-   scrollbar. Subtle themed thumb, transparent track. */
+   ::-webkit-scrollbar styling ONLY. The standard scrollbar-width /
+   scrollbar-color props DISABLE the pseudo-element in Chromium and do
+   NOT opt the element out of Edge's Fluent OVERLAY mode - the thumb
+   keeps floating over live content (gutter stayed 0 with them set,
+   probe-measured). Without the standard props, the webkit block forces
+   a classic reserved-gutter scrollbar: the thumb is a real hit target,
+   so a thumb press can never start a text selection under it. */
 [data-transcript-scroll] {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-weak-base) transparent;
+  /* reserve the strip explicitly: Fluent overlay scrollbars stay overlay
+     even under webkit thumb styling (gutter measured 0 with the pseudo
+     applied), and a reserved gutter is what makes a thumb press a REAL
+     scrollbar press that can never start a text selection under it */
+  scrollbar-gutter: stable;
 }
 [data-transcript-scroll]::-webkit-scrollbar {
   width: 12px;
@@ -867,17 +870,21 @@ html[data-color-scheme="light"] {
 /* HoverRail v4: floating pill (no gutter column). Popover opens only
    from the pill, scale+slide in from it, 150ms. Rest opacity is inline
    (0.4 rest / 1 near). */
+/* the popover is vertically CENTERED on the pill (owner round 2026-10-25:
+   bottom-aligned read as detached); the translateY lives INSIDE the
+   keyframes so the entry animation never fights the centering */
 @keyframes osh-rail-pop-in {
   from {
     opacity: 0;
-    transform: translateX(-6px) scale(0.96);
+    transform: translateY(-50%) translateX(-6px) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateX(0) scale(1);
+    transform: translateY(-50%) translateX(0) scale(1);
   }
 }
 .osh-rail-pop {
+  top: 50%;
   animation: osh-rail-pop-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
 }
 .osh-rail-pill-open {
