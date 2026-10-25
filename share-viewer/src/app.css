@@ -734,7 +734,13 @@ html[data-color-scheme="light"] {
   width: 12px;
 }
 [data-transcript-scroll]::-webkit-scrollbar-track {
+  /* visible but quiet: makes the reserved strip an explicit affordance
+     (the thumb has a home you can see) and doubles as a live diagnostic
+     - if this track does not paint on a given machine, that machine's
+     Fluent overlay is overriding webkit scrollbar styling there */
   background: transparent;
+  border-left: 1px solid var(--border-weak-base);
+  border-radius: 8px;
 }
 [data-transcript-scroll]::-webkit-scrollbar-thumb {
   background: var(--border-weak-base);
