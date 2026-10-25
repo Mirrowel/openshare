@@ -89,11 +89,14 @@ stays all-mode.
 
 ## TUI
 
-- `/share` — share the session (one-time consent; copies the URL). On a
-  child session, shares the whole family. Already shared → the share
-  manager: copy links (per server), per-server stop / leave-as-snapshot,
-  share to another server, stop all. A credential conflict opens the
-  collision dialog (copy debug info / share on a new share / don't share).
+- `/share` — share the session (explicit consent on EVERY creation —
+  nothing is published silently; then the URL is copied). On a child
+  session, shares the whole family. Already shared → the session menu,
+  identical to `/openshare → This session`: copy links (per server, or
+  all), stop sharing — delete or leave a snapshot, per-server stop on
+  multi-server shares —, share to another server, session TTL and read
+  auth. A credential conflict opens the collision dialog (copy debug
+  info / share on a new share / don't share).
 - `/openshare` — grouped settings (compact root with live summaries →
   focused submenus): This session (share/stop — delete or leave a
   snapshot —, TTL override, session read auth), **Servers** (connection
@@ -159,7 +162,7 @@ src/
                    ws handshake, chunked syncs, backfill, collisions, opt-outs
   server.ts        v1 entry {id, server, setup}
   tui.tsx          v1 TUI entry + host facade
-  commands.ts      /share (toggle + fan-out manager + collision dialog) /openshare
+  commands.ts      /share (consent gate → session menu — the SAME menu as /openshare → This session — plus collision + gone dialogs) /openshare
   share-flow.ts    host-agnostic flows: flag, bindings v1/v2, enrollment,
                    rotate/disconnect, admin client, unshare multi-delete
   settings.ts      grouped settings tree + servers section + admin console

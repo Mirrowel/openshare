@@ -42,9 +42,9 @@ enforce it: the same auth/enroll suites run against both backends).
 | Suite | Covers |
 |---|---|
 | regression | parity: legacy single file == standalone build == package (== package-dir via file:// URL) |
-| manual (core/allmode/engine shards) | dormancy, flag/backfill, unshare, re-share, read-auth opts, all-mode gating, undo tombstones, completed debounce, turn sockets, finalize |
+| manual (core/allmode/engine shards) | dormancy, flag/backfill, unshare, re-share, read-auth opts, all-mode gating, undo tombstones, completed debounce, turn sockets, finalize, queued-prompt ordering (S13) |
 | tui-flow | share/manager flows, config write targets, enrollment, admin console, gone detection, size prefs |
-| v2-mock | the v2 adapter against a scripted mock v2 host |
+| v2-mock | the v2 adapter against a scripted mock v2 host (incl. inbox queue semantics: held until `session.inbox.delivered`, cancelled never surfaces) |
 | auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign, request caps, the since/delta handshake — 80 checks, CF + Bun |
 | enroll | plugin enrollment lifecycle vs a real worker (private + public) |
 | fanout | dual workers, mid-session join backfill, opt-outs, collisions |

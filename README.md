@@ -193,7 +193,7 @@ You are the hoster — the code the plugin asks for is one you mint yourself, ri
 
 ### 4. Connect the plugin
 
-In opencode: `/share` → **Connect to a server** → paste the server's base URL (the `https://your-host` part — not a `/s/…` share link) and the code, if private → **enrolled, token saved**. That's the one-time setup — no share exists yet. Run `/share` once more: a one-time consent, then the link is copied. Every share after that is one keystroke.
+In opencode: `/share` → **Connect to a server** → paste the server's base URL (the `https://your-host` part — not a `/s/…` share link) and the code, if private → **enrolled, token saved**. That's the one-time setup — no share exists yet. Run `/share` once more: the consent dialog, then the link is copied. Every later share is one keystroke, but the consent question itself always appears — no share is ever created silently.
 
 For CI, bundle `ci/openshare.js` and drop a config next to it:
 
@@ -252,13 +252,13 @@ Full semantics: [share-worker/README — Identity & enrollment](share-worker/REA
 
 ## TUI commands
 
-- **`/share`** — shadows the deprecated built-in. Not connected yet → the connect flow (URL + code). First share → one-time consent, then the URL is copied. Already shared → the **share manager**:
-  - single server: copy link / **stop sharing** — with the choice to **delete the page** (links die, final "gone" frame) or **leave it as-is** (a frozen snapshot that stays readable until its TTL) — also reachable from `/openshare → This session → Stop sharing`;
-  - multiple servers: per-server copy, **manage per server** (stop here / leave as snapshot), share to another server, stop all (delete everywhere or leave snapshots everywhere);
+- **`/share`** — shadows the deprecated built-in. Not connected yet → the connect flow (URL + code). Not shared yet → an explicit consent dialog (every creation asks — nothing is published silently), then the URL is copied. Already shared → **the session menu, identical to `/openshare → This session`**:
+  - copy the link (per server when several are bound, or all links at once) / **stop sharing** — with the choice to **delete the page** (links die, final "gone" frame) or **leave it as-is** (a frozen snapshot that stays readable until its TTL); multiple servers additionally offer per-server stop, and sharing to another configured server;
+  - per-session **TTL** and **read auth** overrides;
   - a credential conflict opens the **collision dialog**: copy debug info (for the hoster / an issue), share on a new share, or don't share.
 - **`/openshare`** — grouped settings (compact root, focused submenus): **This session**, **Servers** (memberships + the admin panel), **Sharing** (mode via selection menu, cadence, TTL), **Read auth**, **Interface** (menu size picker), **Advanced**, **Config files** (write target + per-key source map). Selection menus everywhere — no typed booleans; every row and group carries a live summary, an `[i]` detail pane, red danger rows, green edited rows.
 - **Root holders are users too** — configuring with the legacy `createToken` files the root token as `adminToken`; the server menu then offers **Get a user token**: admin-mints your own user identity and keeps root for the admin panel.
-- **Gone detection** — a binding can outlive its page (purge, TTL, host-side delete). Opening the share manager probes every bound server; dead entries are cleared from the session automatically with a **"Share is gone"** modal offering *Share again* / *Close*. The sidebar chip verifies lazily and renders a dim `⊘` state — clicking it opens the manager instead of copying a dead link. Network errors never count as gone.
+- **Gone detection** — a binding can outlive its page (purge, TTL, host-side delete). Running `/share` probes every bound server; dead entries are cleared from the session automatically with a **"Share is gone"** modal offering *Share again* (asks consent) / *Close*. The sidebar chip verifies lazily and renders a dim `⊘` state — clicking it runs `/share` instead of copying a dead link. Network errors never count as gone.
 - **Sidebar chip** (v1 hosts — the v2 TUI context has no slot registry yet) — `◉ re:share` next to the session title; click copies the link. `·N` when the session streams to several servers; `⊘` when the page is gone (click to fix).
 
 ## The viewer
