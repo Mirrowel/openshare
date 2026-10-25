@@ -2832,6 +2832,7 @@ function createV2ServerSetup() {
       return () => {};
     }
     const pendingRefresh = new Map;
+    const queuedInbox = new Map;
     const refresh = (sessionID) => {
       let timer = pendingRefresh.get(sessionID);
       if (timer)
@@ -2846,7 +2847,10 @@ function createV2ServerSetup() {
             });
             const messages = await client.session.messages?.({ path: { id: sessionID } });
             const list = messages?.data ?? [];
+            const held = queuedInbox.get(sessionID);
             for (const message of list) {
+              if (held?.has(message.info.id))
+                continue;
               await engine.hooks.event({
                 event: { type: "message.updated", properties: { sessionID, info: message.info } }
               });
@@ -2877,6 +2881,33 @@ function createV2ServerSetup() {
             const type = event.type;
             if (type === "session.deleted") {
               await engine.hooks.event({ event: { type, properties: { sessionID: sid } } });
+              continue;
+            }
+            if (type.startsWith("session.inbox.")) {
+              const data = event.data ?? {};
+              const inboxID = data.inboxID;
+              if (inboxID) {
+                let set = queuedInbox.get(sid);
+                if (!set) {
+                  set = new Set;
+                  queuedInbox.set(sid, set);
+                }
+                if (type === "session.inbox.enqueued" && data.item?.delivery === "queue") {
+                  set.add(inboxID);
+                } else if (type === "session.inbox.delivered") {
+                  set.delete(inboxID);
+                  refresh(sid);
+                } else if (type === "session.inbox.cancelled") {
+                  set.add(inboxID);
+                } else if (type === "session.inbox.delivery.changed") {
+                  if (data.item?.delivery === "queue")
+                    set.add(inboxID);
+                  else {
+                    set.delete(inboxID);
+                    refresh(sid);
+                  }
+                }
+              }
               continue;
             }
             if (type === "message.removed" || type === "message.part.removed") {

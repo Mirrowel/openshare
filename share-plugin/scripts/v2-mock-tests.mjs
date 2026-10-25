@@ -77,6 +77,20 @@ function makeMockV2Host() {
     text: "v2 mock prompt",
   })
 
+  // second user prompt: queued mid-turn (the inbox scenario). Its row
+  // EXISTS in the store while queued — mirroring the v2 host persisting
+  // the message at inbox-enqueue time — but the share must not see it
+  // until inbox.delivered fires.
+  const T_USER2 = now() - 20000
+  const MSG_USER2 = "msg_v2mock_u2"
+  const MSG_USER3 = "msg_v2mock_u3"
+  const queuedUserMessage = (id, text, t) => ({
+    id,
+    type: "user",
+    time: { created: t },
+    text,
+  })
+
   const assistantMessage = (text) => ({
     id: MSG_ASSISTANT,
     type: "assistant",
@@ -162,7 +176,7 @@ function makeMockV2Host() {
     },
   }
 
-  return { SID, MSG_USER, MSG_ASSISTANT, MSG_COMPACTION, store, sessionInfo, userMessage, assistantMessage, compactionMessage, event, script, emit, context }
+  return { SID, MSG_USER, MSG_ASSISTANT, MSG_COMPACTION, MSG_USER2, MSG_USER3, T_USER2, store, sessionInfo, userMessage, queuedUserMessage, assistantMessage, compactionMessage, event, script, emit, context }
 }
 
 // --- run --------------------------------------------------------------------------
@@ -298,6 +312,39 @@ try {
   }, "V2: real change still lands through the dedupe")
   const revAfterChange = (await (await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)).json()).rev
   check("V2: real change bumps rev", revAfterChange > revAfterGrow, `${revAfterGrow} -> ${revAfterChange}`)
+
+  // inbox queue semantics: the host persists the queued prompt's message
+  // row mid-turn; the share must NOT surface it until delivered.
+  {
+    mock.store.messages.get(mock.SID).push(mock.queuedUserMessage(mock.MSG_USER2, "queued prompt", mock.T_USER2))
+    mock.emit(mock.event("session.inbox.enqueued", { inboxID: mock.MSG_USER2, item: { delivery: "queue" } }))
+    mock.emit(mock.event("session.text.ended")) // mid-turn refresh runs with U2 in the store
+    await sleepAsync(1500) // past the refresh debounce + flush
+    const dataMid = await (await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)).json()
+    const u2Early = (dataMid.data ?? []).some((m) => m.type === "message" && m.data?.id === mock.MSG_USER2)
+    check("V2: queued prompt held off the share", !u2Early, "the queued user message surfaced before delivery")
+
+    // delivered: the turn starts — the prompt appears
+    mock.emit(mock.event("session.inbox.delivered", { inboxID: mock.MSG_USER2 }))
+    await waitFor(async () => {
+      const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+      if (!r.ok) return false
+      const parsed = await r.json()
+      return (parsed.data ?? []).some((m) => m.type === "message" && m.data?.id === mock.MSG_USER2)
+    }, "V2: delivered prompt appears on the share")
+
+    // cancelled: a queued-then-cancelled prompt must NEVER surface
+    mock.store.messages.get(mock.SID).push(mock.queuedUserMessage(mock.MSG_USER3, "cancelled prompt", Date.now()))
+    mock.emit(mock.event("session.inbox.enqueued", { inboxID: mock.MSG_USER3, item: { delivery: "queue" } }))
+    mock.emit(mock.event("session.text.ended"))
+    await sleepAsync(1200)
+    mock.emit(mock.event("session.inbox.cancelled", { inboxID: mock.MSG_USER3 }))
+    mock.emit(mock.event("session.text.ended"))
+    await sleepAsync(1500)
+    const dataEnd = await (await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)).json()
+    const u3Seen = (dataEnd.data ?? []).some((m) => m.type === "message" && m.data?.id === mock.MSG_USER3)
+    check("V2: cancelled queued prompt never surfaces", !u3Seen, "the cancelled prompt leaked to the share")
+  }
 
   // idle -> completed
   await waitFor(async () => {
