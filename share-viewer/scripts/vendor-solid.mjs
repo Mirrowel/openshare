@@ -16,61 +16,74 @@
 // identical for every non-reentrant walk). Upstream issue material:
 // re-entrant disposal is legal Solid usage; the unguarded loops are not.
 //
-// The patched copy is wired through vite.config.ts resolve.alias
-// ("solid-js" -> vendor/solid/solid.js) so node_modules stays pristine.
+// TWO patched variants are written:
+//   vendor/solid/solid.js — from dist/solid.js (the build variant)
+//   vendor/solid/dev.js   — from dist/dev.js (the dev-server variant:
+//                           unminified, dev warnings, readable stack traces)
+// vite.config.ts picks by command (serve -> dev.js, build -> solid.js) so
+// node_modules stays pristine in both.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const SRC = join(ROOT, "node_modules", "solid-js", "dist", "solid.js")
 const OUT_DIR = join(ROOT, "vendor", "solid")
-const OUT = join(OUT_DIR, "solid.js")
-
-let s = readFileSync(SRC, "utf8")
-const nl = s.includes("\r\n") ? "\r\n" : "\n"
 
 const fail = (what) => {
   throw new Error(`vendor-solid: ${what} anchor missing - solid-js version drifted`)
 }
 
-// already patched? (idempotent)
-if (!s.includes("openshare hardening: re-entrant disposal")) {
-  const A = [
-    "  if (node.cleanups) {",
-    "    for (i = node.cleanups.length - 1; i >= 0; i--) node.cleanups[i]();",
-    "    node.cleanups = null;",
-  ].join(nl)
-  const B = [
-    "  if (node.cleanups) {",
-    "    // openshare hardening: re-entrant disposal may null this array mid-loop",
-    "    const cleanups = node.cleanups;",
-    "    for (i = cleanups.length - 1; i >= 0; i--) cleanups[i]();",
-    "    node.cleanups = null;",
-  ].join(nl)
-  if (!s.includes(A)) fail("cleanups loop")
-  s = s.replace(A, B)
+function patch(source, label) {
+  const nl = source.includes("\r\n") ? "\r\n" : "\n"
+  let s = source
+  if (!s.includes("openshare hardening: re-entrant disposal")) {
+    const A = [
+      "  if (node.cleanups) {",
+      "    for (i = node.cleanups.length - 1; i >= 0; i--) node.cleanups[i]();",
+      "    node.cleanups = null;",
+    ].join(nl)
+    const B = [
+      "  if (node.cleanups) {",
+      "    // openshare hardening: re-entrant disposal may null this array mid-loop",
+      "    const cleanups = node.cleanups;",
+      "    for (i = cleanups.length - 1; i >= 0; i--) cleanups[i]();",
+      "    node.cleanups = null;",
+    ].join(nl)
+    if (!s.includes(A)) fail(`cleanups loop (${label})`)
+    s = s.replace(A, B)
 
-  const C = [
-    "  } else if (node.owned) {",
-    "    for (i = node.owned.length - 1; i >= 0; i--) cleanNode(node.owned[i]);",
-    "    node.owned = null;",
-  ].join(nl)
-  const D = [
-    "  } else if (node.owned) {",
-    "    // openshare hardening: re-entrant disposal may null this array mid-loop",
-    "    const owned = node.owned;",
-    "    for (i = owned.length - 1; i >= 0; i--) cleanNode(owned[i]);",
-    "    node.owned = null;",
-  ].join(nl)
-  if (!s.includes(C)) fail("owned loop")
-  s = s.replace(C, D)
+    const C = [
+      "  } else if (node.owned) {",
+      "    for (i = node.owned.length - 1; i >= 0; i--) cleanNode(node.owned[i]);",
+      "    node.owned = null;",
+    ].join(nl)
+    const D = [
+      "  } else if (node.owned) {",
+      "    // openshare hardening: re-entrant disposal may null this array mid-loop",
+      "    const owned = node.owned;",
+      "    for (i = owned.length - 1; i >= 0; i--) cleanNode(owned[i]);",
+      "    node.owned = null;",
+    ].join(nl)
+    if (!s.includes(C)) fail(`owned loop (${label})`)
+    s = s.replace(C, D)
+  }
+  return s
 }
 
 mkdirSync(OUT_DIR, { recursive: true })
-writeFileSync(OUT, s)
+
+const build = patch(readFileSync(join(ROOT, "node_modules", "solid-js", "dist", "solid.js"), "utf8"), "solid.js")
+writeFileSync(join(OUT_DIR, "solid.js"), build)
+console.log("vendor/solid/solid.js written", build.length, "bytes")
+
+const dev = patch(readFileSync(join(ROOT, "node_modules", "solid-js", "dist", "dev.js"), "utf8"), "dev.js")
+writeFileSync(join(OUT_DIR, "dev.js"), dev)
+console.log("vendor/solid/dev.js written", dev.length, "bytes")
+
 writeFileSync(
   join(OUT_DIR, "SOLID-SOURCE.txt"),
-  `patched from node_modules/solid-js/dist/solid.js\nfix: cleanNode snapshot loops (re-entrant disposal nulls owned/cleanups mid-walk)\nsee scripts/vendor-solid.mjs\n`,
+  `patched from node_modules/solid-js/dist/{solid,dev}.js
+fix: cleanNode snapshot loops (re-entrant disposal nulls owned/cleanups mid-walk)
+see scripts/vendor-solid.mjs
+`,
 )
-console.log("vendor/solid/solid.js written", s.length, "bytes")

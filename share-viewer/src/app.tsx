@@ -289,6 +289,8 @@ function SessionView(props: {
               function setActiveMessage(message: any) {
                 setStore("messageId", message ? message.id : undefined)
               }
+              // exact date by default, relative on click (title block toggle)
+              const [relativeDate, setRelativeDate] = createSignal(false)
               // continuous-mode fast-skip: the rail's jump target for the
               // VirtualTimeline (nonce so repeat jumps to the same message
               // re-fire)
@@ -407,7 +409,17 @@ function SessionView(props: {
                         <div class="text-12-regular text-text-base">{modelDisplay()}</div>
                       </div>
                       <div class="text-12-regular text-text-weaker">
-                        {DateTime.fromMillis(info().time.created).toFormat("dd MMM yyyy, HH:mm")}
+                        <button
+                          type="button"
+                          class="bg-transparent border-none p-0 cursor-pointer text-12-regular text-text-weaker hover:text-text-base"
+                          title={relativeDate() ? "Show exact date" : "Show relative time"}
+                          aria-pressed={relativeDate()}
+                          onClick={() => setRelativeDate((v) => !v)}
+                        >
+                          {relativeDate()
+                            ? DateTime.fromMillis(info().time.created).toRelative({ locale: "en" })
+                            : DateTime.fromMillis(info().time.created).toFormat("dd MMM yyyy, HH:mm")}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -610,6 +622,7 @@ function SessionView(props: {
                                 doc={timelineDoc() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID()}
                                 scrollTarget={jumpTarget()}
+                                onActiveMessageChange={(id) => setActiveMessage(userTurns().find((m: any) => m.id === id))}
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={false}
                   editToolDefaultOpen={false}

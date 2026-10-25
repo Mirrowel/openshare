@@ -153,15 +153,18 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     window.dispatchEvent(new PopStateEvent("popstate"))
   }
   const isSub = () => {
+    // a child session carries parentID in the data (true on in-page
+    // navigation the moment a subagent opens, not only on fresh URL loads)
+    if (info()?.parentID) return true
     const parts = location.pathname.split("/").filter(Boolean)
     const i = parts.indexOf("s")
-    return i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2])
+    return i >= 0 && !!parts[i + 2] && /^\d+$/.test(parts[i + 2])
   }
 
   const TurnBody = (p: { section: SessionSection; index: number }) => (
     <w.TurnWrap section={p.section} index={p.index} settings={props.settings}>
       <w.PromptWrap section={p.section} settings={props.settings}>
-        <div class="py-2">
+        <div class="py-2" classList={{ "osh-flat-prompt": props.settings.promptStyle === "flat" }}>
           <Show when={props.skin.promptInBody !== false}>
             <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{p.section.prompt}</p>
           </Show>

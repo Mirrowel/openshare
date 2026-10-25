@@ -357,6 +357,19 @@ export function SettingsBody(props: {
               onChange={(outputOverflow) => props.update({ outputOverflow })}
             />
           </div>
+          {/* how user prompts render: right-aligned bubble or flat text
+              (the reader skin's look, available everywhere) */}
+          <div class="pl-3 pb-1.5">
+            <div class="text-12-regular text-text-weaker pb-1">Prompts</div>
+            <Segmented
+              value={props.settings.promptStyle}
+              options={[
+                { id: "bubble" as const, label: "bubble" },
+                { id: "flat" as const, label: "flat" },
+              ]}
+              onChange={(promptStyle) => props.update({ promptStyle })}
+            />
+          </div>
           {/* diff layout: auto (split when it fits), or forced - forced
               split still requires the width; the per-card U/A/S toggle in
               edit headers writes the same setting */}

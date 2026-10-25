@@ -530,6 +530,27 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   overflow-x: hidden;
 }
 
+/* --- prompt style: bubble (default) or flat ------------------------------
+   Flat unhooks the kit's right-aligned chat bubble and renders prompts as
+   plain left-aligned text (the reader skin's look, available everywhere).
+   Unlayered so it beats the kit's @layer rules regardless of specificity. */
+html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-message-body"] {
+  width: auto;
+  max-width: none;
+  margin-inline-start: 0;
+  align-items: flex-start;
+}
+html[data-osh-prompts="flat"] [data-component="user-message"] [data-slot="user-message-text"] {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+/* skins' base-view prompt (already plain text; nothing to unhook, but the
+   wrapper keeps the setting legible if a skin styles its own bubble) */
+.osh-flat-prompt {
+  --osh-prompt-flat: 1;
+}
+
 /* --- split diff (VSCode-style) ------------------------------------------
    The split card's width is set INLINE from measurement (viewport - card
    left - margin) so it can never overflow the page (the old min(200%,

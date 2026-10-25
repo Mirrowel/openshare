@@ -7,8 +7,11 @@
 //             everything resumes exactly as before.
 //   local   — served by the decrypt tool's localhost server at /s/<id>:
 //             window.__MIRROBOT_SNAPSHOT__ carries {items, sessionID} inline.
+//   demo    — ?demo in vite dev renders the built-in fixture (src/demo.ts);
+//             viewer development with no worker, share or auth.
 import { createMemo, createSignal } from "solid-js"
 import { fold, readPrefs, type ShareData } from "./fold"
+import { demoSnapshot } from "./demo"
 
 export type Branding = {
   name?: string
@@ -67,7 +70,11 @@ async function fetchBranding(): Promise<Branding> {
 
 export function useShareSource(): Source {
   const { shareID, sub } = parsePath()
-  const embedded = (window as any).__MIRROBOT_SNAPSHOT__ as
+  // ?demo in vite dev serves the built-in fixture share (src/demo.ts) -
+  // viewer development with no worker, no share, no auth
+  const embedded = (import.meta.env.DEV && new URLSearchParams(location.search).has("demo")
+    ? demoSnapshot
+    : (window as any).__MIRROBOT_SNAPSHOT__) as
     | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string }
     | undefined
 
@@ -157,7 +164,7 @@ export function useShareSource(): Source {
     const dataMemo = createMemo(() => fold(all(), sessionID(), shareID, status()))
     return {
       mode: "local",
-      shareID,
+      shareID: shareID || embedded.sessionID,
       sub,
       data: dataMemo,
       ready: () => all().some((i) => i.type === "session"),

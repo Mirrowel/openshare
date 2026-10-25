@@ -8,7 +8,7 @@
 // Drives the vendored session-ui projection + row renderer, so rendering
 // is identical to the non-virtualized timeline.
 import { createVirtualizer } from "@tanstack/solid-virtual"
-import { createEffect, createMemo, createSignal, onCleanup, Show, createRoot, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, createRoot, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
@@ -92,10 +92,21 @@ export function VirtualTimeline(props: {
    * follow live content. "start": paged turns and static docs — open at
    * the top, no follow-live. */
   anchor?: "end" | "start"
+  /** explicit live-follow override: false disables the pinned auto-scroll
+   * (the reader navigated away on purpose); undefined falls back to the
+   * anchor-derived behavior. */
+  followLive?: boolean
   /** continuous-mode fast-skip: when this changes to a message id, scroll
-   *  to that user message's row (the rail's jump target). nonce makes
-   *  repeat jumps to the same message re-fire. */
+   * to that user message's row (the rail's jump target). nonce makes
+   * repeat jumps to the same message re-fire. */
   scrollTarget?: { id: string; nonce: number }
+  /** imperative controls handed to the parent once the virtualizer is
+   * live (focus mode, hotkeys, rail jumps all scroll through this) */
+  onReady?: (controls: { scrollToMessage: (id: string) => void }) => void
+  /** reports the user message currently in view (the active turn) as the
+   * user scrolls — drives the title's active-turn model and the rail's
+   * active marker */
+  onActiveMessageChange?: (id: string) => void
 }): JSX.Element {
   const projection = createReactiveTimelineProjection({
     sessionMessages: () => props.doc.messages,
@@ -183,21 +194,31 @@ export function VirtualTimeline(props: {
     if (measurementCache.size > 4000) measurementCache.clear()
   })
 
+  // scroll to a user message's row by id — shared by the scrollTarget
+  // prop (reactive jumps) and the onReady controls (imperative calls)
+  const scrollToMessage = (id: string, behavior?: ScrollBehavior) => {
+    const rows = projection.rows()
+    const idx = rows.findIndex((row) => {
+      const k = String((row as any)?._tag === "UserMessage" ? `user-message:${(row as any).userMessageID}` : "")
+      return k === `user-message:${id}`
+    })
+    if (idx < 0) return
+    if (!scrollElement) return
+    // tanstack's own offset math (estimate-based; the measurement pass
+    // corrects around the jump)
+    virtualizer.scrollToIndex(idx, { align: "start", behavior })
+  }
+
   // continuous-mode fast-skip: jump to a user message row by id
   createEffect(() => {
     const target = props.scrollTarget
     if (!target) return
-    const rows = projection.rows()
-    const idx = rows.findIndex((row) => {
-      const k = String((row as any)?._tag === "UserMessage" ? `user-message:${(row as any).userMessageID}` : "")
-      return k === `user-message:${target.id}`
-    })
-    if (idx < 0) return
-    const el = scrollElement
-    if (!el) return
-    // tanstack's own offset math (estimate-based; the measurement pass
-    // corrects around the jump)
-    virtualizer.scrollToIndex(idx, { align: "start" })
+    scrollToMessage(target.id)
+  })
+
+  // imperative controls for the parent (focus mode, hotkeys, rail)
+  onMount(() => {
+    props.onReady?.({ scrollToMessage: (id) => scrollToMessage(id) })
   })
 
   // pin state: at end → pinned (follows new content); nudge up → unpinned
@@ -232,6 +253,7 @@ export function VirtualTimeline(props: {
     const first = lastCount === 0
     lastCount = count
     if (first && restored) return
+    if (props.followLive === false) return
     if (!grew || !pinned() || count === 0 || !scrollElement) return
     queueMicrotask(() => {
       const el = scrollElement
@@ -249,6 +271,26 @@ export function VirtualTimeline(props: {
   })
 
   const items = virtualizer.getVirtualItems()
+
+  // active turn tracking: the last user-message row at or above the
+  // viewport start is "the turn you are reading" — the title's model and
+  // the rail's marker follow it. Emits only on change.
+  let lastActive: string | undefined
+  createEffect(() => {
+    if (!props.onActiveMessageChange) return
+    const vis = items
+    const offset = virtualizer.scrollOffset ?? 0
+    let current: string | undefined
+    for (const item of vis) {
+      const key = String(item.key)
+      if (key.startsWith("user-message:")) current = key.slice("user-message:".length)
+      if (item.start > offset + 4 && current) break
+    }
+    if (current && current !== lastActive) {
+      lastActive = current
+      props.onActiveMessageChange(current)
+    }
+  })
 
   // KEYED ROW CACHE (smart-sync): one component + DOM node per row key,
   // created in its own root and REUSED for the component's lifetime. A
@@ -382,6 +424,7 @@ export function VirtualTimeline(props: {
       <Show when={props.header}>{props.header}</Show>
       <div
         ref={(el) => (host = el)}
+        data-transcript-content
         style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
       />
       <Show when={props.footer}>{props.footer}</Show>

@@ -86,7 +86,7 @@ function displayPathDir(path: string): string {
   const segs = nd.split("/").filter(Boolean)
   return segs.length > 2 ? "…" + segs.slice(-2).join("/") : norm(dir)
 }
-const countLines = (text: string) => (text ? text.split("\n").length : 0)
+const countLines = (text: string) => (text ? text.replace(/\n$/, "").split("\n").length : 0)
 
 /** v1 read rows said which slice of the file they took ("from 284"). */
 function readRange(props: ToolProps, lines: number): string {
