@@ -43,6 +43,7 @@ The worker owns the connection rules; the plugin clamps itself into these on con
 | `IDLE_DROP_MS` | `600000` | Turn mode: no-signal fallback (hosts that never emit idle). |
 | `FINALIZE_AFTER_MS` | `300000` | Plugin socket died WITHOUT a goodbye (kill -9, crash, power cut): after this long the share settles to `interrupted` (never `completed` - the run's truth is unknown). DO alarm on socket close; the daily sweeper backstops silent deaths where even the close never surfaced. Reconnects cancel it. |
 | `MAX_TTL_DAYS` | `90` | Per-share TTL cap (per-token `maxTtlDays` caps below this; the user's `defaultTtlDays` setting is clamped to it). |
+| `ANON_CREATE_HOURLY` | `100` | Public mode: global cap on anonymous (ownerless) share creations per rolling hour, ALL anonymous visitors combined. Each create costs a Durable Object + one KV write. |
 | `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` | `1000` / `60000` | Allowed client sync interval (the clamp window). |
 | `COMPLETED_DELAY_MAX_MS` | `60000` | Allowed client completed-delay. |
 
@@ -59,6 +60,35 @@ watch via hibernating WebSockets. Free-tier friendly by construction:
 sockets sleep while idle (zero cost), outgoing pushes are free, incoming
 frames bill 20:1. A 10s-debounced batch costs a few request-equivalents
 per session; a watched page costs exactly one request to open.
+
+## Resource budget (what the worker actually spends)
+
+The binding constraint on the Workers **free plan is Durable Object
+SQLite row writes** — 100k/day, with puts *and* deletes each counting as
+one row. The accounting is simple:
+
+- every applied sync chunk writes `rows = items-changed + 1 meta row`
+  (chunk-size overhead is ~0.5% at 200 items per chunk);
+- a session's initial backfill is the big burst: a 5k-message session
+  ≈ 5,000 rows in one go;
+- steady-state streaming is amortized by the plugin's flush debounce —
+  one row write per changed message per flush, not per event;
+- reads are cheap (5M rows/day free) and viewer traffic is nearly free
+  (hibernating sockets, free outgoing pushes, `?since` deltas answer
+  ~200 bytes when nothing changed).
+
+The floor is **one row per changed item** — irreducible without storing
+multiple items per row (a batch-key layout would cut rows ~20x, but it
+sits on the same storage/marker/delta machinery where the worst bugs in
+this project's history lived, so it is deliberately not done). Personal
+deployments sit far inside the budget (a busy day is typically 10-30k
+rows); busy public community servers with many large backfills are what
+approach it.
+
+KV writes (1k/day free) are one per share create. On public servers the
+global anonymous-create cap (`ANON_CREATE_HOURLY`, default 100 — all
+anonymous visitors combined, per rolling hour) bounds that; note free
+tier is not expected to host public servers in the first place.
 
 **Passive** — after a run, [`tools/view-export.py`](../tools/README.md)
 (agent-side companion) renders any exported session tree (main + every
