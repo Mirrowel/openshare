@@ -275,25 +275,29 @@ function ParentRow(props: { label: string; onParent: () => void; compact?: boole
   )
 }
 
-/** tiny 3-button group for the sidebar's own config popover */
-function LinePicker(props: { value: number; options: number[]; onPick: (n: number) => void }) {
+/** "- [n] +" stepper: the number is editable directly (type a value,
+ *  clamp on change/blur), the buttons step by 1. Range 1..10. */
+function LineStepper(props: { label: string; value: number; onSet: (n: number) => void }) {
+  const clamp = (n: number) => Math.max(1, Math.min(10, n))
+  const btn =
+    "flex items-center justify-center size-6 rounded border border-border-weak-base bg-transparent text-text-weaker hover:text-text-base hover:bg-surface-base cursor-pointer text-14-regular leading-none"
   return (
-    <span class="flex items-center rounded-md overflow-hidden border border-border-weak-base">
-      <For each={props.options}>
-        {(n) => (
-          <button
-            type="button"
-            class="min-w-7 h-6 px-1.5 text-12-mono cursor-pointer border-none"
-            classList={{
-              "bg-surface-raised-base text-text-strong": props.value === n,
-              "bg-transparent text-text-weaker hover:text-text-base": props.value !== n,
-            }}
-            onClick={() => props.onPick(n)}
-          >
-            {n}
-          </button>
-        )}
-      </For>
+    <span class="flex items-center gap-1.5">
+      <button type="button" class={btn} aria-label={`fewer ${props.label}`} disabled={props.value <= 1} onClick={() => props.onSet(clamp(props.value - 1))}>
+        −
+      </button>
+      <input
+        type="number"
+        min="1"
+        max="10"
+        value={props.value}
+        aria-label={props.label}
+        class="w-10 h-6 text-center rounded border border-border-weak-base bg-transparent text-12-mono text-text-base [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        onChange={(e) => props.onSet(clamp(parseInt((e.target as HTMLInputElement).value, 10) || 1))}
+      />
+      <button type="button" class={btn} aria-label={`more ${props.label}`} disabled={props.value >= 10} onClick={() => props.onSet(clamp(props.value + 1))}>
+        +
+      </button>
     </span>
   )
 }
@@ -324,11 +328,11 @@ function SidebarConfig(props: { previewLines: { prompt: number; response: number
       <div class="text-12-medium text-text-weaker pb-2">Hover preview</div>
       <div class="flex items-center justify-between pb-1.5">
         <span class="text-12-regular text-text-base">prompt lines</span>
-        <LinePicker value={props.previewLines.prompt} options={[1, 2, 3]} onPick={(prompt) => props.onSet({ ...props.previewLines, prompt })} />
+        <LineStepper label="prompt lines" value={props.previewLines.prompt} onSet={(prompt) => props.onSet({ ...props.previewLines, prompt })} />
       </div>
       <div class="flex items-center justify-between">
         <span class="text-12-regular text-text-base">response lines</span>
-        <LinePicker value={props.previewLines.response} options={[2, 4, 6]} onPick={(response) => props.onSet({ ...props.previewLines, response })} />
+        <LineStepper label="response lines" value={props.previewLines.response} onSet={(response) => props.onSet({ ...props.previewLines, response })} />
       </div>
     </div>
   )
@@ -593,13 +597,15 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                         label={props.label(i)}
                         onHover={onHover}
                         onSelect={(i) => {
+                          // the popover STAYS OPEN after acting (owner
+                          // round: closing on every click made
+                          // multi-turn hopping needlessly heavy); Esc and
+                          // clicking away still close it
                           props.onSelect(i)
-                          setOpen(false)
                           setPreview(undefined)
                         }}
                         onFocus={(i) => {
                           props.onFocusTurn?.(i)
-                          setOpen(false)
                           setPreview(undefined)
                         }}
                       />
