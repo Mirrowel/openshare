@@ -790,6 +790,30 @@ function SessionView(props: {
                       </div>
                       </div>
                       <div classList={{ "!overflow-hidden": true, "md:hidden": wide(), "lg:hidden": !wide() }}>
+                        {/* narrow-viewport nav: the "Turn N of M" bar
+                            (PromptNav renders its NarrowBar below md);
+                            the desktop column's instance is CSS-hidden
+                            there, so the mobile branch carries its own */}
+                        <Show when={userTurns().length > 1}>
+                          <PromptNav
+                            count={userTurns().length}
+                            active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                            variant={props.settings.promptNav}
+                            onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+                            parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: () => { const t = parentTurn()!; window.history.pushState({}, "", `/s/${props.source.shareID}#${t.userID}`); window.dispatchEvent(new PopStateEvent("popstate")) } } : undefined}
+                            label={(i) => {
+                              const t = userTurns()[i]?.text
+                              return typeof t === "string" ? t.trim().split("\n")[0] : undefined
+                            }}
+                            onSelect={(i) => {
+                              // the narrow branch renders the mobile paged
+                              // timeline (keyed on activeMessage): selecting
+                              // the turn pages it; focus affordances stay
+                              // off - the overlay lives in the desktop column
+                              setActiveMessage(userTurns()[i])
+                            }}
+                          />
+                        </Show>
                         {turns()}
                       </div>
                     </Show>

@@ -734,24 +734,23 @@ html[data-color-scheme="light"] {
   width: 12px;
 }
 [data-transcript-scroll]::-webkit-scrollbar-track {
-  /* visible but quiet: makes the reserved strip an explicit affordance
-     (the thumb has a home you can see) and doubles as a live diagnostic
-     - if this track does not paint on a given machine, that machine's
-     Fluent overlay is overriding webkit scrollbar styling there */
-  background: transparent;
+  /* faint but visible: the strip reads as the scrollbar's home at every
+     zoom/scale (a fully transparent track left the thumb's engagement
+     imperceptible on overlay-flavored setups) */
+  background: var(--surface-base);
   border-left: 1px solid var(--border-weak-base);
   border-radius: 8px;
 }
 [data-transcript-scroll]::-webkit-scrollbar-thumb {
-  background: var(--border-weak-base);
+  /* FULL-WIDTH thumb: a transparent-border trick shrank the visible lift
+     to ~6px inside the 12px track, and the thin sliver made engagement
+     untraceable at fractional zoom/scale - the visible lift now covers
+     the whole hit area */
+  background: var(--text-weaker);
   border-radius: 8px;
-  border: 3px solid transparent;
-  background-clip: content-box;
 }
 [data-transcript-scroll]::-webkit-scrollbar-thumb:hover {
-  background: var(--text-weaker);
-  border: 3px solid transparent;
-  background-clip: content-box;
+  background: var(--text-weak);
 }
 
 /* --- agent/mode switch: a full-width centered EVENT row ------------------

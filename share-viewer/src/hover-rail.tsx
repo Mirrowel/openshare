@@ -23,6 +23,7 @@
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { createMediaQuery } from "@solid-primitives/media"
+import { Popover } from "@kobalte/core/popover"
 
 const IconPanel = (props: { class?: string }) => (
   // panel-left glyph: a framed rectangle with a left column bar - drawn,
@@ -135,13 +136,71 @@ export function PromptNav(props: {
   onSetPreviewLines?: (v: { prompt: number; response: number }) => void
 }) {
   // the sidebar state only applies on desktop widths; below md the control
-  // is always the pill (a 192px column would eat a phone)
+  // is the compact "Turn N of M" top bar (the conversation view's narrow
+  // pattern - a 192px column or a floating pill would eat a phone)
   const desktop = createMediaQuery("(min-width: 768px)")
   const sidebar = () => props.variant === "sidebar" && desktop()
   return (
-    <Show when={sidebar()} fallback={<Pill {...props} />}>
-      <Sidebar {...props} />
+    <Show
+      when={desktop()}
+      fallback={<NarrowBar {...props} />}
+    >
+      <Show when={sidebar()} fallback={<Pill {...props} />}>
+        <Sidebar {...props} />
+      </Show>
     </Show>
+  )
+}
+
+/** the narrow-viewport state: a full-width "Turn N of M" bar at the top
+ *  of the transcript opening a dropdown of the turn rows - the
+ *  conversation view's own narrow pattern (owner round 2026-10-25:
+ *  classic should behave the same when zoomed in / on phones). */
+function NarrowBar(props: Parameters<typeof PromptNav>[0]) {
+  const [open, setOpen] = createSignal(false)
+  const current = () => props.active ?? props.focusedIndex ?? 0
+  return (
+    <Popover open={open()} onOpenChange={setOpen} placement="bottom-start" gutter={4}>
+      <Popover.Trigger class="osh-turn-button justify-between w-full px-3 border-b border-border-weak-base rounded-none" aria-label="Choose a turn">
+        <span>{props.focusedIndex !== undefined ? "Focused" : "Turn"} {current() + 1} of {props.count}</span>
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content class="z-50 w-72 max-w-[calc(100vw-2rem)] max-h-[60dvh] overflow-y-auto p-1.5 rounded-lg border border-border-weak-base bg-background-base shadow-lg" aria-label="turns">
+          <Show when={props.parentLink}>
+            {(p) => <ParentRow label={p().label} onParent={() => { p().onParent(); setOpen(false) }} />}
+          </Show>
+          <For each={Array.from({ length: props.count }, (_, i) => i)}>
+            {(i) => (
+              <NavRow
+                i={i}
+                active={props.active === i}
+                filled={props.focusedIndex === i}
+                label={props.label(i)}
+                onSelect={(i) => {
+                  if (props.onFocusTurn && props.active === undefined && props.focusedIndex !== undefined) {
+                    // continuous + focused: switch the focused turn
+                    props.onFocusTurn(i)
+                  } else {
+                    props.onSelect(i)
+                  }
+                  setOpen(false)
+                }}
+                onFocus={(i) => {
+                  props.onFocusTurn?.(i)
+                  setOpen(false)
+                }}
+              />
+            )}
+          </For>
+          <Show when={props.count === 0}>
+            <div class="px-2 py-1 text-12-regular text-text-weaker">no turns match</div>
+          </Show>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover>
   )
 }
 
