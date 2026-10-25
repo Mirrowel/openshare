@@ -27,7 +27,7 @@ export function TurnNav(props: {
   onToggle: () => void
   getPreview: (messageID: string) => string
 }) {
-  const desktop = createMediaQuery("(min-width: 768px)")
+  const desktop = createMediaQuery("(min-width: 900px)")
   const [open, setOpen] = createSignal(false)
   const compact = () => desktop() && props.collapsed
   const currentIndex = () => props.messages.findIndex((m) => m.id === props.current)

@@ -733,24 +733,39 @@ html[data-color-scheme="light"] {
 [data-transcript-scroll]::-webkit-scrollbar {
   width: 12px;
 }
+/* --- transcript scrollbar: slim, and hit-tested at every zoom --------
+   WHY THE OVERHANG: Chromium builds the scrollbar's hit rect from
+   integer-snapped layout geometry while painting at full precision; at
+   fractional device scale (e.g. 1.25 x zoom) the two grids disagree at
+   the right edge, and when frac(scrollerLeft x dpr) === 0.5 the hit
+   rect ends one physical pixel INSIDE the painted bar - the last pixel
+   column is dead (no hover, no grab). Classic's +18px indent made its
+   scroller left edge land on that half-pixel at 100% and 140% zoom
+   while the conversation view's 192px left edge never did. Letting the
+   scroller box overhang the viewport by 2px pushes the hit rect past
+   the last visible pixel at every dpr/zoom/sidebar width, so the edge
+   pixel is always a real scrollbar press. Scoped to the timeline
+   scrollers only (a global rule broke the skin scrollers' widths). */
+[data-transcript-scroll][data-osh-gutter] {
+  width: calc(100% + 2px);
+  margin-right: -2px;
+}
+[data-transcript-scroll][data-osh-gutter]::-webkit-scrollbar {
+  width: 14px;
+}
 [data-transcript-scroll]::-webkit-scrollbar-track {
-  /* faint but visible: the strip reads as the scrollbar's home at every
-     zoom/scale (a fully transparent track left the thumb's engagement
-     imperceptible on overlay-flavored setups) */
-  background: var(--surface-base);
-  border-left: 1px solid var(--border-weak-base);
-  border-radius: 8px;
+  background: transparent;
 }
 [data-transcript-scroll]::-webkit-scrollbar-thumb {
-  /* FULL-WIDTH thumb: a transparent-border trick shrank the visible lift
-     to ~6px inside the 12px track, and the thin sliver made engagement
-     untraceable at fractional zoom/scale - the visible lift now covers
-     the whole hit area */
-  background: var(--text-weaker);
+  background: var(--border-weak-base);
   border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 [data-transcript-scroll]::-webkit-scrollbar-thumb:hover {
-  background: var(--text-weak);
+  background: var(--text-weaker);
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 
 /* --- agent/mode switch: a full-width centered EVENT row ------------------

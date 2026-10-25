@@ -429,6 +429,7 @@ export function VirtualTimeline(props: {
       }}
       onScroll={onScroll}
       data-transcript-scroll
+      data-osh-gutter
       style={{ "overflow-y": "auto", "min-height": "0" }}
     >
       {/* header/footer live in the scroll flow (normal flow, not absolute):

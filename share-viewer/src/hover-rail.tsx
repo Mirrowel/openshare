@@ -135,10 +135,11 @@ export function PromptNav(props: {
   previewLines?: { prompt: number; response: number }
   onSetPreviewLines?: (v: { prompt: number; response: number }) => void
 }) {
-  // the sidebar state only applies on desktop widths; below md the control
-  // is the compact "Turn N of M" top bar (the conversation view's narrow
-  // pattern - a 192px column or a floating pill would eat a phone)
-  const desktop = createMediaQuery("(min-width: 768px)")
+  // the sidebar state only applies on desktop widths; below 900px the
+  // control is the compact "Turn N of M" top bar (the conversation view's
+  // narrow pattern - owner round 2026-10-25: trigger sooner than md,
+  // 768px needed absurd zoom levels)
+  const desktop = createMediaQuery("(min-width: 900px)")
   const sidebar = () => props.variant === "sidebar" && desktop()
   return (
     <Show
