@@ -29,6 +29,10 @@ export function TurnNav(props: {
 }) {
   const desktop = createMediaQuery("(min-width: 900px)")
   const [open, setOpen] = createSignal(false)
+  // the narrow popover anchors to the trigger's LABEL span, not the
+  // full-width trigger (bottom-start on a w-full trigger opened the
+  // list at the viewport's far left - owner-caught)
+  let labelEl: HTMLSpanElement | undefined
   const compact = () => desktop() && props.collapsed
   const currentIndex = () => props.messages.findIndex((m) => m.id === props.current)
   const TurnEntry = (p: { message: V2Message; number: number }) => {
@@ -133,10 +137,9 @@ export function TurnNav(props: {
   )
   return (
     <Show when={desktop()} fallback={
-      <Popover open={open()} onOpenChange={setOpen} placement="bottom-start" gutter={4}>
+      <Popover open={open()} onOpenChange={setOpen} placement="bottom-start" gutter={4} anchorRef={() => labelEl}>
         <Popover.Trigger class="osh-turn-button justify-between w-full px-3 border-b border-border-weak-base rounded-none" aria-label="Choose a turn">
-          <span>{props.focused ? "Focused" : "Turn"} {currentIndex() + 1} of {props.messages.length}</span>
-          <Icon name="chevron-down" size="small" />
+          <span ref={labelEl} class="inline-flex items-center gap-1.5"><span>{props.focused ? "Focused" : "Turn"} {currentIndex() + 1} of {props.messages.length}</span><Icon name="chevron-down" size="small" /></span>
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Content class="z-50 w-72 max-w-[calc(100vw-2rem)] max-h-[60dvh] overflow-y-auto rounded-lg border border-border-weak-base bg-background-base shadow-lg" aria-label="Conversation turns">

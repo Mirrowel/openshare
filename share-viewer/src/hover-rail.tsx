@@ -168,14 +168,20 @@ export function PromptNav(props: {
  *  classic should behave the same when zoomed in / on phones). */
 function NarrowBar(props: Parameters<typeof PromptNav>[0]) {
   const [open, setOpen] = createSignal(false)
+  // the popover anchors to the LABEL, not the full-width trigger button:
+  // bottom-start on a w-full trigger opened the list at the viewport's
+  // far left (owner-caught)
+  let labelEl: HTMLSpanElement | undefined
   const current = () => props.active ?? props.focusedIndex ?? 0
   return (
-    <Popover open={open()} onOpenChange={setOpen} placement="bottom-start" gutter={4}>
+    <Popover open={open()} onOpenChange={setOpen} placement="bottom-start" gutter={4} anchorRef={() => labelEl}>
       <Popover.Trigger class="osh-turn-button justify-between w-full px-3 border-b border-border-weak-base rounded-none" aria-label="Choose a turn">
-        <span>{props.focusedIndex !== undefined ? "Focused" : "Turn"} {current() + 1} of {props.count}</span>
-        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <span ref={labelEl} class="inline-flex items-center gap-1.5">
+          <span>{props.focusedIndex !== undefined ? "Focused" : "Turn"} {current() + 1} of {props.count}</span>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content class="z-50 w-72 max-w-[calc(100vw-2rem)] max-h-[60dvh] overflow-y-auto p-1.5 rounded-lg border border-border-weak-base bg-background-base shadow-lg" aria-label="turns">
