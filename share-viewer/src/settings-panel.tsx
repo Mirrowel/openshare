@@ -394,6 +394,36 @@ export function SettingsBody(props: {
               }}
             />
           </div>
+          {/* [design-trial: pill rest-state] — temporary picker so the
+              owner compares the three candidate pill designs live; the
+              losers (setting + variant code) are deleted after the pick */}
+          <div class="pl-3 pb-1.5">
+            <div class="text-12-regular text-text-weaker pb-1">Pill style (trial)</div>
+            <Segmented
+              value={props.settings.pillVariant}
+              options={[
+                { id: "map" as const, label: "map" },
+                { id: "capsule" as const, label: "capsule" },
+                { id: "ghost" as const, label: "ghost" },
+              ]}
+              onChange={(pillVariant) => props.update({ pillVariant })}
+            />
+          </div>
+          {/* [design-trial: subagent hint] — same trial mechanism for the
+              task-row "open subagent" hint reveal */}
+          <div class="pl-3 pb-1.5">
+            <div class="text-12-regular text-text-weaker pb-1">Subagent hint (trial)</div>
+            <Segmented
+              value={props.settings.subagentHint}
+              options={[
+                { id: "flap" as const, label: "flap" },
+                { id: "peel" as const, label: "peel" },
+                { id: "plate" as const, label: "plate" },
+                { id: "flapboard" as const, label: "flapboard" },
+              ]}
+              onChange={(subagentHint) => props.update({ subagentHint })}
+            />
+          </div>
           {/* view-scoped settings render from the registry schema
               (VIEW_SETTINGS / ViewEntry.settings) - a view that adds a
               setting edits ONLY its own entry, never this file */}

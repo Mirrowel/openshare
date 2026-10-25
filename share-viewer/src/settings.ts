@@ -50,6 +50,16 @@ export type OshSettings = {
    * Long jumps are instant either way (mid-flight measurement
    * corrections stutter across thousands of pixels). */
   smoothScroll: boolean
+  // [design-trial: pill rest-state] — three candidate designs for the
+  // floating turn pill (map = tick strip, capsule = current + progress
+  // track, ghost = hidden until approached). DELETE after the owner
+  // picks: the setting, the panel rows, the CSS, and the unused variant
+  // components all go together.
+  pillVariant: "map" | "capsule" | "ghost"
+  // [design-trial: subagent hint] — four candidate reveal animations for
+  // the "open subagent" hint on task rows (in-flow, room-carving; the
+  // old floating chip clipped into sibling rows). DELETE after the pick.
+  subagentHint: "flap" | "peel" | "plate" | "flapboard"
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -77,6 +87,8 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   outputOverflow: "wrap",
   promptStyle: "bubble",
   smoothScroll: true,
+  pillVariant: "capsule",
+  subagentHint: "flap",
 }
 
 const COOKIE = "osh_settings"
@@ -220,6 +232,8 @@ export function applySettings(s: OshSettings) {
   // tool output overflow: wrap vs hidden-scrollbar horizontal scroll
   html.dataset.oshOverflow = s.outputOverflow === "wrap" ? "wrap" : "scroll"
   html.dataset.oshPrompts = s.promptStyle === "flat" ? "flat" : "bubble"
+  // [design-trial: subagent hint] variant selector (see OshSettings)
+  html.dataset.oshHint = s.subagentHint ?? "flap"
 }
 
 export const TEXT_SIZES: Record<string, string> = {

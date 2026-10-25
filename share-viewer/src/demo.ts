@@ -77,6 +77,9 @@ export const demoSnapshot = {
     user("msg_demo_user_2", "Also make sure code, long tool output, and a subagent link still work after the change.", 5),
     assistant("msg_demo_assistant_2", 6, [
       tool("tool_demo_task", "subagent", { description: "Review mobile transcript edge cases", prompt: "Check narrow viewport behavior for code blocks, tool output, and subagent navigation." }, "Reviewed the mobile layout. Code blocks need horizontal scrolling; tool output should keep its own scroll area; task links need a comfortable tap target.", { metadata: { sessionID: childID } }),
+      // two CONSECUTIVE subagent calls: the hint/room-carving geometry
+      // case (a floating hint clipped into the sibling card)
+      tool("tool_demo_task_2", "subagent", { description: "Audit theme tokens", prompt: "Verify the gutter tokens resolve on both themes." }, "Checked both themes: the gutter tokens resolve, and the mobile override wins under 640px.", { metadata: { sessionID: childID } }),
       tool("tool_demo_edit", "edit", { filePath: "share-viewer/src/app.css", oldString: ".session-content { padding: 1.5rem; }", newString: ".session-content { padding: 1rem; }" }, "Updated mobile page gutter and constrained transcript width.", { title: "Tighten mobile page spacing", metadata: { files: [cssDiff] } }),
       { type: "reasoning", text: "The narrow-screen changes are intentionally limited to spacing and overflow, so the desktop reading width stays unchanged." },
       text("The layout review found three practical mobile fixes: reduce page gutters, let code scroll horizontally, and preserve independent scrolling inside large outputs."),
