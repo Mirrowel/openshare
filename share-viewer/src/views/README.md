@@ -76,10 +76,17 @@ themeable, settings-equipped, agent-labeled, subagent-navigable.
 - **Chrome** (`chrome.tsx`): `SkinHeader` (back, title, version, model,
   status, copy-markdown, GitHub, your settings trigger - styled by class
   props, flavored by `afterBack`/`afterTitle`/`statusRender`/`trailing`
-  slots), `SkinFooter` (brand row + label + GitHub), `statusTone`,
+  slots, plus a right-side `parentLink` affordance on subagent pages),
+  `SkinFooter` (brand row + label + GitHub), `statusTone`,
   `sessionCode`, `pad2`, `promptTitle`. Strongly-themed mastheads may
   stay bespoke (see teletype/atlas/timeline) - that is the escape hatch,
   not the default.
+- **Prompt nav**: `PromptNav` (`src/hover-rail.tsx`) is the shared
+  prompt navigation - pill or sidebar state, hover previews, focus-mode
+  affordance, and the subagent parent row. `BaseSessionView` mounts it
+  for every skin; a core view with its own navigation (see
+  `conversation`) registers through `src/prompt-nav.ts` so `j`/`k` and
+  `[`/`]` dispatch to it.
 - **Settings**: the ONE shared popover (every skin's trigger mounts it;
   Ctrl+K toggles it anywhere). View-scoped settings render automatically
   from your `registerSkin` `settings` array - the shared files never
