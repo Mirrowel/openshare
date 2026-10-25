@@ -956,12 +956,28 @@ export class ShareDO {
       this.state.acceptWebSocket(pair[1], ["viewer"])
       try {
         // `since` handshake: a viewer that just loaded /data at rev N
-        // doesn't need the full first frame again — an empty frame with
-        // the rev/status keeps it in sync until the next broadcast
-        const since = Number(url.searchParams.get("since") ?? "")
+        // doesn't need the full first frame again. Cases (delta frames
+        // only for clients that ANNOUNCED capability — an old cached
+        // bundle treats any non-empty first frame as the full set and
+        // would prune everything not in a delta):
+        //   since === rev  -> empty frame (nothing changed; poll parity)
+        //   since < rev, delta=1 -> DELTA frame (only items touched
+        //                     since, tombstone markers re-emitted) — a
+        //                     reconnect no longer re-transfers the whole
+        //                     share and re-folds every item viewer-side
+        //   else (no delta, or since > rev) -> FULL frame — since > rev
+        //                     means the server rewound/recreated and the
+        //                     viewer MUST prune what no longer exists
+        const sinceRaw = url.searchParams.get("since")
+        const since = sinceRaw === null ? NaN : Number(sinceRaw)
+        const wantsDelta = url.searchParams.get("delta") === "1"
         const meta2 = meta
-        if (Number.isFinite(since) && since === (meta2.rev ?? 0)) {
-          pair[1].send(JSON.stringify({ op: "frame", rev: meta2.rev, status: meta2.status, items: [] }))
+        const rev = meta2.rev ?? 0
+        if (Number.isFinite(since) && since === rev) {
+          pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: [] }))
+        } else if (wantsDelta && Number.isFinite(since) && since >= 0 && since < rev) {
+          const delta = redactItems(await this.itemsSince(since))
+          pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: delta, kind: "delta" }))
         } else {
           pair[1].send((await this.renderCache(meta)).frameStr)
         }

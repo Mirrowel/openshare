@@ -323,6 +323,37 @@ try {
     const full = await req(W1, "GET", `/api/share/${SID}/data`)
     const fullIds = (full.json?.data ?? []).map((i) => i.data?.id)
     ok("T26e full read prunes the deleted item", fullIds.includes("msg_s2") && fullIds.includes("msg_s3") && !fullIds.includes("msg_s1"), JSON.stringify(fullIds))
+    // WS first-frame delta: a reconnecting viewer (since=rev1, delta=1)
+    // gets ONLY what it missed (msg_s3 + the tombstone), not the whole
+    // share — the full first frame on rev-miss was the last whole-share
+    // transfer on the reconnect path
+    const wsFirst = await new Promise((resolve, reject) => {
+      const w = new WebSocket(`${W1.replace(/^http/, "ws")}/api/share/${SID}/ws?since=${rev1}&delta=1`)
+      const timer = setTimeout(() => { try { w.close() } catch {} ; reject(new Error("ws first-frame timeout")) }, 10000)
+      w.addEventListener("message", (ev) => {
+        clearTimeout(timer)
+        try { w.close() } catch {}
+        try { resolve(JSON.parse(ev.data)) } catch { reject(new Error("bad json")) }
+      })
+      w.addEventListener("error", () => { clearTimeout(timer); reject(new Error("ws error")) })
+    })
+    const wsIds = (wsFirst.items ?? []).map((i) => i.data?.id)
+    ok("T26f WS first frame is a delta (kind marker)", wsFirst.kind === "delta" && wsFirst.rev === rev3, JSON.stringify({ kind: wsFirst.kind, rev: wsFirst.rev, ids: wsIds }))
+    ok("T26g WS delta carries only the missed items + tombstone", wsIds.includes("msg_s3") && wsIds.includes("msg_s1") && !wsIds.includes("msg_s2") && (wsFirst.items ?? []).some((i) => i.data?.id === "msg_s1" && i.del === true), JSON.stringify(wsIds))
+    // and an old-style client (no delta=1) still gets the FULL first
+    // frame — backward compat for cached bundles that can only replace
+    const wsOld = await new Promise((resolve, reject) => {
+      const w = new WebSocket(`${W1.replace(/^http/, "ws")}/api/share/${SID}/ws?since=${rev1}`)
+      const timer = setTimeout(() => { try { w.close() } catch {} ; reject(new Error("ws first-frame timeout")) }, 10000)
+      w.addEventListener("message", (ev) => {
+        clearTimeout(timer)
+        try { w.close() } catch {}
+        try { resolve(JSON.parse(ev.data)) } catch { reject(new Error("bad json")) }
+      })
+      w.addEventListener("error", () => { clearTimeout(timer); reject(new Error("ws error")) })
+    })
+    const oldIds = (wsOld.items ?? []).map((i) => i.data?.id)
+    ok("T26h no-delta client gets the full first frame", wsOld.kind !== "delta" && oldIds.includes("msg_s2") && !oldIds.includes("msg_s1"), JSON.stringify(oldIds))
     await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
   }
 

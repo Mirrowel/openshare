@@ -118,9 +118,10 @@ export function useShareSource(): Source {
   // FULL-SET replace: /data responses and a WS socket's first frame carry
   // the COMPLETE live item set - they must prune keys the server no
   // longer has. A merge-only consumer keeps items deleted while its
-  // socket was down (tombstones are not stored server-side), so an
-  // undone turn resurrected on every reconnect until a hard reload
-  // (live-caught). Delta frames keep using merge().
+  // socket was down, so an undone turn resurrected on every reconnect
+  // until a hard reload (live-caught). Deltas (WS delta frames, poll
+  // since-responses) keep using merge() - they carry tombstone markers
+  // for what was deleted.
   const replaceFull = (incoming: any[]) => {
     setItems((prev) => {
       const next = new Map<string, any>()
@@ -187,20 +188,25 @@ function liveSource(ctx: any): Source {
   let ws: WebSocket | undefined
   let pollTimer: any
   let wsRetryTimer: any
-  // a socket's FIRST frame is the full item set (or the empty since-hit);
-  // every later frame is a delta - full frames replace, deltas merge
+  // a socket's FIRST frame is the full item set, the empty since-hit, or
+  // (when we announced delta=1) a DELTA — every later frame is a delta.
+  // Full frames replace (pruning items deleted while we were away);
+  // deltas merge (the merge path deletes on tombstones)
   let firstFrame = true
 
   const wire = () => {
     if (needsAuth()) return
-    firstFrame = true // a fresh socket's first frame is the full set (or the empty since-hit)
+    firstFrame = true // a fresh socket's first frame arrives per the since handshake below
     try {
       // local http workers (bun server, wrangler dev) speak plain ws://
       const proto = location.protocol === "https:" ? "wss" : "ws"
-      // `since`: we already hold /data at rev — the worker answers with an
-      // empty frame when nothing changed instead of the full first frame
+      // `since`: we already hold /data at rev — the server answers with an
+      // empty frame (nothing changed) or a DELTA (only what we missed;
+      // delta=1 announces we can merge it — an old cached bundle that
+      // can't would prune everything not in the delta). No since (first
+      // ever load) or a rewound server gets the full frame.
       const r = typeof rev === "function" ? rev() : 0
-      const since = Number.isFinite(r) && r > 0 ? `?since=${r}` : ""
+      const since = Number.isFinite(r) && r > 0 ? `?since=${r}&delta=1` : ""
       ws = new WebSocket(`${proto}://${location.host}/api/share/${shareID}/ws${since}`)
     } catch {
       startPolling()
@@ -211,9 +217,15 @@ function liveSource(ctx: any): Source {
       try { frame = JSON.parse(ev.data) } catch { return }
       if (frame.op !== "frame") return
       lastFrameAt = Date.now()
-      const isFull = firstFrame
+      const isFirst = firstFrame
       firstFrame = false
-      if (isFull && (frame.items ?? []).length > 0) replaceFull(frame.items)
+      // a delta first frame (kind:"delta") MERGES — replacing with it
+      // would prune every item not in the delta (data-loss trap; the
+      // server only sends kind:"delta" to delta=1 clients). Any other
+      // non-empty first frame is the full set: replace, so items deleted
+      // while we were disconnected get pruned instead of resurrecting
+      // until a hard reload.
+      if (isFirst && frame.kind !== "delta" && (frame.items ?? []).length > 0) replaceFull(frame.items)
       else merge(frame.items ?? [])
       setRev(frame.rev ?? 0)
       if (frame.status === "gone") {

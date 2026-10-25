@@ -897,7 +897,7 @@ type ControlData = {
   attachRoot?: boolean
   earlySyncs: Frame[]
 }
-type ViewerData = { kind: "viewer"; shareId: string; since?: string }
+type ViewerData = { kind: "viewer"; shareId: string; since?: string; delta?: string }
 type WsData = ControlData | ViewerData
 
 async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
@@ -1075,7 +1075,7 @@ const server = Bun.serve<WsData>({
     if (wm && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return httpHandler(req).then((res) => {
         if (res.status !== 200) return res
-        if (srv.upgrade(req, { data: { kind: "viewer", shareId: wm[1], since: url.searchParams.get("since") ?? undefined } satisfies ViewerData })) return
+        if (srv.upgrade(req, { data: { kind: "viewer", shareId: wm[1], since: url.searchParams.get("since") ?? undefined, delta: url.searchParams.get("delta") ?? undefined } satisfies ViewerData })) return
         return new Response("upgrade failed", { status: 400 })
       })
     }
@@ -1089,11 +1089,19 @@ const server = Bun.serve<WsData>({
         set.add(ws)
         const share = q.share(ws.data.shareId)
         if (share) {
-          // `since` handshake (worker parity): a viewer that just loaded
-          // /data at rev N gets an empty frame until the next broadcast
+          // `since` handshake (worker parity): since === rev answers an
+          // empty frame; since < rev with delta=1 answers a DELTA (only
+          // items touched since, tombstones included — rev/del rows);
+          // anything else gets the full frame (incl. since > rev, where
+          // the viewer must prune). Deltas only for clients that
+          // announced capability (old bundles treat any non-empty first
+          // frame as the full set).
           const since = Number(ws.data.since)
           if (Number.isFinite(since) && since === share.rev) {
             try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: [] })) } catch {}
+          } else if (ws.data.delta === "1" && Number.isFinite(since) && since >= 0 && since < share.rev) {
+            const delta = db.query("SELECT item FROM items WHERE shareId = ? AND rev > ?").all(share.id, since) as Array<{ item: string }>
+            try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: delta.map((r) => JSON.parse(r.item)), kind: "delta" })) } catch {}
           } else {
             try { ws.send(renderFrame(share)) } catch {}
           }
