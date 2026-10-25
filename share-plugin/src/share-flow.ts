@@ -30,8 +30,6 @@ export type SessionBinding = {
   opts?: SessionOpts
 }
 
-export const CONSENT_KV_KEY = "openshare_consent"
-
 export function pluginConfigPaths(baseDir: string = moduleDir()): string[] {
   return configPaths(baseDir)
 }
@@ -488,7 +486,20 @@ export async function waitForBinding(
 
 export type FlowResult = { ok: boolean; message: string; url?: string; unconfigured?: boolean }
 
-export async function runShareFlow(host: ShareHostApi, sessionID: string | undefined): Promise<FlowResult> {
+/** Consent gate: EVERY share creation asks explicitly (per owner
+ * directive — no remembered consent, no silent creates). */
+export async function requestShareConsent(host: ShareHostApi): Promise<boolean> {
+  return host.ui.showConfirm({
+    title: "Share Session",
+    message: "Publish this session (and its subagent sessions) to your openshare worker?\nThe link lets anyone with it read the conversation.",
+    confirmLabel: "Share",
+  })
+}
+
+/** runShareFlow with the consent gate applied: share copies the link,
+ * unshared asks consent once, then creates. Every create path routes
+ * through here (/share, settings, gone-again). */
+export async function shareWithConsent(host: ShareHostApi, sessionID: string | undefined): Promise<FlowResult> {
   if (!sessionID) return { ok: false, message: "No active session to share." }
   const cfg = currentConfig()
   if (!isConfigured(cfg)) {
@@ -501,10 +512,7 @@ export async function runShareFlow(host: ShareHostApi, sessionID: string | undef
     await host.clipboard.write(existing.url)
     return { ok: true, message: `Share URL copied to clipboard: ${existing.url}`, url: existing.url }
   }
-  if (!host.kv.get(CONSENT_KV_KEY, false)) {
-    // caller shows the consent dialog before invoking confirmShare()
-    return { ok: false, message: "consent required" }
-  }
+  if (!(await requestShareConsent(host))) return { ok: false, message: "Share cancelled." }
   return confirmShare(host, root)
 }
 

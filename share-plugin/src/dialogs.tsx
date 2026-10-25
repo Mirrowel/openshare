@@ -733,8 +733,17 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
         <box flexDirection="row" gap={1}>
           <For each={actions()}>
             {(action) => (
-              <box paddingLeft={2} paddingRight={2} backgroundColor={action.danger ? theme().error : theme().primary} onMouseUp={() => props.onDone(action.value)}>
-                <text fg={theme().background}><b>{action.title}</b></text>
+              <box
+                paddingLeft={2}
+                paddingRight={2}
+                backgroundColor={action.key === "enter" ? (action.danger ? theme().error : theme().primary) : undefined}
+                border={action.key === "enter" ? undefined : true}
+                borderColor={action.danger ? theme().error : theme().textMuted}
+                onMouseUp={() => props.onDone(action.value)}
+              >
+                <text fg={action.key === "enter" ? theme().background : action.danger ? theme().error : theme().textMuted}>
+                  <b>{action.title}</b>
+                </text>
               </box>
             )}
           </For>

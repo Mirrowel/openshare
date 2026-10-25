@@ -30,6 +30,8 @@ import {
   saveServerEntry,
   serverEntries,
   setShareFlag,
+  shareWithConsent,
+  workerDeleteShare,
   type AdminShare,
   type AdminUser,
 } from "./share-flow.js"
@@ -917,26 +919,68 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
 
   const sessionRows = async (): Promise<ShareDialogSelectOption<string>[]> => {
     if (!startAtSession) return []
-    const binding = await readBinding(host.client, await resolveRoot(host.client, startAtSession))
-    const rows: ShareDialogSelectOption<string>[] = [
-      {
-        title: binding?.url ? "Copy share link" : "Share this session",
+    const root = await resolveRoot(host.client, startAtSession)
+    const bindings = await readBindings(host.client, root)
+    const live = bindings.filter((b) => b.url && b.enabled !== false)
+    const rows: ShareDialogSelectOption<string>[] = []
+    if (live.length === 0) {
+      rows.push({
+        title: "Share this session",
         value: "session:share",
-        description: binding?.url ? "copy the share URL to the clipboard" : "Set the share flag; the server plugin creates the page",
-        help: binding?.url
-          ? `Copies the share URL to the clipboard.\n\nURL: ${binding.url}\nShare id: ${binding.id ?? "?"}`
-          : "Publishes this session (and its subagent sessions) to the active server. The full history lands in the page — sharing mid-session is first-class, nothing is missed.",
-      },
-    ]
-    if (binding?.url) {
+        description: "set the share flag; the server plugin creates the page",
+        help: "Publishes this session (and its subagent sessions) to the active server. The full history lands in the page — sharing mid-session is first-class, nothing is missed. You will be asked to confirm before anything is published.",
+      })
+    } else if (live.length === 1) {
+      const b = live[0]
+      rows.push({
+        title: "Copy share link",
+        value: "session:copy",
+        description: "copy the share URL to the clipboard",
+        help: `Copies the share URL to the clipboard.\n\nURL: ${b.url}\nShare id: ${b.id ?? "?"}`,
+      })
+    } else {
+      for (const b of live) {
+        rows.push({
+          title: `Copy link — ${hostOf(b.url || b.server)}`,
+          value: `session:copy:${b.server}`,
+          description: b.url,
+          help: `Copies this server's share URL to the clipboard.\n\nURL: ${b.url}\nShare id: ${b.id}\n\nEach server carries an independent page of the same session.`,
+        })
+      }
+      rows.push({
+        title: "Copy all links",
+        value: "session:copyall",
+        description: `${live.length} servers`,
+        help: `Copies every bound server's share URL.\n\n${live.map((b) => `• ${b.url}`).join("\n")}`,
+      })
+    }
+    if (live.length) {
       rows.push({
         title: "Stop sharing",
         value: "session:unshare",
-        description: "delete the page(s), or leave a snapshot",
+        description: live.length > 1 ? `delete every page (${live.length} servers), or leave snapshots` : "delete the page, or leave a snapshot",
         danger: true,
-        help: `Choose per run: DELETE every page server-side (links stop working — final "gone" state), or LEAVE AS-IS (stop updating; pages stay readable until their TTL — a frozen snapshot).\n\nURLs:\n${[binding.url].join("\n")}\n\nSharing again later always creates fresh page(s) with new URLs.`,
+        help: `Choose per run: DELETE every page server-side (links stop working — final "gone" state), or LEAVE AS-IS (stop updating; pages stay readable until their TTL — a frozen snapshot).\n\nURLs:\n${live.map((b) => b.url).join("\n")}\n\nSharing again later always creates fresh page(s) with new URLs.`,
       })
+      if (live.length > 1) {
+        rows.push({
+          title: "Stop on one server…",
+          value: "session:unshare:one",
+          description: "delete or snapshot a single server's page",
+          help: `Per-server stop: pick the server, then delete its page or leave it as a read-only snapshot. Other servers are unaffected.\n\nBound servers:\n${live.map((b) => `• ${b.server} — ${b.url}`).join("\n")}`,
+        })
+        const otherServers = serverEntries().filter((s) => !live.some((b) => b.server === s.url))
+        if (otherServers.length) {
+          rows.push({
+            title: "Share to another server…",
+            value: "session:more",
+            description: otherServers.map((s) => hostOf(s.url)).join(", "),
+            help: `Adds one of your other configured servers as a destination for THIS session: it becomes the active server and the full history is mirrored there within seconds.\n\nAvailable:\n${otherServers.map((s) => `• ${s.url}`).join("\n")}`,
+          })
+        }
+      }
     }
+    const binding = bindings[0]
     rows.push({
       title: "Session TTL override (days)",
       value: "session:ttl",
@@ -1054,14 +1098,88 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
 
     if (choice.startsWith("session:") && startAtSession) {
       const root = await resolveRoot(host.client, startAtSession)
-      const current = await readBinding(host.client, root)
+      const all = await readBindings(host.client, root)
+      const live = all.filter((b) => b.url && b.enabled !== false)
+      const current = all[0]
       if (choice === "session:share") {
         if (!isConfigured(cfg)) {
           await showInfo(host.ui, { title: "Not configured", message: "Connect a server (Servers group) first, then share." })
           return
         }
-        const result = await confirmShare(host, root)
+        const result = await shareWithConsent(host, startAtSession)
         host.ui.toast({ variant: result.ok ? "success" : "error", title: "OpenShare", message: result.message, duration: result.ok ? 8000 : 15000 })
+        return
+      }
+      if (choice === "session:copy" && live[0]) {
+        const okw = await host.clipboard.write(live[0].url!)
+        host.ui.toast({ variant: okw ? "success" : "error", title: "OpenShare", message: okw ? `Share URL copied: ${live[0].url}` : `Clipboard failed — ${live[0].url}` })
+        return
+      }
+      if (choice.startsWith("session:copy:") ) {
+        const b = live.find((x) => `session:copy:${x.server}` === choice)
+        if (b) {
+          const okw = await host.clipboard.write(b.url!)
+          host.ui.toast({ variant: okw ? "success" : "error", title: "OpenShare", message: okw ? `Share URL copied: ${b.url}` : `Clipboard failed — ${b.url}` })
+        }
+        return
+      }
+      if (choice === "session:copyall") {
+        const joined = live.map((b) => b.url).filter(Boolean).join("\n")
+        const okw = await host.clipboard.write(joined)
+        host.ui.toast({ variant: okw ? "success" : "error", title: "OpenShare", message: okw ? `${live.length} share URL(s) copied` : "Clipboard failed" })
+        return
+      }
+      if (choice === "session:unshare:one") {
+        const pick = await showSelect(host.ui, {
+          title: "Stop on which server",
+          options: [...live.map((b) => ({ title: hostOf(b.url || b.server), value: b.server, description: b.url })), { title: "Cancel", value: "__cancel" }],
+        })
+        if (!pick || pick === "__cancel") return
+        const target = live.find((b) => b.server === pick)
+        if (!target) return
+        const how = await showSelect(host.ui, {
+          title: `Stop sharing — ${hostOf(target.url || target.server)}`,
+          options: [
+            { title: "Delete the page", value: "delete", description: "this link stops working for everyone", danger: true },
+            { title: "Leave as-is (snapshot)", value: "leave", description: "stop updating; the page stays until its TTL" },
+            { title: "Cancel", value: "__cancel" },
+          ],
+        })
+        if (!how || how === "__cancel") return
+        if (how === "leave") {
+          await patchSessionBinding(host.client, root, (servers) => {
+            delete servers[target.server]
+            servers[target.server] = { optedOut: true }
+          })
+          host.ui.toast({ variant: "success", title: "OpenShare", message: `${hostOf(target.url || target.server)} left as-is — a snapshot until its TTL.` })
+          return
+        }
+        const targetEntry = all.find((b) => b.server === target.server)
+        if (!targetEntry?.secret) {
+          host.ui.toast({ variant: "error", title: "OpenShare", message: "No secret for this page — cannot delete it server-side; binding cleared." })
+          await patchSessionBinding(host.client, root, (servers) => {
+            delete servers[target.server]
+          })
+          return
+        }
+        const gone = await workerDeleteShare(target.server, target.id!, targetEntry.secret)
+        await patchSessionBinding(host.client, root, (servers) => {
+          delete servers[target.server]
+        })
+        host.ui.toast({ variant: gone ? "success" : "warning", title: "OpenShare", message: gone ? `Page deleted on ${hostOf(target.url || target.server)}.` : `Could not delete the page (it may already be gone) — binding cleared.` })
+        return
+      }
+      if (choice === "session:more") {
+        const otherServers = serverEntries().filter((s) => !live.some((b) => b.server === s.url))
+        if (!otherServers.length) return
+        const pick = await showSelect(host.ui, {
+          title: "Share to another server",
+          options: [...otherServers.map((s) => ({ title: hostOf(s.url), value: s.url, description: s.entry.label })), { title: "Cancel", value: "__cancel" }],
+        })
+        if (!pick || pick === "__cancel") return
+        for (const s of serverEntries()) if (s.url !== pick) saveServerEntry(s.url, { active: undefined })
+        saveServerEntry(pick, { active: true })
+        host.ui.toast({ variant: "success", title: "OpenShare", message: `${hostOf(pick)} activated — this session mirrors there within seconds.` })
         return
       }
       if (choice === "session:unshare") {
