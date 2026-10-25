@@ -40,6 +40,10 @@ export type OshSettings = {
   /** how user prompts render everywhere: right-aligned bubble (default)
    * or flat text like the reader skin */
   promptStyle: "bubble" | "flat"
+  /** smooth-scroll prompt jumps (rail, j/k, [ ]); off = instant jumps.
+   * Long jumps are instant either way (mid-flight measurement
+   * corrections stutter across thousands of pixels). */
+  smoothScroll: boolean
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -61,6 +65,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   groveThinking: "left",
   outputOverflow: "scroll",
   promptStyle: "bubble",
+  smoothScroll: true,
 }
 
 const COOKIE = "osh_settings"

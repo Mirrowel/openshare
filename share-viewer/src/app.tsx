@@ -40,6 +40,7 @@ import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
+import { promptNavKey, registerPromptNav } from "./prompt-nav"
 import { createMediaQuery } from "@solid-primitives/media"
 import { InfoPanel } from "./views/info-panel"
 import { findView, resolveSessionID } from "./views/registry"
@@ -295,7 +296,26 @@ function SessionView(props: {
               // VirtualTimeline (nonce so repeat jumps to the same message
               // re-fire)
               let jumpNonce = 1
-              const [jumpTarget, setJumpTarget] = createSignal<{ id: string; nonce: number }>()
+              const [jumpTarget, setJumpTarget] = createSignal<{ id: string; nonce: number; behavior?: ScrollBehavior }>()
+              // one prompt-nav implementation for classic: paged pages the
+              // turn, continuous jumps the virtualizer (smooth per setting,
+              // long jumps fall back to instant inside the timeline)
+              const jumpBehavior = () => (props.settings.smoothScroll ? "smooth" as const : "auto" as const)
+              const activeIndex = () => userTurns().findIndex((m: any) => m.id === activeMessage()?.id)
+              registerPromptNav({
+                next: () => {
+                  const i = Math.min(activeIndex() + 1, userTurns().length - 1)
+                  if (i === activeIndex()) return
+                  if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
+                  else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                },
+                prev: () => {
+                  const i = Math.max(activeIndex() - 1, 0)
+                  if (i === activeIndex()) return
+                  if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
+                  else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                },
+              })
               // the model of the ACTIVE turn: user metadata first (stamped
               // at ingestion), else the following assistant's model
               const provider = createMemo(() => {
@@ -584,7 +604,7 @@ function SessionView(props: {
                               }}
                               onSelect={(i) => {
                                 if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
-                                else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++ })
+                                else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
                               }}
                             />
                           </Show>
@@ -858,25 +878,15 @@ export function App() {
     })
   })
 
-  // j/k keyboard navigation between prompts
+  // j/k and [ ] are aliases of one prompt-nav action; the active view
+  // (classic body or a skin's BaseSessionView) registers the handler
+  // (src/prompt-nav.ts) - this listener only dispatches
   window.addEventListener("keydown", (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-    if (e.key !== "j" && e.key !== "k") return
-    const d = source.data()
-    if (!d) return
-    const sessionID = sub == null || sub() == null ? d.sessionID : undefined
-    const sid = sessionID ?? d.sessionID
-    const msgs = visibleMessages(d, sid).filter((m) => (m as any)?.type === "user")
-    const current = msgs.findIndex((m) => location.hash.includes(m.id))
-    const next = e.key === "j" ? Math.min(current + 1, msgs.length - 1) : Math.max(current - 1, 0)
-    const target = msgs[next]?.id
-    if (!target) return
-    // classic renders [data-message-id] rows; skins render sections keyed
-    // `prefix:<userMessageID>` - fall through so j/k works in every view
-    const el =
-      document.querySelector(`[data-message-id="${target}"]`) ??
-      document.querySelector(`[data-section-key$=":${CSS.escape(target)}"]`)
-    el?.scrollIntoView({ behavior: "smooth" })
+    const nav = promptNavKey(e)
+    if (!nav) return
+    e.preventDefault()
+    if (e.key === "j" || e.key === "]") nav.next()
+    else nav.prev()
   })
 
   // Ctrl+K opens the panel and focuses search

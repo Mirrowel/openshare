@@ -98,8 +98,9 @@ export function VirtualTimeline(props: {
   followLive?: boolean
   /** continuous-mode fast-skip: when this changes to a message id, scroll
    * to that user message's row (the rail's jump target). nonce makes
-   * repeat jumps to the same message re-fire. */
-  scrollTarget?: { id: string; nonce: number }
+   * repeat jumps to the same message re-fire; behavior carries the
+   * smooth-scroll setting (long jumps fall back to instant internally). */
+  scrollTarget?: { id: string; nonce: number; behavior?: ScrollBehavior }
   /** imperative controls handed to the parent once the virtualizer is
    * live (focus mode, hotkeys, rail jumps all scroll through this) */
   onReady?: (controls: { scrollToMessage: (id: string) => void }) => void
@@ -195,7 +196,10 @@ export function VirtualTimeline(props: {
   })
 
   // scroll to a user message's row by id — shared by the scrollTarget
-  // prop (reactive jumps) and the onReady controls (imperative calls)
+  // prop (reactive jumps) and the onReady controls (imperative calls).
+  // Long smooth jumps fall back to instant: tanstack animates scrollTop
+  // over estimate-based offsets and measurement corrections mid-flight
+  // stutter badly across thousands of pixels.
   const scrollToMessage = (id: string, behavior?: ScrollBehavior) => {
     const rows = projection.rows()
     const idx = rows.findIndex((row) => {
@@ -204,16 +208,25 @@ export function VirtualTimeline(props: {
     })
     if (idx < 0) return
     if (!scrollElement) return
+    let how = behavior
+    if (how === "smooth") {
+      try {
+        const offset = virtualizer.getOffsetForIndex?.(idx, "start")
+        if (offset != null && scrollElement && Math.abs(offset[0] - scrollElement.scrollTop) > scrollElement.clientHeight * 4) {
+          how = "auto"
+        }
+      } catch {}
+    }
     // tanstack's own offset math (estimate-based; the measurement pass
     // corrects around the jump)
-    virtualizer.scrollToIndex(idx, { align: "start", behavior })
+    virtualizer.scrollToIndex(idx, { align: "start", behavior: how })
   }
 
   // continuous-mode fast-skip: jump to a user message row by id
   createEffect(() => {
     const target = props.scrollTarget
     if (!target) return
-    scrollToMessage(target.id)
+    scrollToMessage(target.id, target.behavior)
   })
 
   // imperative controls for the parent (focus mode, hotkeys, rail)

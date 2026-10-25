@@ -49,21 +49,13 @@ export function HoverRail(props: {
     setNear(true)
     setOpen(true)
   }
-  const step = (dir: 1 | -1) => {
-    const cur = props.active ?? 0
-    const next = Math.min(props.count - 1, Math.max(0, cur + dir))
-    if (next !== cur || props.active === undefined) props.onSelect(next)
-  }
+  // [ ] are handled globally (src/prompt-nav.ts - aliases of j/k with the
+  // active view's registered implementation); the rail only owns Escape
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       setOpen(false)
       setNear(false)
-      return
     }
-    const tag = (e.target as HTMLElement | null)?.tagName
-    if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable) return
-    if (e.key === "[") step(-1)
-    else if (e.key === "]") step(1)
   }
   onMount(() => window.addEventListener("keydown", onKey))
   onCleanup(() => {

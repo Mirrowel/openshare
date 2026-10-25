@@ -370,6 +370,15 @@ export function SettingsBody(props: {
               onChange={(promptStyle) => props.update({ promptStyle })}
             />
           </div>
+          {/* smooth-scroll prompt jumps (rail clicks, j/k, [ ]); long
+              jumps are instant either way */}
+          <Switch
+            label="Smooth scrolling"
+            hint="animate prompt jumps (rail, j/k, [ ]); long jumps are instant either way"
+            on={props.settings.smoothScroll}
+            onChange={() => props.update({ smoothScroll: !props.settings.smoothScroll })}
+          />
+          <div class="pt-1" />
           {/* diff layout: auto (split when it fits), or forced - forced
               split still requires the width; the per-card U/A/S toggle in
               edit headers writes the same setting */}

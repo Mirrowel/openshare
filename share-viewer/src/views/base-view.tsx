@@ -8,6 +8,7 @@
 import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { HoverRail } from "../hover-rail"
+import { registerPromptNav } from "../prompt-nav"
 import { viewSupportsPaged } from "./registry"
 import { ViewProvider, type ViewContextValue } from "./view-context"
 import { copySessionMarkdown } from "../copy-markdown"
@@ -152,6 +153,26 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     window.history.pushState({}, "", `/s/${props.source.shareID}`)
     window.dispatchEvent(new PopStateEvent("popstate"))
   }
+  // skins' prompt-nav: paged steps the active section, continuous smooth-
+  // scrolls to the section (j/k and [ ] both dispatch here)
+  registerPromptNav({
+    next: () => {
+      const i = Math.min((active() ?? 0) + 1, visible().length - 1)
+      if (continuous()) {
+        const sc = scroller as unknown as HTMLDivElement | undefined
+        const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+        el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+      } else if (i !== active()) setActive(i)
+    },
+    prev: () => {
+      const i = Math.max((active() ?? 0) - 1, 0)
+      if (continuous()) {
+        const sc = scroller as unknown as HTMLDivElement | undefined
+        const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+        el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+      } else if (i !== active()) setActive(i)
+    },
+  })
   const isSub = () => {
     // a child session carries parentID in the data (true on in-page
     // navigation the moment a subagent opens, not only on fresh URL loads)
@@ -261,7 +282,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               if (continuous()) {
                 const sc = scroller as unknown as HTMLDivElement | undefined
                 const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-                el?.scrollIntoView({ behavior: "smooth", block: "start" })
+                el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
                 return
               }
               setActive(i)
