@@ -278,21 +278,8 @@ export function SettingsBody(props: {
               }
             />
           </Show>
-          {/* prompt navigation state: the floating pill or the sidebar
-              column - one of the two is always present; the toggle also
-              lives in the control itself (sidebar collapse / popover
-              "sidebar" button) */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Turn navigation</div>
-            <Segmented
-              value={props.settings.promptNav}
-              options={[
-                { id: "pill" as const, label: "pill" },
-                { id: "sidebar" as const, label: "sidebar" },
-              ]}
-              onChange={(promptNav) => props.update({ promptNav })}
-            />
-          </div>
+          {/* prompt nav state lives in the control itself (sidebar gear +
+              collapse / popover sidebar button) - no panel duplicate */}
           <Switch
             label="Center content"
             on={props.settings.centerContent}

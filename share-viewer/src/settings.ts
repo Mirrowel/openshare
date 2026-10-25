@@ -16,8 +16,11 @@ export type OshSettings = {
     *  column; one of the two is ALWAYS present with >1 prompt - the pill
     *  is never fully removable (owner round 2026-10-25) */
    promptNav: "pill" | "sidebar"
-   /** sidebar width in px (drag-resized; clamped 160-400) */
-   turnNavWidth?: number
+  /** sidebar width in px (drag-resized; clamped 160-400) */
+  turnNavWidth?: number
+  /** hover-preview clamps: prompt/response line counts (sidebar gear) */
+  previewPromptLines?: number
+  previewResponseLines?: number
    followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"
@@ -54,7 +57,9 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   theme: "system",
   continuous: false,
   pagedByView: {},
-  promptNav: "pill",
+  promptNav: "sidebar",
+  previewPromptLines: 2,
+  previewResponseLines: 4,
   followLive: true,
   textSize: "normal",
   readText: "normal",

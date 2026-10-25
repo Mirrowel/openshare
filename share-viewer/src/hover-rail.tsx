@@ -21,6 +21,7 @@
 // past the list's right edge, rendered at the panel level so it never
 // clips in the scrolling list.
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { Portal } from "solid-js/web"
 import { createMediaQuery } from "@solid-primitives/media"
 
 const IconPanel = (props: { class?: string }) => (
@@ -55,7 +56,13 @@ function Kbd(props: { children: JSX.Element }) {
  *  cursor, closed by any outside pointerdown or Escape. The kit's
  *  Menu (a Kobalte dropdown) never renders its content when opened
  *  programmatically without a Trigger (probe-verified twice), and a
- *  one-item menu does not need the machinery. */
+ *  one-item menu does not need the machinery.
+ *  PORTALED to document.body: inside the pill popover the card was
+ *  trapped in a transformed z-40 stacking context (the wrapper's entry
+ *  animation keeps a transform forever) alongside the hover preview,
+ *  and painted lost beneath it - right-click on a popover row looked
+ *  dead while the sidebar's copy worked (owner-caught). At body level
+ *  no ancestor can clip, stack, or contain it. */
 export function TurnContextMenu(props: { x: number; y: number; onClose: () => void; onFocus: () => void }) {
   let card: HTMLDivElement | undefined
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
@@ -71,25 +78,27 @@ export function TurnContextMenu(props: { x: number; y: number; onClose: () => vo
   const left = Math.min(props.x, window.innerWidth - 180)
   const top = Math.min(props.y, window.innerHeight - 56)
   return (
-    <div
-      ref={card}
-      role="menu"
-      aria-label="turn actions"
-      class="fixed z-[80] min-w-36 p-1 rounded-lg border border-border-weak-base bg-background-base shadow-lg"
-      style={{ left: `${left}px`, top: `${top}px` }}
-    >
-      <button
-        type="button"
-        role="menuitem"
-        class="w-full text-left px-3 py-1.5 rounded-md text-12-regular text-text-base hover:bg-surface-base cursor-pointer border-none bg-transparent"
-        onClick={() => {
-          props.onClose()
-          props.onFocus()
-        }}
+    <Portal mount={document.body}>
+      <div
+        ref={card}
+        role="menu"
+        aria-label="turn actions"
+        class="fixed z-[80] min-w-36 p-1 rounded-lg border border-border-weak-base bg-background-base shadow-lg"
+        style={{ left: `${left}px`, top: `${top}px` }}
       >
-        Focus on turn
-      </button>
-    </div>
+        <button
+          type="button"
+          role="menuitem"
+          class="w-full text-left px-3 py-1.5 rounded-md text-12-regular text-text-base hover:bg-surface-base cursor-pointer border-none bg-transparent"
+          onClick={() => {
+            props.onClose()
+            props.onFocus()
+          }}
+        >
+          Focus on turn
+        </button>
+      </div>
+    </Portal>
   )
 }
 
@@ -121,6 +130,9 @@ export function PromptNav(props: {
   /** sidebar width in px (drag-resized; persisted by the caller) */
   width?: number
   onResize?: (w: number) => void
+  /** hover-preview clamp line counts (configured from the sidebar gear) */
+  previewLines?: { prompt: number; response: number }
+  onSetPreviewLines?: (v: { prompt: number; response: number }) => void
 }) {
   // the sidebar state only applies on desktop widths; below md the control
   // is always the pill (a 192px column would eat a phone)
@@ -225,17 +237,23 @@ function NavRow(props: {
  *  left) because `left: 100%` resolves against the WRAPPER - which is
  *  only pill-wide, painting the preview straight over the rows
  *  (vision-caught). Rendered at the wrapper level, never inside the
- *  scrolling list. The prompt gets most of the room (3 lines) and the
- *  response snippet 4. */
-function PreviewCard(props: { label: string | undefined; text: string; top: number; left: number }) {
+ *  scrolling list. Line counts are the user's preview-size choice
+ *  (sidebar gear), clamped via inline -webkit-line-clamp. */
+function PreviewCard(props: { label: string | undefined; text: string; top: number; left: number; promptLines?: number; responseLines?: number }) {
+  const clamp = (n?: number) => ({
+    display: "-webkit-box" as const,
+    "-webkit-box-orient": "vertical" as const,
+    "-webkit-line-clamp": String(n ?? 3),
+    overflow: "hidden" as const,
+  })
   return (
     <div
       class="osh-pnav-preview absolute z-50 w-80 max-w-[calc(100vw-5rem)] p-3 rounded-lg border border-border-weak-base bg-background-base shadow-lg pointer-events-none"
       style={{ top: `${props.top}px`, left: `${props.left}px` }}
       role="note"
     >
-      <div class="text-12-medium text-text-strong line-clamp-3">{props.label ?? "turn"}</div>
-      <div class="pt-0.5 text-12-regular text-text-weak line-clamp-4">{props.text}</div>
+      <div class="text-12-medium text-text-strong" style={clamp(props.promptLines ?? 3)}>{props.label ?? "turn"}</div>
+      <div class="pt-0.5 text-12-regular text-text-weak" style={clamp(props.responseLines ?? 4)}>{props.text}</div>
     </div>
   )
 }
@@ -257,9 +275,69 @@ function ParentRow(props: { label: string; onParent: () => void; compact?: boole
   )
 }
 
+/** tiny 3-button group for the sidebar's own config popover */
+function LinePicker(props: { value: number; options: number[]; onPick: (n: number) => void }) {
+  return (
+    <span class="flex items-center rounded-md overflow-hidden border border-border-weak-base">
+      <For each={props.options}>
+        {(n) => (
+          <button
+            type="button"
+            class="min-w-7 h-6 px-1.5 text-12-mono cursor-pointer border-none"
+            classList={{
+              "bg-surface-raised-base text-text-strong": props.value === n,
+              "bg-transparent text-text-weaker hover:text-text-base": props.value !== n,
+            }}
+            onClick={() => props.onPick(n)}
+          >
+            {n}
+          </button>
+        )}
+      </For>
+    </span>
+  )
+}
+
+/** the sidebar's OWN config popover (not the shared settings panel) -
+ *  holds the sidebar's own knobs only: hover-preview size for now.
+ *  Anchored under the gear, closed by outside pointerdown/Escape. */
+function SidebarConfig(props: { previewLines: { prompt: number; response: number }; onSet: (v: { prompt: number; response: number }) => void; onClose: () => void }) {
+  let panel: HTMLDivElement | undefined
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
+  const onDown = (e: PointerEvent) => { if (panel && !panel.contains(e.target as Node)) props.onClose() }
+  onMount(() => {
+    window.addEventListener("keydown", onKey)
+    window.addEventListener("pointerdown", onDown, true)
+  })
+  onCleanup(() => {
+    window.removeEventListener("keydown", onKey)
+    window.removeEventListener("pointerdown", onDown, true)
+  })
+  return (
+    <div
+      ref={panel}
+      class="absolute top-8 z-30 w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl"
+      style={{ left: "calc(100% + 8px)" }}
+      role="dialog"
+      aria-label="sidebar settings"
+    >
+      <div class="text-12-medium text-text-weaker pb-2">Hover preview</div>
+      <div class="flex items-center justify-between pb-1.5">
+        <span class="text-12-regular text-text-base">prompt lines</span>
+        <LinePicker value={props.previewLines.prompt} options={[1, 2, 3]} onPick={(prompt) => props.onSet({ ...props.previewLines, prompt })} />
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-12-regular text-text-base">response lines</span>
+        <LinePicker value={props.previewLines.response} options={[2, 4, 6]} onPick={(response) => props.onSet({ ...props.previewLines, response })} />
+      </div>
+    </div>
+  )
+}
+
 // ------------------------------------------------------------- sidebar ----
 function Sidebar(props: Parameters<typeof PromptNav>[0]) {
   const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
+  const [configOpen, setConfigOpen] = createSignal(false)
   let panel: HTMLDivElement | undefined
 
   const onHover = (i: number, el: HTMLElement) => {
@@ -294,15 +372,30 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
     <aside ref={panel} class="relative flex flex-col h-full shrink-0 border-r border-border-weak-base bg-background-base" style={{ width: `${props.width ?? 192}px` }} aria-label="turns">
       <div class="flex items-center justify-between h-8 px-3 shrink-0">
         <span class="text-12-medium text-text-weaker">Turns</span>
-        <button
-          type="button"
-          class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
-          onClick={() => props.onSetVariant("pill")}
-          title="collapse to the floating pill"
-          aria-label="collapse turn sidebar"
-        >
-          <IconCollapse />
-        </button>
+        <span class="flex items-center gap-1">
+          <button
+            type="button"
+            class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
+            onClick={() => setConfigOpen((v) => !v)}
+            title="sidebar settings"
+            aria-label="sidebar settings"
+            aria-expanded={configOpen()}
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.25" />
+              <path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
+            onClick={() => props.onSetVariant("pill")}
+            title="collapse to the floating pill"
+            aria-label="collapse turn sidebar"
+          >
+            <IconCollapse />
+          </button>
+        </span>
       </div>
       <div
         class="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-0.5"
@@ -342,7 +435,14 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
         <span class="tabular-nums">{props.count} turns</span>
         <span class="flex items-center gap-1"><Kbd>J</Kbd><Kbd>K</Kbd></span>
       </div>
-      <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} />}</Show>
+      <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} promptLines={props.previewLines?.prompt} responseLines={props.previewLines?.response} />}</Show>
+      <Show when={configOpen() && props.onSetPreviewLines}>
+        <SidebarConfig
+          previewLines={props.previewLines ?? { prompt: 2, response: 4 }}
+          onSet={props.onSetPreviewLines!}
+          onClose={() => setConfigOpen(false)}
+        />
+      </Show>
       {/* the resize handle: a hairline grab zone on the right edge */}
       <div class="absolute top-0 bottom-0 right-0 w-1.5 cursor-col-resize hover:bg-border-weak-base/60 z-10" onPointerDown={startResize} aria-hidden="true" />
     </aside>
@@ -449,7 +549,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
         <Show when={open()}>
           <div
             ref={popEl}
-            class="osh-rail-pop absolute left-full bottom-0 z-50 w-80 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
+            class="osh-rail-pop absolute left-full z-50 w-80 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
             style={{ "margin-left": "6px" }}
             role="menu"
             aria-label="turns"
@@ -523,7 +623,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
           </div>
           {/* the hover preview renders at the WRAPPER level: the popover is
               overflow-hidden (rounded header/footer) and would clip it */}
-          <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} />}</Show>
+          <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} promptLines={props.previewLines?.prompt} responseLines={props.previewLines?.response} />}</Show>
         </Show>
       </div>
     </>
