@@ -268,6 +268,34 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
     <ViewProvider value={ctxValue}>
       <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
         <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
+      <div class="flex flex-col flex-1 min-h-0">
+          {/* the narrow bar's slot: column flow above the row (the row is
+              a stretch row for the sidebar variant - an in-flow bar there
+              stretches to full height) */}
+          <Show when={visible().length > 1}>
+            <PromptNav
+              only="narrow"
+              count={visible().length}
+              active={continuous() ? undefined : active()}
+              title={props.skin.id}
+              variant={props.settings.promptNav}
+              onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+              parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: back } : undefined}
+              label={(i) => {
+                const p = visible()[i]?.prompt
+                return typeof p === "string" ? p.trim().split("\n")[0] : undefined
+              }}
+              onSelect={(i) => {
+                if (continuous()) {
+                  const sc = scroller as unknown as HTMLDivElement | undefined
+                  const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
+                  el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+                  return
+                }
+                setActive(i)
+              }}
+            />
+          </Show>
         <div class="flex flex-1 min-h-0">
           {/* PromptNav: ALWAYS present with >1 prompt - the sidebar column
               or the floating pill, never neither (the pill is not
@@ -278,6 +306,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               bug, live-caught twice). */}
           <Show when={visible().length > 1}>
             <PromptNav
+              only="desktop"
               count={visible().length}
               active={continuous() ? undefined : active()}
               title={props.skin.id}
@@ -325,6 +354,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               <div class="text-13-regular text-text-weaker py-10 text-center">no prompts match the search</div>
             </Show>
           </div>
+        </div>
         </div>
         <w.Footer {...props} />
       </div>

@@ -647,8 +647,33 @@ function SessionView(props: {
                         "lg:flex": !wide(),
                       }}
                     >
-                        <div classList={{ "@container relative flex min-h-0 flex-1 basis-3/5 min-w-0": true }}>
-                          <div class="flex items-stretch justify-start h-full min-h-0 w-full">
+                        <div classList={{ "@container relative flex flex-col min-h-0 flex-1 basis-3/5 min-w-0": true }}>
+                          {/* the narrow bar's slot: column flow above the
+                              row (the row is items-stretch for the sidebar
+                              and would stretch an in-flow bar to full
+                              height - the 872px "Turn 1 of 4" page) */}
+                          <Show when={userTurns().length > 1}>
+                            <PromptNav
+                              only="narrow"
+                              count={userTurns().length}
+                              active={userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
+                              variant={props.settings.promptNav}
+                              onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+                              parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: () => { const t = parentTurn()!; window.history.pushState({}, "", `/s/${props.source.shareID}#${t.userID}`); window.dispatchEvent(new PopStateEvent("popstate")) } } : undefined}
+                              label={(i) => {
+                                const t = userTurns()[i]?.text
+                                return typeof t === "string" ? t.trim().split("\n")[0] : undefined
+                              }}
+                              onSelect={(i) => {
+                                if (focused()) {
+                                  focusTurn(i)
+                                  return
+                                }
+                                setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                              }}
+                            />
+                          </Show>
+                          <div class="flex items-stretch justify-start flex-1 min-h-0 w-full">
                             {/* PromptNav: ALWAYS present with >1 prompt - the
                                 sidebar column or the floating pill (one of
                                 the two, never neither). Paged pages the turn,
@@ -656,6 +681,7 @@ function SessionView(props: {
                                 shift+click focuses the turn. */}
                             <Show when={userTurns().length > 1}>
                               <PromptNav
+                                only="desktop"
                                 count={userTurns().length}
                                 active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
                                 variant={props.settings.promptNav}

@@ -134,21 +134,30 @@ export function PromptNav(props: {
   /** hover-preview clamp line counts (configured from the sidebar gear) */
   previewLines?: { prompt: number; response: number }
   onSetPreviewLines?: (v: { prompt: number; response: number }) => void
+  /** which variants THIS placement renders: call sites put the nav in
+   *  different slots - the sidebar/pill slot is a stretch flex ROW (the
+   *  sidebar wants h-full) where an in-flow narrow bar stretches to the
+   *  full row height, so the narrow bar needs a column-flow slot. A
+   *  placement passes only="desktop" (sidebar/pill) or only="narrow"
+   *  (the Turn N of M bar); default renders whichever fits the width. */
+  only?: "desktop" | "narrow"
 }) {
   // the sidebar state only applies on desktop widths; below 900px the
   // control is the compact "Turn N of M" top bar (the conversation view's
   // narrow pattern - owner round 2026-10-25: trigger sooner than md,
   // 768px needed absurd zoom levels)
   const desktop = createMediaQuery("(min-width: 900px)")
-  const sidebar = () => props.variant === "sidebar" && desktop()
+  const showDesktopSide = () => desktop() && props.only !== "narrow"
+  const showNarrow = () => !desktop() && props.only !== "desktop"
   return (
-    <Show
-      when={desktop()}
-      fallback={<NarrowBar {...props} />}
-    >
-      <Show when={sidebar()} fallback={<Pill {...props} />}>
-        <Sidebar {...props} />
+    <Show when={showNarrow()} fallback={
+      <Show when={showDesktopSide()}>
+        <Show when={props.variant === "sidebar"} fallback={<Pill {...props} />}>
+          <Sidebar {...props} />
+        </Show>
       </Show>
+    }>
+      <NarrowBar {...props} />
     </Show>
   )
 }
