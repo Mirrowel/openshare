@@ -16,6 +16,8 @@ export type OshSettings = {
     *  column; one of the two is ALWAYS present with >1 prompt - the pill
     *  is never fully removable (owner round 2026-10-25) */
    promptNav: "pill" | "sidebar"
+   /** sidebar width in px (drag-resized; clamped 160-400) */
+   turnNavWidth?: number
    followLive: boolean
   textSize: "compact" | "normal" | "roomy"
   readText: "compact" | "normal" | "large"

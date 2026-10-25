@@ -655,6 +655,8 @@ function SessionView(props: {
                                 active={/* both modes: paged selection or the tracked reading position */ userTurns().findIndex((m: any) => m.id === activeMessage()?.id)}
                                 variant={props.settings.promptNav}
                                 onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+                                width={props.settings.turnNavWidth}
+                                onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}
                                 parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: () => { const t = parentTurn()!; window.history.pushState({}, "", `/s/${props.source.shareID}#${t.userID}`); window.dispatchEvent(new PopStateEvent("popstate")) } } : undefined}
                                 label={(i) => {
                                   const t = userTurns()[i]?.text
@@ -662,6 +664,7 @@ function SessionView(props: {
                                 }}
                                 preview={(i) => responsePreview(userTurns()[i]?.id)}
                                 onFocusTurn={focusTurn}
+                                focusedIndex={focused() ? focusIndex() : undefined}
                                 onSelect={(i) => {
                                   if (pagedFor(props.settings, "classic")) setActiveMessage(userTurns()[i])
                                   else setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })

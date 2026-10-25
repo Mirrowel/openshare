@@ -1,19 +1,25 @@
-// PromptNav (owner round 2026-10-25): ONE prompt navigation control, two
-// states - a sidebar column (192px, content shifts right for it) or the
-// floating pill at the left edge (vertically centered, 40% visible at
-// rest). The setting `promptNav` picks the state; the toggle lives IN the
-// control (sidebar header collapse button / pill popover expand button) -
-// the pill is never removable, one of the two states is always present
-// while a session has more than one prompt.
+// PromptNav (owner round 2026-10-25): ONE turn navigation control, two
+// states - a sidebar column (default 192px, drag the edge to resize,
+// content shifts right for it) or the floating pill at the left edge
+// (vertically centered, 40% visible at rest). The setting `promptNav`
+// picks the state; the toggle lives IN the control (sidebar header
+// collapse button / pill popover expand button) - the pill is never
+// removable, one of the two states is always present while a session
+// has more than one turn.
 //
-// Shared by classic and every skin (BaseSessionView). Selection logic is
-// the caller's: paged pages the turn, continuous jumps the virtualizer
-// (j/k and [ ] dispatch through src/prompt-nav.ts to the same handlers).
+// Vocabulary: everything user-facing says "turn(s)" - one word for the
+// nav, the focus overlay ("Turn N of M") and the context menu.
 //
-// Hover previews: each row previews its response (first text of the
-// following assistant message / the section's response) in a card anchored
-// to the row's right edge, rendered at the panel level so it never clips
-// in the scrolling list.
+// Focus mode affordances (classic): the reticle glyph on a row is
+// CLICKABLE (span, not button - a button inside a button is invalid
+// HTML; click handler + stopPropagation), right-click opens a
+// "Focus on turn" menu, and shift+click works anywhere on the row. The
+// reticle renders FILLED and always-visible on the turn currently in
+// the focus overlay, following focus switches.
+//
+// Hover previews: each row previews its response in a card anchored
+// past the list's right edge, rendered at the panel level so it never
+// clips in the scrolling list.
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { createMediaQuery } from "@solid-primitives/media"
 
@@ -25,11 +31,13 @@ const IconPanel = (props: { class?: string }) => (
     <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.25" />
   </svg>
 )
+// collapse (sidebar open): the chevron points LEFT, the direction the
+// panel collapses toward - pointing right read as "expand" (owner-caught)
 const IconCollapse = (props: { class?: string }) => (
   <svg viewBox="0 0 16 16" class={props.class} width="14" height="14" aria-hidden="true" fill="none">
     <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" stroke-width="1.25" />
     <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.25" />
-    <polyline points="9 6.5 11.5 8 9 9.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+    <polyline points="7 6.5 4.5 8 7 9.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
   </svg>
 )
 
@@ -43,28 +51,76 @@ function Kbd(props: { children: JSX.Element }) {
   )
 }
 
+/** the right-click "Focus on turn" card - hand-rolled: fixed at the
+ *  cursor, closed by any outside pointerdown or Escape. The kit's
+ *  Menu (a Kobalte dropdown) never renders its content when opened
+ *  programmatically without a Trigger (probe-verified twice), and a
+ *  one-item menu does not need the machinery. */
+export function TurnContextMenu(props: { x: number; y: number; onClose: () => void; onFocus: () => void }) {
+  let card: HTMLDivElement | undefined
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
+  const onDown = (e: PointerEvent) => { if (card && !card.contains(e.target as Node)) props.onClose() }
+  onMount(() => {
+    window.addEventListener("keydown", onKey)
+    window.addEventListener("pointerdown", onDown, true)
+  })
+  onCleanup(() => {
+    window.removeEventListener("keydown", onKey)
+    window.removeEventListener("pointerdown", onDown, true)
+  })
+  const left = Math.min(props.x, window.innerWidth - 180)
+  const top = Math.min(props.y, window.innerHeight - 56)
+  return (
+    <div
+      ref={card}
+      role="menu"
+      aria-label="turn actions"
+      class="fixed z-[80] min-w-36 p-1 rounded-lg border border-border-weak-base bg-background-base shadow-lg"
+      style={{ left: `${left}px`, top: `${top}px` }}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        class="w-full text-left px-3 py-1.5 rounded-md text-12-regular text-text-base hover:bg-surface-base cursor-pointer border-none bg-transparent"
+        onClick={() => {
+          props.onClose()
+          props.onFocus()
+        }}
+      >
+        Focus on turn
+      </button>
+    </div>
+  )
+}
+
 export type PromptNavVariant = "pill" | "sidebar"
 
 export function PromptNav(props: {
   count: number
-  /** currently active prompt index (paged) or undefined (continuous) */
+  /** currently active turn index (paged) or undefined (continuous) */
   active?: number
+  /** the turn currently shown in the focus overlay, if any - its row
+   *  renders the reticle filled and always visible */
+  focusedIndex?: number
   label: (i: number) => string | undefined
   /** response preview for hover cards; undefined = no preview */
   preview?: (i: number) => string | undefined
   onSelect: (i: number) => void
-  /** shift+click (or the row's hover focus button) opens the turn in
-   *  focus mode - the overlay over the transcript (classic) */
+  /** focus mode (classic): shift+click, the reticle, or the right-click
+   *  menu opens the turn as an overlay over the transcript */
   onFocusTurn?: (i: number) => void
   /** skin custom rows (replaces the default list). undefined = default */
   children?: JSX.Element
   /** compact heading (skin name etc.) */
   title?: string
   /** subagent pages: the persistent "back to parent" row pinned above the
-   *  prompt list (sidebar and popover both) */
+   *  turn list (sidebar and popover both) */
   parentLink?: { label: string; onParent: () => void }
   variant: PromptNavVariant
   onSetVariant: (v: PromptNavVariant) => void
+  /** sidebar width in px (drag-resized; persisted by the caller) */
+  width?: number
+  onResize?: (w: number) => void
 }) {
   // the sidebar state only applies on desktop widths; below md the control
   // is always the pill (a 192px column would eat a phone)
@@ -77,30 +133,37 @@ export function PromptNav(props: {
   )
 }
 
-/** one prompt row - shared by the sidebar and the pill popover so both
- *  states read as the same control. number + label + accent marker;
- *  shift+click focuses the turn when the host supports it; the sidebar
- *  variant adds a hover-revealed focus button for discoverability. */
+/** one turn row - shared by the sidebar and the pill popover so both
+ *  states read as the same control. plain number in a fixed 2ch column
+ *  (no leading zero; no staircase at 10+, 100+ may widen), tight gap,
+ *  12px text - matched to the conversation view's nav (owner-caught:
+ *  our rows read oversized and amateurish next to it). */
 function NavRow(props: {
   i: number
   active: boolean
+  filled?: boolean
   label: string | undefined
   onHover?: (i: number, el: HTMLElement) => void
   onSelect: (i: number) => void
   onFocus?: (i: number) => void
-  focusAffordance?: boolean
 }) {
-  return (
+  const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | undefined>()
+  const button = (
     <button
       type="button"
       role="menuitem"
-      class="osh-pnav-row group relative w-full flex items-center gap-2 min-h-7 px-2 py-1 rounded-md border-none cursor-pointer text-left"
+      class="osh-pnav-row group relative w-full flex items-center gap-1.5 min-h-6 px-2 py-0.5 rounded-md border-none cursor-pointer text-left"
       classList={{
         "bg-surface-raised-base text-text-strong": props.active,
         "bg-transparent text-text-base hover:bg-surface-base": !props.active,
       }}
       aria-current={props.active ? "true" : undefined}
       onMouseEnter={(e) => props.onHover?.(props.i, e.currentTarget)}
+      onContextMenu={(e) => {
+        if (!props.onFocus) return
+        e.preventDefault()
+        setMenuAt({ x: e.clientX, y: e.clientY })
+      }}
       onClick={(e) => {
         if (e.shiftKey && props.onFocus) {
           props.onFocus(props.i)
@@ -108,24 +171,31 @@ function NavRow(props: {
         }
         props.onSelect(props.i)
       }}
-      title={props.onFocus ? "click: jump here · shift+click: focus this turn" : undefined}
+      title={props.onFocus ? "click: jump here · shift+click or the reticle: focus this turn · right-click: menu" : undefined}
     >
       <span
         class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full transition-opacity duration-150"
         classList={{ "opacity-100": props.active, "opacity-0": !props.active }}
         style={{ background: "var(--openshare-accent, var(--text-base))" }}
       />
-      <span class="text-12-mono text-text-weaker w-5 shrink-0 tabular-nums">{String(props.i + 1).padStart(2, "0")}</span>
-      <span class="truncate text-13-regular">{props.label ?? "prompt"}</span>
-      <Show when={props.onFocus && props.focusAffordance}>
-        {/* non-interactive affordance (interactive content inside a button
-            is invalid): the icon marks shift+click; the row's title says it */}
+      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums">{props.i + 1}</span>
+      <span class="truncate text-12-regular">{props.label ?? "turn"}</span>
+      <Show when={props.onFocus}>
+        {/* the focus reticle: a span (interactive content inside a button
+            is invalid HTML) - clickable via handler + stopPropagation.
+            FILLED and always visible on the turn in the focus overlay,
+            following focus switches; otherwise revealed on hover only */}
         <span
-          class="ml-auto shrink-0 flex items-center justify-center size-5 text-text-weaker opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-          aria-hidden="true"
+          class="ml-auto shrink-0 flex items-center justify-center size-5 cursor-pointer transition-opacity duration-150"
+          classList={{ "opacity-100": props.filled, "opacity-0 group-hover:opacity-100": !props.filled }}
+          style={props.filled ? { color: "var(--openshare-accent, var(--text-base))" } : undefined}
+          onClick={(e) => {
+            e.stopPropagation()
+            props.onFocus?.(props.i)
+          }}
         >
           <svg viewBox="0 0 16 16" width="12" height="12" fill="none">
-            <circle cx="8" cy="8" r="4.5" stroke="currentColor" stroke-width="1.25" />
+            <circle cx="8" cy="8" r="4.5" stroke="currentColor" stroke-width="1.25" fill={props.filled ? "currentColor" : "none"} />
             <line x1="8" y1="0.5" x2="8" y2="3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
             <line x1="8" y1="12.5" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
             <line x1="0.5" y1="8" x2="3.5" y2="8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
@@ -135,6 +205,19 @@ function NavRow(props: {
       </Show>
     </button>
   )
+  return (
+    <>
+      {button}
+      <Show when={menuAt() && props.onFocus}>
+        <TurnContextMenu
+          x={menuAt()!.x}
+          y={menuAt()!.y}
+          onClose={() => setMenuAt(undefined)}
+          onFocus={() => props.onFocus?.(props.i)}
+        />
+      </Show>
+    </>
+  )
 }
 
 /** the hover preview card, anchored past the list's right edge. `top` and
@@ -142,26 +225,27 @@ function NavRow(props: {
  *  left) because `left: 100%` resolves against the WRAPPER - which is
  *  only pill-wide, painting the preview straight over the rows
  *  (vision-caught). Rendered at the wrapper level, never inside the
- *  scrolling list. */
+ *  scrolling list. The prompt gets most of the room (3 lines) and the
+ *  response snippet 4. */
 function PreviewCard(props: { label: string | undefined; text: string; top: number; left: number }) {
   return (
     <div
-      class="osh-pnav-preview absolute z-50 w-72 max-w-[calc(100vw-5rem)] p-3 rounded-lg border border-border-weak-base bg-background-base shadow-lg pointer-events-none"
+      class="osh-pnav-preview absolute z-50 w-80 max-w-[calc(100vw-5rem)] p-3 rounded-lg border border-border-weak-base bg-background-base shadow-lg pointer-events-none"
       style={{ top: `${props.top}px`, left: `${props.left}px` }}
       role="note"
     >
-      <div class="text-12-medium text-text-strong line-clamp-2">{props.label ?? "prompt"}</div>
-      <div class="pt-0.5 text-12-regular text-text-weak line-clamp-3">{props.text}</div>
+      <div class="text-12-medium text-text-strong line-clamp-3">{props.label ?? "turn"}</div>
+      <div class="pt-0.5 text-12-regular text-text-weak line-clamp-4">{props.text}</div>
     </div>
   )
 }
 
-/** the persistent back-to-parent row pinned above the prompt list */
+/** the persistent back-to-parent row pinned above the turn list */
 function ParentRow(props: { label: string; onParent: () => void; compact?: boolean }) {
   return (
     <button
       type="button"
-      class="flex items-center gap-2 w-full min-h-7 px-2 py-1 rounded-md bg-transparent border-none cursor-pointer text-left text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base"
+      class="flex items-center gap-1.5 w-full min-h-6 px-2 py-0.5 rounded-md bg-transparent border-none cursor-pointer text-left text-12-regular text-text-weaker hover:text-text-base hover:bg-surface-base"
       onClick={props.onParent}
       title={`back to parent: ${props.label}`}
     >
@@ -177,7 +261,6 @@ function ParentRow(props: { label: string; onParent: () => void; compact?: boole
 function Sidebar(props: Parameters<typeof PromptNav>[0]) {
   const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
   let panel: HTMLDivElement | undefined
-  let list: HTMLDivElement | undefined
 
   const onHover = (i: number, el: HTMLElement) => {
     if (!props.preview || !panel) return setPreview(undefined)
@@ -188,25 +271,43 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
     setPreview({ i, top: er.top - pr.top, left: pr.width + 8 })
   }
 
+  // drag-resize: pointer capture on the edge handle, width clamped, the
+  // caller persists it on release
+  const startResize = (e: PointerEvent) => {
+    e.preventDefault()
+    const target = e.currentTarget as HTMLElement
+    target.setPointerCapture(e.pointerId)
+    const move = (ev: PointerEvent) => {
+      const w = Math.max(160, Math.min(400, ev.clientX - panel!.getBoundingClientRect().left))
+      props.onResize?.(Math.round(w))
+    }
+    const up = (ev: PointerEvent) => {
+      target.releasePointerCapture(ev.pointerId)
+      target.removeEventListener("pointermove", move)
+      target.removeEventListener("pointerup", up)
+    }
+    target.addEventListener("pointermove", move)
+    target.addEventListener("pointerup", up)
+  }
+
   return (
-    <aside ref={panel} class="relative flex flex-col h-full w-48 shrink-0 border-r border-border-weak-base bg-background-base" aria-label="prompts">
+    <aside ref={panel} class="relative flex flex-col h-full shrink-0 border-r border-border-weak-base bg-background-base" style={{ width: `${props.width ?? 192}px` }} aria-label="turns">
       <div class="flex items-center justify-between h-8 px-3 shrink-0">
-        <span class="text-11-mono text-text-weaker uppercase tracking-wider">Prompts</span>
+        <span class="text-12-medium text-text-weaker">Turns</span>
         <button
           type="button"
           class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
           onClick={() => props.onSetVariant("pill")}
           title="collapse to the floating pill"
-          aria-label="collapse prompt sidebar"
+          aria-label="collapse turn sidebar"
         >
           <IconCollapse />
         </button>
       </div>
       <div
-        ref={list}
         class="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-0.5"
         role="menu"
-        aria-label="prompts"
+        aria-label="turns"
         onMouseLeave={() => setPreview(undefined)}
         onScroll={() => setPreview(undefined)}
       >
@@ -221,11 +322,11 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
                 <NavRow
                   i={i}
                   active={props.active === i}
+                  filled={props.focusedIndex === i}
                   label={props.label(i)}
                   onHover={onHover}
                   onSelect={(i) => props.onSelect(i)}
                   onFocus={props.onFocusTurn}
-                  focusAffordance
                 />
               )}
             </For>
@@ -234,14 +335,16 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
           {props.children}
         </Show>
         <Show when={props.count === 0}>
-          <div class="px-2 py-1 text-12-regular text-text-weaker">no prompts match</div>
+          <div class="px-2 py-1 text-12-regular text-text-weaker">no turns match</div>
         </Show>
       </div>
       <div class="flex items-center justify-between h-7 px-3 shrink-0 text-10-mono text-text-weaker border-t border-border-weak-base/60">
-        <span class="tabular-nums">{String(props.count).padStart(2, "0")} prompts</span>
+        <span class="tabular-nums">{props.count} turns</span>
         <span class="flex items-center gap-1"><Kbd>J</Kbd><Kbd>K</Kbd></span>
       </div>
       <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} />}</Show>
+      {/* the resize handle: a hairline grab zone on the right edge */}
+      <div class="absolute top-0 bottom-0 right-0 w-1.5 cursor-col-resize hover:bg-border-weak-base/60 z-10" onPointerDown={startResize} aria-hidden="true" />
     </aside>
   )
 }
@@ -310,7 +413,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
       />
       <div
         role="navigation"
-        aria-label="prompts"
+        aria-label="turns"
         ref={panel}
         onMouseEnter={pillEnter}
         onMouseLeave={stripLeave}
@@ -326,10 +429,10 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
             transition: "opacity 160ms ease, border-color 140ms ease",
           }}
           onClick={() => (open() ? stripLeave() : pillEnter())}
-          aria-label={`prompts (${props.count})`}
+          aria-label={`turns (${props.count})`}
           aria-expanded={open()}
         >
-          <span class="text-10-mono text-text-weaker leading-none">{String(props.count).padStart(2, "0")}</span>
+          <span class="text-10-mono text-text-weaker leading-none">{props.count}</span>
           <span class="flex flex-col gap-[3px] py-0.5">
             <For each={Array.from({ length: Math.min(3, props.count) })}>
               {() => <span class="block h-px w-3.5 rounded-full bg-text-weaker/70" />}
@@ -337,7 +440,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
           </span>
           <Show when={props.active !== undefined}>
             <span class="text-10-mono leading-none" style={{ color: "var(--openshare-accent, var(--text-base))" }}>
-              {String((props.active ?? 0) + 1).padStart(2, "0")}
+              {(props.active ?? 0) + 1}
             </span>
           </Show>
         </button>
@@ -349,12 +452,12 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
             class="osh-rail-pop absolute left-full bottom-0 z-50 w-80 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
             style={{ "margin-left": "6px" }}
             role="menu"
-            aria-label="prompts"
+            aria-label="turns"
           >
             <div class="flex items-center justify-between h-8 px-3 border-b border-border-weak-base/60">
               <span class="flex items-center gap-2 min-w-0">
-                <span class="text-11-mono text-text-weaker uppercase tracking-wider truncate">{props.title ?? "Prompts"}</span>
-                <span class="text-10-mono text-text-weaker tabular-nums shrink-0">{String(props.count).padStart(2, "0")}</span>
+                <span class="text-12-medium text-text-weaker truncate">{props.title ?? "Turns"}</span>
+                <span class="text-10-mono text-text-weaker tabular-nums shrink-0">{props.count}</span>
               </span>
               <button
                 type="button"
@@ -363,7 +466,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                   props.onSetVariant("sidebar")
                   setOpen(false)
                 }}
-                title="keep prompts as a sidebar column"
+                title="keep turns as a sidebar column"
                 aria-label="expand to sidebar"
               >
                 <IconPanel />
@@ -386,6 +489,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                       <NavRow
                         i={i}
                         active={props.active === i}
+                        filled={props.focusedIndex === i}
                         label={props.label(i)}
                         onHover={onHover}
                         onSelect={(i) => {
@@ -409,11 +513,11 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
             <div class="flex items-center justify-between h-7 px-3 border-t border-border-weak-base/60 text-10-mono text-text-weaker">
               <Show when={props.active !== undefined} fallback={<span>jump</span>}>
                 <span class="tabular-nums">
-                  {String((props.active ?? 0) + 1).padStart(2, "0")} / {String(props.count).padStart(2, "0")}
+                  {(props.active ?? 0) + 1} / {props.count}
                 </span>
               </Show>
               <span class="flex items-center gap-1">
-                <Kbd>J</Kbd><Kbd>K</Kbd><span class="px-0.5">prompts</span><Kbd>ESC</Kbd><span class="px-0.5">close</span>
+                <Kbd>J</Kbd><Kbd>K</Kbd><span class="px-0.5">turns</span><Kbd>ESC</Kbd><span class="px-0.5">close</span>
               </span>
             </div>
           </div>

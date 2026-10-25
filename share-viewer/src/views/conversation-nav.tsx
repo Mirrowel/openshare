@@ -11,6 +11,7 @@ import { HoverCard } from "@kobalte/core/hover-card"
 import { Menu } from "@opencode/ui/menu"
 import { Icon } from "@opencode/ui/icon"
 import { createSignal, For, Show } from "solid-js"
+import { TurnContextMenu } from "../hover-rail"
 import type { V2Message } from "../fold"
 
 export function TurnNav(props: {
@@ -32,15 +33,21 @@ export function TurnNav(props: {
   const currentIndex = () => props.messages.findIndex((m) => m.id === props.current)
   const TurnEntry = (p: { message: V2Message; number: number }) => {
     const [menuOpen, setMenuOpen] = createSignal(false)
+    const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | undefined>()
     const [previewOpen, setPreviewOpen] = createSignal(false)
     let row: HTMLDivElement | undefined
     const label = () => p.message.text?.trim().split("\n")[0] || "Untitled prompt"
+    const focus = () => {
+      props.onFocus(p.message)
+      setOpen(false)
+    }
     return (
+      <>
       <Menu open={menuOpen()} onOpenChange={setMenuOpen} getAnchorRect={() => row?.getBoundingClientRect()}>
         <div ref={row} class="flex items-center rounded-md hover:bg-surface-base" classList={{ "bg-surface-base": !compact() && props.current === p.message.id }}
           onContextMenu={(event) => {
             event.preventDefault()
-            setMenuOpen(true)
+            setMenuAt({ x: event.clientX, y: event.clientY })
           }}>
           <HoverCard open={compact() && previewOpen() && !menuOpen()} onOpenChange={setPreviewOpen} placement="right" gutter={12} openDelay={200} closeDelay={80}>
           <HoverCard.Trigger as="button"
@@ -83,10 +90,14 @@ export function TurnNav(props: {
         </div>
         <Menu.Portal>
           <Menu.Content class="z-[80]">
-            <Menu.Item onSelect={() => { props.onFocus(p.message); setOpen(false) }}>Focus on turn</Menu.Item>
+            <Menu.Item onSelect={focus}>Focus on turn</Menu.Item>
           </Menu.Content>
         </Menu.Portal>
       </Menu>
+      <Show when={menuAt()}>
+        <TurnContextMenu x={menuAt()!.x} y={menuAt()!.y} onClose={() => setMenuAt(undefined)} onFocus={focus} />
+      </Show>
+      </>
     )
   }
   const list = () => (

@@ -283,7 +283,7 @@ export function SettingsBody(props: {
               lives in the control itself (sidebar collapse / popover
               "sidebar" button) */}
           <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Prompt navigation</div>
+            <div class="text-12-regular text-text-weaker pb-1">Turn navigation</div>
             <Segmented
               value={props.settings.promptNav}
               options={[

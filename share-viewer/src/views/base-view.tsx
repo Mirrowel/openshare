@@ -283,6 +283,8 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               title={props.skin.id}
               variant={props.settings.promptNav}
               onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
+              width={props.settings.turnNavWidth}
+              onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}
               parentLink={parentTurn() ? { label: parentTurn()!.label, onParent: back } : undefined}
               label={(i) => {
                 const p = visible()[i]?.prompt
