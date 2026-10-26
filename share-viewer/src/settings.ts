@@ -2,9 +2,6 @@
 // entry.tsx to set html[data-osh-theme] / text size without a flash.
 import { createSignal } from "solid-js"
 
-/** the subagent-hint design trial variants */
-const HINTS = ["chip", "swap", "leader"] as const
-
 export type OshSettings = {
   view: string
   theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
@@ -68,13 +65,6 @@ export type OshSettings = {
   /** jump animation: instant everywhere, smooth for short jumps only
    *  (near), or smooth always (long jumps included) */
   smoothScroll: "instant" | "near" | "always"
-  /** [design-trial: subagent hint] how the "open subagent" hover hint
-   *  appears on a task card: chip (overlay pill flipping out from the
-   *  card's right edge, the card itself never changes), swap (the
-   *  subtitle crossfades into the action in place), leader (dotted
-   *  leader line to the right edge). Only horizontal movement, always
-   *  inside the row; the accent underline is always on. */
-  subagentHint: (typeof HINTS)[number]
   /** ghost mode: the pill rests invisible (0 opacity); the proximity
    * strip wakes it and a one-time pulse carries discoverability */
   pillGhost: boolean
@@ -117,7 +107,6 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   fileOverflow: { read: "wrap", write: "wrap", edit: "wrap" },
   promptStyle: "bubble",
   smoothScroll: "near",
-  subagentHint: "chip",
   pillGhost: false,
   navSearchBar: false,
   rowPromptLines: 1,
@@ -171,7 +160,6 @@ export function readSettings(): OshSettings {
           parsed.readTextPx = READ_TEXT_MIGRATE[parsed.readText] ?? 14
           delete parsed.readText
         }
-        if (!HINTS.includes(parsed.subagentHint)) parsed.subagentHint = "chip"
         if (typeof parsed.smoothScroll === "boolean") {
           parsed.smoothScroll = parsed.smoothScroll ? "near" : "instant"
         }
@@ -348,7 +336,6 @@ export function applySettings(s: OshSettings) {
   // the left edge; the sidebar column already displaces content, so its
   // extra indent shrinks to breathing room
   html.dataset.oshNav = s.promptNav === "sidebar" ? "sidebar" : "pill"
-  html.dataset.oshHint = HINTS.includes(s.subagentHint) ? s.subagentHint : "chip"
   // file-card width, live: every file tool reads --osh-card (text cards
   // at the value, split diffs at 2x, both viewport-capped)
   const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))

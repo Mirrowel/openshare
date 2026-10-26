@@ -273,23 +273,6 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
     }
   }
 }
-// the hint span itself sits IN-FLOW inside the card's info row, right
-// before the chevron Show, so the chip variant participates in layout
-// (the tool text truncates around it; nothing ever overlaps)
-{
-  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
-  if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
-    if (!s.includes("osh-subagent-hint")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
-      const anchor = ["            <Show when={clickable()}>", '              <div data-component="task-tool-action">'].join(nl)
-      const inject = ['            <span class="osh-subagent-hint" aria-hidden="true">open subagent \u2197</span>'].concat(anchor.split(nl)).join(nl)
-      if (!s.includes(anchor)) throw new Error("vendor-v2: task chevron anchor missing - upstream drifted")
-      s = s.replace(anchor, inject)
-      writeFileSync(p, s)
-    }
-  }
-}
 
 // vendor fork: file-change tools never merge with each other inside a
 // context group (owner directive 2026-10-24: grouping groups individual

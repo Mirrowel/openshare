@@ -845,20 +845,10 @@ html[data-color-scheme="light"] {
   position: static;
 }
 
-/* the chip variant's narrow-card fallback measures the row via a
-   container query. The container is the tool-trigger row (definitely
-   sized by its parent flex chain); putting inline-size containment on
-   .osh-task-wrap itself zeroes its content-based intrinsic width */
-[data-component="tool-trigger"]:has(.osh-task-wrap) {
-  container-type: inline-size;
-}
-/* [design-trial: subagent hint] the "open subagent" hover hint on a
-   task card. Contract (owner 2026-10-26): the only permitted movement is
-   horizontal, staying in the row; the card's box never changes. The
-   accent underline along the card's bottom edge is part of every
-   variant. Variants: chip (flip out to the right), swap (subtitle
-   crossfades into the action), leader (dotted leader line to the right
-   edge). */
+/* task cards: the kit's own chevron reveals on hover (unchanged) and
+   a 1px accent underline expands along the bottom edge - centered,
+   spanning a quarter of the card. The card keeps its rounded surface,
+   no outline; nothing else is animated and nothing below moves. */
 .osh-task-wrap {
   display: block;
   position: relative;
@@ -867,21 +857,11 @@ html[data-color-scheme="light"] {
   border: none;
   outline: none;
 }
-.osh-subagent-hint {
-  white-space: nowrap;
-  font: 10.5px/18px ui-monospace, SFMono-Regular, Consolas, monospace;
-  letter-spacing: 0.04em;
-  pointer-events: none;
-  z-index: 4;
-  opacity: 0;
-}
-/* the underline, ALWAYS: a 1px accent line, centered, spanning a third
-   of the card, expanding horizontally on hover */
 .osh-task-wrap::after {
   content: "";
   position: absolute;
-  left: 32%;
-  right: 32%;
+  left: 38%;
+  right: 38%;
   bottom: 0;
   height: 1px;
   border-radius: 1px;
@@ -894,138 +874,14 @@ html[data-color-scheme="light"] {
 .osh-task-wrap:hover::after {
   transform: scaleX(1);
 }
-/* the subtitle yields space (in-flow variants); the pill never shrinks */
-.osh-task-wrap [data-slot="basic-tool-tool-subtitle"] {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* chip (default): an overlay pill FLIPPING OUT from the card's right
-   edge into the free space beside it. The card's box never changes -
-   nothing expands in-flow. Hinged on its left edge, rotateY -90deg to
-   0 with a fade. Below the narrow threshold the chip stays hidden and
-   the kit chevron takes over. */
-html[data-osh-hint="chip"] .osh-subagent-hint,
-html:not([data-osh-hint]) .osh-subagent-hint {
-  position: absolute;
-  left: 100%;
-  top: 50%;
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 8px;
-  margin-left: 0;
-  color: var(--text-weaker);
-  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
-  border: 0.5px solid var(--border-weak-base);
-  border-radius: 999px;
-  /* flat rotateY (no perspective): a projected flip wobbles the box
-     vertically by a sub-pixel - the contract is exact stability */
-  transform: translateY(-50%) translateX(2px) rotateY(-70deg);
-  transform-origin: left center;
-  transition: opacity 150ms ease-out, transform 180ms cubic-bezier(0.2, 0.7, 0.3, 1);
-}
-html[data-osh-hint="chip"] .osh-task-wrap:hover .osh-subagent-hint,
-html:not([data-osh-hint]) .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-  transform: translateY(-50%) translateX(6px) rotateY(0deg);
-}
-/* the chip REPLACES the chevron wherever it shows */
-html[data-osh-hint="chip"] .osh-task-wrap:hover [data-component="task-tool-action"],
-html[data-osh-hint="swap"] .osh-task-wrap:hover [data-component="task-tool-action"],
-html[data-osh-hint="leader"] .osh-task-wrap:hover [data-component="task-tool-action"] {
-  width: 0 !important;
-  opacity: 0 !important;
-  margin-inline-start: 0 !important;
-}
-/* narrow row: no room beside the card - the chevron returns instead */
-@container (max-width: 320px) {
-  html[data-osh-hint="chip"] .osh-task-wrap:hover .osh-subagent-hint,
-  html:not([data-osh-hint]) .osh-task-wrap:hover .osh-subagent-hint {
+@media (prefers-reduced-motion: reduce) {
+  .osh-task-wrap::after {
+    transition: opacity 150ms ease-out;
+    transform: none;
     opacity: 0;
   }
-  html[data-osh-hint="chip"] .osh-task-wrap:hover [data-component="task-tool-action"],
-  html:not([data-osh-hint]) .osh-task-wrap:hover [data-component="task-tool-action"] {
-    width: 16px !important;
-    opacity: 1 !important;
-    margin-inline-start: 2px !important;
-  }
-}
-
-/* swap: the subtitle crossfades into the action - the description
-   slides out left while the pill slides in from the right, in the same
-   slot. The only variant that trades the description for the action
-   in place. */
-html[data-osh-hint="swap"] .osh-subagent-hint {
-  position: absolute;
-  right: 34px;
-  top: 50%;
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 8px;
-  color: var(--text-weaker);
-  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
-  border: 0.5px solid var(--border-weak-base);
-  border-radius: 999px;
-  transform: translateY(-50%) translateX(8px);
-  transition: opacity 150ms ease-out, transform 180ms ease-out;
-}
-html[data-osh-hint="swap"] .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
-}
-html[data-osh-hint="swap"] [data-slot="basic-tool-tool-subtitle"] {
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-}
-html[data-osh-hint="swap"] .osh-task-wrap:hover [data-slot="basic-tool-tool-subtitle"] {
-  opacity: 0;
-  transform: translateX(-6px);
-}
-
-/* leader: a dotted leader line running from the label to the right
-   edge, TOC-style, revealing horizontally from the left. Text and line
-   sit on --text-weak (never --text-weaker: it reads as invisible on
-   dark themes) and the arrow head carries the accent. */
-html[data-osh-hint="leader"] .osh-subagent-hint {
-  position: absolute;
-  left: 34%;
-  right: 30px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-weak);
-  clip-path: inset(0 100% 0 0);
-  transition: clip-path 220ms ease-out, opacity 150ms ease-out;
-}
-html[data-osh-hint="leader"] .osh-subagent-hint::after {
-  content: "";
-  flex: 1;
-  border-top: 1px dotted var(--text-weak);
-  margin-bottom: 2px;
-}
-html[data-osh-hint="leader"] .osh-subagent-hint::before {
-  content: "\2197";
-  order: 3;
-  color: var(--openshare-accent, var(--icon-strong-base));
-  font-size: 11px;
-}
-html[data-osh-hint="leader"] .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-  clip-path: inset(0 0 0 0);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .osh-subagent-hint,
-  .osh-subagent-hint::after,
-  .osh-task-wrap::after,
-  [data-component="task-tool-surface"],
-  [data-slot="basic-tool-tool-subtitle"] {
-    transition: opacity 150ms ease-out !important;
-    animation: none;
+  .osh-task-wrap:hover::after {
+    opacity: 1;
   }
 }
 /* the custom-grouping checklist reveal (settings panel): slides open
