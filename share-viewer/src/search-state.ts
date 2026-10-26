@@ -38,18 +38,18 @@ export const activeHit = () => state.active
 export function setSearchQuery(query: string) {
   setState({ query, active: null })
   if (!query.trim()) clearEngine()
-  else scheduleRun()
+  else scheduleRun(SETTLE_MS)
 }
 export function setSearchScopes(scopes: SearchScope[]) {
   setState("scopes", scopes)
-  scheduleRun()
+  scheduleRun(SETTLE_MS)
 }
 export function setActiveHit(hit: SearchHit) {
   setState("active", hit)
 }
 export function setHitPartIds(ids: string[]) {
   setState("hitPartIds", ids)
-  if (ids.length) scheduleRun()
+  scheduleRun(SETTLE_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -60,24 +60,48 @@ let engineStarted = false
 let observer: MutationObserver | undefined
 let scrollerEl: HTMLElement | undefined
 let running = false
-let runQueued = false
+let settleTimer: ReturnType<typeof setTimeout> | undefined
+/** true while the engine itself writes DOM (marks, clicks): the
+ *  observer must ignore those mutations or every pass schedules the
+ *  next one forever */
+let engineMutating = false
+/** mark rewrites flush to the observer asynchronously (after the
+ *  engineMutating flag is already false); ignore batches briefly after
+ *  a pass so our own churn cannot self-schedule */
+let suppressObserverUntil = 0
 /** collapsibles WE expanded, to re-collapse when the search clears */
 const expandedBySearch = new Set<HTMLElement>()
-/** collapsibles already handled (expanded or found hitless) - manual
- * re-collapses during an active search stick */
-const handledCollapsibles = new WeakSet<HTMLElement>()
+/** collapsibles already evaluated under the CURRENT settled query -
+ *  rebuilt on every query change, so a row the user touched earlier is
+ *  reconsidered by the next search (owner-caught: a sticky set made
+ *  rows stop expanding permanently) */
+let handledCollapsibles = new WeakSet<HTMLElement>()
+/** the query the handled set belongs to */
+let handledQuery = ""
 
 function transcriptScroller(): HTMLElement | undefined {
   return (document.querySelector("[data-transcript-scroll]") as HTMLElement | null) ?? undefined
 }
 
-function scheduleRun() {
-  if (runQueued) return
-  runQueued = true
-  requestAnimationFrame(() => {
-    runQueued = false
+// typing settle: the engine waits this long after the last change
+// before marking/expanding, so no prefix of a typed word triggers a pass
+const SETTLE_MS = 900
+// scroll-driven passes (virtualization mounts rows) use a short delay
+const SCROLL_MS = 250
+
+/** debounce a pass. Query changes wait for typing to settle (owner
+ *  round 2026-10-26: per-keystroke passes mass-expanded the transcript
+ *  on every prefix); scroll-driven mutations use a shorter delay */
+function scheduleRun(delay = SCROLL_MS) {
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = setTimeout(() => {
+    settleTimer = undefined
     runPass()
-  })
+  }, delay)
+}
+function cancelScheduled() {
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = undefined
 }
 
 function runPass() {
@@ -85,16 +109,30 @@ function runPass() {
   const q = state.query.trim().toLowerCase()
   const sc = transcriptScroller()
   if (!sc) return
+  // a new settled query: re-evaluate every row from scratch
+  if (q !== handledQuery) {
+    handledCollapsibles = new WeakSet<HTMLElement>()
+    handledQuery = q
+  }
   running = true
+  engineMutating = true
+  let expandedAny = false
   try {
     clearMarksIn(sc)
     if (q) {
+      // expand BEFORE marking: expanding mounts body text that the mark
+      // walk must see in the same pass
+      expandedAny = expandHitRows(sc)
       markMatches(sc, q)
-      expandHitRows(sc)
     }
   } finally {
+    engineMutating = false
     running = false
+    suppressObserverUntil = typeof performance !== "undefined" ? performance.now() + 120 : 0
   }
+  // newly mounted bodies may paint after the pass: one fix-up pass so
+  // their marks land without waiting for the next scroll
+  if (expandedAny) scheduleRun(180)
 }
 
 /** wrap case-insensitive query matches in <mark> across the scroller's
@@ -144,18 +182,36 @@ function markMatches(root: HTMLElement, q: string) {
  *  the DOM and DOM inspection can never see a body-only hit. Triggers
  *  that are links (subagent task cards render their trigger as an <a
  *  href> - triggerAsLink) are NEVER clicked: clicking one navigates to
- *  the subagent page (owner-caught). */
-function expandHitRows(root: HTMLElement) {
-  if (!state.hitPartIds.length) return
+ *  the subagent page (owner-caught).
+ *
+ *  Bounded three ways (a whole-transcript sweep mass-expanded rows on
+ *  every keystroke and broke virtualization - owner-caught):
+ *  - only rows near the reading position are considered; scrolling
+ *    mounts more rows and the next pass expands those;
+ *  - rows WE opened that no longer match the current query collapse
+ *    back, so expansions track the current query, not the union of
+ *    typed prefixes;
+ *  - each row is evaluated once per settled query (manual re-collapses
+ *    stick within that search). */
+function expandHitRows(root: HTMLElement): boolean {
   const idSet = new Set(state.hitPartIds)
+  let expandedAny = false
   const rows = Array.from(
     root.querySelectorAll("[data-timeline-part-id], [data-timeline-part-ids]"),
   ) as HTMLElement[]
+  // the near-reading window: rows around the current scroll position
+  // (a touch ahead so content is prepared before it is read)
+  const vh = typeof window !== "undefined" ? window.innerHeight : 900
+  const top = root.getBoundingClientRect().top
+  const near = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect()
+    return r.bottom > top - vh * 0.75 && r.top < top + vh * 1.25
+  }
   for (const row of rows) {
     const ids = row.getAttribute("data-timeline-part-ids")?.split(",").map((s) => s.trim()) ?? []
     const own = row.getAttribute("data-timeline-part-id")
     if (own) ids.push(own)
-    if (!ids.some((id) => idSet.has(id))) continue
+    const matches = ids.some((id) => idSet.has(id))
     // the collapsible to expand: tool rows carry it as an ANCESTOR
     // (tool-part-wrapper inside the collapsible); reasoning rows carry
     // it as a DESCENDANT (the reasoning-part wrapper around its own
@@ -164,8 +220,19 @@ function expandHitRows(root: HTMLElement) {
       (row.closest('[data-component="collapsible"]') as HTMLElement | null) ??
       (row.matches('[data-component="collapsible"]') ? row : ((row.querySelector(':scope [data-component="collapsible"]') as HTMLElement | null) ?? null))
     if (!collapsible) continue
+    if (!matches) {
+      // stale expansion from an earlier (prefix) query: collapse it
+      if (expandedBySearch.has(collapsible) && near(row)) {
+        const trigger = collapsible.querySelector('[data-slot="collapsible-trigger"]') as HTMLElement | null
+        if (trigger && trigger.tagName !== "A" && !trigger.closest("a")) trigger.click()
+        expandedBySearch.delete(collapsible)
+      }
+      continue
+    }
+    if (!near(row)) continue
     if (handledCollapsibles.has(collapsible) || expandedBySearch.has(collapsible)) continue
     if (collapsible.getAttribute("data-closed") === null) {
+      // already open by the user: never fight it
       handledCollapsibles.add(collapsible)
       continue
     }
@@ -175,7 +242,9 @@ function expandHitRows(root: HTMLElement) {
     expandedBySearch.add(collapsible)
     handledCollapsibles.add(collapsible)
     trigger.click()
+    expandedAny = true
   }
+  return expandedAny
 }
 
 function clearMarksIn(root: HTMLElement) {
@@ -188,41 +257,69 @@ function clearMarksIn(root: HTMLElement) {
 }
 
 function clearEngine() {
+  cancelScheduled()
+  handledQuery = ""
+  handledCollapsibles = new WeakSet<HTMLElement>()
   const sc = transcriptScroller()
-  if (sc) clearMarksIn(sc)
+  if (sc) {
+    engineMutating = true
+    try {
+      clearMarksIn(sc)
+    } finally {
+      engineMutating = false
+    }
+  }
   // restore what we expanded (elements still alive re-collapse; dead
   // ones drop out of the set)
-  for (const el of Array.from(expandedBySearch)) {
-    if (!el.isConnected) {
+  engineMutating = true
+  try {
+    for (const el of Array.from(expandedBySearch)) {
+      if (!el.isConnected) {
+        expandedBySearch.delete(el)
+        continue
+      }
+      const trigger = (el.querySelector('[data-slot="collapsible-trigger"]') ?? el.querySelector("button, a")) as HTMLElement | null
+      trigger?.click()
       expandedBySearch.delete(el)
-      continue
     }
-    const trigger = (el.querySelector('[data-slot="collapsible-trigger"]') ?? el.querySelector("button, a")) as HTMLElement | null
-    trigger?.click()
-    expandedBySearch.delete(el)
+  } finally {
+    engineMutating = false
   }
 }
 
 export function ensureSearchEngine() {
   if (engineStarted || typeof window === "undefined") return
   engineStarted = true
+  let scrollEl: HTMLElement | undefined
+  const onScroll = () => {
+    if (running || engineMutating) return
+    scheduleRun()
+  }
   const attach = () => {
     const sc = transcriptScroller()
     if (sc === scrollerEl) return
     scrollerEl = sc
     observer?.disconnect()
+    scrollEl?.removeEventListener("scroll", onScroll)
+    scrollEl = sc ?? undefined
     if (!sc) return
     observer = new MutationObserver((muts) => {
-      if (running) return
+      if (running || engineMutating) return
+      if (typeof performance !== "undefined" && performance.now() < suppressObserverUntil) return
       // ignore pure attribute churn (animations, aria updates)
       if (muts.every((m) => m.type === "attributes")) return
       scheduleRun()
     })
     observer.observe(sc, { childList: true, subtree: true, characterData: false })
+    // virtualized scrolling repositions rows with style/transform updates
+    // only (attribute churn, filtered above) - without this listener no
+    // pass ever ran while scrolling, so hits never expanded as they came
+    // into view (owner-caught)
+    sc.addEventListener("scroll", onScroll, { passive: true })
   }
   const boot = () => {
     attach()
-    if (state.query.trim()) scheduleRun()
+    if (state.query.trim()) scheduleRun(SETTLE_MS)
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true })
   else boot()
