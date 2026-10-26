@@ -68,6 +68,9 @@ export type OshSettings = {
    * hidden) - the multi-line rows adopted from the menu trials */
   rowPromptLines: number
   rowResponseLines: number
+  /** file-tool card width in rem (text cards; split diffs render at 2x,
+   *  viewport-capped) - applied live as --osh-card on <html> */
+  cardWidth: number
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -100,6 +103,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   navSearchBar: false,
   rowPromptLines: 1,
   rowResponseLines: 0,
+  cardWidth: 40,
 }
 
 const COOKIE = "osh_settings"
@@ -296,6 +300,10 @@ export function applySettings(s: OshSettings) {
   // the left edge; the sidebar column already displaces content, so its
   // extra indent shrinks to breathing room
   html.dataset.oshNav = s.promptNav === "sidebar" ? "sidebar" : "pill"
+  // file-card width, live: every file tool reads --osh-card (text cards
+  // at the value, split diffs at 2x, both viewport-capped)
+  const cardWidth = Math.max(24, Math.min(64, s.cardWidth ?? 40))
+  html.style.setProperty("--osh-card", `${cardWidth}rem`)
 }
 
 export const TEXT_SIZES: Record<string, string> = {

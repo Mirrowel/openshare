@@ -10,6 +10,7 @@ import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { pagedFor, setPagedFor, type OshSettings } from "./settings"
+import { LineStepper } from "./hover-rail"
 import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
 import type { ViewSettingDef } from "./views/registry"
 import { tryView } from "./views/view-context"
@@ -353,6 +354,18 @@ export function SettingsBody(props: {
                 { id: "flat" as const, label: "flat" },
               ]}
               onChange={(promptStyle) => props.update({ promptStyle })}
+            />
+          </div>
+          {/* file-tool card width (rem), live via --osh-card; split diffs
+              render at 2x, viewport-capped either way */}
+          <div class="flex items-center justify-between pb-1.5">
+            <span class="text-12-regular text-text-base">File card width</span>
+            <LineStepper
+              label="file card width"
+              min={24}
+              max={64}
+              value={Math.round(props.settings.cardWidth ?? 40)}
+              onSet={(cardWidth) => props.update({ cardWidth })}
             />
           </div>
           {/* smooth-scroll prompt jumps (rail clicks, j/k, [ ]); long
