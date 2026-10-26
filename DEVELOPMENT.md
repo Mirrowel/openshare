@@ -83,7 +83,7 @@ Two more hard rules learned live:
 
 Visual verification rig (lives outside the repo; rebuild from this description when needed): a `share-viewer` build served by an in-process static server with a rich contract-v2 fixture share, then playwright-core over real Edge. Two instruments:
 
-- **Fingerprint** (`snap`/`diff`): renders all 11 views on the fixture and hashes text + structure — any shared-code refactor must keep every view identical (deliberate unifications are listed in the commit, nothing else moves). Text hashes are blind to pure-layout breaks — pair with the gate's computed-style checks.
+- **Fingerprint** (`snap`/`diff`): renders every view on the fixture (12 entries: classic, reader, conversation, nine skins) and hashes text + structure — any shared-code refactor must keep every view identical (deliberate unifications are listed in the commit, nothing else moves). Text hashes are blind to pure-layout breaks — pair with the gate's computed-style checks.
 - **Gate**: behavioral assertions (settings schema per view, Ctrl+K, search parity, rail, agent labels, headers-are-flex-rows, zero page errors).
 
 ### Diff review view — removed (2026-10-24), optional future
