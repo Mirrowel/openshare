@@ -47,8 +47,12 @@
   margin-bottom: -12px;
 }
 
-/* ONE code surface: a tint of the text colour, so light, dark and the
-   premade themes all get a surface in their own hue. */
+/* ONE code surface, exposed to views through the SDK (Skin.codeSurface):
+   a tint of the text colour, so light, dark and the premade themes all
+   get a surface in their own hue. The tokens are global and inert; the
+   applications below are OPT-IN per view via html[data-osh-code-surface]
+   (conversation applies it; classic and the skins keep their current
+   surfaces by default). */
 :root {
   --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
   /* the same tint over the page, opaque: the sticky line-number gutter
@@ -56,7 +60,7 @@
   --osh-code-solid: color-mix(in oklab, var(--text-base) 7%, var(--background-stronger, var(--background-base)));
 }
 /* the kit sets the highlighter block's background inline */
-[data-component="markdown-code"] pre.shiki {
+html[data-osh-code-surface] [data-component="markdown-code"] pre.shiki {
   background-color: var(--osh-code-bg) !important;
   border-color: var(--border-weaker-base);
 }
@@ -332,7 +336,7 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--osh-code-bg);
+  background: var(--surface-base);
   border: 1px solid var(--border-weaker-base);
   font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: pre-wrap;
@@ -483,13 +487,18 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
+}
+html[data-osh-code-surface] [data-component="osh-file-body"] {
   background: var(--osh-code-solid);
   /* the kit's hook for the diff/gutter background; opaque so scrolled
      code never shows through the sticky gutter */
   --opencode-diffs-bg: var(--osh-code-solid);
 }
-[data-component="osh-file-body"] diffs-container {
+html[data-osh-code-surface] [data-component="osh-file-body"] diffs-container {
   background-color: transparent;
+}
+html[data-osh-code-surface] .osh-pre {
+  background: var(--osh-code-bg);
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(100%, calc(2 * var(--osh-card)));

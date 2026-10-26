@@ -48,6 +48,16 @@ export type ViewEntry = {
   paged?: boolean
   /** view-scoped settings (rendered in the settings panel when active) */
   settings?: ViewSettingDef[]
+  /** opt into the SDK code surface: markdown code blocks, the pre tool
+   *  surface and file/diff card bodies all take the --osh-code-* tint
+   *  (see app.css). Off by default - views keep their current surfaces */
+  codeSurface?: boolean
+}
+/** apply/clear the code-surface attribute for the ACTIVE view; the
+ *  standalone conversation entry applies it itself */
+export function applyCodeSurface(on: boolean) {
+  if (on) document.documentElement.dataset.oshCodeSurface = ""
+  else delete document.documentElement.dataset.oshCodeSurface
 }
 
 // the settings panel lists classic + reader + every registered view
@@ -80,13 +90,14 @@ export function registerView(entry: ViewEntry) {
 /** register a SKIN as a view: the entry derives its id from the skin and
  *  the component is the standard BaseSessionView mount - one declaration
  *  per view, no wrapper boilerplate */
-export function registerSkin(skin: Skin, extra: { label: string; mark?: string; paged?: boolean; settings?: ViewSettingDef[] }) {
+export function registerSkin(skin: Skin, extra: { label: string; mark?: string; paged?: boolean; settings?: ViewSettingDef[]; codeSurface?: boolean }) {
   registerView({
     id: skin.id,
     label: extra.label,
     mark: extra.mark,
     paged: extra.paged,
     settings: extra.settings,
+    codeSurface: extra.codeSurface,
     component: (props) => <BaseSessionView {...props} skin={skin} />,
   })
 }

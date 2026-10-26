@@ -51,8 +51,12 @@ const mySkin: Skin = {
 
 registerSkin(mySkin, {
   label: "myid",                    // settings selector label
-  mark: "◆",                        // selector glyph
+  mark: "?",                        // selector glyph
   // paged: false,                  // continuous-only views hide the paged toggle
+  // codeSurface: true,             // opt into the shared code surface: markdown
+  //                                 // code blocks, the pre tool surface and
+  //                                 // file/diff card bodies take the --osh-code-*
+  //                                 // tint (off by default; conversation uses it)
   // settings: [                    // view-scoped settings, rendered for you
   //   { kind: "switch", key: "myToggle", label: "My toggle", hint: "..." },
   // ],

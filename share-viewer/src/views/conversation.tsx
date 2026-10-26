@@ -10,7 +10,7 @@
 //
 // Registered continuous-only (paged: false): focus mode is this view's
 // way to read one turn.
-import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { Mark } from "@opencode/ui/logo"
@@ -22,6 +22,7 @@ import { findParentTurn } from "../parent-link"
 import { TurnNav } from "./conversation-nav"
 import { AppHeader } from "./conversation-header"
 import { useSessionSections } from "./session-data"
+import { applyCodeSurface } from "./registry"
 import { SearchControl } from "../search-palette"
 import type { ViewProps } from "./registry"
 
@@ -32,6 +33,10 @@ export function ConversationView(props: ViewProps) {
   const [turnsCollapsed, setTurnsCollapsed] = createSignal(false)
   let timeline: { scrollToMessage: (id: string, behavior?: ScrollBehavior) => void } | undefined
 
+  // this entry owns its chrome, so it opts itself into the SDK code
+  // surface (registry views get it from their entry's codeSurface flag)
+  onMount(() => applyCodeSurface(true))
+  onCleanup(() => applyCodeSurface(false))
   const info = createMemo(() => (props.data.session as any[]).find((s) => s.id === props.sessionID))
   const messages = createMemo(() => visibleMessages(props.data, props.sessionID))
   const sections = useSessionSections(props.data, props.sessionID)

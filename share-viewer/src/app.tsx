@@ -46,7 +46,7 @@ import { promptNavKey, registerPromptNav } from "./prompt-nav"
 import { findParentTurn } from "./parent-link"
 import { createMediaQuery } from "@solid-primitives/media"
 import { InfoPanel } from "./views/info-panel"
-import { findView, resolveSessionID } from "./views/registry"
+import { findView, resolveSessionID, applyCodeSurface } from "./views/registry"
 import { setVendoredData } from "./views/vendored-part"
 
 // full-page views (everything except classic/reader, which live in the
@@ -60,6 +60,9 @@ function FullPageView(props: {
   sub: () => number | undefined
 }) {
   const view = createMemo(() => findView(props.settings.view))
+  // the SDK code surface is opt-in per view (registry entries); the
+  // standalone conversation entry applies it itself
+  createEffect(() => applyCodeSurface(view()?.codeSurface === true))
   const sessionID = createMemo(() => resolveSessionID(props.source.data(), props.sub()))
   setVendoredData(props.source.data(), {
     sessionHref: (id) => subHref(props.source, id),
