@@ -22,8 +22,11 @@ export type OshSettings = {
   previewPromptLines?: number
   previewResponseLines?: number
    followLive: boolean
-  textSize: "compact" | "normal" | "roomy"
-  readText: "compact" | "normal" | "large"
+  /** interface scale, percent of the default type ladder (75-150) -
+   *  scales every font-size token at the root; rem paddings follow */
+  textScale: number
+  /** reading text base size in px (12-24), scoped to the content column */
+  readTextPx: number
   /** diff rendering: auto (split when it fits), or forced (forced split
    * still requires the space; too-narrow falls back to unified) */
   diffMode: "auto" | "split" | "unified"
@@ -56,7 +59,9 @@ export type OshSettings = {
   /** smooth-scroll prompt jumps (rail, j/k, [ ]); off = instant jumps.
    * Long jumps are instant either way (mid-flight measurement
    * corrections stutter across thousands of pixels). */
-  smoothScroll: boolean
+  /** jump animation: instant everywhere, smooth for short jumps only
+   *  (near), or smooth always (long jumps included) */
+  smoothScroll: "instant" | "near" | "always"
   /** ghost mode: the pill rests invisible (0 opacity); the proximity
    * strip wakes it and a one-time pulse carries discoverability */
   pillGhost: boolean
@@ -82,8 +87,8 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   previewPromptLines: 3,
   previewResponseLines: 4,
   followLive: true,
-  textSize: "normal",
-  readText: "normal",
+  textScale: 100,
+  readTextPx: 14,
   diffMode: "auto",
   backgroundOn: true,
   reasoningOpen: false,
@@ -98,7 +103,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   outputOverflow: "wrap",
   fileOverflow: { read: "wrap", write: "wrap", edit: "wrap" },
   promptStyle: "bubble",
-  smoothScroll: true,
+  smoothScroll: "near",
   pillGhost: false,
   navSearchBar: false,
   rowPromptLines: 1,
@@ -107,6 +112,12 @@ export const SETTINGS_DEFAULTS: OshSettings = {
 }
 
 const COOKIE = "osh_settings"
+
+// preset -> continuous migration values (old 3-step cookies). Lives
+// above readSettings: it runs at import time (signal seeds), so a
+// module-bottom const would be a TDZ crash.
+export const TEXT_SCALE_MIGRATE: Record<string, number> = { compact: 95, normal: 100, roomy: 110 }
+export const READ_TEXT_MIGRATE: Record<string, number> = { compact: 13, normal: 14, large: 16 }
 
 export function readSettings(): OshSettings {
   try {
@@ -135,6 +146,19 @@ export function readSettings(): OshSettings {
         // the per-tool defaults (wrap) stand
         if (!parsed.fileOverflow && parsed.outputOverflow === "scroll") {
           parsed.fileOverflow = { read: "scroll", write: "scroll", edit: "scroll" }
+        }
+        // preset -> continuous migrations (old 3-step text sizes, the
+        // boolean smooth scroll)
+        if (typeof parsed.textSize === "string") {
+          parsed.textScale = TEXT_SCALE_MIGRATE[parsed.textSize] ?? 100
+          delete parsed.textSize
+        }
+        if (typeof parsed.readText === "string") {
+          parsed.readTextPx = READ_TEXT_MIGRATE[parsed.readText] ?? 14
+          delete parsed.readText
+        }
+        if (typeof parsed.smoothScroll === "boolean") {
+          parsed.smoothScroll = parsed.smoothScroll ? "near" : "instant"
         }
         return { ...SETTINGS_DEFAULTS, ...parsed }
       }
@@ -281,12 +305,13 @@ export function applySettings(s: OshSettings) {
       if (cur.theme === "system") applyScheme(document.documentElement, "system")
     })
   }
-  // interface scale (root font — rem paddings scale with it)
-  html.dataset.oshText =
-    s.textSize === "compact" ? "compact" : s.textSize === "roomy" ? "roomy" : "normal"
-  // reading text size (markdown content only)
-  html.dataset.oshReadText =
-    s.readText === "compact" ? "compact" : s.readText === "large" ? "large" : "normal"
+  // interface scale, continuous: font-size tokens scale at the root
+  const textScale = Math.max(75, Math.min(150, s.textScale ?? 100))
+  html.style.setProperty("--osh-text-scale", String(textScale / 100))
+  // reading text, continuous: the content column's type ladder derives
+  // from one base px (ratios from the kit's default ladder)
+  const readPx = Math.max(12, Math.min(24, s.readTextPx ?? 14))
+  html.style.setProperty("--osh-read-px", `${readPx}px`)
   html.dataset.oshReasoning = s.reasoningOpen ? "open" : "collapsed"
   // tool invocation info (subtitle/args while collapsed)
   html.dataset.oshToolInfo = s.toolInfo ? "on" : "off"
@@ -302,12 +327,6 @@ export function applySettings(s: OshSettings) {
   html.dataset.oshNav = s.promptNav === "sidebar" ? "sidebar" : "pill"
   // file-card width, live: every file tool reads --osh-card (text cards
   // at the value, split diffs at 2x, both viewport-capped)
-  const cardWidth = Math.max(24, Math.min(64, s.cardWidth ?? 40))
+  const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))
   html.style.setProperty("--osh-card", `${cardWidth}rem`)
-}
-
-export const TEXT_SIZES: Record<string, string> = {
-  compact: "95%",
-  normal: "100%",
-  roomy: "110%",
 }

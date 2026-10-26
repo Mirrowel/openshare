@@ -83,6 +83,91 @@ function Section(props: { label: string; children: JSX.Element; alwaysOpen?: boo
   )
 }
 
+/** multi-position lever: label row, then a horizontal track with a
+ *  sliding knob and one mark per position. Clicking the track (or a
+ *  mark) moves the knob (animated); the current value renders beside
+ *  the label and swaps with a fade-slide when it changes. Replaces
+ *  Segmented for 2-3 position choices where the value should name
+ *  itself (owner round 2026-10-26). */
+export function Lever<T extends string>(props: {
+  label: string
+  value: T
+  options: { id: T; label: string }[]
+  onChange: (v: T) => void
+}) {
+  const idx = () => Math.max(0, props.options.findIndex((o) => o.id === props.value))
+  const pos = () => (props.options.length > 1 ? (idx() / (props.options.length - 1)) * 100 : 0)
+  return (
+    <div class="pb-2.5">
+      <div class="flex items-baseline justify-between pb-1.5">
+        <span class="text-12-regular text-text-base">{props.label}</span>
+        <span class="text-12-medium text-text-weaker osh-lever-value">{props.options[idx()]?.label}</span>
+      </div>
+      <div
+        class="relative h-4 flex items-center cursor-pointer"
+        role="radiogroup"
+        aria-label={props.label}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          const x = (e.clientX - r.left) / r.width
+          const i = Math.round(x * (props.options.length - 1))
+          props.onChange(props.options[i]!.id)
+        }}
+      >
+        <div class="absolute left-0 right-0 h-[3px] rounded-full bg-border-weak-base" />
+        <div
+          class="absolute size-3.5 rounded-full border-2 border-background-base shadow-sm transition-[left] duration-200 ease-out"
+          style={{ left: `calc(${pos()}% - 7px)`, background: "var(--openshare-accent, var(--icon-strong-base))" }}
+        />
+        <For each={props.options}>
+          {(o, i) => (
+            <span
+              class="absolute size-1.5 rounded-full transition-colors duration-200"
+              classList={{ "bg-icon-strong-base": i() <= idx(), "bg-border-strong-base": i() > idx() }}
+              style={{ left: `calc(${(i() / Math.max(1, props.options.length - 1)) * 100}% - 3px)` }}
+            />
+          )}
+        </For>
+      </div>
+    </div>
+  )
+}
+
+/** draggable value bar: a styled range input with the live value beside
+ *  the label. Replaces preset Segments for continuous settings (owner
+ *  round 2026-10-26 - gradual adjustment over 3 presets). */
+export function SliderRow(props: {
+  label: string
+  value: number
+  min: number
+  max: number
+  unit?: string
+  onChange: (n: number) => void
+}) {
+  return (
+    <div class="pb-2.5">
+      <div class="flex items-baseline justify-between pb-1.5">
+        <span class="text-12-regular text-text-base">{props.label}</span>
+        <span class="text-12-medium text-text-weaker tabular-nums osh-lever-value">
+          {Math.round(props.value)}
+          {props.unit}
+        </span>
+      </div>
+      <input
+        type="range"
+        class="osh-slider w-full"
+        min={props.min}
+        max={props.max}
+        step={1}
+        value={props.value}
+        aria-label={props.label}
+        style={{ "--osh-slider-fill": `${((props.value - props.min) / Math.max(1, props.max - props.min)) * 100}%` }}
+        onInput={(e) => props.onChange(Number((e.target as HTMLInputElement).value))}
+      />
+    </div>
+  )
+}
+
 function Segmented<T extends string>(props: {
   value: T
   options: { id: T; label: string }[]
@@ -240,27 +325,49 @@ export function SettingsBody(props: {
         </div>
       </Section>
 
-      <Section label="interface scale" alwaysOpen>
-        <Segmented
-          value={props.settings.textSize}
-          options={[
-            { id: "compact" as const, label: "compact" },
-            { id: "normal" as const, label: "normal" },
-            { id: "roomy" as const, label: "roomy" },
-          ]}
-          onChange={(textSize) => props.update({ textSize })}
+      <Section label="reading & layout">
+        <SliderRow
+          label="interface scale"
+          value={props.settings.textScale ?? 100}
+          min={75}
+          max={150}
+          unit="%"
+          onChange={(textScale) => props.update({ textScale })}
         />
-      </Section>
-
-      <Section label="reading text" alwaysOpen>
-        <Segmented
-          value={props.settings.readText}
+        <SliderRow
+          label="reading text"
+          value={props.settings.readTextPx ?? 14}
+          min={12}
+          max={24}
+          unit="px"
+          onChange={(readTextPx) => props.update({ readTextPx })}
+        />
+        <SliderRow
+          label="file card width"
+          value={props.settings.cardWidth ?? 40}
+          min={20}
+          max={80}
+          unit="rem"
+          onChange={(cardWidth) => props.update({ cardWidth })}
+        />
+        <Lever
+          label="prompts"
+          value={props.settings.promptStyle}
           options={[
-            { id: "compact" as const, label: "compact" },
-            { id: "normal" as const, label: "normal" },
-            { id: "large" as const, label: "large" },
+            { id: "bubble" as const, label: "bubble" },
+            { id: "flat" as const, label: "flat" },
           ]}
-          onChange={(readText) => props.update({ readText })}
+          onChange={(promptStyle) => props.update({ promptStyle })}
+        />
+        <Lever
+          label="smooth scrolling"
+          value={props.settings.smoothScroll}
+          options={[
+            { id: "instant" as const, label: "instant" },
+            { id: "near" as const, label: "near" },
+            { id: "always" as const, label: "always" },
+          ]}
+          onChange={(smoothScroll) => props.update({ smoothScroll })}
         />
       </Section>
 
@@ -339,43 +446,12 @@ export function SettingsBody(props: {
               </div>
             </Show>
           </div>
-          {/* long-line overflow, diff layout, and the per-tool file
-              overflow are NOT panel settings: their toggles live on the
-              tool cards themselves (per-card U/A/S and wrap/scroll
-              selectors; the cookie-persisted settings stay) */}
-          {/* how user prompts render: right-aligned bubble or flat text
-              (the reader skin's look, available everywhere) */}
-          <div class="pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Prompts</div>
-            <Segmented
-              value={props.settings.promptStyle}
-              options={[
-                { id: "bubble" as const, label: "bubble" },
-                { id: "flat" as const, label: "flat" },
-              ]}
-              onChange={(promptStyle) => props.update({ promptStyle })}
-            />
-          </div>
-          {/* file-tool card width (rem), live via --osh-card; split diffs
-              render at 2x, viewport-capped either way */}
-          <div class="flex items-center justify-between pb-1.5">
-            <span class="text-12-regular text-text-base">File card width</span>
-            <LineStepper
-              label="file card width"
-              min={24}
-              max={64}
-              value={Math.round(props.settings.cardWidth ?? 40)}
-              onSet={(cardWidth) => props.update({ cardWidth })}
-            />
-          </div>
-          {/* smooth-scroll prompt jumps (rail clicks, j/k, [ ]); long
-              jumps are instant either way */}
-          <Switch
-            label="Smooth scrolling"
-            hint="animate prompt jumps (rail, j/k, [ ]); long jumps are instant either way"
-            on={props.settings.smoothScroll}
-            onChange={() => props.update({ smoothScroll: !props.settings.smoothScroll })}
-           />
+           {/* long-line overflow, diff layout, and the per-tool file
+               overflow are NOT panel settings: their toggles live on the
+               tool cards themselves (per-card U/A/S and wrap/scroll
+               selectors; the cookie-persisted settings stay) */}
+           {/* prompts, file card width and smooth scrolling live in the
+              reading & layout section above */}
            <div class="pt-1" />
            {/* view-scoped settings render from the registry schema
               (VIEW_SETTINGS / ViewEntry.settings) - a view that adds a
