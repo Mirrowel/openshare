@@ -53,6 +53,8 @@ registerSkin(mySkin, {
   label: "myid",                    // settings selector label
   mark: "?",                        // selector glyph
   // paged: false,                  // continuous-only views hide the paged toggle
+  // navMinTurns: 1,                // mount the prompt nav even on single-turn
+  //                                 // sessions (default 2)
   // codeSurface: true,             // opt into the shared code surface: markdown
   //                                 // code blocks, the pre tool surface and
   //                                 // file/diff card bodies take the --osh-code-*
