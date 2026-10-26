@@ -16,6 +16,8 @@ import { App } from "./app"
 import "./tool-overrides"
 import "./app.css"
 import "./views/skins.css"
+import { watchTaskCards } from "./task-widths"
+watchTaskCards()
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge

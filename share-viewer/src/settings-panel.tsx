@@ -10,7 +10,6 @@ import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { pagedFor, setPagedFor, type OshSettings } from "./settings"
-import { setDiffMode, setFileOverflow } from "./settings"
 import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
 import type { ViewSettingDef } from "./views/registry"
 import { tryView } from "./views/view-context"
@@ -162,7 +161,7 @@ function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings;
   }
   return (
     <Show when={props.def.showWhen ? (props.settings as Record<string, unknown>)[props.def.showWhen] === true : true}>
-      <div class="pl-3 pb-1.5">
+      <div class="pb-1.5">
         <div class="text-12-regular text-text-weaker pb-1">{props.def.label}</div>
         <Segmented
           value={value() as string}
@@ -305,7 +304,7 @@ export function SettingsBody(props: {
           {/* auto-expand: WHICH tool bodies open on render. Checkbox list
               (known tools + anything this session used), cookie-persisted
               so every share picks it up. Default: none */}
-          <div class="pl-3 pb-1.5">
+          <div class="pb-1.5">
             <button
               type="button"
               class="w-full flex items-center justify-between text-left text-12-regular text-text-base py-1 hover:text-text-strong"
@@ -339,23 +338,13 @@ export function SettingsBody(props: {
               </div>
             </Show>
           </div>
-          {/* long lines in tool outputs: wrap, or scroll horizontally
-              (hidden scrollbar) - the output width is hard-capped either
-              way; this only picks the overflow behavior */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Long lines in outputs</div>
-            <Segmented
-              value={props.settings.outputOverflow}
-              options={[
-                { id: "scroll" as const, label: "scroll" },
-                { id: "wrap" as const, label: "wrap" },
-              ]}
-              onChange={(outputOverflow) => props.update({ outputOverflow })}
-            />
-          </div>
+          {/* long-line overflow, diff layout, and the per-tool file
+              overflow are NOT panel settings: their toggles live on the
+              tool cards themselves (per-card U/A/S and wrap/scroll
+              selectors; the cookie-persisted settings stay) */}
           {/* how user prompts render: right-aligned bubble or flat text
               (the reader skin's look, available everywhere) */}
-          <div class="pl-3 pb-1.5">
+          <div class="pb-1.5">
             <div class="text-12-regular text-text-weaker pb-1">Prompts</div>
             <Segmented
               value={props.settings.promptStyle}
@@ -373,72 +362,14 @@ export function SettingsBody(props: {
             hint="animate prompt jumps (rail, j/k, [ ]); long jumps are instant either way"
             on={props.settings.smoothScroll}
             onChange={() => props.update({ smoothScroll: !props.settings.smoothScroll })}
-          />
-          <div class="pt-1" />
-          {/* diff layout: auto (split when the column fits two cards), or
-              forced - forced split still needs the width; the per-card
-              U/A/S control sits at the edit card's right edge, above the
-              wrap/scroll selector */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Diff layout</div>
-            <Segmented
-              value={props.settings.diffMode}
-              options={[
-                { id: "auto" as const, label: "auto" },
-                { id: "split" as const, label: "split" },
-                { id: "unified" as const, label: "unified" },
-              ]}
-              onChange={(diffMode) => {
-                props.update({ diffMode })
-                setDiffMode(diffMode)
-              }}
-            />
-          </div>
-          {/* per-tool overflow for the file tools (owner round 2026-10-26):
-              read/write/edit+patch each wrap or scroll independently - the
-              per-card toggle writes the same entries */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">File tools overflow</div>
-            <For each={(["read", "write", "edit"] as const).map((t) => ({ t, label: t === "edit" ? "edit/patch" : t }))}>
-              {({ t, label }) => (
-                <div class="flex items-center justify-between gap-2 pb-1">
-                  <span class="text-12-regular text-text-base">{label}</span>
-                  <Segmented
-                    value={(props.settings.fileOverflow ?? { read: "wrap", write: "wrap", edit: "wrap" })[t]}
-                    options={[
-                      { id: "wrap" as const, label: "wrap" },
-                      { id: "scroll" as const, label: "scroll" },
-                    ]}
-                    onChange={(mode) => {
-                      setFileOverflow(t, mode)
-                      props.update({ fileOverflow: { ...(props.settings.fileOverflow ?? { read: "wrap" as const, write: "wrap" as const, edit: "wrap" as const }), [t]: mode } })
-                    }}
-                  />
-                </div>
-              )}
-            </For>
-          </div>
-          {/* [design-trial: subagent hint] — same trial mechanism for the
-              task-row "open subagent" hint reveal */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Subagent hint (trial)</div>
-            <Segmented
-              value={props.settings.subagentHint}
-              options={[
-                { id: "flap" as const, label: "flap" },
-                { id: "peel" as const, label: "peel" },
-                { id: "plate" as const, label: "plate" },
-                { id: "flapboard" as const, label: "flapboard" },
-              ]}
-              onChange={(subagentHint) => props.update({ subagentHint })}
-            />
-          </div>
-          {/* view-scoped settings render from the registry schema
+           />
+           <div class="pt-1" />
+           {/* view-scoped settings render from the registry schema
               (VIEW_SETTINGS / ViewEntry.settings) - a view that adds a
               setting edits ONLY its own entry, never this file */}
-          <For each={VIEW_SETTINGS[props.settings.view] ?? []}>
-            {(def) => <ViewSettingControl def={def} settings={props.settings} update={props.update} />}
-          </For>
+           <For each={VIEW_SETTINGS[props.settings.view] ?? []}>
+             {(def) => <ViewSettingControl def={def} settings={props.settings} update={props.update} />}
+           </For>
           <Show when={props.branding.backgroundUrl}>
             <Switch
               label="Background image"

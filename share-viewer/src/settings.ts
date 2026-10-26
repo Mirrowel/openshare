@@ -68,11 +68,6 @@ export type OshSettings = {
    * hidden) - the multi-line rows adopted from the menu trials */
   rowPromptLines: number
   rowResponseLines: number
-  // [design-trial: subagent hint] — four candidate reveal animations for
-  // the "open subagent" hint on task rows (in-flow, room-carving at the
-  // unbordered wrapper; the card's rectangle never grows). DELETE after
-  // the pick.
-  subagentHint: "flap" | "peel" | "plate" | "flapboard"
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -105,7 +100,6 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   navSearchBar: false,
   rowPromptLines: 1,
   rowResponseLines: 0,
-  subagentHint: "flap",
 }
 
 const COOKIE = "osh_settings"
@@ -298,8 +292,6 @@ export function applySettings(s: OshSettings) {
   // tool output overflow: wrap vs hidden-scrollbar horizontal scroll
   html.dataset.oshOverflow = s.outputOverflow === "wrap" ? "wrap" : "scroll"
   html.dataset.oshPrompts = s.promptStyle === "flat" ? "flat" : "bubble"
-  // [design-trial: subagent hint] variant selector (see OshSettings)
-  html.dataset.oshHint = s.subagentHint ?? "flap"
   // nav state drives the content indent: the floating pill needs room at
   // the left edge; the sidebar column already displaces content, so its
   // extra indent shrinks to breathing room

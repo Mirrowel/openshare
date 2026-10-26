@@ -181,10 +181,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   line-height: var(--line-height-large, 1.5);
 }
 
-/* task/subagent cards carried a visible border in v1 */
-[data-timeline-row] [data-component="task-tool-card"] {
-  border: 1px solid var(--border-weak-base);
-}
+/* task/subagent cards: NO outline (owner round 2026-10-26 - the
+   rectangle goes, the rounded background stays; see .osh-task-wrap
+   block for the full hint treatment) */
 
 /* tool output blocks keep v1 breathing room below */
 [data-component="tool-output"] {
@@ -476,7 +475,9 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 :root {
   /* +20% (owner round 2026-10-26): unified/text file cards render wider;
      split = 2x the same token, still viewport-capped */
-  --osh-card: 36rem;
+  /* +10% more (owner round 2026-10-26): 36rem -> 39.6rem; split = 2x the
+     same token, still viewport-capped */
+  --osh-card: 39.6rem;
 }
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
@@ -856,21 +857,23 @@ html[data-color-scheme="light"] {
   position: static;
 }
 
-/* [design-trial: subagent hint] — the "open subagent ↗" hint on task
-   rows, as a REAL element (vendored .osh-task-wrap wraps the card, the
-   hint span sits in-flow below it). Room-carving: the wrap grows, the
-   content below slides down and back - but the card's bordered box
-   never changes size. CSS-only ancestors (:has() / wrapper ::after)
-   broke wherever the nesting differs (flex-row trigger containers put
-   the pseudo-element mid-page) - an element is deterministic in every
-   view. One reveal animation per variant, picked by html[data-osh-hint]. */
+/* the subagent hint, final form: flap only. The hint box is a
+   PERMANENT reservation below every task card (22px) - nothing below
+   ever moves on hover; the flap animation reveals INSIDE the reserved
+   box. The card keeps its rounded background but loses its outline
+   (owner round 2026-10-26); the following row's spacing collapses to
+   1px so subagent->next = flap + 1px, replacing normal spacing. */
 .osh-task-wrap {
   display: block;
+}
+.osh-task-wrap [data-component="task-tool-card"] {
+  border: none;
+  outline: none;
 }
 .osh-subagent-hint {
   display: block;
   width: 100%;
-  height: 0;
+  height: 22px;
   opacity: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -880,76 +883,51 @@ html[data-color-scheme="light"] {
   color: var(--text-weaker);
   box-sizing: border-box;
   pointer-events: none;
-  /* retract: quick fold-up after a small grace delay */
-  transition: height 140ms ease-in 180ms, opacity 120ms ease-in 180ms;
 }
+/* the flap: a hanging sign unfolding from the top hinge, overshooting
+   past vertical, knocking back, settling - inside the reserved box */
 .osh-task-wrap:hover .osh-subagent-hint {
-  height: 22px;
   opacity: 1;
-  transition: none;
-}
-
-/* A - flap: a hanging sign unfolding from the top hinge, overshooting
-   past vertical, knocking back, settling (the owner's pick to beat) */
-html[data-osh-hint="flap"] .osh-task-wrap:hover .osh-subagent-hint {
   transform-origin: top center;
-  animation: osh-hint-flap 500ms cubic-bezier(0.2, 0.7, 0.3, 1) 120ms both;
+  animation: osh-hint-flap 500ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 @keyframes osh-hint-flap {
-  0% { height: 0; opacity: 0; transform: perspective(160px) rotateX(-85deg); }
-  35% { height: 22px; opacity: 1; }
+  0% { opacity: 0; transform: perspective(160px) rotateX(-85deg); }
+  30% { opacity: 1; }
   68% { transform: perspective(160px) rotateX(6deg); }
   84% { transform: perspective(160px) rotateX(-3deg); }
-  100% { height: 22px; opacity: 1; transform: none; }
+  100% { opacity: 1; transform: none; }
 }
-
-/* B - peel: the card's bottom edge peels open from the right in a
-   diagonal wipe, like a lift-to-open sticker */
-html[data-osh-hint="peel"] .osh-task-wrap:hover .osh-subagent-hint {
-  animation: osh-hint-peel 340ms cubic-bezier(0.2, 0.7, 0.3, 1) 120ms both;
-  background:
-    linear-gradient(105deg, transparent 82%, color-mix(in srgb, var(--text-weaker) 18%, transparent) 94%, transparent 96%),
-    color-mix(in srgb, var(--surface-raised-base, var(--background-base)) 55%, transparent);
-}
-@keyframes osh-hint-peel {
-  0% { height: 0; opacity: 0; clip-path: inset(0 100% 0 0); }
-  45% { height: 22px; opacity: 1; }
-  100% { height: 22px; opacity: 1; clip-path: inset(0 0 0 0); }
-}
-
-/* C - plate: the label slides out from under the card's right edge */
-html[data-osh-hint="plate"] .osh-task-wrap:hover .osh-subagent-hint {
-  animation: osh-hint-plate 320ms cubic-bezier(0.2, 0.7, 0.3, 1) 120ms both;
-  text-align: right;
-  padding-right: 10px;
-}
-@keyframes osh-hint-plate {
-  0% { height: 0; opacity: 0; clip-path: inset(0 0 0 100%); transform: translateX(10px); }
-  45% { height: 20px; opacity: 1; }
-  100% { height: 20px; opacity: 1; clip-path: inset(0 0 0 0); transform: none; }
-}
-
-/* D - flapboard: the label snaps down in mechanical steps like a
-   split-flap departures board */
-html[data-osh-hint="flapboard"] .osh-task-wrap:hover .osh-subagent-hint {
-  animation:
-    osh-hint-board-height 200ms ease-out 120ms both,
-    osh-hint-board-flip 240ms steps(4, end) 120ms both;
-}
-@keyframes osh-hint-board-height {
-  0% { height: 0; opacity: 0; }
-  100% { height: 22px; opacity: 1; }
-}
-@keyframes osh-hint-board-flip {
-  0% { transform: perspective(140px) rotateX(-90deg); }
-  100% { transform: none; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  html[data-osh-hint] .osh-task-wrap:hover .osh-subagent-hint {
+  .osh-task-wrap:hover .osh-subagent-hint {
     animation: none;
-    transition: height 120ms ease-out, opacity 120ms ease-out;
   }
+}
+/* the reserved flap space REPLACES the normal spacing: the row after a
+   task row starts 1px below the reservation */
+[data-timeline-row]:has(.osh-task-wrap) + [data-timeline-row],
+[data-row-key]:has(.osh-task-wrap) + [data-row-key] {
+  padding-top: 1px !important;
+  margin-top: 1px !important;
+}
+
+/* thin decorative scrollbars for the nav lists and settings bodies:
+   4px rounded translucent thumb, invisible track - presence and
+   position only, not a drag target */
+.osh-thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-weaker) 45%, transparent) transparent;
+}
+.osh-thin-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.osh-thin-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-weaker) 45%, transparent);
+  border-radius: 4px;
+}
+.osh-thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 
