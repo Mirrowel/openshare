@@ -470,6 +470,22 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   color: var(--text-strong);
   font-weight: 600;
 }
+/* path-first layout: the directory reads before the name and truncates
+   from its START (rtl direction + plaintext keeps the text order, the
+   ellipsis lands on the left) so the name always stays whole; the name
+   never shrinks */
+.osh-title-path-first {
+  min-width: 0;
+}
+.osh-title-path-first .osh-dir-full {
+  flex: 0 1 auto;
+  direction: rtl;
+  unicode-bidi: plaintext;
+}
+.osh-file-sep {
+  flex: none;
+  color: var(--text-weaker);
+}
 /* --- file-card sizing (owner round 2026-10-25) --------------------------
    ONE fixed card width for the whole file family: read, write and
    unified edit all render at --osh-card (30rem); a split diff renders at

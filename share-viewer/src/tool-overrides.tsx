@@ -86,8 +86,9 @@ function displayPathDir(path: string): string {
   const nd = norm(dir)
   if (nd === base) return "."
   if (nd.startsWith(base + "/")) return nd.slice(base.length + 1)
-  const segs = nd.split("/").filter(Boolean)
-  return segs.length > 2 ? "…" + segs.slice(-2).join("/") : norm(dir)
+  // full directory otherwise: the row ellipsizes only when it truly
+  // cannot fit (owner directive 2026-10-26 - no segment collapsing)
+  return norm(dir)
 }
 const countLines = (text: string) => (text ? text.replace(/\n$/, "").split("\n").length : 0)
 
@@ -193,16 +194,29 @@ function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) 
   )
 }
 
+/** File-title layout: PATH FIRST by default (the directory reads before
+ * the name, like a file listing; the dir truncates from its START when
+ * long so the name always stays whole). Views that keep the name-first
+ * arrangement (the conversation view, verbatim from its PR) flip
+ * setFileTitlePathFirst(false). */
+const [fileTitlePathFirst, setFileTitlePathFirst] = createSignal(true)
+export { setFileTitlePathFirst }
+
 /** The expanded body's title bar - icon-badge, file name, muted directory.
  * Duplicates the header row on purpose: when a long transcript scrolls the
  * row away, the card still says what you are reading. */
 function FileTitle(props: { path: string }) {
   const name = basename(props.path)
+  const dir = createMemo(() => displayPathDir(props.path))
   return (
-    <div data-slot="osh-file-title">
+    <div data-slot="osh-file-title" classList={{ "osh-title-path-first": fileTitlePathFirst() }}>
       <FileIcon node={{ path: props.path, type: "file" }} class="osh-file-icon size-4 shrink-0" />
+      <Show when={fileTitlePathFirst() && dir()}>
+        <span class="osh-file-dir osh-dir-full" title={dir()}>{dir()}</span>
+        <span class="osh-file-sep">/</span>
+      </Show>
       <span class="osh-file-name">{name}</span>
-      <Show when={dirname(props.path)}>
+      <Show when={!fileTitlePathFirst() && dirname(props.path)}>
         <span class="osh-file-dir">{dirname(props.path).split("/").at(-1)}</span>
       </Show>
     </div>
