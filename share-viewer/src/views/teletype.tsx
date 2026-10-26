@@ -165,6 +165,7 @@ function Masthead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
           >
             <Icon name="github" size="small" />
           </a>
+          {props.searchControl}
            <SkinSettingsPopover
              settings={props.settings}
              update={props.updateSettings}

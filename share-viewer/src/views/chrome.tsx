@@ -67,6 +67,9 @@ export function SkinHeader(props: {
   /** hide the GitHub repo link (rare) */
   noGithub?: boolean
   /** hide the copy-as-markdown button (rare) */
+  /** the search palette trigger (a SearchControl element); rendered left
+   *  of the copy button when provided */
+  searchControl?: JSX.Element
   noCopy?: boolean
   /** custom status presentation (default: StatusReadout) */
   statusRender?: (status: string) => JSX.Element
@@ -120,6 +123,9 @@ export function SkinHeader(props: {
           )}
         </Show>
         {props.trailing}
+        {/* the header search palette trigger (sections + jump wired by
+            BaseSessionView) - left of copy-markdown in every skin */}
+        {props.searchControl}
         <Show when={!props.noCopy}>
           <button
             class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"

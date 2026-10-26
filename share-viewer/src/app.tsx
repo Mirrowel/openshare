@@ -36,6 +36,8 @@ import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
 import { copySessionMarkdown } from "./copy-markdown"
+import { SearchControl } from "./search-palette"
+import { useSessionSections } from "./views/session-data"
 import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
@@ -263,7 +265,12 @@ function SessionView(props: {
     return { found: idx >= 0, index: idx }
   })
   if (!match().found) return <NotFound status="session data not synced yet" branding={props.source.branding()} />
-  const sessionID = () => target().sessionID
+              const sessionID = () => target().sessionID
+              // the header search palette's index: the same section model
+              // the skins search (prompt, response, reasoning, tools).
+              // sessionID captured at mount - the view subtree re-creates
+              // on session (hash) navigation
+              const searchSections = useSessionSections(props.data, sessionID())
   const isSub = () => target().isSub
   const backHref = () => (target().isSub ? `/s/${props.source.shareID}` : undefined)
   const info = createMemo(() => props.data.session[match().index])
@@ -307,7 +314,7 @@ function SessionView(props: {
               const hashJump = () => {
                 const id = decodeURIComponent(location.hash.slice(1))
                 if (!id || !userTurns().some((m: any) => m.id === id)) return
-                setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior() })
+                setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
               }
               const onHashNav = () => hashJump()
               window.addEventListener("popstate", onHashNav)
@@ -330,23 +337,25 @@ function SessionView(props: {
               // VirtualTimeline (nonce so repeat jumps to the same message
               // re-fire)
               let jumpNonce = 1
-              const [jumpTarget, setJumpTarget] = createSignal<{ id: string; nonce: number; behavior?: ScrollBehavior }>()
+              const [jumpTarget, setJumpTarget] = createSignal<{ id: string; nonce: number; behavior?: ScrollBehavior; force?: boolean }>()
               // one prompt-nav implementation for classic: always jump the
-              // virtualizer (smooth per setting, long jumps fall back to
-              // instant inside the timeline) - classic has no paged mode,
-              // focus mode is the one-turn surface
-              const jumpBehavior = () => (props.settings.smoothScroll ? "smooth" as const : "auto" as const)
+              // virtualizer - classic has no paged mode,
+              // focus mode is the one-turn surface. Tri-state smoothness:
+              // instant | near (smooth, long jumps snap) | always (smooth
+              // everywhere - the timeline's 4-viewport cap is bypassed)
+              const jumpBehavior = () => (props.settings.smoothScroll === "instant" ? ("auto" as const) : ("smooth" as const))
+              const jumpForce = () => props.settings.smoothScroll === "always"
               const activeIndex = () => userTurns().findIndex((m: any) => m.id === activeMessage()?.id)
               registerPromptNav({
                 next: () => {
                   const i = Math.min(activeIndex() + 1, userTurns().length - 1)
                   if (i === activeIndex()) return
-                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
                 },
                 prev: () => {
                   const i = Math.max(activeIndex() - 1, 0)
                   if (i === activeIndex()) return
-                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
                 },
               })
               // the model of the ACTIVE turn: user metadata first (stamped
@@ -610,6 +619,12 @@ function SessionView(props: {
                       <StatusLine status={props.source.status()} />
                     </div>
                     <div class="flex items-center gap-2.5 ml-auto">
+                      {/* the header search palette (prompts, responses,
+                          thinking, tools) - left of copy-markdown */}
+                      <SearchControl
+                        sections={searchSections}
+                        onJump={(sectionId) => setJumpTarget({ id: sectionId, nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })}
+                      />
                       <button
                         class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
                         title="copy session as markdown"
@@ -669,7 +684,7 @@ function SessionView(props: {
                                   focusTurn(i)
                                   return
                                 }
-                                setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                                setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
                               }}
                             />
                           </Show>
@@ -709,7 +724,7 @@ function SessionView(props: {
                                     focusTurn(i)
                                     return
                                   }
-                                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior() })
+                                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
                                 }}
                               />
                             </Show>

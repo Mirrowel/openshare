@@ -17,6 +17,7 @@ import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
 import { useSessionSections, type SessionSection, type ToolEntry, type ReasoningEntry, type TextEntry } from "./session-data"
+import { SearchControl } from "../search-palette"
 import type { ViewProps } from "./registry"
 import { pagedFor, type OshSettings } from "../settings"
 import { Icon } from "@opencode/ui/icon"
@@ -168,7 +169,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
       if (continuous()) {
         const sc = scroller as unknown as HTMLDivElement | undefined
         const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-        el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+        el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
       } else if (i !== active()) setActive(i)
     },
     prev: () => {
@@ -176,7 +177,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
       if (continuous()) {
         const sc = scroller as unknown as HTMLDivElement | undefined
         const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-        el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+        el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
       } else if (i !== active()) setActive(i)
     },
   })
@@ -267,7 +268,23 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   return (
     <ViewProvider value={ctxValue}>
       <div data-view={props.skin.id} class="flex flex-col h-screen w-full bg-background-base text-text-base">
-        <w.Header {...props} model={model()} status={props.source.status()} onBack={back} isSub={isSub()} />
+        <w.Header
+          {...props}
+          model={model()}
+          status={props.source.status()}
+          onBack={back}
+          isSub={isSub()}
+          searchControl={
+            <SearchControl
+              sections={visible}
+              onJump={(sectionId) => {
+                const sc = scroller as unknown as HTMLDivElement | undefined
+                const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${sectionId}`)}"]`)
+                el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
+              }}
+            />
+          }
+        />
       <div class="flex flex-col flex-1 min-h-0">
           {/* the narrow bar's slot: column flow above the row (the row is
               a stretch row for the sidebar variant - an in-flow bar there
@@ -289,7 +306,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
                 if (continuous()) {
                   const sc = scroller as unknown as HTMLDivElement | undefined
                   const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-                  el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+                  el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
                   return
                 }
                 setActive(i)
@@ -328,7 +345,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
                 if (continuous()) {
                   const sc = scroller as unknown as HTMLDivElement | undefined
                   const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-                  el?.scrollIntoView({ behavior: props.settings.smoothScroll ? "smooth" : "auto", block: "start" })
+                  el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
                   return
                 }
                 setActive(i)

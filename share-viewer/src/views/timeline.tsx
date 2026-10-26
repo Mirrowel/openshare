@@ -289,6 +289,7 @@ function RailEnd(props: Parameters<NonNullable<SkinWrappers["Footer"]>>[0]) {
           >
             <Icon name="github" size="small" />
           </a>
+          {props.searchControl}
         </span>
       </div>
     </div>

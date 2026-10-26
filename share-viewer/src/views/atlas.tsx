@@ -223,6 +223,7 @@ function Masthead(props: HeaderProps) {
               >
                 <Icon name="github" size="small" />
               </a>
+              {props.searchControl}
 {/* the legend lives in the global Session info popup now (setInfoExtra) */}
               <SkinSettingsPopover
                 settings={props.settings}

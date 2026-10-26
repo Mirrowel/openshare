@@ -22,6 +22,9 @@ export type ViewProps = {
   updateSettings: (patch: Partial<OshSettings>) => void
   search: string
   onSearch: (v: string) => void
+  /** the header search palette trigger, built by BaseSessionView - skins
+   *  render it in their masthead action row */
+  searchControl?: JSX.Element
 }
 
 /** a view-scoped setting, rendered automatically by the settings panel

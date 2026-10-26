@@ -100,7 +100,7 @@ export function VirtualTimeline(props: {
    * to that user message's row (the rail's jump target). nonce makes
    * repeat jumps to the same message re-fire; behavior carries the
    * smooth-scroll setting (long jumps fall back to instant internally). */
-  scrollTarget?: { id: string; nonce: number; behavior?: ScrollBehavior }
+  scrollTarget?: { id: string; nonce: number; behavior?: ScrollBehavior; force?: boolean }
   /** imperative controls handed to the parent once the virtualizer is
    * live (focus mode, hotkeys, rail jumps all scroll through this) */
   onReady?: (controls: { scrollToMessage: (id: string) => void }) => void
@@ -200,7 +200,7 @@ export function VirtualTimeline(props: {
   // Long smooth jumps fall back to instant: tanstack animates scrollTop
   // over estimate-based offsets and measurement corrections mid-flight
   // stutter badly across thousands of pixels.
-  const scrollToMessage = (id: string, behavior?: ScrollBehavior) => {
+  const scrollToMessage = (id: string, behavior?: ScrollBehavior, force?: boolean) => {
     const rows = projection.rows()
     const idx = rows.findIndex((row) => {
       const k = String((row as any)?._tag === "UserMessage" ? `user-message:${(row as any).userMessageID}` : "")
@@ -209,7 +209,7 @@ export function VirtualTimeline(props: {
     if (idx < 0) return
     if (!scrollElement) return
     let how = behavior
-    if (how === "smooth") {
+    if (how === "smooth" && !force) {
       try {
         const offset = virtualizer.getOffsetForIndex?.(idx, "start")
         if (offset != null && scrollElement && Math.abs(offset[0] - scrollElement.scrollTop) > scrollElement.clientHeight * 4) {
@@ -226,7 +226,7 @@ export function VirtualTimeline(props: {
   createEffect(() => {
     const target = props.scrollTarget
     if (!target) return
-    scrollToMessage(target.id, target.behavior)
+    scrollToMessage(target.id, target.behavior, target.force)
   })
 
   // imperative controls for the parent (focus mode, hotkeys, rail)

@@ -232,6 +232,19 @@ function NarrowBar(props: Parameters<typeof PromptNav>[0]) {
   )
 }
 
+/** one-shot: the next pill mount pings ONCE (set when the sidebar
+ *  collapses to a pill mid-session - that transition needs a hello, not
+ *  the full double pulse a page load carries) */
+let singlePulseNext = false
+function flagSinglePulse() {
+  singlePulseNext = true
+}
+function consumeSinglePulse() {
+  const v = singlePulseNext
+  singlePulseNext = false
+  return v
+}
+
 /** one turn row - shared by the sidebar and the pill popover so both
  *  states read as the same control. plain number in a fixed 2ch column
  *  (no leading zero; no staircase at 10+, 100+ may widen), tight gap,
@@ -611,7 +624,7 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
           <button
             type="button"
             class="flex items-center justify-center size-5 rounded text-text-weaker hover:text-text-base hover:bg-surface-base bg-transparent border-none cursor-pointer"
-            onClick={() => props.onSetVariant("pill")}
+            onClick={() => { flagSinglePulse(); props.onSetVariant("pill") }}
             title="collapse to the floating pill"
             aria-label="collapse turn sidebar"
           >
@@ -645,7 +658,7 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
         <Show
           when={props.children}
           fallback={
-            <For each={sbFilter().trim() ? Array.from({ length: props.count }, (_, i) => i).filter((i) => (props.label(i) ?? "").toLowerCase().includes(sbFilter().trim().toLowerCase()) || (props.preview?.(i) ?? "").toLowerCase().includes(sbFilter().trim().toLowerCase())) : Array.from({ length: props.count }, (_, i) => i)}>
+            <For each={sbFilter().trim() ? Array.from({ length: props.count }, (_, i) => i).filter((i) => (props.label(i) ?? "").toLowerCase().includes(sbFilter().trim().toLowerCase())) : Array.from({ length: props.count }, (_, i) => i)}>
               {(i) => (
                 <NavRow
                   i={i}
@@ -703,11 +716,20 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
 
   onMount(() => {
     // ghost mode pings on EVERY page load while enabled (owner round
-    // 2026-10-26): one pulse per reload - an invisible pill needs a
-    // recurring hello, not a first-visit-only one
+    // 2026-10-26): a double pulse - ping, short pause, ping. A pill that
+    // mounts mid-session (sidebar collapsed to pill) pings ONCE (the
+    // toggle sets the one-shot flag below)
     if (props.pillGhost) {
+      const single = consumeSinglePulse()
       setPulse(true)
-      setTimeout(() => setPulse(false), 1900)
+      setTimeout(() => {
+        setPulse(false)
+        if (single) return
+        setTimeout(() => {
+          setPulse(true)
+          setTimeout(() => setPulse(false), 1600)
+        }, 600)
+      }, 1600)
     }
   })
 
@@ -755,11 +777,14 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
     setPreview({ i, top: er.top - wr.top, left: popRect.right - wr.left + 8 })
   }
 
-  // the search field (nav config toggle) filters the rows in both states
+  // the search field (nav config toggle) filters the rows in both
+  // states - PROMPTS ONLY (owner round 2026-10-26: the simple filter
+  // hides non-matching turns; rich multi-scope search is the header
+  // palette's job)
   const filtered = () => {
     const q = filter().trim().toLowerCase()
     if (!q) return Array.from({ length: props.count }, (_, i) => i)
-    return Array.from({ length: props.count }, (_, i) => i).filter((i) => (props.label(i) ?? "").toLowerCase().includes(q) || (props.preview?.(i) ?? "").toLowerCase().includes(q))
+    return Array.from({ length: props.count }, (_, i) => i).filter((i) => (props.label(i) ?? "").toLowerCase().includes(q))
   }
 
   return (
