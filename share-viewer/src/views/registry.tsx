@@ -60,8 +60,9 @@ export const VIEW_OPTIONS: { id: string; label: string }[] = [
 // carry theirs on their entries; see registerView)
 export const VIEW_SETTINGS: Record<string, ViewSettingDef[]> = {
   classic: [
-    { kind: "switch", key: "toolGrouping", label: "Group tool calls", hint: "collapse a response's tool calls into summary rows" },
-    { kind: "segmented", key: "toolGroupingScope", label: "Group", showWhen: "toolGrouping", hint: "reads & searches matches the original scope: shell, edits and agents stay their own rows", options: [{ id: "context", label: "reads & searches" }, { id: "all", label: "all calls" }] },
+    // grouping is GLOBAL now: the transcript section's off/custom/all
+    // lever + the "collapse these" checklist (classic and conversation
+    // both read it through timelineDetail)
   ],
 }
 

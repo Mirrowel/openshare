@@ -390,21 +390,20 @@ function SessionView(props: {
               // its own "Thought" row. OFF = every tool call its own row.
               // Always passed so ungrouped rows keep content spacing.
               const timelineDetail = createMemo(() => {
-                const grouped = props.settings.toolGrouping !== false
-                // v1 scope = only reads/searches collapse; everything else
-                // keeps its own row with its own output
-                const context = props.settings.toolGroupingScope !== "all"
+                const mode = props.settings.toolGrouping
+                const picks = new Set(props.settings.groupTools ?? [])
+                const gp = (tool: string) => mode === "all" || (mode === "custom" && picks.has(tool))
                 // per-tool auto-expand drives everything (renderer's
                 // toolDefaultOpen, consulted before categories); category
                 // details stay collapsed so unlisted tools never open
                 const details = "collapsed" as const
                 return {
-                  shell: { placement: grouped && !context ? "grouped" : "separate", details },
-                  edit: { placement: grouped && !context ? "grouped" : "separate", details },
+                  shell: { placement: gp("shell") ? "grouped" : "separate", details },
+                  edit: { placement: gp("edit") ? "grouped" : "separate", details },
                   thinking: { placement: "separate", details: props.settings.reasoningOpen ? "expanded" : "collapsed" },
-                  subagents: { placement: grouped && !context ? "grouped" : "separate" },
+                  subagents: { placement: gp("task") ? "grouped" : "separate" },
                   notices: { placement: "separate" },
-                  tools: { placement: grouped ? "grouped" : "separate", ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}) },
+                  tools: { placement: mode === "off" ? "separate" : "grouped", ...(mode === "custom" ? { only: [...picks] } : {}) },
                 } as any
               })
               // the v2 timeline document: full session (continuous mode)
@@ -1025,6 +1024,12 @@ export function App() {
       setTimeout(restore, 120)
     })
   }
+
+  // the debug reset: settings.ts wiped the cookie and applied defaults;
+  // swap the live state to match (no reload)
+  window.addEventListener("osh:settings-reset", (e) => {
+    setSettings((e as CustomEvent<OshSettings>).detail)
+  })
 
   // follow-live: keep the newest content visible, only when already at
   // bottom (evaluated at fire time - a fresh load starts at the top and

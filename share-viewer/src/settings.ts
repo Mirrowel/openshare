@@ -37,9 +37,12 @@ export type OshSettings = {
   /** tools whose bodies auto-expand on render (checkbox list, cookie-
    * persisted so every share picks it up). Default: none. */
   autoExpand: string[]
-  toolGrouping: boolean
-  /** what grouping covers: v1 scope (reads/searches only) or every tool */
-  toolGroupingScope: "context" | "all"
+  /** tool-call grouping: off = every call its own row; custom = only the
+   *  tools in groupTools collapse into summary rows; all = every call */
+  toolGrouping: "off" | "custom" | "all"
+  /** which tools the "custom" grouping collapses (same checklist UI as
+   *  autoExpand; prefilled with the original reads & searches scope) */
+  groupTools: string[]
   /** grove only: keep reasoning on the left (with tools) or move it right */
   groveThinking: "left" | "right"
   /** how tool OUTPUTS overflow long lines: wrap them, or scroll the output
@@ -95,8 +98,8 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   centerContent: false,
   toolInfo: true,
   autoExpand: [],
-  toolGrouping: true,
-  toolGroupingScope: "context",
+  toolGrouping: "off",
+  groupTools: ["read", "glob", "grep", "list"],
   groveThinking: "left",
   // wrap is the default (owner round 2026-10-25); saved cookies keep
   // their explicit choice
@@ -160,6 +163,14 @@ export function readSettings(): OshSettings {
         if (typeof parsed.smoothScroll === "boolean") {
           parsed.smoothScroll = parsed.smoothScroll ? "near" : "instant"
         }
+        // grouping: {bool + context|all scope} -> off | custom | all
+        if (typeof parsed.toolGrouping === "boolean" || typeof parsed.toolGroupingScope === "string") {
+          const on = parsed.toolGrouping !== false
+          const all = parsed.toolGroupingScope === "all"
+          parsed.toolGrouping = on ? (all ? "all" : "custom") : "off"
+          delete parsed.toolGroupingScope
+        }
+        if (!Array.isArray(parsed.groupTools)) parsed.groupTools = ["read", "glob", "grep", "list"]
         return { ...SETTINGS_DEFAULTS, ...parsed }
       }
     }
@@ -317,7 +328,7 @@ export function applySettings(s: OshSettings) {
   html.dataset.oshToolInfo = s.toolInfo ? "on" : "off"
   // tool-call grouping (summary rows). Default ON; off = every call its
   // own row through the v2 timeline detail placements
-  html.dataset.oshToolGrouping = s.toolGrouping === false ? "off" : "on"
+  html.dataset.oshToolGrouping = s.toolGrouping === "off" ? "off" : s.toolGrouping
   // tool output overflow: wrap vs hidden-scrollbar horizontal scroll
   html.dataset.oshOverflow = s.outputOverflow === "wrap" ? "wrap" : "scroll"
   html.dataset.oshPrompts = s.promptStyle === "flat" ? "flat" : "bubble"
@@ -329,4 +340,15 @@ export function applySettings(s: OshSettings) {
   // at the value, split diffs at 2x, both viewport-capped)
   const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))
   html.style.setProperty("--osh-card", `${cardWidth}rem`)
+}
+
+/** wipe every saved setting and re-apply the defaults live: same as
+ *  killing the cookie, minus the cookie editor. App state listens for
+ *  the osh:settings-reset event and swaps to the defaults the same
+ *  tick, so no reload is needed. */
+export function resetAllSettings() {
+  const expires = "Thu, 01 Jan 1970 00:00:00 GMT"
+  document.cookie = `osh_settings=; path=/; expires=${expires}`
+  applySettings(SETTINGS_DEFAULTS)
+  window.dispatchEvent(new CustomEvent("osh:settings-reset", { detail: SETTINGS_DEFAULTS }))
 }

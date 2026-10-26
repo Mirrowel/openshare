@@ -898,6 +898,25 @@ html[data-color-scheme="light"] {
     opacity: 1;
   }
 }
+/* the custom-grouping checklist reveal (settings panel): slides open
+   under the lever */
+.osh-reveal {
+  animation: osh-reveal-in 220ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  transform-origin: top center;
+}
+@keyframes osh-reveal-in {
+  from { opacity: 0; transform: translateY(-4px) scaleY(0.96); max-height: 0; }
+  to { opacity: 1; transform: translateY(0) scaleY(1); max-height: 320px; }
+}
+/* the debug reset: the resting row brightens into the armed warning
+   panel, which springs in */
+.osh-reset-arm { animation: osh-value-in 180ms ease-out; }
+.osh-reset-armed { animation: osh-reset-pop 260ms cubic-bezier(0.34, 1.4, 0.44, 1); transform-origin: left center; }
+@keyframes osh-reset-pop {
+  from { opacity: 0; transform: translateX(-6px) scale(0.97); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
 /* the lever's value text + the slider's value chip swap with a gentle
    fade-slide when the value changes (keyed remount re-runs it) */
 .osh-lever-value {
@@ -946,15 +965,32 @@ input[type="range"].osh-slider::-moz-range-thumb {
   border: 2px solid var(--openshare-accent, var(--icon-strong-base));
 }
 
-/* the search palette: drops in from the header - slight descend +
-   settle, matching the pop-open's easing family */
+/* the search palette: drops in from the header bar. Centering rides the
+   flex WRAPPER (the kit's tailwind emits `translate:` as a CSS property;
+   animating transform on a class-centered element applied both offsets
+   and landed the palette one width left mid-animation) - the animation
+   only touches opacity/translateY/scale */
 .osh-search-palette {
   animation: osh-palette-in 180ms cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 @keyframes osh-palette-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(-8px) scale(0.985); }
+  from { opacity: 0; transform: translateY(-10px) scale(0.985); }
   60% { opacity: 1; }
-  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* live search marks + the active-hit flash */
+mark.osh-search-hit {
+  background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 26%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+mark.osh-search-hit.osh-search-hit-active {
+  animation: osh-hit-flash 1.6s ease-out;
+}
+@keyframes osh-hit-flash {
+  0%, 45% { background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 70%, transparent); }
+  100% { background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 26%, transparent); }
 }
 
 /* thin decorative scrollbars for the nav lists and settings bodies:

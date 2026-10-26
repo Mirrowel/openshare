@@ -9,7 +9,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
-import { pagedFor, setPagedFor, type OshSettings } from "./settings"
+import { pagedFor, setPagedFor, resetAllSettings, type OshSettings } from "./settings"
 import { LineStepper } from "./hover-rail"
 import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
 import type { ViewSettingDef } from "./views/registry"
@@ -20,6 +20,7 @@ import type { Branding } from "./data-source"
 const [panelOpen, setPanelOpen] = createSignal(false)
 // auto-expand picker sub-view inside the settings panel
 const [expandPicker, setExpandPicker] = createSignal(false)
+const [groupPickerOpen, setGroupPicker] = createSignal(false)
 export const togglePanel = () => setPanelOpen((v) => !v)
 export const closePanel = () => setPanelOpen(false)
 
@@ -50,6 +51,64 @@ const THEMES: { id: OshSettings["theme"]; label: string; bg: string; fg: string 
 
 // a visual signature per view comes from the registry (viewMark) - the
 // marks table is gone; entries carry their own glyphs
+
+/** the debug reset: a deliberate two-step. The resting row is quiet;
+ *  engaging it springs the armed state open (warning icon, Cancel /
+ *  Reset pair). Reset wipes the settings cookie and re-applies the
+ *  defaults live - the app listens for the reset event, no reload. */
+function ResetRow(props: { onDone: () => void }) {
+  const [armed, setArmed] = createSignal(false)
+  const confirm = () => {
+    resetAllSettings()
+    setArmed(false)
+    props.onDone()
+  }
+  return (
+    <Show
+      when={armed()}
+      fallback={
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 py-1.5 px-2 rounded-lg border border-border-weak-base bg-transparent text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150 osh-reset-arm"
+          onClick={() => setArmed(true)}
+          title="wipe every saved setting and restore the defaults"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true" class="shrink-0">
+            <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M2.5 1.5v3h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Reset all settings
+        </button>
+      }
+    >
+      <div class="osh-reset-armed flex items-center gap-2 p-2 rounded-lg border border-error-base/60 bg-error-base/10">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true" class="shrink-0 text-error-base">
+          <path d="M8 5.5v3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <circle cx="8" cy="11.8" r="0.9" fill="currentColor" stroke="none" />
+          <path d="M8 2 1.8 13h12.4L8 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none" />
+        </svg>
+        <span class="flex-1 text-12-regular text-text-strong leading-tight">
+          Reset every setting to its default?
+          <span class="block text-11-regular text-text-weaker">this cannot be undone</span>
+        </span>
+        <button
+          type="button"
+          class="flex items-center h-6 px-2.5 rounded-md border border-border-weak-base bg-transparent text-12-regular text-text-base hover:bg-surface-base cursor-pointer"
+          onClick={() => setArmed(false)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="flex items-center h-6 px-2.5 rounded-md border-none bg-error-base text-12-medium text-white hover:opacity-90 cursor-pointer"
+          onClick={confirm}
+        >
+          Reset
+        </button>
+      </div>
+    </Show>
+  )
+}
 
 function SectionLabel(props: { children: string }) {
   return <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase">{props.children}</div>
@@ -325,7 +384,7 @@ export function SettingsBody(props: {
         </div>
       </Section>
 
-      <Section label="reading & layout">
+      <Section label="reading">
         <SliderRow
           label="interface scale"
           value={props.settings.textScale ?? 100}
@@ -371,7 +430,7 @@ export function SettingsBody(props: {
         />
       </Section>
 
-      <Section label="behavior">
+      <Section label="transcript">
         <div class="flex flex-col">
           <Show when={viewSupportsPaged(props.settings.view)}>
             <Switch
@@ -409,9 +468,61 @@ export function SettingsBody(props: {
             on={props.settings.toolInfo}
             onChange={() => props.update({ toolInfo: !props.settings.toolInfo })}
           />
-          {/* auto-expand: WHICH tool bodies open on render. Checkbox list
-              (known tools + anything this session used), cookie-persisted
-              so every share picks it up. Default: none */}
+           {/* grouping: off = every call its own row; custom = only the
+               checked tools collapse; all = everything. The checklist
+               appears (animated) only on custom */}
+           <Lever
+             label="group tool calls"
+             value={props.settings.toolGrouping}
+             options={[
+               { id: "off" as const, label: "off" },
+               { id: "custom" as const, label: "custom" },
+               { id: "all" as const, label: "all" },
+             ]}
+             onChange={(toolGrouping) => {
+               props.update({ toolGrouping })
+               if (toolGrouping === "custom" && !groupPickerOpen()) setGroupPicker(true)
+             }}
+           />
+           <Show when={props.settings.toolGrouping === "custom"}>
+             <div class="osh-reveal pb-1.5">
+               <button
+                 type="button"
+                 class="w-full flex items-center justify-between text-left text-12-regular text-text-base py-1 hover:text-text-strong"
+                 onClick={() => setGroupPicker(!groupPickerOpen())}
+               >
+                 <span>Collapse these</span>
+                 <span class="text-text-weaker">{props.settings.groupTools.length ? `${props.settings.groupTools.length} on` : "none"} {groupPickerOpen() ? "▾" : "▸"}</span>
+               </button>
+               <Show when={groupPickerOpen()}>
+                 <div class="flex flex-col gap-0.5 pt-1 max-h-56 overflow-y-auto" data-osh-panel-scroll>
+                   <For each={autoExpandChoices()}>
+                     {(name) => {
+                       const on = () => props.settings.groupTools.includes(name)
+                       return (
+                         <label class="flex items-center gap-2 text-12-regular text-text-base cursor-pointer py-0.5">
+                           <input
+                             type="checkbox"
+                             checked={on()}
+                             onChange={() => {
+                               const next = on()
+                                 ? props.settings.groupTools.filter((t) => t !== name)
+                                 : [...props.settings.groupTools, name]
+                               props.update({ groupTools: next })
+                             }}
+                           />
+                           <span classList={{ "text-text-weaker": !on() }}>{name}</span>
+                         </label>
+                       )
+                     }}
+                   </For>
+                 </div>
+               </Show>
+             </div>
+           </Show>
+           {/* auto-expand: WHICH tool bodies open on render. Checkbox list
+               (known tools + anything this session used), cookie-persisted
+               so every share picks it up. Default: none */}
           <div class="pb-1.5">
             <button
               type="button"
@@ -458,7 +569,7 @@ export function SettingsBody(props: {
               setting edits ONLY its own entry, never this file */}
            <For each={VIEW_SETTINGS[props.settings.view] ?? []}>
              {(def) => <ViewSettingControl def={def} settings={props.settings} update={props.update} />}
-           </For>
+            </For>
           <Show when={props.branding.backgroundUrl}>
             <Switch
               label="Background image"
@@ -469,18 +580,12 @@ export function SettingsBody(props: {
         </div>
       </Section>
 
-      <Section label="search" alwaysOpen>
-        <div class="relative">
-          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-icon-weaker-base pointer-events-none">
-            <Icon name="magnifying-glass" size="small" />
-          </span>
-          <input
-            class="w-full box-border pl-8 pr-2.5 py-1.5 rounded-lg border border-border-weak-base bg-background-stronger text-text-base text-12-regular outline-none focus:border-icon-strong-base transition-colors duration-150"
-            placeholder="filter prompts (Ctrl+K)"
-            value={props.search}
-            onInput={(e) => props.onSearch(e.currentTarget.value)}
-          />
-        </div>
+      {/* the view-filter search input is GONE: the header search palette
+          (/) is the search surface; the nav lists keep the togglable
+          prompts-only filter in their own config */}
+
+      <Section label="debug">
+        <ResetRow onDone={() => props.update({})} />
       </Section>
     </div>
   )

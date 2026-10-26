@@ -137,16 +137,17 @@ export function ConversationView(props: ViewProps) {
   }
 
   const timelineDetail = createMemo(() => {
-    const grouped = props.settings.toolGrouping !== false
-    const context = props.settings.toolGroupingScope !== "all"
+    const mode = props.settings.toolGrouping
+    const picks = new Set(props.settings.groupTools ?? [])
+    const gp = (tool: string) => mode === "all" || (mode === "custom" && picks.has(tool))
     const details = "collapsed" as const
     return {
-      shell: { placement: grouped && !context ? "grouped" : "separate", details },
-      edit: { placement: grouped && !context ? "grouped" : "separate", details },
+      shell: { placement: gp("shell") ? "grouped" : "separate", details },
+      edit: { placement: gp("edit") ? "grouped" : "separate", details },
       thinking: { placement: "separate", details: props.settings.reasoningOpen ? "expanded" : "collapsed" },
-      subagents: { placement: grouped && !context ? "grouped" : "separate" },
+      subagents: { placement: gp("task") ? "grouped" : "separate" },
       notices: { placement: "separate" },
-      tools: { placement: grouped ? "grouped" : "separate", ...(grouped && context ? { only: ["read", "glob", "grep", "list"] } : {}) },
+      tools: { placement: mode === "off" ? "separate" : "grouped", ...(mode === "custom" ? { only: [...picks] } : {}) },
     } as any
   })
 
