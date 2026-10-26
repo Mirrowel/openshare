@@ -381,6 +381,48 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: the subagent hover hint as a REAL element. The hint needs
+// to carve room below the card without touching the card's bordered box;
+// CSS-only attempts (:has() on ancestors, ::after on wrappers) broke in
+// views whose nesting differs (flex-row trigger containers put the
+// pseudo-element mid-page). A wrapper div + span element is deterministic
+// in every view: the wrap is a block flex-item, the hint sits in-flow
+// under the card, height-animated from 0 (app.css styles it).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("osh-task-wrap")) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const openA = ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
+      const openB = [
+        "    const trigger = () => (",
+        "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
+        '      // card (app.css: height 0 -> 22px on hover; the card box never grows)',
+        '      <div class="osh-task-wrap">',
+        "      <div",
+        '        data-component="task-tool-card"',
+      ].join(nl)
+      // close anchor rides the task-unique `delegating()` Show that follows
+      const closeA = ["      </div>", "    )", "", "    return (", "      <Show", "        when={delegating()}"].join(nl)
+      const closeB = [
+        "      </div>",
+        '      <span class="osh-subagent-hint" aria-hidden="true">open subagent \u2197</span>',
+        "      </div>",
+        "    )",
+        "",
+        "    return (",
+        "      <Show",
+        "        when={delegating()}",
+      ].join(nl)
+      if (!s.includes(openA)) throw new Error("vendor-v2: task trigger open anchor missing - upstream drifted")
+      if (!s.includes(closeA)) throw new Error("vendor-v2: task trigger close anchor missing - upstream drifted")
+      s = s.replace(openA, openB).replace(closeA, closeB)
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: grouped task rows label the agent that ACTUALLY ran.
 // Upstream's grouped label ignores the task input's agent entirely (it
 // always reads ui.tool.agent.default = "Agent"). The viewer's fold

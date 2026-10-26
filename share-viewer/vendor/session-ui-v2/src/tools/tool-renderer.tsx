@@ -1917,6 +1917,9 @@ ToolRegistry.register({
     }
 
     const trigger = () => (
+      // openshare fork: .osh-task-wrap carries the in-flow hint below the
+      // card (app.css: height 0 -> 22px on hover; the card box never grows)
+      <div class="osh-task-wrap">
       <div
         data-component="task-tool-card"
         style={{
@@ -1953,6 +1956,8 @@ ToolRegistry.register({
             </Show>
           </div>
         </div>
+      </div>
+      <span class="osh-subagent-hint" aria-hidden="true">open subagent ↗</span>
       </div>
     )
 
