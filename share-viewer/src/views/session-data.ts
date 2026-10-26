@@ -15,6 +15,9 @@ export type ToolEntry = {
   input?: Record<string, unknown>
   // the v2 content block (type:"tool") — carries name/state/time
   part: AnyPart
+  /** host message id: the kit keys some tool disclosures by message
+   *  (`message:<id>`), which the palette uses to pre-open rows */
+  messageID: string
   state?: any
   status?: string
   // the vendored per-tool rule (edit/write/patch open naturally unless
@@ -91,6 +94,7 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
           const state = c.state ?? {}
           const entry: ToolEntry = {
             kind: "tool",
+            messageID: m.id,
             tool: c.name ?? "tool",
             title: String(state.input?.description ?? state.title ?? c.name ?? "tool"),
             output: isTask ? undefined : toolOutputText(state),

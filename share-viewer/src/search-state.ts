@@ -14,6 +14,7 @@
 // Expansion is data-driven: collapsed rows unmount their content, so
 // DOM text can never reveal a body-only hit. The palette publishes the
 // matched PART ids (never prompt ids - prompt text is always visible).
+import { createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 
 export type SearchScope = "prompts" | "responses" | "thinking" | "tools"
@@ -36,9 +37,19 @@ type SearchState = {
   active: SearchHit | null
   /** part ids whose DATA text matched (published by the palette) */
   hitPartIds: string[]
+  /** file paths of matching file tools: file cards key their disclosure by
+   *  path (`patch:<path>`, `<group>:file:<path>`), not by part id */
+  hitFilePaths: string[]
+  /** host message ids of the hits: some tool rows key their disclosure by
+   *  message (`message:<id>`) instead of by part id */
+  hitMessageIds: string[]
+  /** user-message (section) ids of the hits: kit group keys embed the user
+   *  message id (`part:<userMessageID>:<firstPartID>`), so a group holding a
+   *  hit on a later member is ownable only through it */
+  hitSectionIds: string[]
 }
 
-const [state, setState] = createStore<SearchState>({ query: "", scopes: [...SEARCH_SCOPES], active: null, hitPartIds: [] })
+const [state, setState] = createStore<SearchState>({ query: "", scopes: [...SEARCH_SCOPES], active: null, hitPartIds: [], hitFilePaths: [], hitMessageIds: [], hitSectionIds: [] })
 
 export const searchState = { get: () => state }
 export const searchQuery = () => state.query
@@ -58,13 +69,98 @@ export function setSearchScopes(scopes: SearchScope[]) {
 export function setActiveHit(hit: SearchHit) {
   setState("active", hit)
 }
-export function setHitPartIds(ids: string[]) {
+export function setHitPartIds(ids: string[], paths: string[] = [], messageIds: string[] = [], sectionIds: string[] = []) {
   setState("hitPartIds", ids)
+  setState("hitFilePaths", paths)
+  setState("hitMessageIds", messageIds)
+  setState("hitSectionIds", sectionIds)
   stats.hitIds = ids
   marksDirty = true
   // expansion follows the hit set when it changes on a settled query
   // (live data updates), but never before typing settles
   if (querySettled && state.query.trim()) requestContentPass()
+}
+
+// ---------------------------------------------------------------------------
+// pre-seeded disclosure: rows are OPEN BEFORE they mount
+//
+// Clicking a trigger when the virtualizer mounted a row meant the row
+// painted closed and animated open exactly when the reader arrived.
+// Instead the palette's part ids are consulted by the disclosure accessor
+// itself, so a matching row renders open on its first paint - scrolling
+// never expands anything.
+// ---------------------------------------------------------------------------
+
+/** does this disclosure key belong to a search hit? kit keys are the bare
+ *  part id for reasoning rows and `${groupKey}:tool:${partId}` (also the
+ *  composed-view entry id) for tool rows */
+const MAX_PRESEED_HITS = 24
+
+export function searchOwnsDisclosure(key: string): boolean {
+  if (!key || !querySettled) return false
+  if (state.hitPartIds.length > MAX_PRESEED_HITS) return false
+  // part-keyed disclosures: the kit composes them per row (`part:<msg>:<id>`,
+  // `<group>:tool:<id>`, reasoning ids verbatim, and whatever a future kit
+  // version invents). A part id is unique, so owning any key that CONTAINS
+  // one is correct and survives key-shape changes.
+  for (const id of state.hitPartIds) {
+    if (key.includes(id)) return true
+  }
+  // group keys use the group's FIRST part (`part:<msg>:<firstPartId>`), so
+  // a hit on a later member never matched by part id - the message id in
+  // the key is the reliable link
+  for (const mid of state.hitMessageIds) {
+    if (mid && key.includes(mid)) return true
+  }
+  for (const sid of state.hitSectionIds) {
+    if (sid && key.includes(sid)) return true
+  }
+  for (const p of state.hitFilePaths) {
+    const norm = p.replace(/\\/g, "/")
+    const base = norm.slice(norm.lastIndexOf("/") + 1)
+    if (key === "patch:" + p || key === "patch:" + norm) return true
+    if (key.endsWith(":file:" + p) || key.endsWith(":file:" + norm)) return true
+    // path-keyed card whose key path differs in root/separators
+    const pathKey = key.startsWith("patch:") || key.includes(":file:")
+    if (pathKey && base.length > 3 && key.endsWith("/" + base)) return true
+  }
+  return false
+}
+
+/** the part id behind a disclosure key (reasoning keys are ids verbatim,
+ *  tool keys end with `:tool:`) */
+function partIdOfKey(key: string): string | undefined {
+  for (const id of state.hitPartIds) if (key.includes(id)) return id
+  return undefined
+}
+
+/** ids the user collapsed BY HAND during the current search: the search
+ *  must not re-open them until the next one. Reactive - the disclosure
+ *  accessors read it, so a dismissal repaints its row immediately. */
+const [dismissedIds, setDismissedIds] = createSignal<Set<string>>(new Set<string>())
+export function searchDismissedPart(id: string): boolean {
+  return dismissedIds().has(id)
+}
+/** is this disclosure key's row collapsed by hand during the search? */
+export function searchKeyDismissed(key: string): boolean {
+  const id = partIdOfKey(key)
+  return !!id && dismissedIds().has(id)
+}
+/** record a user toggle on a search-owned row */
+export function dismissSearchKey(key: string, open: boolean) {
+  const id = partIdOfKey(key)
+  if (!id) return
+  setDismissedIds((prev) => {
+    const has = prev.has(id)
+    if (open === !has) return prev
+    const next = new Set<string>(prev)
+    if (open) next.delete(id)
+    else next.add(id)
+    return next
+  })
+}
+function resetDismissals() {
+  if (dismissedIds().size) setDismissedIds(new Set<string>())
 }
 
 // ---------------------------------------------------------------------------
@@ -202,13 +298,14 @@ function runPass() {
     handledIds = new Set<string>()
     resolvedQuery = q.toLowerCase()
     marksDirty = true
+    resetDismissals()
   }
   running = true
   engineMutating = true
   const started = typeof performance !== "undefined" ? performance.now() : 0
   let expandedAny = false
   try {
-    if (q && querySettled) expandedAny = expandHitRows(sc)
+    if (q && querySettled) expandedAny = expandHitRows(sc, Infinity)
     if (marksDirty || lastMarkedQuery !== q) {
       paint(sc, q)
       lastMarkedQuery = q
@@ -384,7 +481,11 @@ function expandHitRows(sc: HTMLElement, reach = 1): boolean {
         }
         continue
       }
-      if (!inWindow(row, sc, reach)) continue
+      // containers (collapsed tool groups) open across the whole mounted
+      // cache at settle time, not at arrival: they are offscreen then, so
+      // their layout change is invisible; opening them on mount is exactly
+      // the "it expands as I get there" artifact
+      if (!inWindow(row, sc, 8)) continue
       const chain = collapsibleChain(row, sc)
       for (const col of chain) {
         if (col.getAttribute("data-closed") !== null && toggleOpen(col)) {
@@ -417,7 +518,18 @@ function expandHitRows(sc: HTMLElement, reach = 1): boolean {
     // a row already evaluated under this query is skipped - this is what
     // makes a manual collapse STICK for the rest of the search
     if (matched.every((id) => handledIds.has(id))) continue
+    // a row the user dismissed stays closed for this search; pre-seeded
+    // rows are already open after the check below, so only non-derivable
+    // disclosures (groups, path-keyed cards without a known path) are ever
+    // clicked - and those are rare
+    if (matched.every((id) => searchDismissedPart(id))) {
+      matched.forEach((id) => handledIds.add(id))
+      continue
+    }
     if (openedCount >= MAX_EXPAND_PER_PASS) break
+    // native <details> (composed skins) have no disclosure key: open them
+    // here, before the empty-chain shortcut below
+    if (openDetails(row, sc)) expandedAny = true
     const chain = collapsibleChain(row, sc)
     let opened = false
     for (const col of chain) {
@@ -428,7 +540,6 @@ function expandHitRows(sc: HTMLElement, reach = 1): boolean {
         stats.expands++
       }
     }
-    if (openDetails(row, sc)) expandedAny = true
     // only record ownership/registration when the row actually opened:
     // pending or locked triggers refuse the click and are retried by a
     // later pass or the mount fast path

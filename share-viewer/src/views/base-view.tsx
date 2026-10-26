@@ -7,6 +7,7 @@
 // each element kind.
 import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
+import { dismissSearchKey, searchKeyDismissed, searchOwnsDisclosure } from "../search-state"
 import { PromptNav } from "../hover-rail"
 import { registerPromptNav } from "../prompt-nav"
 import { findParentTurn } from "../parent-link"
@@ -106,11 +107,17 @@ export function DefaultFooter(props: ViewProps) {
 }
 
 export function ReasoningBlock(props: { text: string; settings: OshSettings; partId?: string }) {
+  const searchOpen = () =>
+    !!props.partId && searchOwnsDisclosure(props.partId) && !searchKeyDismissed(props.partId)
   return (
     <details
       class="reasoning-collapse group"
       data-timeline-part-id={props.partId}
-      open={props.settings.reasoningOpen || undefined}
+      open={props.settings.reasoningOpen || searchOpen() || undefined}
+      onToggle={(e) => {
+        // a manual collapse/expand during a search sticks for that search
+        if (props.partId && searchOwnsDisclosure(props.partId)) dismissSearchKey(props.partId, e.currentTarget.open)
+      }}
     >
       <summary class="flex items-center gap-2 cursor-pointer list-none select-none py-1">
         <span class="flex items-center gap-1.5 text-12-medium text-text-weaker group-hover:text-text-base transition-colors duration-150">

@@ -100,6 +100,18 @@ export function SearchControl(props: {
   })
   const [sel, setSel] = createSignal(0)
   let inputEl: HTMLInputElement | undefined
+  let listEl: HTMLDivElement | undefined
+  // the selected row must stay visible however it was selected (arrows,
+  // hover, or a hit-list refresh) - a selection the reader cannot see is
+  // a selection they cannot verify
+  createEffect(() => {
+    const i = sel()
+    hits()
+    queueMicrotask(() => {
+      const row = listEl?.querySelectorAll<HTMLElement>('[role="option"]')[i]
+      row?.scrollIntoView({ block: "nearest" })
+    })
+  })
 
   const hits = createMemo<SearchHit[]>(() => {
     const q = searchQuery()
@@ -113,9 +125,26 @@ export function SearchControl(props: {
     hits()
     setSel(0)
   })
-  // publish the hit part ids: the expansion engine is data-driven
+  // publish hit part ids + file paths: pre-seeding is data-driven, and file
+  // cards key their disclosure by path rather than by part id
   createEffect(() => {
-    setHitPartIds(hits().map((h) => h.partId).filter((x): x is string => !!x))
+    const list = hits()
+    const ids = list.map((h) => h.partId).filter((x): x is string => !!x)
+    const want = new Set(ids)
+    const paths: string[] = []
+    const messageIds: string[] = []
+    const sectionIds: string[] = []
+    for (const s of props.sections()) {
+      for (const t of s.tools) {
+        const id = (t.part as any)?.id
+        if (!id || !want.has(id)) continue
+        const p = (t.input as any)?.filePath ?? (t.input as any)?.path
+        if (typeof p === "string" && p) paths.push(p)
+        if (t.messageID) messageIds.push(t.messageID)
+        sectionIds.push(s.id)
+      }
+    }
+    setHitPartIds(ids, paths, messageIds, sectionIds)
   })
 
   const jump = (h: SearchHit) => {
@@ -286,7 +315,7 @@ export function SearchControl(props: {
                   </For>
                 </div>
                 {/* results */}
-                <div class="max-h-[46vh] overflow-y-auto osh-thin-scroll py-1" role="listbox" aria-label="search results">
+                <div ref={listEl} class="max-h-[46vh] overflow-y-auto osh-thin-scroll py-1" role="listbox" aria-label="search results">
                   <Show
                     when={searchQuery().trim()}
                     fallback={

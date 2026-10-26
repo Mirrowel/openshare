@@ -1042,12 +1042,16 @@ mark.osh-search-hit.osh-search-hit-active {
   background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 14%, transparent);
 }
 /* result rows: hairline separators, the selected row carries an accent
-   edge bar (the nav rail's language) */
+   edge bar (the nav rail's language). Typography is set here so the row
+   never inherits the 16px page body: a 16px/24px line box in a 12px
+   snippet made 38px rows with the text sitting high in the highlight. */
 .osh-search-row {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
+  font-size: 12px;
+  line-height: 16px;
   padding: 6px 14px 6px 12px;
   border: none;
   border-bottom: 1px solid color-mix(in srgb, var(--border-weak-base) 40%, transparent);

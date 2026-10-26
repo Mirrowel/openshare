@@ -12,7 +12,7 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, creat
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
-import { claimDisclosure, disclosureOwned, engineClicking, releaseDisclosure } from "./search-state"
+import { claimDisclosure, disclosureOwned, dismissSearchKey, engineClicking, releaseDisclosure, searchKeyDismissed, searchOwnsDisclosure } from "./search-state"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
 import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "@opencode/session-ui/timeline/row"
@@ -136,8 +136,32 @@ export function VirtualTimeline(props: {
     editToolDefaultOpen: () => props.editToolDefaultOpen ?? false,
     toolDefaultOpen: props.toolDefaultOpen,
     disclosure: {
-      value: (key) => toolOpen[key],
+      // precedence: a live search PRE-OPENS its hits, so a matching row is
+      // already open on its first paint (never clicked at arrival); a
+      // manual collapse during that search wins for that search; then the
+      // user's (and engine's) stored state
+      value: (key) =>
+        searchKeyDismissed(key)
+          ? undefined
+          : searchOwnsDisclosure(key)
+            ? true
+            : (toolOpen[key] ?? (disclosureOwned(key) ? true : undefined)),
       set: (key, open) => {
+        if (engineClicking()) {
+          // the engine clicks non-derivable rows (groups, patch cards):
+          // record ownership so a clear closes them
+          claimDisclosure(key, open)
+          setToolOpen(key, open)
+          writeDisclosure(props.sessionKey, toolOpen)
+          return
+        }
+        if (searchOwnsDisclosure(key)) {
+          // the user toggled a search-owned row: record it for THIS search
+          // (a new search re-expands) instead of writing persistent state
+          dismissSearchKey(key, open)
+          return
+        }
+        if (!open) releaseDisclosure(key)
         setToolOpen(key, open)
         writeDisclosure(props.sessionKey, toolOpen)
         // NO JS scroll compensation here, ever (owner round 2026-10-24):
