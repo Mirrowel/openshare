@@ -275,7 +275,6 @@ function SessionView(props: {
               // on session (hash) navigation
               const searchSections = useSessionSections(props.data, sessionID())
   const isSub = () => target().isSub
-  const backHref = () => (target().isSub ? `/s/${props.source.shareID}` : undefined)
   const info = createMemo(() => props.data.session[match().index])
   // the classic/reader transcript body - see the mount-site comment
   const ClassicBody = () => {
@@ -441,34 +440,9 @@ function SessionView(props: {
               const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
               const displayTitle = () => stripSubagentSuffix(info().title ?? "")
               const title = () => (
-                <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-2">
+                  {/* line 1: version, model, date */}
                   <div class="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center sm:h-8 justify-start self-stretch">
-                    <Show when={isSub()}>
-                      <Show when={backHref()} keyed>
-                        {(href) => (
-                          <a
-                            href={href}
-                            class="pl-[2.5px] pr-2 flex items-center gap-1.5 bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base no-underline"
-                            onclick={() => {
-                              scrollMemory.set(location.pathname, window.scrollY)
-                              // turn-anchored return: the parent turn that
-                              // spawned this child, not the session top
-                              const turn = parentTurn()
-                              const hash = turn ? `#${turn.userID}` : ""
-                              window.history.pushState({}, "", `/s/${props.source.shareID}${hash}`)
-                              window.dispatchEvent(new PopStateEvent("popstate"))
-                            }}
-                          >
-                            ← main
-                          </a>
-                        )}
-                      </Show>
-                    </Show>
-                    <Show when={isSub()}>
-                      <span class="pl-[2.5px] pr-2 flex items-center bg-surface-strong shadow-xs-border-base w-fit text-12-mono text-text-base">
-                        subagent
-                      </span>
-                    </Show>
                     <div class="pl-[2.5px] pr-2 flex items-center gap-1.75 bg-surface-strong shadow-xs-border-base w-fit">
                       <Mark class="shrink-0 w-3 my-0.5" />
                       <div class="text-12-mono text-text-base">v{String(info().version ?? "")}</div>
@@ -495,7 +469,32 @@ function SessionView(props: {
                       </div>
                     </div>
                   </div>
-                  <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
+                  {/* line 2: title, then (subagent pages) the tag and the
+                      back-to-parent pill - the conversation view's exact
+                      treatment, so both core views read the same */}
+                  <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
+                    <Show when={isSub()}>
+                      <span class="text-12-regular text-text-weaker">subagent</span>
+                    </Show>
+                    <Show when={isSub() && parentTurn()}>
+                      <button
+                        type="button"
+                        class="self-center inline-flex items-center gap-1 h-6 pl-1.5 pr-2.5 rounded-full bg-surface-base text-12-regular text-text-weak hover:text-text-strong hover:bg-surface-raised-base border-none cursor-pointer transition-colors duration-150"
+                        title={`back to parent: ${parentTurn()!.label}`}
+                        onClick={() => {
+                          scrollMemory.set(location.pathname, window.scrollY)
+                          // turn-anchored return: the parent turn that
+                          // spawned this child, not the session top
+                          const turn = parentTurn()!
+                          window.history.pushState({}, "", `/s/${props.source.shareID}#${turn.userID}`)
+                          window.dispatchEvent(new PopStateEvent("popstate"))
+                        }}
+                      >
+                        ← back to parent
+                      </button>
+                    </Show>
+                  </div>
                 </div>
               )
 
