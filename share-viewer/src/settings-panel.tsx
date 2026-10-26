@@ -476,10 +476,10 @@ export function SettingsBody(props: {
              value={props.settings.subagentHint}
              options={[
                { id: "chip" as const, label: "chip" },
-               { id: "fade" as const, label: "fade" },
-               { id: "corner" as const, label: "corner" },
-               { id: "underline" as const, label: "underline" },
-               { id: "flap" as const, label: "flap" },
+               { id: "swap" as const, label: "swap" },
+               { id: "leader" as const, label: "leader" },
+               { id: "edge" as const, label: "edge" },
+               { id: "shift" as const, label: "shift" },
              ]}
              onChange={(subagentHint) => props.update({ subagentHint })}
            />

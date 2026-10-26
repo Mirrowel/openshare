@@ -1949,6 +1949,7 @@ ToolRegistry.register({
                 <span data-slot="basic-tool-tool-subtitle">{subtitle()}</span>
               </Show>
             </div>
+            <span class="osh-subagent-hint" aria-hidden="true">open subagent ↗</span>
             <Show when={clickable()}>
               <div data-component="task-tool-action">
                 <Icon name="chevron-right" size="normal" />
@@ -1957,7 +1958,6 @@ ToolRegistry.register({
           </div>
         </div>
       </div>
-      <span class="osh-subagent-hint" aria-hidden="true">open subagent ↗</span>
       </div>
     )
 

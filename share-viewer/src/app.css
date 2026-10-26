@@ -845,23 +845,36 @@ html[data-color-scheme="light"] {
   position: static;
 }
 
-/* [design-trial: subagent hint] five appearances for the "open subagent"
-   hover hint on a task card. Everything except "flap" is VERTICALLY
-   STABLE: only opacity and horizontal transforms animate, so no hover
-   ever grows, unfolds, or shifts content downward. All variants are
-   overlays - nothing below the card moves (stacked task cards keep
-   their natural spacing). The card keeps its rounded surface, no
-   outline. */
+/* [design-trial: subagent hint] the "open subagent" hover hint on a
+   task card. Contract (owner 2026-10-26): the ONLY permitted movement is
+   horizontal, staying in the row - nothing may appear below the card.
+   The accent UNDERLINE along the card's bottom edge is always part of
+   the design; variants differ in how the label itself appears. The card
+   keeps its rounded surface, no outline. */
 .osh-task-wrap {
   display: block;
   position: relative;
+}
+/* the chip variant's narrow-card fallback measures the card via a
+   container query. The container is the tool-trigger row (definitely
+   sized by its parent flex chain); putting inline-size containment on
+   .osh-task-wrap itself zeroes its content-based intrinsic width */
+[data-component="tool-trigger"]:has(.osh-task-wrap) {
+  container-type: inline-size;
+}
+/* the subtitle yields space to the chip (it truncates); the chip never
+   shrinks - without this both flex items share the squeeze and the chip
+   text clips */
+.osh-task-wrap [data-slot="basic-tool-tool-subtitle"] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .osh-task-wrap [data-component="task-tool-card"] {
   border: none;
   outline: none;
 }
 .osh-subagent-hint {
-  position: absolute;
   white-space: nowrap;
   font: 10.5px/18px ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: 0.04em;
@@ -870,130 +883,200 @@ html[data-color-scheme="light"] {
   z-index: 4;
   opacity: 0;
 }
-
-/* chip (default): a quiet mono pill docked INSIDE the card's right edge,
-   left of the chevron, fading in over the subtitle's tail - zero layout
-   impact, zero vertical motion */
-html[data-osh-hint="chip"] .osh-subagent-hint,
-html:not([data-osh-hint]) .osh-subagent-hint {
-  top: 50%;
-  right: 34px;
-  height: 18px;
-  padding: 0 8px;
-  color: var(--text-weaker);
-  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
-  border: 0.5px solid var(--border-weak-base);
-  border-radius: 999px;
-  transform: translateY(-50%) translateX(-6px);
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-}
-html[data-osh-hint="chip"] .osh-task-wrap:hover .osh-subagent-hint,
-html:not([data-osh-hint]) .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
-}
-
-/* fade: the hanging sign at bottom-center, but with NO motion at all -
-   the pill is fully positioned at rest and only its opacity changes */
-html[data-osh-hint="fade"] .osh-subagent-hint {
-  left: 50%;
-  bottom: 0;
-  height: 20px;
-  padding: 0 10px;
-  transform: translateX(-50%) translateY(100%);
-  background: var(--background-stronger, var(--background-base));
-  border-radius: 0 0 6px 6px;
-  box-shadow: 0 3px 10px rgb(0 0 0 / 0.22);
-  transition: opacity 160ms ease-out;
-}
-html[data-osh-hint="fade"] .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-}
-
-/* corner: a small docked tab at the card's bottom-right corner, sliding
-   in HORIZONTALLY from behind the card's edge (the vertical offset is
-   constant) */
-html[data-osh-hint="corner"] .osh-subagent-hint {
-  right: 0;
-  bottom: 0;
-  height: 20px;
-  padding: 0 9px;
-  transform: translateX(10px) translateY(100%);
-  background: var(--background-stronger, var(--background-base));
-  border: 0.5px solid var(--border-weak-base);
-  border-top: none;
-  border-radius: 0 0 0 6px;
-  box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-}
-html[data-osh-hint="corner"] .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-  transform: translateX(0) translateY(100%);
-}
-
-/* underline: a 2px accent line expanding along the card's bottom edge
-   (scaleX, horizontal) with the micro-label fading in beneath it */
-html[data-osh-hint="underline"] .osh-subagent-hint {
-  left: 50%;
-  bottom: 0;
-  height: 15px;
-  font-size: 9.5px;
-  line-height: 15px;
-  transform: translateX(-50%) translateY(100%);
-  transition: opacity 160ms ease-out;
-}
-html[data-osh-hint="underline"] .osh-subagent-hint::before {
+/* the underline, ALWAYS: a 2px accent line expanding horizontally along
+   the card's bottom edge on hover */
+.osh-task-wrap::after {
   content: "";
   position: absolute;
   left: 14%;
   right: 14%;
-  bottom: 100%;
+  bottom: 0;
   height: 2px;
   border-radius: 1px;
   background: var(--openshare-accent, var(--icon-strong-base));
   transform: scaleX(0);
   transform-origin: center;
   transition: transform 180ms ease-out;
+  pointer-events: none;
 }
-html[data-osh-hint="underline"] .osh-task-wrap:hover .osh-subagent-hint {
-  opacity: 1;
-}
-html[data-osh-hint="underline"] .osh-task-wrap:hover .osh-subagent-hint::before {
+.osh-task-wrap:hover::after {
   transform: scaleX(1);
 }
 
-/* flap (the previous design, kept for comparison): hanging sign
-   unfolding from the top hinge with a bounce - NOT vertically stable */
-html[data-osh-hint="flap"] .osh-subagent-hint {
-  left: 50%;
-  bottom: 0;
-  padding: 0 10px;
-  height: 22px;
-  transform: translateX(-50%) translateY(100%);
-  background: var(--background-stronger, var(--background-base));
-  border-radius: 0 0 6px 6px;
-  box-shadow: 0 3px 10px rgb(0 0 0 / 0.22);
+/* chip (default): an in-flow mono pill INSIDE the card's info row, right
+   where the chevron lives. It expands to fully contain "open subagent"
+   while the subtitle truncates around it - nothing overlaps, nothing
+   moves vertically. On a card too narrow to fit it, the chip stays hidden
+   and the kit chevron takes over (the mobile behavior). */
+html[data-osh-hint="chip"] .osh-subagent-hint,
+html:not([data-osh-hint]) .osh-subagent-hint {
+  position: static;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 18px;
+  padding: 0;
+  max-width: 0;
+  margin-inline-start: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
+  border: 0.5px solid var(--border-weak-base);
+  border-radius: 999px;
+  transition:
+    max-width 180ms ease-out,
+    padding 180ms ease-out,
+    margin-inline-start 180ms ease-out,
+    opacity 150ms ease-out;
 }
-html[data-osh-hint="flap"] .osh-task-wrap:hover .osh-subagent-hint {
+html[data-osh-hint="chip"] .osh-task-wrap:hover .osh-subagent-hint,
+html:not([data-osh-hint]) .osh-task-wrap:hover .osh-subagent-hint {
+  max-width: 200px;
+  padding: 0 8px;
+  margin-inline-start: 8px;
   opacity: 1;
-  transform-origin: top center;
-  animation: osh-hint-flap 500ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
-@keyframes osh-hint-flap {
-  0% { opacity: 0; transform: translateX(-50%) translateY(100%) perspective(160px) rotateX(-85deg); }
-  30% { opacity: 1; }
-  68% { transform: translateX(-50%) translateY(100%) perspective(160px) rotateX(6deg); }
-  84% { transform: translateX(-50%) translateY(100%) perspective(160px) rotateX(-3deg); }
-  100% { opacity: 1; transform: translateX(-50%) translateY(100%) rotateX(0deg); }
+/* the chip REPLACES the chevron wherever it shows */
+html[data-osh-hint="chip"] .osh-task-wrap:hover [data-component="task-tool-action"],
+html[data-osh-hint="swap"] .osh-task-wrap:hover [data-component="task-tool-action"],
+html[data-osh-hint="leader"] .osh-task-wrap:hover [data-component="task-tool-action"],
+html[data-osh-hint="shift"] .osh-task-wrap:hover [data-component="task-tool-action"] {
+  width: 0 !important;
+  opacity: 0 !important;
+  margin-inline-start: 0 !important;
 }
-@media (prefers-reduced-motion: reduce) {
-  .osh-task-wrap:hover .osh-subagent-hint {
-    animation: none;
-    opacity: 1;
+/* narrow card: no room for the chip - the chevron returns instead */
+@container (max-width: 320px) {
+  html[data-osh-hint="chip"] .osh-task-wrap:hover .osh-subagent-hint,
+  html:not([data-osh-hint]) .osh-task-wrap:hover .osh-subagent-hint {
+    max-width: 0;
+    padding: 0;
+    margin-inline-start: 0;
+    opacity: 0;
   }
+  html[data-osh-hint="chip"] .osh-task-wrap:hover [data-component="task-tool-action"],
+  html:not([data-osh-hint]) .osh-task-wrap:hover [data-component="task-tool-action"] {
+    width: 16px !important;
+    opacity: 1 !important;
+    margin-inline-start: 2px !important;
+  }
+}
+
+/* swap: the subtitle fades out and the chip fades into its place - the
+   row trades information for the action */
+html[data-osh-hint="swap"] .osh-subagent-hint {
+  position: static;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 18px;
+  padding: 0;
+  max-width: 0;
+  margin-inline-start: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
+  border: 0.5px solid var(--border-weak-base);
+  border-radius: 999px;
+  transition:
+    max-width 180ms ease-out,
+    padding 180ms ease-out,
+    margin-inline-start 180ms ease-out,
+    opacity 150ms ease-out;
+}
+html[data-osh-hint="swap"] .osh-task-wrap:hover .osh-subagent-hint {
+  max-width: 200px;
+  padding: 0 8px;
+  margin-inline-start: 8px;
+  opacity: 1;
+}
+html[data-osh-hint="swap"] [data-slot="basic-tool-tool-subtitle"] {
+  transition: opacity 150ms ease-out;
+}
+html[data-osh-hint="swap"] .osh-task-wrap:hover [data-slot="basic-tool-tool-subtitle"] {
+  opacity: 0;
+}
+
+/* leader: a dotted leader line running from the label to the right edge,
+   TOC-style, revealing horizontally from the left */
+html[data-osh-hint="leader"] .osh-subagent-hint {
+  position: absolute;
+  left: 34%;
+  right: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 220ms ease-out, opacity 150ms ease-out;
+}
+html[data-osh-hint="leader"] .osh-subagent-hint::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dotted var(--text-weaker);
+  margin-bottom: 2px;
+}
+html[data-osh-hint="leader"] .osh-task-wrap:hover .osh-subagent-hint {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+}
+
+/* edge: opacity only, no movement at all - a slim accent bar at the
+   card's right edge; the kit chevron keeps its reveal */
+html[data-osh-hint="edge"] .osh-subagent-hint {
+  display: none;
+}
+html[data-osh-hint="edge"] .osh-task-wrap::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 2.5px;
+  border-radius: 0 2px 2px 0;
+  background: var(--openshare-accent, var(--icon-strong-base));
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+  pointer-events: none;
+}
+html[data-osh-hint="edge"] .osh-task-wrap:hover::before {
+  opacity: 1;
+}
+
+/* shift: the card's content slides LEFT by the chip's width and the chip
+   fades into the vacated space - overlap is impossible because the room
+   is made, not borrowed */
+html[data-osh-hint="shift"] .osh-subagent-hint {
+  position: absolute;
+  right: 34px;
+  top: 50%;
+  transform: translateY(-50%) translateX(10px);
+  height: 18px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
+  border: 0.5px solid var(--border-weak-base);
+  border-radius: 999px;
+  transition: opacity 160ms ease-out, transform 160ms ease-out;
+}
+html[data-osh-hint="shift"] [data-component="task-tool-surface"] {
+  transition: transform 180ms ease-out;
+}
+html[data-osh-hint="shift"] .osh-task-wrap:hover [data-component="task-tool-surface"] {
+  transform: translateX(-16px);
+}
+html[data-osh-hint="shift"] .osh-task-wrap:hover .osh-subagent-hint {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
   .osh-subagent-hint,
-  .osh-subagent-hint::before {
-    transition: opacity 150ms ease-out;
+  .osh-subagent-hint::after,
+  .osh-task-wrap::after,
+  .osh-task-wrap::before,
+  [data-component="task-tool-surface"],
+  [data-slot="basic-tool-tool-subtitle"] {
+    transition: opacity 150ms ease-out !important;
+    animation: none;
   }
 }
 /* the custom-grouping checklist reveal (settings panel): slides open
