@@ -276,7 +276,12 @@ function SessionView(props: {
               const searchSections = useSessionSections(props.data, sessionID())
   const isSub = () => target().isSub
   const info = createMemo(() => props.data.session[match().index])
-  // the classic/reader transcript body - see the mount-site comment
+  // classic's prompt-nav gate: how many turns before the nav mounts.
+  // TEMP 1 for the owner's single-prompt-subagent review; the shipped
+  // default is 2 (registry views can override via ViewEntry.navMinTurns)
+  const NAV_MIN_TURNS = 1
+
+  // the classic/reader transcript body - see the mount-site comment
   const ClassicBody = () => {
     const [store, setStore] = createStore({ messageId: undefined as string | undefined })
 
@@ -668,7 +673,7 @@ function SessionView(props: {
                               row (the row is items-stretch for the sidebar
                               and would stretch an in-flow bar to full
                               height - the 872px "Turn 1 of 4" page) */}
-                          <Show when={userTurns().length > 1}>
+                          <Show when={userTurns().length >= NAV_MIN_TURNS}>
                             <PromptNav
                               only="narrow"
                               count={userTurns().length}
@@ -695,7 +700,7 @@ function SessionView(props: {
                                 the two, never neither). Paged pages the turn,
                                 continuous jumps to the user message row;
                                 shift+click focuses the turn. */}
-                            <Show when={userTurns().length > 1}>
+                            <Show when={userTurns().length >= NAV_MIN_TURNS}>
                               <PromptNav
                                 only="desktop"
                                 count={userTurns().length}
@@ -838,7 +843,7 @@ function SessionView(props: {
                             (PromptNav renders its NarrowBar below md);
                             the desktop column's instance is CSS-hidden
                             there, so the mobile branch carries its own */}
-                        <Show when={userTurns().length > 1}>
+                        <Show when={userTurns().length >= NAV_MIN_TURNS}>
                           <PromptNav
                             only="narrow"
                             count={userTurns().length}

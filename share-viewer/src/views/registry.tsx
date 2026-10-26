@@ -48,6 +48,11 @@ export type ViewEntry = {
   paged?: boolean
   /** view-scoped settings (rendered in the settings panel when active) */
   settings?: ViewSettingDef[]
+  /** how many user turns the view needs before its prompt nav mounts
+   *  (sidebar/pill). Default 2: a single-prompt session needs no
+   *  turn switcher. Views that want the nav on every session (the
+   *  conversation view always shows its TurnNav) override to 1 */
+  navMinTurns?: number
   /** opt into the SDK code surface: markdown code blocks, the pre tool
    *  surface and file/diff card bodies all take the --osh-code-* tint
    *  (see app.css). Off by default - views keep their current surfaces */
@@ -90,7 +95,7 @@ export function registerView(entry: ViewEntry) {
 /** register a SKIN as a view: the entry derives its id from the skin and
  *  the component is the standard BaseSessionView mount - one declaration
  *  per view, no wrapper boilerplate */
-export function registerSkin(skin: Skin, extra: { label: string; mark?: string; paged?: boolean; settings?: ViewSettingDef[]; codeSurface?: boolean }) {
+export function registerSkin(skin: Skin, extra: { label: string; mark?: string; paged?: boolean; settings?: ViewSettingDef[]; codeSurface?: boolean; navMinTurns?: number }) {
   registerView({
     id: skin.id,
     label: extra.label,
@@ -98,7 +103,8 @@ export function registerSkin(skin: Skin, extra: { label: string; mark?: string; 
     paged: extra.paged,
     settings: extra.settings,
     codeSurface: extra.codeSurface,
-    component: (props) => <BaseSessionView {...props} skin={skin} />,
+    navMinTurns: extra.navMinTurns,
+    component: (props) => <BaseSessionView {...props} skin={skin} navMinTurns={extra.navMinTurns} />,
   })
 }
 

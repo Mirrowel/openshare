@@ -133,7 +133,7 @@ export function ReasoningBlock(props: { text: string; settings: OshSettings; par
 }
 
 // ---------------------------------------------------------------- base ----
-export function BaseSessionView(props: ViewProps & { skin: Skin }) {
+export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: number }) {
   const w = wrappersOf(props.skin)
   const sections = useSessionSections(props.data, props.sessionID)
   const [active, setActive] = createSignal(0)
@@ -320,7 +320,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
           {/* the narrow bar's slot: column flow above the row (the row is
               a stretch row for the sidebar variant - an in-flow bar there
               stretches to full height) */}
-          <Show when={visible().length > 1}>
+          <Show when={visible().length >= (props.navMinTurns ?? 2)}>
             <PromptNav
               only="narrow"
               count={visible().length}
@@ -349,7 +349,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               and ignores flow. children MUST be undefined for Nav-less
               skins (a <Show> element is always truthy - the empty-popover
               bug, live-caught twice). */}
-          <Show when={visible().length > 1}>
+          <Show when={visible().length >= (props.navMinTurns ?? 2)}>
             <PromptNav
               only="desktop"
               count={visible().length}
