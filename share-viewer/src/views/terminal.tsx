@@ -14,6 +14,7 @@ function StatusBar(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const view = useView()
   return (
     <SkinHeader
+      searchControl={props.searchControl}
       class="h-7 px-3 flex items-center justify-between gap-4 bg-background-stronger border-b border-border-weak-base shrink-0 text-12-mono text-text-weaker font-mono relative z-30"
       leadClass="flex items-center gap-3 min-w-0"
       titleClass="text-text-strong truncate"

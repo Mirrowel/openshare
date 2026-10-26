@@ -9,6 +9,7 @@ import { SettingsPanel } from "../settings-panel"
 import { toggleInfoPanel } from "./info-panel"
 import { visibleMessages, type ShareData } from "../fold"
 import { copySessionMarkdown } from "../copy-markdown"
+import type { JSX } from "solid-js"
 import type { OshSettings } from "../settings"
 import type { useShareSource } from "../data-source"
 
@@ -56,6 +57,7 @@ export function AppHeader(props: {
   updateSettings: (patch: Partial<OshSettings>) => void
   search: string
   onSearch: (v: string) => void
+  searchControl?: JSX.Element
 }) {
   const sessionTools = () => [...new Set(visibleMessages(props.data, props.sessionID).flatMap((message) =>
     (message.content ?? []).filter((part) => part.type === "tool").map((part) => (part as any).name),
@@ -80,6 +82,7 @@ export function AppHeader(props: {
       </Show>
       <StatusLine status={props.source.status()} />
       <div class="flex items-center gap-1">
+        {props.searchControl}
         <button
           class="size-6 flex items-center justify-center rounded-md text-icon-base hover:text-icon-strong-base hover:bg-surface-base cursor-pointer bg-transparent border-none p-0"
           title="copy session as markdown"

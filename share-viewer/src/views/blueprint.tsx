@@ -133,6 +133,7 @@ function DraftingHeader(props: HeaderProps) {
       `}</style>
       <Title>{info()?.title ?? "session"} | {b().name || "openshare"}</Title>
       <SkinHeader
+        searchControl={props.searchControl}
         class="h-10 px-4 flex items-center gap-3 bg-background-stronger border-b border-border-base shrink-0 relative z-30"
         leadClass="flex items-center gap-3 min-w-0 flex-1"
         titleClass="min-w-0 flex-1 truncate text-14-medium text-text-strong"

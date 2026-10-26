@@ -68,6 +68,10 @@ export function SectionFrame(props: {
 
 export function WindowedSections(props: {
   sections: SessionSection[]
+  /** ask to reveal a section outside the mounted window (prompt nav +
+   *  search jumps): jump to its estimated offset, then align to the real
+   *  element once it mounts */
+  reveal?: () => { id: string; n: number } | undefined
   scroller: () => HTMLElement | undefined
   cachePrefix: string
   class?: string
@@ -130,6 +134,31 @@ export function WindowedSections(props: {
       acc += sectionH(i)
     }
     return { tops, total: acc }
+  })
+
+  // reveal a section that is not mounted yet: scroll to its estimated
+  // offset so the window mounts it, then align to the real element
+  let lastReveal = 0
+  createEffect(() => {
+    const req = props.reveal?.()
+    if (!req || req.n === lastReveal) return
+    lastReveal = req.n
+    const idx = props.sections.findIndex((s) => s.id === req.id)
+    const parent = props.scroller()
+    if (idx < 0 || !parent) return
+    const { tops } = geometry()
+    parent.scrollTop = Math.max(0, tops[idx] - 4)
+    const align = (tries: number) => {
+      const el = parent.querySelector<HTMLElement>(
+        `[data-section-key="${CSS.escape(`${props.cachePrefix}:${req.id}`)}"]`,
+      )
+      if (el) {
+        el.scrollIntoView({ block: "start", behavior: "auto" })
+        return
+      }
+      if (tries < 8) requestAnimationFrame(() => align(tries + 1))
+    }
+    requestAnimationFrame(() => align(0))
   })
 
   const window_ = createMemo(() => {

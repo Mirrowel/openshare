@@ -42,6 +42,7 @@ function CasefileHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0
     <>
       <Title>{info()?.title} | {props.source.branding().name || "openshare"}</Title>
       <SkinHeader
+        searchControl={props.searchControl}
         class="shrink-0 px-5 pt-3 bg-background-stronger border-b border-border-weak-base relative z-30"
         leadClass="flex items-end gap-3 min-w-0"
         titleClass="text-16-medium text-text-strong truncate pb-1"

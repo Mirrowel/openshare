@@ -114,6 +114,7 @@ function RunningHead(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) 
     <>
       <Title>{`${info()?.title ?? "session"} | ${props.source.branding().name || "openshare"}`}</Title>
       <SkinHeader
+        searchControl={props.searchControl}
         class="h-11 px-5 lg:px-10 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30"
         leadClass="flex items-center gap-3 min-w-0"
         titleClass="min-w-0 truncate text-12-regular text-text-weaker italic"

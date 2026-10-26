@@ -48,6 +48,7 @@ function CanopyHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0])
   return (
     <>
       <SkinHeader
+        searchControl={props.searchControl}
         class="h-10 px-4 flex items-center justify-between gap-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30"
         leadClass="flex items-center gap-2 min-w-0"
         titleClass="text-14-medium text-text-strong truncate"

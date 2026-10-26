@@ -83,6 +83,7 @@ function CinemaHeader(props: HeaderProps) {
     <>
       <Title>{info()?.title ?? "session"} | {b().name || "openshare"}</Title>
       <SkinHeader
+        searchControl={props.searchControl}
         class="shrink-0 px-4 py-2 flex items-center justify-between gap-3 bg-background-stronger border-b border-border-weak-base relative z-30"
         leadClass="flex items-center gap-2.5 min-w-0"
         titleClass="text-12-mono uppercase tracking-widest text-text-weaker"

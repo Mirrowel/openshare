@@ -12,6 +12,7 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, creat
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
+import { claimDisclosure, disclosureOwned, engineClicking, releaseDisclosure } from "./search-state"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
 import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "@opencode/session-ui/timeline/row"

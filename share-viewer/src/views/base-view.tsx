@@ -105,9 +105,13 @@ export function DefaultFooter(props: ViewProps) {
   )
 }
 
-export function ReasoningBlock(props: { text: string; settings: OshSettings }) {
+export function ReasoningBlock(props: { text: string; settings: OshSettings; partId?: string }) {
   return (
-    <details class="reasoning-collapse group" open={props.settings.reasoningOpen || undefined}>
+    <details
+      class="reasoning-collapse group"
+      data-timeline-part-id={props.partId}
+      open={props.settings.reasoningOpen || undefined}
+    >
       <summary class="flex items-center gap-2 cursor-pointer list-none select-none py-1">
         <span class="flex items-center gap-1.5 text-12-medium text-text-weaker group-hover:text-text-base transition-colors duration-150">
           <Icon name="brain" size="small" />
@@ -130,6 +134,25 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
   const model = () => sessionModelLabel(props.data, props.sessionID)
   const continuous = () => !pagedFor(props.settings, props.skin.id, viewSupportsPaged(props.skin.id))
   const cachePrefix = props.source.shareID + ":" + props.sessionID
+  // one jump path for prompt nav and search: a mounted section scrolls
+  // exactly, a far one is revealed by the section window (estimate then
+  // align), and paged mode switches the active turn instead
+  const [revealReq, setRevealReq] = createSignal<{ id: string; n: number }>()
+  let revealN = 0
+  const jumpToSection = (id: string) => {
+    if (!continuous()) {
+      const i = visible().findIndex((s) => s.id === id)
+      if (i >= 0) setActive(i)
+      return
+    }
+    const sc = scroller as unknown as HTMLDivElement | undefined
+    const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${id}`)}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
+      return
+    }
+    setRevealReq({ id, n: ++revealN })
+  }
 
   // search filter
   const q = () => props.search.trim().toLowerCase()
@@ -213,7 +236,15 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               when={e.kind !== "reasoning"}
               fallback={
                 <w.ReasoningWrap entry={e as ReasoningEntry} settings={props.settings}>
-                  <ReasoningBlock text={(e as ReasoningEntry).text} settings={props.settings} />
+                  <ReasoningBlock
+                    text={(e as ReasoningEntry).text}
+                    settings={props.settings}
+                    partId={
+                      (e as ReasoningEntry).messageID != null && (e as ReasoningEntry).ordinal != null
+                        ? `${(e as ReasoningEntry).messageID}:reasoning:${(e as ReasoningEntry).ordinal}`
+                        : ((e as ReasoningEntry).part as any)?.id
+                    }
+                  />
                 </w.ReasoningWrap>
               }
             >
@@ -275,14 +306,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
           onBack={back}
           isSub={isSub()}
           searchControl={
-            <SearchControl
-              sections={visible}
-              onJump={(sectionId) => {
-                const sc = scroller as unknown as HTMLDivElement | undefined
-                const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${sectionId}`)}"]`)
-                el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
-              }}
-            />
+            <SearchControl sections={sections} onJump={jumpToSection} />
           }
         />
       <div class="flex flex-col flex-1 min-h-0">
@@ -303,13 +327,10 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
                 return typeof p === "string" ? p.trim().split("\n")[0] : undefined
               }}
               onSelect={(i) => {
-                if (continuous()) {
-                  const sc = scroller as unknown as HTMLDivElement | undefined
-                  const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-                  el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
-                  return
-                }
+                const id = visible()[i]?.id
+                if (!id) return
                 setActive(i)
+                jumpToSection(id)
               }}
             />
           </Show>
@@ -342,18 +363,28 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               }}
               preview={(i) => visible()[i]?.response || undefined}
               onSelect={(i) => {
-                if (continuous()) {
-                  const sc = scroller as unknown as HTMLDivElement | undefined
-                  const el = sc?.querySelector(`[data-section-key="${CSS.escape(`${cachePrefix}:${visible()[i]?.id}`)}"]`)
-                  el?.scrollIntoView({ behavior: props.settings.smoothScroll === "instant" ? "auto" : "smooth", block: "start" })
-                  return
-                }
+                const id = visible()[i]?.id
+                if (!id) return
                 setActive(i)
+                jumpToSection(id)
               }}
             >
               {w.Nav ? (() => {
                 const NavSkin = w.Nav!
-                return <NavSkin sections={visible()} active={active()} onSelect={setActive} />
+                return (
+                  <NavSkin
+                    sections={visible()}
+                    active={active()}
+                    // a bespoke Nav selects a turn; in continuous mode that
+                    // must also scroll to it (via the section-window reveal
+                    // for far turns), same as the shared list
+                    onSelect={(i: number) => {
+                      setActive(i)
+                      const id = visible()[i]?.id
+                      if (id) jumpToSection(id)
+                    }}
+                  />
+                )
               })() : undefined}
             </PromptNav>
           </Show>
@@ -362,6 +393,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               sections={visible()}
               scroller={() => scroller}
               cachePrefix={cachePrefix}
+              reveal={() => revealReq()}
               class={props.skin.columnClass ?? "max-w-3xl mx-auto osh-indent px-6 py-6 flex flex-col gap-8"}
               render={(s, i) => (
                 <Show when={continuous()} fallback={<Show when={active() === i}><TurnBody section={s} index={i} /></Show>}>

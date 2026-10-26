@@ -979,12 +979,29 @@ input[type="range"].osh-slider::-moz-range-thumb {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 /* live search marks: browser-find yellow - maximum contrast on every
-   theme, near-black text on the highlight */
+   theme, near-black text on the highlight. The engine paints ranges
+   through the CSS Custom Highlight API (no DOM writes, so layout never
+   shifts and virtualizer measurements stay stable); the <mark> rules
+   remain for browsers without it. */
+::highlight(osh-search) {
+  background-color: #f6d944;
+  color: #16130a;
+}
+::highlight(osh-search-flash) {
+  background-color: #ffdf3d;
+  color: #16130a;
+}
+.osh-search-flash-row {
+  outline: 1px solid #f6d944;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 mark.osh-search-hit {
   background: #f6d944;
   color: #16130a;
   border-radius: 2px;
-  padding: 0 1px;
+  /* NO padding: a mark must never change line height or wrapping (that
+     re-measured rows and moved the reader while searching) */
 }
 mark.osh-search-hit.osh-search-hit-active {
   background: #ffdf3d;

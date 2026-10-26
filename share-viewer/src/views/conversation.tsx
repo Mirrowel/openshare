@@ -21,6 +21,8 @@ import { registerPromptNav } from "../prompt-nav"
 import { findParentTurn } from "../parent-link"
 import { TurnNav } from "./conversation-nav"
 import { AppHeader } from "./conversation-header"
+import { useSessionSections } from "./session-data"
+import { SearchControl } from "../search-palette"
 import type { ViewProps } from "./registry"
 
 export function ConversationView(props: ViewProps) {
@@ -32,6 +34,7 @@ export function ConversationView(props: ViewProps) {
 
   const info = createMemo(() => (props.data.session as any[]).find((s) => s.id === props.sessionID))
   const messages = createMemo(() => visibleMessages(props.data, props.sessionID))
+  const sections = useSessionSections(props.data, props.sessionID)
   const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
   const autoExpandOpen = (tool: { name: string }) => props.settings.autoExpand.includes(tool.name)
   const firstUserMessage = createMemo(() => userTurns().at(0))
@@ -257,6 +260,15 @@ export function ConversationView(props: ViewProps) {
         updateSettings={props.updateSettings}
         search={props.search}
         onSearch={props.onSearch}
+        searchControl={
+          <SearchControl
+            sections={sections}
+            onJump={(sectionId) => {
+              const m = userTurns().find((x: any) => x.id === sectionId)
+              if (m) setActiveMessage(m, props.settings.smoothScroll === "instant" ? "auto" : "smooth")
+            }}
+          />
+        }
       />
       {/* layout direction is driven by [data-osh-conv-layout] in app.css
           at 900px - aligned with TurnNav's own breakpoint. Tailwind's

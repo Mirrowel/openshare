@@ -21,6 +21,7 @@ import type { SessionSection } from "./views/session-data"
 import {
   SEARCH_SCOPES,
   activeHit,
+  clearSearch,
   ensureSearchEngine,
   jumpToHit,
   searchQuery,
@@ -45,31 +46,38 @@ function scopeHits(s: SessionSection, query: string, active: Set<SearchScope>): 
   const out: SearchHit[] = []
   const push = (scope: SearchScope, text: string | undefined, partId?: string) => {
     if (!active.has(scope) || !text) return
-    const at = text.toLowerCase().indexOf(q)
-    if (at >= 0) out.push({ sectionId: s.id, turn: s.index + 1, scope, partId, line: text.replace(/\s+/g, " "), at })
+    // offsets must be computed on the SAME string the snippet slices:
+    // raw-text indices drifted off the whitespace-collapsed line
+    const line = text.replace(/\s+/g, " ")
+    const at = line.toLowerCase().indexOf(q)
+    if (at >= 0) out.push({ sectionId: s.id, turn: s.index + 1, scope, partId, line, at })
   }
-  push("prompts", s.prompt, s.id)
+  // prompts/responses are always rendered when their section is: no
+  // part id is published, so the expansion engine never treats them as
+  // collapsed bodies and jumps resolve through the section instead
+  push("prompts", s.prompt)
   push("responses", s.response)
-  for (const r of s.reasoning) {
+  if (active.has("thinking")) for (const r of s.reasoning) {
     // the kit synthesizes `${messageID}:reasoning:${ordinal}` for
     // non-tool part ids (projection contentEntries) - match the scheme
     const rid = r.messageID != null && r.ordinal != null ? `${r.messageID}:reasoning:${r.ordinal}` : (r.part as any)?.id
     push("thinking", r.text, rid)
   }
-  for (const t of s.tools) {
+  if (active.has("tools")) for (const t of s.tools) {
     if (EXCLUDED_TOOLS.has(t.tool)) continue
-    push("tools", `${t.tool} ${t.title} ${t.output ?? ""} ${safeJson(t.input)}`, (t.part as any)?.id)
+    const id = (t.part as any)?.id
+    // body text (title + output) is what a match can highlight and
+    // expand; a match on the RAW tool name alone (e.g. "bash", rendered
+    // as "Shell") stays a result but publishes no part id - expanding it
+    // opened rows with nothing to show and jumped to a body without the
+    // match
+    const body = `${t.title} ${t.output ?? ""}`
+    if (body.toLowerCase().includes(q)) push("tools", body, id)
+    else if (t.tool.toLowerCase().includes(q)) push("tools", `${t.tool} ${body}`)
   }
   return out
 }
-const safeJson = (v: unknown) => {
-  if (!v) return ""
-  try {
-    return typeof v === "string" ? v : JSON.stringify(v)
-  } catch {
-    return ""
-  }
-}
+
 
 export function SearchControl(props: {
   sections: () => SessionSection[]
@@ -79,6 +87,17 @@ export function SearchControl(props: {
 }) {
   ensureSearchEngine()
   const [open, setOpen] = createSignal(false)
+  // a different session (subagent open/back) must not inherit this
+  // session's query, hits or expansions; live data updates keep the
+  // same first section id so they never clear
+  let firstSectionId = ""
+  createEffect(() => {
+    const s = props.sections()
+    const first = s[0]?.id ?? ""
+    if (!first) return
+    if (firstSectionId && first !== firstSectionId) clearSearch()
+    firstSectionId = first
+  })
   const [sel, setSel] = createSignal(0)
   let inputEl: HTMLInputElement | undefined
 
@@ -101,7 +120,17 @@ export function SearchControl(props: {
 
   const jump = (h: SearchHit) => {
     setActiveHit(h)
-    if (!jumpToHit(h, props.smooth !== false)) props.onJump(h.sectionId)
+    if (jumpToHit(h, props.smooth !== false)) return
+    // the part is not mounted (far turn / collapsed body): navigate by
+    // section first - the mount fast path expands it - then retry the
+    // part jump so the flash lands on the match, not the turn top
+    props.onJump(h.sectionId)
+    let tries = 0
+    const retry = () => {
+      if (++tries > 8) return
+      if (!jumpToHit(h, false, true)) setTimeout(retry, 120)
+    }
+    setTimeout(retry, 220)
   }
 
   const onKey = (e: KeyboardEvent) => {
@@ -109,6 +138,11 @@ export function SearchControl(props: {
       if (e.key === "/" && !(e.target as HTMLElement)?.closest?.("input, textarea, [contenteditable]")) {
         e.preventDefault()
         setOpen(true)
+      } else if (e.key === "Escape" && searchQuery().trim() && !(e.target as HTMLElement)?.closest?.("input, textarea, [contenteditable]")) {
+        // marks persist after clicking away or jumping; Esc is the
+        // documented way to end the search - it must work then too
+        setSearchQuery("")
+        setHitPartIds([])
       }
       return
     }
