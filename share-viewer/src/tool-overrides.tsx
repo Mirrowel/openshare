@@ -16,6 +16,7 @@ import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useData } from "@opencode/session-ui/context"
 import { useFileComponent } from "@opencode/ui/context"
+import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
@@ -197,10 +198,9 @@ function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) 
  * row away, the card still says what you are reading. */
 function FileTitle(props: { path: string }) {
   const name = basename(props.path)
-  const ext = name.includes(".") ? name.split(".").at(-1)!.slice(0, 4) : "file"
   return (
     <div data-slot="osh-file-title">
-      <span class="osh-file-icon osh-file-ext">{ext}</span>
+      <FileIcon node={{ path: props.path, type: "file" }} class="osh-file-icon size-4 shrink-0" />
       <span class="osh-file-name">{name}</span>
       <Show when={dirname(props.path)}>
         <span class="osh-file-dir">{dirname(props.path).split("/").at(-1)}</span>

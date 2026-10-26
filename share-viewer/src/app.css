@@ -47,6 +47,17 @@
   margin-bottom: -12px;
 }
 
+/* ONE code surface: a tint of the text colour, so light, dark and the
+   premade themes all get a surface in their own hue. */
+:root {
+  --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
+}
+/* the kit sets the highlighter block's background inline */
+[data-component="markdown-code"] pre.shiki {
+  background-color: var(--osh-code-bg) !important;
+  border-color: var(--border-weaker-base);
+}
+
 /* === settings-driven bits === */
 /* text scaling via the design system's font-size tokens: the text
    utilities read var(--font-size-*), so overriding the tokens scales
@@ -318,7 +329,7 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--surface-base);
+  background: var(--osh-code-bg);
   border: 1px solid var(--border-weaker-base);
   font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: pre-wrap;
@@ -469,6 +480,12 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
+  background: var(--osh-code-bg);
+  /* the kit paints an opaque diff background; this is its hook */
+  --opencode-diffs-bg: transparent;
+}
+[data-component="osh-file-body"] diffs-container {
+  background-color: transparent;
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(100%, calc(2 * var(--osh-card)));
@@ -491,18 +508,6 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   flex: none;
 }
 
-/* the file-title extension badge (TS/MD/JSON...) */
-[data-slot="osh-file-title"] .osh-file-ext {
-  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-weaker);
-  background: var(--surface-base);
-  border: 1px solid var(--border-weaker-base);
-  border-radius: 4px;
-  padding: 2px 4px;
-}
 
 
 /* --- tool output overflow (setting: scroll | wrap) --------------------
