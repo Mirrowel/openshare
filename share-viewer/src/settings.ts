@@ -4,7 +4,7 @@ import { createSignal } from "solid-js"
 
 export type OshSettings = {
   view: string
-  theme: "system" | "light" | "dark" | "mirrobot" | "midnight" | "sepia" | "nord"
+  theme: "system" | "light" | "dark" | "darker" | "mirrobot" | "midnight" | "sepia" | "nord"
   continuous: boolean
   /** legacy storage (continuous-by-view) - read for migration only,
    *  stripped on the next write */
@@ -219,6 +219,7 @@ export function setPagedFor(prev: OshSettings, view: string, value: boolean): Os
 const PREMADE_BASE: Record<string, "light" | "dark"> = {
   light: "light",
   dark: "dark",
+  darker: "dark",
   mirrobot: "dark",
   midnight: "dark",
   sepia: "light",

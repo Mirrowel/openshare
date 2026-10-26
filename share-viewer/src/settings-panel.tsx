@@ -43,6 +43,7 @@ const THEMES: { id: OshSettings["theme"]; label: string; bg: string; fg: string 
   { id: "system", label: "system", bg: "#17181c", fg: "#d8dbe0" },
   { id: "light", label: "light", bg: "#fafafa", fg: "#171717" },
   { id: "dark", label: "dark", bg: "#101010", fg: "#e6e6e6" },
+  { id: "darker", label: "darker", bg: "#0a0a0a", fg: "#e6e6e6" },
   { id: "mirrobot", label: "mirrobot", bg: "#16130f", fg: "#f2ead8" },
   { id: "midnight", label: "midnight", bg: "#0b0e14", fg: "#8fa3d0" },
   { id: "sepia", label: "sepia", bg: "#f4ecd8", fg: "#8a6d3b" },

@@ -135,6 +135,19 @@ const PREMADES = {
       ...v2Overrides("#f4ecd8", "#ece1c8", "#4a4034", "#7a6c56", "#a3947a", "#d8caae"),
     },
   },
+  // darker: the dark theme one step down - the page tone conversation
+  // paints (bg-background-stronger) as an explicit second dark theme,
+  // not a remap (owner directive 2026-10-26; NOT the default)
+  darker: {
+    base: "dark",
+    overrides: {
+      "--background-base": "#0a0a0a",
+      "--background-weak": "#131313",
+      "--background-strong": "#0b0b0b",
+      "--background-stronger": "#0e0e0e",
+      ...v2Overrides("#0a0a0a", "#131313", "#ffffff9e", "#ffffff6c", "#ffffff48", "#ffffff21"),
+    },
+  },
   nord: {
     base: "dark",
     overrides: {
