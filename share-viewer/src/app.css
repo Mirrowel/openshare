@@ -845,13 +845,13 @@ html[data-color-scheme="light"] {
   position: static;
 }
 
-/* the subagent hint, final form: an OVERLAY flap. No reservation, no
-   margins - the sign hangs from the card's bottom edge and overlays
-   whatever is below (solid surface + shadow, drawn on top, readable
-   over the next card). Stacked task cards keep their natural spacing
-   because nothing below ever moves (owner round 2026-10-26: the
-   reservation inserted unnatural gaps between consecutive task cards).
-   The card keeps its rounded surface body, no outline. */
+/* [design-trial: subagent hint] five appearances for the "open subagent"
+   hover hint on a task card. Everything except "flap" is VERTICALLY
+   STABLE: only opacity and horizontal transforms animate, so no hover
+   ever grows, unfolds, or shifts content downward. All variants are
+   overlays - nothing below the card moves (stacked task cards keep
+   their natural spacing). The card keeps its rounded surface, no
+   outline. */
 .osh-task-wrap {
   display: block;
   position: relative;
@@ -862,25 +862,119 @@ html[data-color-scheme="light"] {
 }
 .osh-subagent-hint {
   position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%) translateY(100%);
-  padding: 0 10px;
-  height: 22px;
-  opacity: 0;
   white-space: nowrap;
-  font: 10.5px/22px ui-monospace, SFMono-Regular, Consolas, monospace;
+  font: 10.5px/18px ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: 0.04em;
   color: var(--text-weaker);
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+}
+
+/* chip (default): a quiet mono pill docked INSIDE the card's right edge,
+   left of the chevron, fading in over the subtitle's tail - zero layout
+   impact, zero vertical motion */
+html[data-osh-hint="chip"] .osh-subagent-hint,
+html:not([data-osh-hint]) .osh-subagent-hint {
+  top: 50%;
+  right: 34px;
+  height: 18px;
+  padding: 0 8px;
+  color: var(--text-weaker);
+  background: color-mix(in srgb, var(--background-stronger) 92%, transparent);
+  border: 0.5px solid var(--border-weak-base);
+  border-radius: 999px;
+  transform: translateY(-50%) translateX(-6px);
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+html[data-osh-hint="chip"] .osh-task-wrap:hover .osh-subagent-hint,
+html:not([data-osh-hint]) .osh-task-wrap:hover .osh-subagent-hint {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* fade: the hanging sign at bottom-center, but with NO motion at all -
+   the pill is fully positioned at rest and only its opacity changes */
+html[data-osh-hint="fade"] .osh-subagent-hint {
+  left: 50%;
+  bottom: 0;
+  height: 20px;
+  padding: 0 10px;
+  transform: translateX(-50%) translateY(100%);
   background: var(--background-stronger, var(--background-base));
   border-radius: 0 0 6px 6px;
   box-shadow: 0 3px 10px rgb(0 0 0 / 0.22);
-  pointer-events: none;
-  z-index: 4;
+  transition: opacity 160ms ease-out;
 }
-/* the flap: hanging sign unfolding from the top hinge, overshooting
-   past vertical, knocking back, settling - as an overlay */
-.osh-task-wrap:hover .osh-subagent-hint {
+html[data-osh-hint="fade"] .osh-task-wrap:hover .osh-subagent-hint {
+  opacity: 1;
+}
+
+/* corner: a small docked tab at the card's bottom-right corner, sliding
+   in HORIZONTALLY from behind the card's edge (the vertical offset is
+   constant) */
+html[data-osh-hint="corner"] .osh-subagent-hint {
+  right: 0;
+  bottom: 0;
+  height: 20px;
+  padding: 0 9px;
+  transform: translateX(10px) translateY(100%);
+  background: var(--background-stronger, var(--background-base));
+  border: 0.5px solid var(--border-weak-base);
+  border-top: none;
+  border-radius: 0 0 0 6px;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+html[data-osh-hint="corner"] .osh-task-wrap:hover .osh-subagent-hint {
+  opacity: 1;
+  transform: translateX(0) translateY(100%);
+}
+
+/* underline: a 2px accent line expanding along the card's bottom edge
+   (scaleX, horizontal) with the micro-label fading in beneath it */
+html[data-osh-hint="underline"] .osh-subagent-hint {
+  left: 50%;
+  bottom: 0;
+  height: 15px;
+  font-size: 9.5px;
+  line-height: 15px;
+  transform: translateX(-50%) translateY(100%);
+  transition: opacity 160ms ease-out;
+}
+html[data-osh-hint="underline"] .osh-subagent-hint::before {
+  content: "";
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  bottom: 100%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--openshare-accent, var(--icon-strong-base));
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 180ms ease-out;
+}
+html[data-osh-hint="underline"] .osh-task-wrap:hover .osh-subagent-hint {
+  opacity: 1;
+}
+html[data-osh-hint="underline"] .osh-task-wrap:hover .osh-subagent-hint::before {
+  transform: scaleX(1);
+}
+
+/* flap (the previous design, kept for comparison): hanging sign
+   unfolding from the top hinge with a bounce - NOT vertically stable */
+html[data-osh-hint="flap"] .osh-subagent-hint {
+  left: 50%;
+  bottom: 0;
+  padding: 0 10px;
+  height: 22px;
+  transform: translateX(-50%) translateY(100%);
+  background: var(--background-stronger, var(--background-base));
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 0.22);
+}
+html[data-osh-hint="flap"] .osh-task-wrap:hover .osh-subagent-hint {
   opacity: 1;
   transform-origin: top center;
   animation: osh-hint-flap 500ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
@@ -896,6 +990,10 @@ html[data-color-scheme="light"] {
   .osh-task-wrap:hover .osh-subagent-hint {
     animation: none;
     opacity: 1;
+  }
+  .osh-subagent-hint,
+  .osh-subagent-hint::before {
+    transition: opacity 150ms ease-out;
   }
 }
 /* the custom-grouping checklist reveal (settings panel): slides open

@@ -65,6 +65,10 @@ export type OshSettings = {
   /** jump animation: instant everywhere, smooth for short jumps only
    *  (near), or smooth always (long jumps included) */
   smoothScroll: "instant" | "near" | "always"
+  /** [design-trial: subagent hint] how the "open subagent" hover hint
+   *  appears on a task card. Everything but "flap" is vertically stable:
+   *  only opacity and horizontal transforms animate */
+  subagentHint: "chip" | "fade" | "corner" | "underline" | "flap"
   /** ghost mode: the pill rests invisible (0 opacity); the proximity
    * strip wakes it and a one-time pulse carries discoverability */
   pillGhost: boolean
@@ -107,6 +111,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   fileOverflow: { read: "wrap", write: "wrap", edit: "wrap" },
   promptStyle: "bubble",
   smoothScroll: "near",
+  subagentHint: "chip",
   pillGhost: false,
   navSearchBar: false,
   rowPromptLines: 1,
@@ -336,6 +341,7 @@ export function applySettings(s: OshSettings) {
   // the left edge; the sidebar column already displaces content, so its
   // extra indent shrinks to breathing room
   html.dataset.oshNav = s.promptNav === "sidebar" ? "sidebar" : "pill"
+  html.dataset.oshHint = s.subagentHint ?? "chip"
   // file-card width, live: every file tool reads --osh-card (text cards
   // at the value, split diffs at 2x, both viewport-capped)
   const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))

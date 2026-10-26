@@ -468,6 +468,21 @@ export function SettingsBody(props: {
             on={props.settings.toolInfo}
             onChange={() => props.update({ toolInfo: !props.settings.toolInfo })}
           />
+           {/* [design-trial: subagent hint] pick the appearance of the
+               "open subagent" hover hint; every option but flap is
+               vertically stable (no downward motion on hover) */}
+           <Lever
+             label="subagent hint"
+             value={props.settings.subagentHint}
+             options={[
+               { id: "chip" as const, label: "chip" },
+               { id: "fade" as const, label: "fade" },
+               { id: "corner" as const, label: "corner" },
+               { id: "underline" as const, label: "underline" },
+               { id: "flap" as const, label: "flap" },
+             ]}
+             onChange={(subagentHint) => props.update({ subagentHint })}
+           />
            {/* grouping: off = every call its own row; custom = only the
                checked tools collapse; all = everything. The checklist
                appears (animated) only on custom */}
