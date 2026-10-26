@@ -107,7 +107,6 @@ function FullPageView(props: {
   )
 }
 import { children, sessionStatus, visibleMessages, type ShareData } from "./fold"
-import { setSubagentData } from "./subagent-map"
 import { applySettings, pagedFor, readSettings, writeSettings, type OshSettings } from "./settings"
 
 // scroll memory for in-page session switching: restore on return
@@ -251,8 +250,8 @@ function SessionView(props: {
   sub: () => number | undefined
 }) {
   // resolve which session this page renders (main or subagent /N)
-  createEffect(() => setSubagentData(props.data))
-
+  // (the subagent label rewrite lives in fold() now - every entry
+  // inherits it there, not just whichever mounts this component)
   const target = createMemo(() => {
     const data = props.data
     const subs = children(data)
@@ -276,9 +275,8 @@ function SessionView(props: {
               const searchSections = useSessionSections(props.data, sessionID())
   const isSub = () => target().isSub
   const info = createMemo(() => props.data.session[match().index])
-  // classic's prompt-nav gate: how many turns before the nav mounts.
-  // TEMP 1 for the owner's single-prompt-subagent review; the shipped
-  // default is 2 (registry views can override via ViewEntry.navMinTurns)
+  // classic's prompt-nav gate: shows from ONE prompt (owner-settled
+  // 2026-10-27; registry views can still override via navMinTurns)
   const NAV_MIN_TURNS = 1
 
   // the classic/reader transcript body - see the mount-site comment

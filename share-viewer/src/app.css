@@ -1146,15 +1146,22 @@ mark.osh-search-hit.osh-search-hit-active {
    spans 8-38px at the viewport edge. 0.75x = 18px puts the first text at
    42px - pill right (38) + 4px clearance, no free space beyond it */
 .osh-indent {
-  /* pill mode: the capsule clears the floating pill (measured: pill
-     right edge + a few px). ~35% cut from the old 18px (owner round
-     2026-10-26) */
-  padding-left: 12px !important;
+  /* pill mode: the capsule clears the floating pill (measured: text at
+     35px, pill right 28 -> 7px gap; owner round 2026-10-27) */
+  padding-left: 11px !important;
 }
-/* sidebar mode: the sidebar column already displaces the content, so
-   the extra indent is breathing room only (owner round 2026-10-26) */
+/* sidebar mode: the sidebar-to-content gap is HALVED to 14px (owner
+   round 2026-10-27). The gap is .osh-indent + the content frame's 24px
+   left padding (the header/footer px-6 blocks and the kit row wrapper
+   px-4 md:px-6) - measured 28px total. 4 + 10 = 14. */
 html[data-osh-nav="sidebar"] .osh-indent {
   padding-left: 4px !important;
+}
+html[data-osh-nav="sidebar"] .osh-indent .px-6 {
+  padding-left: 10px !important;
+}
+html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
+  padding-left: 10px !important;
 }
 
 /* HoverRail v4: floating pill (no gutter column). Popover opens only

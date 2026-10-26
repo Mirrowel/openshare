@@ -277,7 +277,7 @@ function NavRow(props: {
     <button
       type="button"
       role="menuitem"
-      class="osh-pnav-row group relative w-full flex items-start gap-1.5 min-h-6 px-2 py-0.5 rounded-md border-none cursor-pointer text-left"
+      class="osh-pnav-row group relative w-full flex items-baseline gap-1.5 min-h-6 px-2 py-0.5 rounded-md border-none cursor-pointer text-left"
       classList={{
         "bg-surface-raised-base text-text-strong": props.active,
         "bg-transparent text-text-base hover:bg-surface-base": !props.active,
@@ -310,7 +310,10 @@ function NavRow(props: {
         }}
         style={props.active ? { background: "var(--openshare-accent, var(--text-base))" } : undefined}
       />
-      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums self-start leading-4">{props.i + 1}</span>
+      {/* baseline-aligned with the label's first line: a centered BOX
+          still reads high because digit ink rides the top of its line
+          box; sharing the baseline is ink-exact at any row height */}
+      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums">{props.i + 1}</span>
       <span class="min-w-0 flex-1 flex flex-col gap-0.5 py-px">
         <span class="text-12-regular" style={navRowsSignal().promptLines > 1 ? clampStyle(navRowsSignal().promptLines) : undefined} classList={{ truncate: navRowsSignal().promptLines <= 1 }}>
           {props.label ?? "turn"}
