@@ -244,6 +244,9 @@ function NavRow(props: {
   label: string | undefined
   /** response preview text - shown INLINE when rowResponseLines > 0 */
   response?: string
+  /** the rail context (pill pop-open): the active marker spans the whole
+   *  row (the rail's one indicator); the sidebar keeps the short marker */
+  markerFull?: boolean
   onHover?: (i: number, el: HTMLElement) => void
   onSelect: (i: number) => void
   onFocus?: (i: number) => void
@@ -283,9 +286,16 @@ function NavRow(props: {
       title={props.onFocus ? "click: jump here · shift+click or the reticle: focus this turn · right-click: menu" : undefined}
     >
       <span
-        class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full transition-opacity duration-150"
-        classList={{ "opacity-100": props.active, "opacity-0": !props.active }}
-        style={{ background: "var(--openshare-accent, var(--text-base))" }}
+        classList={{
+          // markerFull (rail context): spans the active row's whole
+          // height, growing/shrinking with it - the rail's one indicator
+          "absolute left-0 rounded-full transition-opacity duration-150": true,
+          "inset-y-0.5 w-[3px]": !!props.markerFull,
+          "top-1/2 -translate-y-1/2 w-[3px] h-4": !props.markerFull,
+          "opacity-100": props.active,
+          "opacity-0": !props.active,
+        }}
+        style={props.active ? { background: "var(--openshare-accent, var(--text-base))" } : undefined}
       />
       <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums leading-5">{props.i + 1}</span>
       <span class="min-w-0 flex-1 flex flex-col gap-0.5 py-px">
@@ -381,8 +391,9 @@ function ParentRow(props: { label: string; onParent: () => void; compact?: boole
 
 /** "- [n] +" stepper: the number is editable directly (type a value,
  *  clamp on change/blur), the buttons step by 1. Range defaults 1..10;
- *  row-content steppers pass their own (e.g. response lines 0..5). */
-function LineStepper(props: { label: string; value: number; onSet: (n: number) => void; min?: number; max?: number }) {
+ *  row-content steppers pass their own (e.g. response lines 0..5).
+ *  Exported for the settings panel (card width). */
+export function LineStepper(props: { label: string; value: number; onSet: (n: number) => void; min?: number; max?: number }) {
   const min = props.min ?? 1
   const max = props.max ?? 10
   const clamp = (n: number) => Math.max(min, Math.min(max, n))
@@ -691,12 +702,12 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
   let popEl: HTMLDivElement | undefined
 
   onMount(() => {
-    if (props.pillGhost && !localStorage.getItem("osh_pill_pulse")) {
+    // ghost mode pings on EVERY page load while enabled (owner round
+    // 2026-10-26): one pulse per reload - an invisible pill needs a
+    // recurring hello, not a first-visit-only one
+    if (props.pillGhost) {
       setPulse(true)
-      setTimeout(() => {
-        setPulse(false)
-        localStorage.setItem("osh_pill_pulse", "1")
-      }, 1900)
+      setTimeout(() => setPulse(false), 1900)
     }
   })
 
@@ -913,17 +924,12 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               onScroll={() => setPreview(undefined)}
             >
               <div class="flex flex-col gap-0.5 min-w-0 flex-1 relative">
+                {/* the rail: full-height track only - the position dot is
+                    GONE; the active row's full-height block (below, in
+                    NavRow) is the one indicator, spanning the selected
+                    prompt's row like the capsule pill's focused block */}
                 <Show when={props.active !== undefined}>
-                  <div class="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-border-weak-base/60">
-                    <div
-                      class="absolute left-0 w-[2px] rounded-full"
-                      style={{
-                        top: `${Math.min(0.97, ((props.active ?? 0) + 0.5) / props.count) * 100}%`,
-                        height: "8px",
-                        background: "var(--openshare-accent, var(--text-base))",
-                      }}
-                    />
-                  </div>
+                  <div class="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-border-weak-base/60" />
                 </Show>
                 <Show when={props.parentLink}>
                   {(p) => <ParentRow label={p().label} onParent={() => { p().onParent(); setOpen(false) }} />}
@@ -939,6 +945,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                           filled={props.focusedIndex === i}
                           label={props.label(i)}
                           response={props.preview?.(i)}
+                          markerFull
                           onHover={onHover}
                           onSelect={(i) => {
                             // the popover STAYS OPEN after acting (owner

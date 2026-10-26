@@ -475,9 +475,9 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 :root {
   /* +20% (owner round 2026-10-26): unified/text file cards render wider;
      split = 2x the same token, still viewport-capped */
-  /* +10% more (owner round 2026-10-26): 36rem -> 39.6rem; split = 2x the
-     same token, still viewport-capped */
-  --osh-card: 39.6rem;
+  /* file-card width; applySettings overrides live from the cardWidth
+     setting (rem) - this is the pre-paint default */
+  --osh-card: 40rem;
 }
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
@@ -865,6 +865,11 @@ html[data-color-scheme="light"] {
    1px so subagent->next = flap + 1px, replacing normal spacing. */
 .osh-task-wrap {
   display: block;
+  /* the part lists' flex gaps put ~5px between consecutive task parts;
+     the reservation replaces that spacing - pulling up 4px leaves
+     flap + 1px (owner round 2026-10-26; measured empirically: margin
+     -6 overshoots to -1) */
+  margin-bottom: -4px;
 }
 .osh-task-wrap [data-component="task-tool-card"] {
   border: none;
@@ -903,14 +908,6 @@ html[data-color-scheme="light"] {
     animation: none;
   }
 }
-/* the reserved flap space REPLACES the normal spacing: the row after a
-   task row starts 1px below the reservation */
-[data-timeline-row]:has(.osh-task-wrap) + [data-timeline-row],
-[data-row-key]:has(.osh-task-wrap) + [data-row-key] {
-  padding-top: 1px !important;
-  margin-top: 1px !important;
-}
-
 /* thin decorative scrollbars for the nav lists and settings bodies:
    4px rounded translucent thumb, invisible track - presence and
    position only, not a drag target */
