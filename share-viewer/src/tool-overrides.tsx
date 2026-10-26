@@ -18,13 +18,14 @@ import { useData } from "@opencode/session-ui/context"
 import { useFileComponent } from "@opencode/ui/context"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
-import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow } from "./settings"
+import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
 
 /** Per-card overflow toggle (owner directive): on the EXPANDED card body -
  *  never the collapsed trigger row. Wraps vs hidden-scrollbar scroll for
- *  long lines; writes the global setting (cookie + html attr). */
-function OverflowToggle() {
-  const wrapping = () => overflowSignal() === "wrap"
+ *  long lines. FILE cards carry a tool prop and write their own tool's
+ *  entry (read/write/edit can differ); other surfaces write the global. */
+function OverflowToggle(props: { tool?: "read" | "write" | "edit" }) {
+  const wrapping = () => (props.tool ? (fileOverflowSignal()[props.tool] ?? "wrap") === "wrap" : overflowSignal() === "wrap")
   return (
     <button
       type="button"
@@ -32,7 +33,8 @@ function OverflowToggle() {
       title={wrapping() ? "wrap: on (click to scroll instead)" : "wrap: off (click to wrap instead)"}
       onClick={(e) => {
         e.stopPropagation()
-        setOutputOverflow(wrapping() ? "scroll" : "wrap")
+        if (props.tool) setFileOverflow(props.tool, wrapping() ? "scroll" : "wrap")
+        else setOutputOverflow(wrapping() ? "scroll" : "wrap")
       }}
     >
       {wrapping() ? "⏎" : "→"}
@@ -267,9 +269,12 @@ function FileCard(props: {
   contents: string
   /** first REAL file line (reads sliced from an offset); 1 = whole file */
   lineStart?: number
+  /** which file tool this card is - drives the PER-TOOL overflow setting */
+  tool: "read" | "write"
   onRendered?: () => void
 }) {
   const fileComponent = useFileComponent()
+  const ov = () => fileOverflowSignal()[props.tool] ?? "wrap"
   let inner: HTMLDivElement | undefined
   const [attempt, setAttempt] = createSignal(0)
   let retried = false
@@ -285,7 +290,7 @@ function FileCard(props: {
     }, 1200)
   }
   return (
-    <FileBody title={props.path}>
+    <FileBody title={props.path} tool={props.tool}>
       <div ref={(el) => (inner = el)} style={{ display: "contents" }}>
         <GutterOffset start={props.lineStart ?? 1}>
           {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
@@ -297,7 +302,7 @@ function FileCard(props: {
               component={fileComponent as any}
               mode="text"
               file={{ name: props.path, contents: props.contents }}
-              overflow={overflowSignal()}
+              overflow={ov()}
               onRendered={() => {
                 settle()
                 props.onRendered?.()
@@ -309,7 +314,7 @@ function FileCard(props: {
               component={fileComponent as any}
               mode="text"
               file={{ name: props.path, contents: props.contents }}
-              overflow={overflowSignal()}
+              overflow={ov()}
               onRendered={() => props.onRendered?.()}
             />
           </Show>
@@ -322,7 +327,7 @@ function FileCard(props: {
 /** Shared body frame: tools indent under their trigger. The card controls
  *  (diff mode when present, overflow toggle always) stack on the title
  *  row's right edge. */
-function FileBody(props: { title?: string; controls?: JSX.Element; children: JSX.Element }) {
+function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; controls?: JSX.Element; children: JSX.Element }) {
   return (
     <div data-component="osh-file-body" ref={(el) => queueMicrotask(() => trackColumn(el))}>
       <div class="osh-file-titlebar">
@@ -331,7 +336,7 @@ function FileBody(props: { title?: string; controls?: JSX.Element; children: JSX
         </Show>
         <div class="osh-card-controls">
           {props.controls}
-          <OverflowToggle />
+          <OverflowToggle tool={props.tool} />
         </div>
       </div>
       {props.children}
@@ -377,7 +382,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>
@@ -455,6 +460,7 @@ const EditTool = (props: ToolProps) => {
         >
           <FileBody
             title={path()}
+            tool="edit"
             controls={
               /* per-card diff mode toggle (writes the global setting) —
                  right edge of the card, directly above the wrap/scroll
@@ -496,6 +502,7 @@ const EditTool = (props: ToolProps) => {
                   mode="diff"
                   virtualize={false}
                   diffStyle="split"
+                  overflow={fileOverflowSignal().edit ?? "wrap"}
                   {...(fileDiff()
                     ? { fileDiff: fileDiff() }
                     : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
@@ -508,6 +515,7 @@ const EditTool = (props: ToolProps) => {
                   mode="diff"
                   virtualize={false}
                   diffStyle="unified"
+                  overflow={fileOverflowSignal().edit ?? "wrap"}
                   {...(fileDiff()
                     ? { fileDiff: fileDiff() }
                     : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
@@ -547,7 +555,7 @@ const WriteTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard path={path()} contents={content()} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="write" path={path()} contents={content()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>

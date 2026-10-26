@@ -10,7 +10,7 @@ import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { pagedFor, setPagedFor, type OshSettings } from "./settings"
-import { setDiffMode } from "./settings"
+import { setDiffMode, setFileOverflow } from "./settings"
 import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
 import type { ViewSettingDef } from "./views/registry"
 import { tryView } from "./views/view-context"
@@ -394,20 +394,29 @@ export function SettingsBody(props: {
               }}
             />
           </div>
-          {/* [design-trial: pill menu] — temporary picker for the four
-              candidate pop-open layouts; losers deleted after the pick */}
+          {/* per-tool overflow for the file tools (owner round 2026-10-26):
+              read/write/edit+patch each wrap or scroll independently - the
+              per-card toggle writes the same entries */}
           <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Pill menu (trial)</div>
-            <Segmented
-              value={props.settings.pillMenu}
-              options={[
-                { id: "mini" as const, label: "mini" },
-                { id: "map" as const, label: "map" },
-                { id: "palette" as const, label: "palette" },
-                { id: "annotated" as const, label: "annotated" },
-              ]}
-              onChange={(pillMenu) => props.update({ pillMenu })}
-            />
+            <div class="text-12-regular text-text-weaker pb-1">File tools overflow</div>
+            <For each={(["read", "write", "edit"] as const).map((t) => ({ t, label: t === "edit" ? "edit/patch" : t }))}>
+              {({ t, label }) => (
+                <div class="flex items-center justify-between gap-2 pb-1">
+                  <span class="text-12-regular text-text-base">{label}</span>
+                  <Segmented
+                    value={(props.settings.fileOverflow ?? { read: "wrap", write: "wrap", edit: "wrap" })[t]}
+                    options={[
+                      { id: "wrap" as const, label: "wrap" },
+                      { id: "scroll" as const, label: "scroll" },
+                    ]}
+                    onChange={(mode) => {
+                      setFileOverflow(t, mode)
+                      props.update({ fileOverflow: { ...(props.settings.fileOverflow ?? { read: "wrap" as const, write: "wrap" as const, edit: "wrap" as const }), [t]: mode } })
+                    }}
+                  />
+                </div>
+              )}
+            </For>
           </div>
           {/* [design-trial: subagent hint] — same trial mechanism for the
               task-row "open subagent" hint reveal */}

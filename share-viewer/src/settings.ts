@@ -41,8 +41,15 @@ export type OshSettings = {
   groveThinking: "left" | "right"
   /** how tool OUTPUTS overflow long lines: wrap them, or scroll the output
    * horizontally (hidden scrollbar, VSCode-style). The width is hard-capped
-   * either way - this only picks the overflow behavior */
+   * either way - this only picks the overflow behavior. Governs non-file
+   * outputs (shell, grep, glob, list); the file tools carry their own
+   * per-tool choice in fileOverflow. */
   outputOverflow: "wrap" | "scroll"
+  /** per-tool overflow for the FILE tools (read/write/edit+patch), each
+   * wrap or scroll independently - e.g. diffs can pan while reads wrap
+   * (owner round 2026-10-26). Defaults wrap; a cookie with an explicit
+   * outputOverflow: "scroll" migrates all three to scroll. */
+  fileOverflow: { read: "wrap" | "scroll"; write: "wrap" | "scroll"; edit: "wrap" | "scroll" }
   /** how user prompts render everywhere: right-aligned bubble (default)
    * or flat text like the reader skin */
   promptStyle: "bubble" | "flat"
@@ -50,14 +57,17 @@ export type OshSettings = {
    * Long jumps are instant either way (mid-flight measurement
    * corrections stutter across thousands of pixels). */
   smoothScroll: boolean
-  /** [design-trial: pill menu] — four candidate layouts for the pill's
-   * pop-open menu (mini = the sidebar's list, map = tick column + rows,
-   * palette = filter field + inline snippets, annotated = rows with
-   * snippets + progress rail). DELETE after the owner picks. */
-  pillMenu: "mini" | "map" | "palette" | "annotated"
   /** ghost mode: the pill rests invisible (0 opacity); the proximity
    * strip wakes it and a one-time pulse carries discoverability */
   pillGhost: boolean
+  /** show the search/filter field in the prompt views (pill pop-open and
+   * sidebar list) */
+  navSearchBar: boolean
+  /** row content in the prompt views: prompt lines 1-5 (default 1 =
+   * today's single-line label) and response lines 0-5 (default 0 =
+   * hidden) - the multi-line rows adopted from the menu trials */
+  rowPromptLines: number
+  rowResponseLines: number
   // [design-trial: subagent hint] — four candidate reveal animations for
   // the "open subagent" hint on task rows (in-flow, room-carving at the
   // unbordered wrapper; the card's rectangle never grows). DELETE after
@@ -88,10 +98,13 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   // wrap is the default (owner round 2026-10-25); saved cookies keep
   // their explicit choice
   outputOverflow: "wrap",
+  fileOverflow: { read: "wrap", write: "wrap", edit: "wrap" },
   promptStyle: "bubble",
   smoothScroll: true,
-  pillMenu: "mini",
   pillGhost: false,
+  navSearchBar: false,
+  rowPromptLines: 1,
+  rowResponseLines: 0,
   subagentHint: "flap",
 }
 
@@ -119,6 +132,12 @@ export function readSettings(): OshSettings {
         // is no longer removable
         delete parsed.showRail
         if (!Array.isArray(parsed.autoExpand)) parsed.autoExpand = []
+        // fileOverflow migration: an explicit global scroll choice (from
+        // before the per-tool split) seeds all three file tools; otherwise
+        // the per-tool defaults (wrap) stand
+        if (!parsed.fileOverflow && parsed.outputOverflow === "scroll") {
+          parsed.fileOverflow = { read: "scroll", write: "scroll", edit: "scroll" }
+        }
         return { ...SETTINGS_DEFAULTS, ...parsed }
       }
     }
@@ -196,6 +215,49 @@ export function setOutputOverflow(mode: OshSettings["outputOverflow"]) {
   writeSettings(next)
   setOverflowSignal(mode)
   applySettings(next)
+}
+
+// per-tool file overflow as signals too: the per-card toggle on a FILE
+// card writes its own tool's entry (read/write/edit; patch rides edit)
+export type FileTool = "read" | "write" | "edit"
+const [fileOverflowSignal, setFileOverflowSignal] = createSignal<OshSettings["fileOverflow"]>(readSettings().fileOverflow)
+export { fileOverflowSignal }
+export function setFileOverflow(tool: FileTool, mode: "wrap" | "scroll") {
+  const next = readSettings()
+  next.fileOverflow = { ...(next.fileOverflow ?? { read: "wrap", write: "wrap", edit: "wrap" }), [tool]: mode }
+  writeSettings(next)
+  setFileOverflowSignal(next.fileOverflow)
+}
+
+// nav row-content + search bar as a signal: NavRow and the nav config
+// popover live outside the app's settings store tree, so they read this
+// live (same pattern as diffModeSignal)
+export type NavRows = { searchBar: boolean; promptLines: number; responseLines: number }
+const [navRowsSignal, setNavRowsSignal] = createSignal<NavRows>({
+  searchBar: readSettings().navSearchBar ?? false,
+  promptLines: readSettings().rowPromptLines ?? 1,
+  responseLines: readSettings().rowResponseLines ?? 0,
+})
+export { navRowsSignal }
+function writeNavRows(next: NavRows) {
+  const s = readSettings()
+  s.navSearchBar = next.searchBar
+  s.rowPromptLines = next.promptLines
+  s.rowResponseLines = next.responseLines
+  writeSettings(s)
+  setNavRowsSignal(next)
+}
+export function setNavSearchBar(searchBar: boolean) {
+  const cur = navRowsSignal()
+  writeNavRows({ ...cur, searchBar })
+}
+export function setRowLines(patch: Partial<Pick<NavRows, "promptLines" | "responseLines">>) {
+  const cur = navRowsSignal()
+  writeNavRows({
+    ...cur,
+    promptLines: Math.max(1, Math.min(5, patch.promptLines ?? cur.promptLines)),
+    responseLines: Math.max(0, Math.min(5, patch.responseLines ?? cur.responseLines)),
+  })
 }
 function resolvedScheme(theme: string): "light" | "dark" {
   if (theme === "system")
