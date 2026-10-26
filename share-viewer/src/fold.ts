@@ -9,6 +9,11 @@
 //   model        [{id, providerID, name?}] per session
 //   prefs        viewer preferences
 import type { SessionStatus } from "@opencode/client/promise"
+// the agent rewrite runs at fold time so EVERY entry (classic, the
+// standalone conversation view, sub pages) inherits it - mounting an
+// entry used to be the only trigger and the conversation entry skipped
+// it, falling back to the raw variant name
+import { setSubagentData } from "./subagent-map"
 
 export type V2Message = Record<string, any>
 
@@ -116,6 +121,10 @@ export function fold(items: { type: string; data?: any; sessionID?: string }[], 
       if (m?.type === "assistant" && !m.model) m.model = { id: "", providerID: "" }
     }
   }
+
+  // resolve subagent labels from the plugin's authoritative stamps (see
+  // the import note at the top) - every entry inherits this at fold time
+  setSubagentData(result)
   }
   return result
 }

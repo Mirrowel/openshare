@@ -9,15 +9,18 @@
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
-import { pagedFor, setPagedFor, type OshSettings } from "./settings"
-import { setDiffMode } from "./settings"
-import { viewSupportsPaged } from "./views/registry"
+import { pagedFor, setPagedFor, resetAllSettings, type OshSettings } from "./settings"
+import { LineStepper } from "./hover-rail"
+import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
+import type { ViewSettingDef } from "./views/registry"
+import { tryView } from "./views/view-context"
+import { sessionToolNamesOf } from "./views/session-data"
 import type { Branding } from "./data-source"
-import { VIEW_OPTIONS } from "./views/registry"
 
 const [panelOpen, setPanelOpen] = createSignal(false)
 // auto-expand picker sub-view inside the settings panel
 const [expandPicker, setExpandPicker] = createSignal(false)
+const [groupPickerOpen, setGroupPicker] = createSignal(false)
 export const togglePanel = () => setPanelOpen((v) => !v)
 export const closePanel = () => setPanelOpen(false)
 
@@ -40,25 +43,72 @@ const THEMES: { id: OshSettings["theme"]; label: string; bg: string; fg: string 
   { id: "system", label: "system", bg: "#17181c", fg: "#d8dbe0" },
   { id: "light", label: "light", bg: "#fafafa", fg: "#171717" },
   { id: "dark", label: "dark", bg: "#101010", fg: "#e6e6e6" },
+  { id: "darker", label: "darker", bg: "#0a0a0a", fg: "#e6e6e6" },
   { id: "mirrobot", label: "mirrobot", bg: "#16130f", fg: "#f2ead8" },
   { id: "midnight", label: "midnight", bg: "#0b0e14", fg: "#8fa3d0" },
   { id: "sepia", label: "sepia", bg: "#f4ecd8", fg: "#8a6d3b" },
   { id: "nord", label: "nord", bg: "#2e3440", fg: "#88c0d0" },
 ]
 
-// a visual signature per view for the selector grid
-const VIEW_MARKS: Record<string, string> = {
-  classic: "▣",
-  reader: "≡",
-  terminal: "❯",
-  casefile: "◫",
-  blueprint: "⊞",
-  cinema: "⬒",
-  timeline: "⋮",
-  letterpress: "A",
-  atlas: "△",
-  teletype: "≣",
-  grove: "❧",
+// a visual signature per view comes from the registry (viewMark) - the
+// marks table is gone; entries carry their own glyphs
+
+/** the debug reset: a deliberate two-step. The resting row is quiet;
+ *  engaging it springs the armed state open (warning icon, Cancel /
+ *  Reset pair). Reset wipes the settings cookie and re-applies the
+ *  defaults live - the app listens for the reset event, no reload. */
+function ResetRow(props: { onDone: () => void }) {
+  const [armed, setArmed] = createSignal(false)
+  const confirm = () => {
+    resetAllSettings()
+    setArmed(false)
+    props.onDone()
+  }
+  return (
+    <Show
+      when={armed()}
+      fallback={
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 py-1.5 px-2 rounded-lg border border-border-weak-base bg-transparent text-12-regular text-text-weaker hover:text-text-base hover:border-border-strong-base cursor-pointer transition-colors duration-150 osh-reset-arm"
+          onClick={() => setArmed(true)}
+          title="wipe every saved setting and restore the defaults"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true" class="shrink-0">
+            <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M2.5 1.5v3h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Reset all settings
+        </button>
+      }
+    >
+      <div class="osh-reset-armed flex items-center gap-2 p-2 rounded-lg border border-error-base/60 bg-error-base/10">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true" class="shrink-0 text-error-base">
+          <path d="M8 5.5v3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <circle cx="8" cy="11.8" r="0.9" fill="currentColor" stroke="none" />
+          <path d="M8 2 1.8 13h12.4L8 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none" />
+        </svg>
+        <span class="flex-1 text-12-regular text-text-strong leading-tight">
+          Reset every setting to its default?
+          <span class="block text-11-regular text-text-weaker">this cannot be undone</span>
+        </span>
+        <button
+          type="button"
+          class="flex items-center h-6 px-2.5 rounded-md border border-border-weak-base bg-transparent text-12-regular text-text-base hover:bg-surface-base cursor-pointer"
+          onClick={() => setArmed(false)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="flex items-center h-6 px-2.5 rounded-md border-none bg-error-base text-12-medium text-white hover:opacity-90 cursor-pointer"
+          onClick={confirm}
+        >
+          Reset
+        </button>
+      </div>
+    </Show>
+  )
 }
 
 function SectionLabel(props: { children: string }) {
@@ -93,6 +143,91 @@ function Section(props: { label: string; children: JSX.Element; alwaysOpen?: boo
   )
 }
 
+/** multi-position lever: label row, then a horizontal track with a
+ *  sliding knob and one mark per position. Clicking the track (or a
+ *  mark) moves the knob (animated); the current value renders beside
+ *  the label and swaps with a fade-slide when it changes. Replaces
+ *  Segmented for 2-3 position choices where the value should name
+ *  itself (owner round 2026-10-26). */
+export function Lever<T extends string>(props: {
+  label: string
+  value: T
+  options: { id: T; label: string }[]
+  onChange: (v: T) => void
+}) {
+  const idx = () => Math.max(0, props.options.findIndex((o) => o.id === props.value))
+  const pos = () => (props.options.length > 1 ? (idx() / (props.options.length - 1)) * 100 : 0)
+  return (
+    <div class="pb-2.5">
+      <div class="flex items-baseline justify-between pb-1.5">
+        <span class="text-12-regular text-text-base">{props.label}</span>
+        <span class="text-12-medium text-text-weaker osh-lever-value">{props.options[idx()]?.label}</span>
+      </div>
+      <div
+        class="relative h-4 flex items-center cursor-pointer"
+        role="radiogroup"
+        aria-label={props.label}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          const x = (e.clientX - r.left) / r.width
+          const i = Math.round(x * (props.options.length - 1))
+          props.onChange(props.options[i]!.id)
+        }}
+      >
+        <div class="absolute left-0 right-0 h-[3px] rounded-full bg-border-weak-base" />
+        <div
+          class="absolute size-3.5 rounded-full border-2 border-background-base shadow-sm transition-[left] duration-200 ease-out"
+          style={{ left: `calc(${pos()}% - 7px)`, background: "var(--openshare-accent, var(--icon-strong-base))" }}
+        />
+        <For each={props.options}>
+          {(o, i) => (
+            <span
+              class="absolute size-1.5 rounded-full transition-colors duration-200"
+              classList={{ "bg-icon-strong-base": i() <= idx(), "bg-border-strong-base": i() > idx() }}
+              style={{ left: `calc(${(i() / Math.max(1, props.options.length - 1)) * 100}% - 3px)` }}
+            />
+          )}
+        </For>
+      </div>
+    </div>
+  )
+}
+
+/** draggable value bar: a styled range input with the live value beside
+ *  the label. Replaces preset Segments for continuous settings (owner
+ *  round 2026-10-26 - gradual adjustment over 3 presets). */
+export function SliderRow(props: {
+  label: string
+  value: number
+  min: number
+  max: number
+  unit?: string
+  onChange: (n: number) => void
+}) {
+  return (
+    <div class="pb-2.5">
+      <div class="flex items-baseline justify-between pb-1.5">
+        <span class="text-12-regular text-text-base">{props.label}</span>
+        <span class="text-12-medium text-text-weaker tabular-nums osh-lever-value">
+          {Math.round(props.value)}
+          {props.unit}
+        </span>
+      </div>
+      <input
+        type="range"
+        class="osh-slider w-full"
+        min={props.min}
+        max={props.max}
+        step={1}
+        value={props.value}
+        aria-label={props.label}
+        style={{ "--osh-slider-fill": `${((props.value - props.min) / Math.max(1, props.max - props.min)) * 100}%` }}
+        onInput={(e) => props.onChange(Number((e.target as HTMLInputElement).value))}
+      />
+    </div>
+  )
+}
+
 function Segmented<T extends string>(props: {
   value: T
   options: { id: T; label: string }[]
@@ -120,7 +255,7 @@ function Segmented<T extends string>(props: {
   )
 }
 
-function Switch(props: { on: boolean; label: string; hint?: string; onChange: () => void }) {
+function Toggle(props: { on: boolean; label: string; hint?: string; onChange: () => void }) {
   return (
     <button
       class="flex items-center justify-between gap-3 w-full py-1 bg-transparent border-none cursor-pointer text-left group"
@@ -156,6 +291,37 @@ function Switch(props: { on: boolean; label: string; hint?: string; onChange: ()
 }
 
 // The panel content, embeddable anywhere. No positioning of its own.
+
+/** renders one view-scoped setting from the registry schema */
+function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings; update: (patch: Partial<OshSettings>) => void }) {
+  const value = () => (props.settings as Record<string, unknown>)[props.def.key]
+  if (props.def.kind === "switch") {
+    return (
+      <Toggle
+        label={props.def.label}
+        hint={props.def.hint}
+        on={value() === true}
+        onChange={() => props.update({ [props.def.key]: value() !== true } as Partial<OshSettings>)}
+      />
+    )
+  }
+  return (
+    <Show when={props.def.showWhen ? (props.settings as Record<string, unknown>)[props.def.showWhen] === true : true}>
+      <div class="pb-1.5">
+        <div class="text-12-regular text-text-weaker pb-1">{props.def.label}</div>
+        <Segmented
+          value={value() as string}
+          options={props.def.options}
+          onChange={(v) => props.update({ [props.def.key]: v } as Partial<OshSettings>)}
+        />
+        <Show when={props.def.hint}>
+          <div class="text-12-regular text-text-weaker pt-1">{props.def.hint}</div>
+        </Show>
+      </div>
+    </Show>
+  )
+}
+
 export function SettingsBody(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void
@@ -188,7 +354,7 @@ export function SettingsBody(props: {
                 onClick={() => props.update({ view: v.id })}
               >
                 <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
-                  {VIEW_MARKS[v.id] ?? v.label[0]}
+                  {viewMark(v.id)}
                 </span>
                 <span class="text-12-regular text-text-base truncate">{v.label}</span>
               </button>
@@ -219,34 +385,56 @@ export function SettingsBody(props: {
         </div>
       </Section>
 
-      <Section label="interface scale" alwaysOpen>
-        <Segmented
-          value={props.settings.textSize}
+      <Section label="reading">
+        <SliderRow
+          label="interface scale"
+          value={props.settings.textScale ?? 100}
+          min={75}
+          max={150}
+          unit="%"
+          onChange={(textScale) => props.update({ textScale })}
+        />
+        <SliderRow
+          label="reading text"
+          value={props.settings.readTextPx ?? 14}
+          min={12}
+          max={24}
+          unit="px"
+          onChange={(readTextPx) => props.update({ readTextPx })}
+        />
+        <SliderRow
+          label="file card width"
+          value={props.settings.cardWidth ?? 40}
+          min={20}
+          max={80}
+          unit="rem"
+          onChange={(cardWidth) => props.update({ cardWidth })}
+        />
+        <Lever
+          label="prompts"
+          value={props.settings.promptStyle}
           options={[
-            { id: "compact" as const, label: "compact" },
-            { id: "normal" as const, label: "normal" },
-            { id: "roomy" as const, label: "roomy" },
+            { id: "bubble" as const, label: "bubble" },
+            { id: "flat" as const, label: "flat" },
           ]}
-          onChange={(textSize) => props.update({ textSize })}
+          onChange={(promptStyle) => props.update({ promptStyle })}
+        />
+        <Lever
+          label="smooth scrolling"
+          value={props.settings.smoothScroll}
+          options={[
+            { id: "instant" as const, label: "instant" },
+            { id: "near" as const, label: "near" },
+            { id: "always" as const, label: "always" },
+          ]}
+          onChange={(smoothScroll) => props.update({ smoothScroll })}
         />
       </Section>
 
-      <Section label="reading text" alwaysOpen>
-        <Segmented
-          value={props.settings.readText}
-          options={[
-            { id: "compact" as const, label: "compact" },
-            { id: "normal" as const, label: "normal" },
-            { id: "large" as const, label: "large" },
-          ]}
-          onChange={(readText) => props.update({ readText })}
-        />
-      </Section>
-
-      <Section label="behavior">
+      <Section label="transcript">
         <div class="flex flex-col">
           <Show when={viewSupportsPaged(props.settings.view)}>
-            <Switch
+            <Toggle
               label="Paged mode"
               hint="one prompt at a time, the rail switcher pages (per view; off = one continuous scroll)"
               on={pagedFor(props.settings, props.settings.view)}
@@ -257,38 +445,86 @@ export function SettingsBody(props: {
               }
             />
           </Show>
-          <Switch
-            label="Prompt rail"
-            hint="the fast-skip pill beside the transcript in scroll mode (paged mode always shows it - it is the pager)"
-            on={props.settings.showRail !== false}
-            onChange={() => props.update({ showRail: props.settings.showRail === false })}
-          />
-          <Switch
+          {/* prompt nav state lives in the control itself (sidebar gear +
+              collapse / popover sidebar button) - no panel duplicate */}
+          <Toggle
             label="Center content"
             on={props.settings.centerContent}
             onChange={() => props.update({ centerContent: !props.settings.centerContent })}
           />
-          <Switch
+          <Toggle
             label="Follow live"
             hint="keep the newest content visible while you are at the bottom"
             on={props.settings.followLive}
             onChange={() => props.update({ followLive: !props.settings.followLive })}
           />
-          <Switch
+          <Toggle
             label="Expanded reasoning"
             on={props.settings.reasoningOpen}
             onChange={() => props.update({ reasoningOpen: !props.settings.reasoningOpen })}
           />
-          <Switch
+          <Toggle
             label="Tool call info"
             hint="invocation titles and queries"
             on={props.settings.toolInfo}
             onChange={() => props.update({ toolInfo: !props.settings.toolInfo })}
           />
-          {/* auto-expand: WHICH tool bodies open on render. Checkbox list
-              (known tools + anything this session used), cookie-persisted
-              so every share picks it up. Default: none */}
-          <div class="pl-3 pb-1.5">
+           {/* grouping: off = every call its own row; custom = only the
+               checked tools collapse; all = everything. The checklist
+               appears (animated) only on custom */}
+           <Lever
+             label="group tool calls"
+             value={props.settings.toolGrouping}
+             options={[
+               { id: "off" as const, label: "off" },
+               { id: "custom" as const, label: "custom" },
+               { id: "all" as const, label: "all" },
+             ]}
+             onChange={(toolGrouping) => {
+               props.update({ toolGrouping })
+               if (toolGrouping === "custom" && !groupPickerOpen()) setGroupPicker(true)
+             }}
+           />
+           <Show when={props.settings.toolGrouping === "custom"}>
+             <div class="osh-reveal pb-1.5">
+               <button
+                 type="button"
+                 class="w-full flex items-center justify-between text-left text-12-regular text-text-base py-1 hover:text-text-strong"
+                 onClick={() => setGroupPicker(!groupPickerOpen())}
+               >
+                 <span>Collapse these</span>
+                 <span class="text-text-weaker">{props.settings.groupTools.length ? `${props.settings.groupTools.length} on` : "none"} {groupPickerOpen() ? "▾" : "▸"}</span>
+               </button>
+               <Show when={groupPickerOpen()}>
+                 <div class="flex flex-col gap-0.5 pt-1 max-h-56 overflow-y-auto" data-osh-panel-scroll>
+                   <For each={autoExpandChoices()}>
+                     {(name) => {
+                       const on = () => props.settings.groupTools.includes(name)
+                       return (
+                         <label class="flex items-center gap-2 text-12-regular text-text-base cursor-pointer py-0.5">
+                           <input
+                             type="checkbox"
+                             checked={on()}
+                             onChange={() => {
+                               const next = on()
+                                 ? props.settings.groupTools.filter((t) => t !== name)
+                                 : [...props.settings.groupTools, name]
+                               props.update({ groupTools: next })
+                             }}
+                           />
+                           <span classList={{ "text-text-weaker": !on() }}>{name}</span>
+                         </label>
+                       )
+                     }}
+                   </For>
+                 </div>
+               </Show>
+             </div>
+           </Show>
+           {/* auto-expand: WHICH tool bodies open on render. Checkbox list
+               (known tools + anything this session used), cookie-persisted
+               so every share picks it up. Default: none */}
+          <div class="pb-1.5">
             <button
               type="button"
               class="w-full flex items-center justify-between text-left text-12-regular text-text-base py-1 hover:text-text-strong"
@@ -322,81 +558,21 @@ export function SettingsBody(props: {
               </div>
             </Show>
           </div>
-          {/* long lines in tool outputs: wrap, or scroll horizontally
-              (hidden scrollbar) - the output width is hard-capped either
-              way; this only picks the overflow behavior */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Long lines in outputs</div>
-            <Segmented
-              value={props.settings.outputOverflow}
-              options={[
-                { id: "scroll" as const, label: "scroll" },
-                { id: "wrap" as const, label: "wrap" },
-              ]}
-              onChange={(outputOverflow) => props.update({ outputOverflow })}
-            />
-          </div>
-          {/* diff layout: auto (split when it fits), or forced - forced
-              split still requires the width; the per-card U/A/S toggle in
-              edit headers writes the same setting */}
-          <div class="pl-3 pb-1.5">
-            <div class="text-12-regular text-text-weaker pb-1">Diff layout</div>
-            <Segmented
-              value={props.settings.diffMode}
-              options={[
-                { id: "auto" as const, label: "auto" },
-                { id: "split" as const, label: "split" },
-                { id: "unified" as const, label: "unified" },
-              ]}
-              onChange={(diffMode) => {
-                props.update({ diffMode })
-                setDiffMode(diffMode)
-              }}
-            />
-          </div>
-          {/* grouping only applies to the classic timeline; views have
-              their own composition */}
-          <Show when={props.settings.view === "classic"}>
-            <Switch
-              label="Group tool calls"
-              hint="collapse a response's tool calls into summary rows"
-              on={props.settings.toolGrouping}
-              onChange={() => props.update({ toolGrouping: !props.settings.toolGrouping })}
-            />
-            <Show when={props.settings.toolGrouping}>
-              <div class="pl-3 pb-1.5">
-                <div class="text-12-regular text-text-weaker pb-1">Group</div>
-                <Segmented
-                  value={props.settings.toolGroupingScope}
-                  options={[
-                    { id: "context" as const, label: "reads & searches" },
-                    { id: "all" as const, label: "all calls" },
-                  ]}
-                  onChange={(toolGroupingScope) => props.update({ toolGroupingScope })}
-                />
-                <div class="text-11-regular text-text-weaker pt-1">
-                  reads &amp; searches matches the original scope: shell, edits and agents stay their own rows
-                </div>
-              </div>
-            </Show>
-          </Show>
-          {/* grove owns its own composition: reasoning sits with the tools
-              on the left by default; this flips it to the reading column */}
-          <Show when={props.settings.view === "grove"}>
-            <div class="pl-3 pb-1.5">
-              <div class="text-12-regular text-text-weaker pb-1">Thinking</div>
-              <Segmented
-                value={props.settings.groveThinking}
-                options={[
-                  { id: "left" as const, label: "left, with tools" },
-                  { id: "right" as const, label: "right, with prompts" },
-                ]}
-                onChange={(groveThinking) => props.update({ groveThinking })}
-              />
-            </div>
-          </Show>
+           {/* long-line overflow, diff layout, and the per-tool file
+               overflow are NOT panel settings: their toggles live on the
+               tool cards themselves (per-card U/A/S and wrap/scroll
+               selectors; the cookie-persisted settings stay) */}
+           {/* prompts, file card width and smooth scrolling live in the
+              reading & layout section above */}
+           <div class="pt-1" />
+           {/* view-scoped settings render from the registry schema
+              (VIEW_SETTINGS / ViewEntry.settings) - a view that adds a
+              setting edits ONLY its own entry, never this file */}
+           <For each={VIEW_SETTINGS[props.settings.view] ?? []}>
+             {(def) => <ViewSettingControl def={def} settings={props.settings} update={props.update} />}
+            </For>
           <Show when={props.branding.backgroundUrl}>
-            <Switch
+            <Toggle
               label="Background image"
               on={props.settings.backgroundOn}
               onChange={() => props.update({ backgroundOn: !props.settings.backgroundOn })}
@@ -405,18 +581,12 @@ export function SettingsBody(props: {
         </div>
       </Section>
 
-      <Section label="search" alwaysOpen>
-        <div class="relative">
-          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-icon-weaker-base pointer-events-none">
-            <Icon name="magnifying-glass" size="small" />
-          </span>
-          <input
-            class="w-full box-border pl-8 pr-2.5 py-1.5 rounded-lg border border-border-weak-base bg-background-stronger text-text-base text-12-regular outline-none focus:border-icon-strong-base transition-colors duration-150"
-            placeholder="filter prompts (Ctrl+K)"
-            value={props.search}
-            onInput={(e) => props.onSearch(e.currentTarget.value)}
-          />
-        </div>
+      {/* the view-filter search input is GONE: the header search palette
+          (/) is the search surface; the nav lists keep the togglable
+          prompts-only filter in their own config */}
+
+      <Section label="debug">
+        <ResetRow onDone={() => props.update({})} />
       </Section>
     </div>
   )
@@ -450,7 +620,9 @@ export function SettingsPanel(props: {
  *  modals): a gear button + an ANCHORED popover under it (top-8 right-0,
  *  opaque, scroll-preserving). letterpress/terminal/cinema each shipped a
  *  centered fixed modal - "settings show up in the middle of the page"
- *  (live-caught); every skin now uses this instead. */
+ *  (live-caught); every skin now uses this instead.
+ *  Inside a view it self-sources sessionTools from the ViewContext, so
+ *  the auto-expand picker lists this share's mcp/custom tools everywhere. */
 export function SkinSettingsPopover(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void
@@ -463,6 +635,8 @@ export function SkinSettingsPopover(props: {
   gearSize?: "small" | "normal"
   gearLabel?: string
 }) {
+  const view = tryView()
+  const sessionTools = () => props.sessionTools ?? (view ? sessionToolNamesOf(view.data, view.sessionID) : undefined)
   return (
     <div class="relative flex items-center">
       <button
@@ -496,7 +670,7 @@ export function SkinSettingsPopover(props: {
             branding={props.branding}
             search={props.search}
             onSearch={props.onSearch}
-            sessionTools={props.sessionTools}
+            sessionTools={sessionTools()}
           />
         </div>
       </Show>

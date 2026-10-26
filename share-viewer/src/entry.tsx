@@ -10,6 +10,10 @@ import { I18nProvider, pluralCategory, pluralKey, type UiI18nParams } from "@ope
 import { dict as uiEn } from "@opencode/ui/i18n/en"
 import { Suspense } from "solid-js"
 import { App } from "./app"
+// register our tool renderers before anything renders - an entry-level
+// import guarantees registration order regardless of which component
+// tree mounts first (classic or a skin)
+import "./tool-overrides"
 import "./app.css"
 import "./views/skins.css"
 

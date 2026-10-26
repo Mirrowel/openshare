@@ -226,12 +226,15 @@ try {
 
     const { host, state } = mockHost(client)
 
-    // F1: first share run hits the consent gate
-    const gated = await flows.runShareFlow(host, sid)
-    check("F1: consent gate before first share", gated.message === "consent required", gated.message)
-
-    const shared = await flows.confirmShare(host, await flows.resolveRoot(client, sid))
-    check("F1: confirmShare succeeds", shared.ok === true, shared.message)
+    // F1: consent is EXPLICIT every time (no remembered consent). Declining
+    // must not create anything; consenting creates + copies the URL.
+    {
+      const declinedHost = mockHost(client, { consent: false })
+      const declined = await flows.shareWithConsent(declinedHost.host, sid)
+      check("F1: declined consent does not share", declined.ok === false && !declined.url, declined.message)
+    }
+    const shared = await flows.shareWithConsent(host, sid)
+    check("F1: consented share succeeds", shared.ok === true && !!shared.url, shared.message)
     check("F1: URL copied to clipboard", state.clipboard.at(-1) === shared.url, `${state.clipboard.at(-1)} vs ${shared.url}`)
 
     const shareId = shared.url.split("/").pop()
@@ -244,8 +247,9 @@ try {
     }, "F1: share data backfilled")
     check("F1: worker carries the backfilled share", !!body)
 
-    // F2: share again copies the link, no new share
-    const again = await flows.runShareFlow(host, sid)
+    // F2: share again copies the link (already-shared short-circuits the
+    // consent gate — nothing new is being published), no new share
+    const again = await flows.shareWithConsent(host, sid)
     check("F2: second share copies existing link", again.ok === true && again.url === shared.url, again.message)
     const after = await httpGet(`${serve.base}/session/${sid}`)
     const bindingNow = (await after.json())?.metadata?.openshare
@@ -383,11 +387,10 @@ try {
     check("F7: purge leaves the server empty", purged.ok === true && sharesAfterPurge.length === 0, JSON.stringify(purged))
 
     // F8: gone detection — a binding whose page died server-side (purge /
-    // TTL / delete) is auto-cleared when the share manager opens, with a
+    // TTL / delete) is auto-cleared when /share opens, with a
     // "Share is gone" modal; the probe is credential-free (/data 404 before
     // the read-auth gate).
-    state.kv.set("openshare_consent", true)
-    const reshard = await flows.runShareFlow(host, sid)
+    const reshard = await flows.shareWithConsent(host, sid)
     check("F8: re-share after purge creates a fresh page", reshard.ok === true && !!reshard.url, reshard.message)
     const shareId2 = reshard.url.split("/").pop()
     await waitFor(async () => {

@@ -782,6 +782,55 @@ try {
     // cleanup
     await httpGet(`${WORKER_URL}/api/share/${init.id}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: init.secret }) })
   }
+
+  // S13: queued-prompt semantics (v1 mirrors the host): a prompt queued
+  // behind a running turn persists immediately and may appear on the
+  // share BEFORE the current turn finishes — host-faithful. What must
+  // hold: message ORDER (U1 < A1 < U2 < A2 by time.created — the queued
+  // prompt never reorders the streaming assistant above it), the slow
+  // turn's content stays attached to A1, and the queued prompt still
+  // gets its own answer after the turn drains.
+  {
+    const s13Sandbox = join(suiteDir, "queued")
+    const s13Project = join(s13Sandbox, "project")
+    mkdirSync(s13Project, { recursive: true })
+    const s13UrlFile = join(s13Sandbox, "share-url.txt")
+    const s13Env = { OPENSHARE_URL_FILE: s13UrlFile }
+    const s13Serve = await startServe({ name: "queued", path: PKG }, s13Sandbox, s13Project, s13Env)
+    try {
+      const sid = await createAndPrompt(s13Serve, "queued prompt probe")
+      const url = (await waitFor(() => readUrlFile(s13UrlFile), "S13: share created")).trim().split("\n").at(-1)
+      const id = url.split("/").pop()
+      // turn 1: slow (streams ~2.5s); fire prompt 2 ~800ms in — the
+      // runner is busy, so the host queues it
+      const p1 = promptSession(s13Serve, sid, "slow one SLOW_TURN")
+      await sleep(800)
+      const p2 = promptSession(s13Serve, sid, "queued behind it")
+      await Promise.all([p1, p2])
+      const settled = await waitForShareData(id, (parsed) => {
+        if (parsed.status !== "completed") return undefined
+        const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.type)
+        const users = msgs.filter((m) => m.data.type === "user")
+        const assistants = msgs.filter((m) => m.data.type === "assistant")
+        return users.length >= 2 && assistants.length >= 2 ? parsed : undefined
+      }, "S13: both turns landed")
+      const msgs = settled.data
+        .filter((i) => i.type === "message" && (i.data?.type === "user" || i.data?.type === "assistant") && i.data?.time?.created)
+        .sort((a, b) => a.data.time.created - b.data.time.created)
+      // createAndPrompt bootstraps one probe turn (U0 A0); the scenario's
+      // own messages are the LAST four
+      const roles = msgs.slice(-4).map((m) => (m.data.type === "user" ? "U" : "A")).join("")
+      check("S13: message order U1 A1 U2 A2", roles === "UAUA", roles)
+      const a1 = msgs.filter((m) => m.data.type === "assistant").at(-2)
+      const a1Text = (a1?.data?.content ?? []).some((c) => c?.type === "text" && String(c?.text ?? "").includes("slow turn complete"))
+      check("S13: slow turn's content stayed on its own message", a1Text, JSON.stringify((a1?.data?.content ?? []).map((c) => c.type)))
+      const u2 = msgs.filter((m) => m.data.type === "user")[1]
+      const a2 = msgs.filter((m) => m.data.type === "assistant")[1]
+      check("S13: queued prompt answered after drain", !!(u2 && a2 && a2.data.time.created >= u2.data.time.created), `${u2?.data?.time?.created} vs ${a2?.data?.time?.created}`)
+    } finally {
+      await stopServe(s13Serve)
+    }
+  }
   } // end engine shard
 } catch (error) {
   console.error("SUITE ERROR:", error.message)

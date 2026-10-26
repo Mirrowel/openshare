@@ -345,6 +345,7 @@ function resolveShareMode(cfg, input) {
 
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join as join2 } from "node:path";
 
 // src/contract.ts
@@ -554,6 +555,15 @@ function cursorFor(id, time) {
   return Buffer.from(JSON.stringify({ id, time })).toString("base64url");
 }
 
+// src/binding-queue.ts
+var queues = new Map;
+function queueBindingWrite(sid, fn) {
+  const prev = queues.get(sid) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  queues.set(sid, run.catch(() => {}));
+  return run;
+}
+
 // src/core.ts
 var DEFAULT_POLICY = {
   mode: "persistent",
@@ -749,6 +759,8 @@ function createEngine(deps) {
         initTimer: null,
         initWasAttach: false,
         backoff: 1000,
+        backoffResetTimer: null,
+        spoolSaveTimer: null,
         reconnectTimer: null,
         intentionalClose: false,
         connectQueued: false,
@@ -806,10 +818,14 @@ function createEngine(deps) {
       if (b && typeof b === "object" && b.policy) {
         applyPolicy(b.policy, url);
       }
+      if (b && typeof b === "object" && b.frameAuth) {
+        frameAuthUrls.add(url);
+      }
     }).catch(() => {
       policyAsked.delete(url);
     });
   };
+  const frameAuthUrls = new Set;
   const wsUrl = (url) => url.replace(/^http/, "ws");
   let spoolRoot = spoolDirFor(cfg);
   try {
@@ -845,7 +861,8 @@ function createEngine(deps) {
     activated: false,
     wroteBinding: false,
     everConnected: false,
-    merged: new Map
+    merged: new Map,
+    sentHash: new Map
   });
   const refreshConfig = () => {
     const next = loadConfig(deps.pluginDir, deps.options);
@@ -878,6 +895,7 @@ function createEngine(deps) {
     }
     st.activated = true;
     st.opts = opts;
+    st.sentHash.clear();
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
       chain = chain.then(() => seedManualStatus(st)).then(() => backfill(st, info)).then(() => queueConnectAll(st)).catch((e) => logError("activation error", e?.message || e));
@@ -929,24 +947,26 @@ function createEngine(deps) {
   async function writeMetadata(st, value) {
     if (!st.client)
       return;
-    try {
-      const info = unwrap(await st.client.session.get({
-        path: { id: st.sid },
-        ...deps.directory ? { query: { directory: deps.directory } } : {}
-      }));
-      const metadata = { ...info?.metadata ?? {} };
-      if (value === null)
-        delete metadata[METADATA_KEY];
-      else
-        metadata[METADATA_KEY] = value;
-      unwrap(await st.client.session.update({
-        path: { id: st.sid },
-        body: { metadata },
-        ...deps.directory ? { query: { directory: deps.directory } } : {}
-      }));
-    } catch (e) {
-      log("metadata write failed (spool still covers reconnects):", e?.message || e);
-    }
+    await queueBindingWrite(st.sid, async () => {
+      try {
+        const info = unwrap(await st.client.session.get({
+          path: { id: st.sid },
+          ...deps.directory ? { query: { directory: deps.directory } } : {}
+        }));
+        const metadata = { ...info?.metadata ?? {} };
+        if (value === null)
+          delete metadata[METADATA_KEY];
+        else
+          metadata[METADATA_KEY] = value;
+        unwrap(await st.client.session.update({
+          path: { id: st.sid },
+          body: { metadata },
+          ...deps.directory ? { query: { directory: deps.directory } } : {}
+        }));
+      } catch (e) {
+        log("metadata write failed (spool still covers reconnects):", e?.message || e);
+      }
+    });
   }
   const parseBinding = (record) => {
     const out = new Map;
@@ -1050,20 +1070,32 @@ function createEngine(deps) {
   const spoolSave = (st, r) => {
     try {
       writeFileSync2(metaPath(st, r.url), JSON.stringify({ shareId: r.shareId, secret: r.secret, ackedRev: r.ackedRev, sid: st.sid, url: r.url }));
-      writeFileSync2(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join(`
+      writeFileSync2(queuePath(st, r.url), r.pending.map((f) => f.wire ?? JSON.stringify(f)).join(`
 `) + (r.pending.length ? `
 ` : ""));
+      rmSync(legacyMetaPath(st), { force: true });
+      rmSync(legacyQueuePath(st), { force: true });
     } catch (e) {
       logError("spool save failed", e?.message || e);
     }
   };
   const spoolAppend = (st, r, f) => {
     try {
-      appendFileSync(queuePath(st, r.url), JSON.stringify(f) + `
+      appendFileSync(queuePath(st, r.url), (f.wire ?? JSON.stringify(f)) + `
 `);
     } catch (e) {
+      r.spoolAppendFailed = true;
       logError("spool append failed", e?.message || e);
     }
+  };
+  const scheduleSpoolSave = (st, r) => {
+    if (r.spoolSaveTimer)
+      return;
+    r.spoolSaveTimer = setTimeout(() => {
+      r.spoolSaveTimer = null;
+      if (!st.closed)
+        spoolSave(st, r);
+    }, 300);
   };
   const spoolLoad = (st, r) => {
     try {
@@ -1073,23 +1105,33 @@ function createEngine(deps) {
         r.secret = meta.secret;
         r.ackedRev = meta.ackedRev ?? 0;
       }
+    } catch {}
+    try {
       if (existsSync2(queuePath(st, r.url))) {
-        r.pending = [];
+        const disk = [];
         for (const line of readFileSync2(queuePath(st, r.url), "utf8").split(`
 `)) {
           if (!line.trim())
             continue;
           try {
-            r.pending.push(JSON.parse(line));
+            disk.push(JSON.parse(line));
           } catch {
             log(`spool load: dropped torn tail line for ${st.sid.slice(0, 18)}`);
             break;
           }
         }
+        for (const f of disk) {
+          if (typeof f.seq !== "number")
+            f.seq = ++nextSeq;
+          else if (f.seq >= nextSeq)
+            nextSeq = f.seq + 1;
+        }
+        if (!r.spoolAppendFailed)
+          r.pending = disk;
+        else
+          r.spoolAppendFailed = false;
       }
-    } catch {
-      r.pending = [];
-    }
+    } catch {}
     if (!r.shareId && targets[0]?.url === r.url) {
       try {
         const meta = JSON.parse(readFileSync2(legacyMetaPath(st), "utf8"));
@@ -1108,10 +1150,17 @@ function createEngine(deps) {
   };
   const spoolClear = (st, r) => {
     try {
+      if (r.spoolSaveTimer) {
+        clearTimeout(r.spoolSaveTimer);
+        r.spoolSaveTimer = null;
+      }
       rmSync(metaPath(st, r.url), { force: true });
       rmSync(queuePath(st, r.url), { force: true });
+      rmSync(legacyMetaPath(st), { force: true });
+      rmSync(legacyQueuePath(st), { force: true });
     } catch {}
   };
+  let nextSeq = 0;
   const wsSend = (r, obj) => {
     if (debugEvents)
       log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send ${obj?.op} (ready=${r.wsReady})`);
@@ -1122,30 +1171,50 @@ function createEngine(deps) {
     }
     return true;
   };
-  const chunkItems = (items, maxItems, maxBytes) => {
+  const chunkedFrames = (items, maxItems, maxBytes) => {
     const chunks = [];
     let cur = [];
+    let curJson = [];
     let curBytes = 0;
     for (const it of items) {
-      const n = (JSON.stringify(it) ?? "null").length;
-      if (cur.length && (cur.length >= maxItems || curBytes + n > maxBytes)) {
-        chunks.push(cur);
+      const j = JSON.stringify(it) ?? "null";
+      if (cur.length && (cur.length >= maxItems || curBytes + j.length > maxBytes)) {
+        chunks.push({ items: cur, json: "[" + curJson.join(",") + "]" });
         cur = [];
+        curJson = [];
         curBytes = 0;
       }
       cur.push(it);
-      curBytes += n;
+      curJson.push(j);
+      curBytes += j.length;
     }
     if (cur.length)
-      chunks.push(cur);
+      chunks.push({ items: cur, json: "[" + curJson.join(",") + "]" });
     return chunks;
+  };
+  const chunkItems = (items, maxItems, maxBytes) => chunkedFrames(items, maxItems, maxBytes).map((c) => c.items);
+  const syncFrameStr = (itemsJson, status, seq) => `{"op":"sync","items":${itemsJson},"status":${JSON.stringify(status)}${seq !== undefined ? `,"seq":${seq}` : ""}}`;
+  const wsSendRaw = (r, s) => {
+    if (debugEvents)
+      log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send raw (${Math.round(s.length / 1024)}KB, ready=${r.wsReady})`);
+    try {
+      r.ws?.send(s);
+    } catch {
+      return false;
+    }
+    return true;
   };
   const sendSync = (r, f) => {
     if (!f.items.length)
-      return wsSend(r, { op: "sync", items: [], status: f.status });
-    for (const chunk of chunkItems(f.items, 200, 512 * 1024)) {
-      wsSend(r, { op: "sync", items: chunk, status: f.status });
+      return wsSend(r, { op: "sync", items: [], status: f.status, seq: f.seq });
+    if (f.wire)
+      return wsSendRaw(r, f.wire);
+    const itemsJson = JSON.stringify(f.items);
+    if (f.items.length <= 200 && itemsJson.length <= 512 * 1024) {
+      return wsSendRaw(r, syncFrameStr(itemsJson, f.status, f.seq));
     }
+    for (const c of chunkedFrames(f.items, 200, 512 * 1024))
+      wsSendRaw(r, syncFrameStr(c.json, f.status, f.seq));
     return true;
   };
   const announceUrl = (st, r) => {
@@ -1287,7 +1356,8 @@ function createEngine(deps) {
         logError(`sharing to ${r.url} disabled (no credential): ${cred.error}`);
         return;
       }
-      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws?token=${encodeURIComponent(token ?? "")}`);
+      const useFrameAuth = !!token && frameAuthUrls.has(r.url);
+      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws${useFrameAuth ? "" : `?token=${encodeURIComponent(token ?? "")}`}`);
       r.ws = ws;
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000);
@@ -1323,6 +1393,27 @@ function createEngine(deps) {
         if (!st.closed)
           scheduleReconnect(st, r);
       });
+      if (useFrameAuth) {
+        wsSend(r, { op: "auth", token });
+        const authed = await new Promise((resolve) => {
+          const t = setTimeout(() => resolve(false), 3000);
+          r.authWaiter = () => {
+            clearTimeout(t);
+            resolve(true);
+          };
+        });
+        r.authWaiter = undefined;
+        if (!authed) {
+          logError(`ws ${r.url.slice(0, 24)}: frame-auth ack timeout - reconnecting with query token`);
+          frameAuthUrls.delete(r.url);
+          try {
+            ws.close(4000, "auth timeout");
+          } catch {}
+          if (!st.closed)
+            scheduleReconnect(st, r);
+          return;
+        }
+      }
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
@@ -1351,7 +1442,7 @@ function createEngine(deps) {
   const scheduleReconnect = (st, r) => {
     if (st.closed || r.reconnectTimer)
       return;
-    const wait = r.backoff;
+    const wait = Math.max(250, Math.round(r.backoff * (0.8 + Math.random() * 0.4)));
     r.backoff = Math.min(r.backoff * 2, 60000);
     r.reconnectTimer = setTimeout(() => {
       r.reconnectTimer = null;
@@ -1433,6 +1524,11 @@ function createEngine(deps) {
     }
   };
   const handleFrame = async (st, r, frame) => {
+    if (frame.op === "authed") {
+      r.authWaiter?.();
+      r.authWaiter = undefined;
+      return;
+    }
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "");
@@ -1471,6 +1567,16 @@ function createEngine(deps) {
             queueConnect(st, r);
           return;
         }
+        if (/limit|too many|rate/i.test(err)) {
+          logError(`${r.url}: create refused:`, frame.error, "- retrying with backoff");
+          r.connecting = false;
+          try {
+            r.ws?.close(4000, "rate limited");
+          } catch {}
+          if (!st.closed)
+            scheduleReconnect(st, r);
+          return;
+        }
         logError(`${r.url}: init refused:`, frame.error, "- creating fresh share");
         deleteAbandoned(r);
         r.shareId = null;
@@ -1499,11 +1605,19 @@ function createEngine(deps) {
       r.connecting = false;
       r.initWasAttach = false;
       r.collided = null;
+      if (r.frozenRemote && !frame.error)
+        r.frozenRemote = false;
       if (r.initTimer) {
         clearTimeout(r.initTimer);
         r.initTimer = null;
       }
-      r.backoff = 1000;
+      if (r.backoffResetTimer)
+        clearTimeout(r.backoffResetTimer);
+      r.backoffResetTimer = setTimeout(() => {
+        r.backoffResetTimer = null;
+        if (r.wsReady && !r.reconnectTimer)
+          r.backoff = 1000;
+      }, 30000);
       st.everConnected = true;
       if (frame.policy)
         applyPolicy(frame.policy, r.url);
@@ -1523,18 +1637,49 @@ function createEngine(deps) {
         flush(st);
       }
       if (wasFanoutCreate) {
+        st.sentHash.clear();
         chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", e?.message || e));
       }
       return;
     }
     if (frame.op === "ack") {
       r.ackedRev = frame.rev ?? r.ackedRev;
-      r.pending = [];
-      spoolSave(st, r);
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer);
+        r.backoffResetTimer = null;
+        r.backoff = 1000;
+      }
+      if (typeof frame.seq === "number") {
+        r.pending = r.pending.filter((p) => p.seq !== frame.seq);
+      } else {
+        r.pending = [];
+      }
+      scheduleSpoolSave(st, r);
       scheduleBindingWrite(st);
       return;
     }
     if (frame.op === "nack" || frame.op === "error") {
+      const errText = String(frame.error ?? "");
+      if (frame.op === "nack") {
+        if (/not found|gone/i.test(errText)) {
+          logError(`${r.url}: share vanished server-side (nack: ${errText}) - recreating`);
+          deleteAbandoned(r);
+          r.shareId = null;
+          r.secret = null;
+          r.ackedRev = 0;
+          try {
+            r.ws?.close(4000, "share gone");
+          } catch {}
+          if (!st.closed)
+            queueConnect(st, r);
+          return;
+        }
+        if (/frozen/i.test(errText)) {
+          r.frozenRemote = true;
+          logError(`${r.url}: share frozen by the hoster - edits refused; contact the server admin`);
+          return;
+        }
+      }
       logError(`${r.url}: worker refused frame:`, JSON.stringify(frame).slice(0, 200));
       if (frame.op === "error" && r.wsReady && !st.closed) {
         r.wsReady = false;
@@ -1557,7 +1702,7 @@ function createEngine(deps) {
     queueConnect(st, r);
   };
   const frameFrom = (st) => {
-    stampsPass();
+    stampsPass(st);
     const items = Array.from(st.queue.values());
     st.queue.clear();
     const statusChanged = st.status !== st.lastSentStatus;
@@ -1577,14 +1722,32 @@ function createEngine(deps) {
     const f = frameFrom(st);
     if (!f)
       return;
+    const chunks = f.items.length ? chunkedFrames(f.items, 200, 512 * 1024) : [];
     let httpWork;
     for (const r of st.remotes.values()) {
-      r.pending.push(f);
-      spoolAppend(st, r, f);
+      if (r.frozenRemote)
+        continue;
+      const fresh = [];
+      if (chunks.length) {
+        for (const c of chunks) {
+          const seq = ++nextSeq;
+          const cf = { items: c.items, status: f.status, seq, wire: syncFrameStr(c.json, f.status, seq) };
+          fresh.push(cf);
+          r.pending.push(cf);
+          spoolAppend(st, r, cf);
+        }
+      } else {
+        const seq = ++nextSeq;
+        const cf = { items: [], status: f.status, seq };
+        fresh.push(cf);
+        r.pending.push(cf);
+        spoolAppend(st, r, cf);
+      }
       if (r.ws && !r.wsReady)
         continue;
       if (r.wsReady) {
-        sendSync(r, f);
+        for (const cf of fresh)
+          sendSync(r, cf);
         continue;
       }
       const viaHttp = flushViaHttp(st, r);
@@ -1593,21 +1756,55 @@ function createEngine(deps) {
     }
     if (st.remotes.size)
       st.lastFlushAt = Date.now();
+    if (httpWork)
+      httpWork.catch((e) => logError("http flush error", e?.message || e));
     return httpWork;
+  };
+  const httpDedupeKey = (it) => {
+    if (!it || typeof it !== "object")
+      return null;
+    const o = it;
+    switch (o.type) {
+      case "session":
+        return "session/" + (o.data?.id ?? "");
+      case "session_diff":
+        return "session_diff/" + (o.sessionID ?? o.data?.sessionID ?? "");
+      case "message":
+        return "message/" + (o.data?.id ?? "");
+      case "part":
+        return "part/" + (o.data?.messageID ?? "") + "/" + (o.data?.id ?? "");
+      case "model":
+        return "model/" + (o.sessionID ?? o.data?.sessionID ?? "");
+      case "prefs":
+        return "prefs";
+      default:
+        return null;
+    }
   };
   const flushViaHttp = async (st, r) => {
     if (!r.shareId || !r.pending.length)
       return;
-    const items = [];
+    const byKey = new Map;
+    const unkeyed = [];
     let status;
+    const sentSeqs = new Set;
     for (const f of r.pending) {
-      for (const it of f.items)
-        items.push(it);
+      for (const it of f.items) {
+        const k = httpDedupeKey(it);
+        if (k)
+          byKey.set(k, it);
+        else
+          unkeyed.push(it);
+      }
       if (f.status)
         status = f.status;
+      if (typeof f.seq === "number")
+        sentSeqs.add(f.seq);
     }
+    const items = [...byKey.values(), ...unkeyed];
     const cred = credOf(r.url);
-    for (const chunk of chunkItems(items, 500, 4 * 1024 * 1024)) {
+    const chunks = items.length ? chunkItems(items, 500, 4 * 1024 * 1024) : [[]];
+    for (const chunk of chunks) {
       const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
         method: "POST",
         headers: { "content-type": "application/json", ...cred.credential ? { authorization: `Bearer ${cred.credential}` } : {} },
@@ -1619,8 +1816,8 @@ function createEngine(deps) {
       const body = await res.json().catch(() => ({}));
       r.ackedRev = body.rev ?? r.ackedRev;
     }
-    r.pending = [];
-    spoolSave(st, r);
+    r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq));
+    scheduleSpoolSave(st, r);
   };
   const scheduleFlush = (st) => {
     if (st.timer)
@@ -1631,12 +1828,27 @@ function createEngine(deps) {
       st.timer = null;
       if (debugEvents)
         log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} remotes=${st.remotes.size}`);
-      chain = chain.then(() => flush(st)).catch((e) => logError("flush error", e?.message || e));
+      chain = chain.then(() => {
+        flush(st);
+      }).catch((e) => logError("flush error", e?.message || e));
     }, wait);
   };
   const enqueue = (st, entry) => {
     if (!st || !entry)
       return;
+    let h;
+    try {
+      h = createHash("sha256").update(JSON.stringify(entry.item)).digest("hex");
+    } catch {
+      h = "";
+    }
+    if (h && st.sentHash.get(entry.key) === h) {
+      if (debugEvents)
+        log(`enqueue dedupe ${entry.item.type} ${entry.key.slice(0, 40)}`);
+      return;
+    }
+    if (h)
+      st.sentHash.set(entry.key, h);
     st.queue.set(entry.key, entry.item);
     indexMessage(entry);
     if (debugEvents)
@@ -1646,6 +1858,7 @@ function createEngine(deps) {
     scheduleFlush(st);
   };
   const msgIndex = new Map;
+  const tombstoned = new Set;
   const indexMessage = (entry) => {
     if (entry.item.type !== "message")
       return;
@@ -1667,6 +1880,8 @@ function createEngine(deps) {
   };
   const sessionStateOf = (sid) => sessions.get(childToParent.get(sid) ?? sid);
   const reEnqueueMessage = (m) => {
+    if (tombstoned.has(`${m.sid}:${m.data.id}`))
+      return;
     const st = sessionStateOf(m.sid);
     if (st)
       enqueue(st, itemFor("message", m.data, m.sid));
@@ -1683,15 +1898,7 @@ function createEngine(deps) {
     }
     return;
   };
-  const stampAgentSwitches = () => {
-    const bySession = new Map;
-    for (const m of msgIndex.values()) {
-      const list = bySession.get(m.sid);
-      if (list)
-        list.push(m);
-      else
-        bySession.set(m.sid, [m]);
-    }
+  const stampAgentSwitches = (bySession) => {
     for (const [, list] of bySession) {
       list.sort((a, b) => a.created - b.created);
       const users = list.map((m, i) => m.role === "user" ? i : -1).filter((i) => i >= 0);
@@ -1699,13 +1906,14 @@ function createEngine(deps) {
       for (let k = 0;k < users.length; k++) {
         const agent = segmentAgent(list, users[k]);
         const d = list[users[k]].data;
-        const meta = d.metadata ??= {};
         const want = k > 0 && agent && prev && agent !== prev ? agent : undefined;
-        if (want !== meta.agentSwitch) {
-          if (want)
+        if (want !== d.metadata?.agentSwitch) {
+          if (want) {
+            const meta = d.metadata ??= {};
             meta.agentSwitch = want;
-          else
-            delete meta.agentSwitch;
+          } else if (d.metadata) {
+            delete d.metadata.agentSwitch;
+          }
           reEnqueueMessage(list[users[k]]);
         }
         if (agent)
@@ -1713,15 +1921,7 @@ function createEngine(deps) {
       }
     }
   };
-  const stampTaskAgents = () => {
-    const bySession = new Map;
-    for (const m of msgIndex.values()) {
-      const list = bySession.get(m.sid);
-      if (list)
-        list.push(m);
-      else
-        bySession.set(m.sid, [m]);
-    }
+  const stampTaskAgents = (bySession) => {
     for (const list of bySession.values())
       list.sort((a, b) => a.created - b.created);
     for (const m of msgIndex.values()) {
@@ -1853,9 +2053,28 @@ function createEngine(deps) {
         reEnqueueMessage(m);
     }
   };
-  const stampsPass = () => {
-    stampAgentSwitches();
-    stampTaskAgents();
+  const stampsPass = (st) => {
+    let any = false;
+    for (const it of st.queue.values()) {
+      if (it.type === "message") {
+        any = true;
+        break;
+      }
+    }
+    if (!any)
+      return;
+    const bySession = new Map;
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid);
+      if (list)
+        list.push(m);
+      else
+        bySession.set(m.sid, [m]);
+    }
+    for (const list of bySession.values())
+      list.sort((a, b) => a.created - b.created);
+    stampAgentSwitches(bySession);
+    stampTaskAgents(bySession);
     stampFileLanguages();
   };
   const mergeEntry = (st, messageID) => {
@@ -1905,8 +2124,11 @@ function createEngine(deps) {
     e.parts.set(part.id, part);
     emitMerged(st, sid, part.messageID);
   };
-  const dropMergedMessage = (st, messageID) => {
+  const dropMergedMessage = (st, messageID, evSid) => {
+    const sid = evSid ?? st.sid;
     st.merged.delete(messageID);
+    msgIndex.delete(`${sid}:${messageID}`);
+    tombstoned.add(`${sid}:${messageID}`);
   };
   const dropMergedPart = (st, sid, messageID, partID) => {
     const e = st.merged.get(messageID);
@@ -1934,6 +2156,10 @@ function createEngine(deps) {
         clearTimeout(r.initTimer);
         r.initTimer = null;
       }
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer);
+        r.backoffResetTimer = null;
+      }
       if (r.reconnectTimer) {
         clearTimeout(r.reconnectTimer);
         r.reconnectTimer = null;
@@ -1943,9 +2169,21 @@ function createEngine(deps) {
         clearTimeout(r.idleDropTimer);
         r.idleDropTimer = null;
       }
-      if (r.wsReady)
+      if (r.wsReady && r.shareId) {
         wsSend(r, { op: "delete" });
-      else if (r.shareId && r.secret) {
+        if (r.shareId && r.secret) {
+          const sid = r.shareId;
+          const sec = r.secret;
+          setTimeout(() => {
+            fetch(`${r.url}/api/share/${sid}`, {
+              method: "DELETE",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ secret: sec }),
+              signal: AbortSignal.timeout(8000)
+            }).catch(() => {});
+          }, 2000);
+        }
+      } else if (r.shareId && r.secret) {
         fetch(`${r.url}/api/share/${r.shareId}`, {
           method: "DELETE",
           headers: { "content-type": "application/json" },
@@ -1963,6 +2201,17 @@ function createEngine(deps) {
     }, 1000);
     for (const r of st.remotes.values())
       spoolClear(st, r);
+    const stSid = st.sid;
+    const pfx = `${stSid}:`;
+    for (const k of msgIndex.keys())
+      if (k.startsWith(pfx))
+        msgIndex.delete(k);
+    for (const k of tombstoned)
+      if (k.startsWith(pfx))
+        tombstoned.delete(k);
+    for (const [child, parent] of childToParent)
+      if (parent === stSid || child === stSid)
+        childToParent.delete(child);
     sessions.delete(st.sid);
     try {
       chain = chain.then(async () => {
@@ -2021,6 +2270,9 @@ function createEngine(deps) {
       if (nextBefore === before)
         break;
       before = nextBefore;
+    }
+    if (out.length >= MAX_PAGES * PAGE_SIZE) {
+      logError(`backfill truncated at ${out.length} messages (page cap) for ${sid.slice(0, 18)} — oldest history not shared`);
     }
     return out;
   }
@@ -2266,7 +2518,9 @@ function createEngine(deps) {
             if (st.timer)
               clearTimeout(st.timer);
             st.timer = null;
-            chain = chain.then(() => flush(st)).catch((e) => logError("idle flush error", e?.message || e));
+            chain = chain.then(() => {
+              flush(st);
+            }).catch((e) => logError("idle flush error", e?.message || e));
             const epoch = st.statusEpoch;
             const settle = () => {
               st.status = st.badSignal ? "error" : "completed";
@@ -2274,7 +2528,9 @@ function createEngine(deps) {
               if (st.timer)
                 clearTimeout(st.timer);
               st.timer = null;
-              chain = chain.then(() => flush(st)).then(() => {
+              chain = chain.then(() => {
+                flush(st);
+              }).then(() => {
                 armSettleDrop(st);
               }).catch((e) => logError("settle flush error", e?.message || e));
             };
@@ -2305,8 +2561,8 @@ function createEngine(deps) {
           if (!messageID)
             return;
           if (t === "message.removed") {
-            dropMergedMessage(st, messageID);
-            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(st.sid, messageID) });
+            dropMergedMessage(st, messageID, sid);
+            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(sid, messageID) });
           } else {
             const partID = p.partID;
             if (!partID)
@@ -2415,6 +2671,13 @@ function createEngine(deps) {
           for (const r of st.remotes.values()) {
             if (!r.wsReady && r.shareId && r.pending.length) {
               await flushViaHttp(st, r).catch(() => {});
+            }
+          }
+          for (const r of st.remotes.values()) {
+            if (r.spoolSaveTimer) {
+              clearTimeout(r.spoolSaveTimer);
+              r.spoolSaveTimer = null;
+              spoolSave(st, r);
             }
           }
           if (st.metaTimer)
@@ -2569,6 +2832,7 @@ function createV2ServerSetup() {
       return () => {};
     }
     const pendingRefresh = new Map;
+    const queuedInbox = new Map;
     const refresh = (sessionID) => {
       let timer = pendingRefresh.get(sessionID);
       if (timer)
@@ -2583,7 +2847,10 @@ function createV2ServerSetup() {
             });
             const messages = await client.session.messages?.({ path: { id: sessionID } });
             const list = messages?.data ?? [];
+            const held = queuedInbox.get(sessionID);
             for (const message of list) {
+              if (held?.has(message.info.id))
+                continue;
               await engine.hooks.event({
                 event: { type: "message.updated", properties: { sessionID, info: message.info } }
               });
@@ -2614,6 +2881,33 @@ function createV2ServerSetup() {
             const type = event.type;
             if (type === "session.deleted") {
               await engine.hooks.event({ event: { type, properties: { sessionID: sid } } });
+              continue;
+            }
+            if (type.startsWith("session.inbox.")) {
+              const data = event.data ?? {};
+              const inboxID = data.inboxID;
+              if (inboxID) {
+                let set = queuedInbox.get(sid);
+                if (!set) {
+                  set = new Set;
+                  queuedInbox.set(sid, set);
+                }
+                if (type === "session.inbox.enqueued" && data.item?.delivery === "queue") {
+                  set.add(inboxID);
+                } else if (type === "session.inbox.delivered") {
+                  set.delete(inboxID);
+                  refresh(sid);
+                } else if (type === "session.inbox.cancelled") {
+                  set.add(inboxID);
+                } else if (type === "session.inbox.delivery.changed") {
+                  if (data.item?.delivery === "queue")
+                    set.add(inboxID);
+                  else {
+                    set.delete(inboxID);
+                    refresh(sid);
+                  }
+                }
+              }
               continue;
             }
             if (type === "message.removed" || type === "message.part.removed") {

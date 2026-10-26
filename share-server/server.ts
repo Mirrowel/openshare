@@ -127,7 +127,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS shares (
   pluginSeen INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'live',
   ownerId TEXT, frozen INTEGER NOT NULL DEFAULT 0, auth TEXT, tokens TEXT NOT NULL DEFAULT '[]',
   attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER)`)
-db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY (shareId, key))`)
+db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 0, del INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (shareId, key))`)
+// pre-existing databases: add the delta-tracking columns (rev stamps +
+// delete markers for the /data `since` handshake)
+try { db.exec("ALTER TABLE items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0") } catch {}
+try { db.exec("ALTER TABLE items ADD COLUMN del INTEGER NOT NULL DEFAULT 0") } catch {}
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}')`)
 db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
@@ -176,11 +180,22 @@ async function checkToken(token: string): Promise<{ kind: "none" | "root" } | { 
   return { kind: "user", token: row, userId: row.userId }
 }
 
-async function createCheck(token: string): Promise<{ ok: true; userId?: string; ttlMaxDays?: number } | { ok: false; error: string; httpStatus: number }> {
+async function createCheck(token: string): Promise<{ ok: true; userId?: string; ttlMaxDays?: number; defaultTtlDays?: number } | { ok: false; error: string; httpStatus: number }> {
   const chk = await checkToken(token)
   if (chk.kind === "root") return { ok: true }
   if (chk.kind === "none") {
-    if (authMode() === "public") return { ok: true } // anonymous ownerless
+    if (authMode() === "public") {
+      // anonymous ownerless create: under a GLOBAL hourly cap — every
+      // create costs storage + sweeper work, and per-anything limits are
+      // dodgeable on this backend (XFF is client-controlled without a
+      // trusted proxy)
+      const now = Date.now()
+      const g = db.query("SELECT * FROM rate WHERE ip = 'anon-creates'").get() as { n: number; resetAt: number } | undefined
+      if (!g || g.resetAt < now) db.query("INSERT INTO rate (ip, n, resetAt) VALUES ('anon-creates', 1, ?) ON CONFLICT(ip) DO UPDATE SET n = 1, resetAt = ?").run(now + 3600000, now + 3600000)
+      else if (g.n >= 100) return { ok: false, error: "too many anonymous creates, try later", httpStatus: 429 }
+      else db.query("UPDATE rate SET n = n + 1 WHERE ip = 'anon-creates'").run()
+      return { ok: true } // anonymous ownerless
+    }
     return { ok: false, error: "token required", httpStatus: 401 }
   }
   const limits = JSON.parse(chk.token.limits) as { maxLiveShares: number; maxTtlDays: number; dailyCreates: number }
@@ -194,7 +209,9 @@ async function createCheck(token: string): Promise<{ ok: true; userId?: string; 
     if ((row?.n ?? 0) >= limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
     db.query("INSERT INTO dcreates (k, n) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET n = n + 1").run(k)
   }
-  return { ok: true, userId: chk.userId, ttlMaxDays: limits.maxTtlDays || 0 }
+  const u = db.query("SELECT settings FROM users WHERE id = ?").get(chk.userId) as { settings: string } | undefined
+  const defaultTtlDays = Number(JSON.parse(u?.settings ?? "{}").defaultTtlDays) || 0
+  return { ok: true, userId: chk.userId, ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays }
 }
 
 async function mint(userId: string, label: string, limits: unknown): Promise<{ value: string; id: string }> {
@@ -219,8 +236,8 @@ function createShare(sessionID: string, ttlDays: number, ownerId: string | null,
   const id = randomId()
   const secret = randomId() + randomId()
   const auth = authLogin && authPassword ? JSON.stringify({ salt: "", loginHash: "", passHash: "" }) : null
-  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?)")
-    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth)
+  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]')")
+    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }))
   if (authLogin && authPassword) {
     // hash asynchronously then persist (the synchronous insert keeps the
     // response fast; the gate materializes a moment later)
@@ -285,20 +302,21 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
       const it = (raw as { del?: boolean }).del ? raw : fitItem(raw)
       const key = itemKey(it)
       if (!key) continue
-      if ((it as { del?: boolean }).del) {
-        db.query("DELETE FROM items WHERE shareId = ? AND key = ?").run(shareId, key)
-        batch.push(it)
-        if ((it as { type?: string }).type === "message" && (it as { data?: { id?: string } }).data?.id) {
-          const prefix = `part/${(it as { data: { id: string } }).data.id}/`
-          const parts = db.query("SELECT key, item FROM items WHERE shareId = ? AND key LIKE ?").all(shareId, prefix + "%") as Array<{ key: string; item: string }>
-          for (const p of parts) {
-            db.query("DELETE FROM items WHERE shareId = ? AND key = ?").run(shareId, p.key)
-            batch.push(JSON.parse(p.item))
-          }
+      // upserts and deletes both keep a ROW: rev + del power the /data
+      // `since` delta (a hard delete would be invisible to `rev > ?` and
+      // undone content would resurrect for polling viewers); full reads
+      // filter del rows, delta readers re-emit the tombstone verbatim
+      const del = (it as { del?: boolean }).del ? 1 : 0
+      db.query("INSERT INTO items (shareId, key, item, rev, del) VALUES (?, ?, ?, ?, ?) ON CONFLICT(shareId, key) DO UPDATE SET item = excluded.item, rev = excluded.rev, del = excluded.del").run(shareId, key, JSON.stringify(it), rev, del)
+      batch.push(it)
+      if (del && (it as { type?: string }).type === "message" && (it as { data?: { id?: string } }).data?.id) {
+        // cascade: legacy v1 part shards die hard — the message marker
+        // supersedes them for delta readers
+        const prefix = `part/${(it as { data: { id: string } }).data.id}/`
+        const parts = db.query("SELECT key, item FROM items WHERE shareId = ? AND key LIKE ? AND del = 0").all(shareId, prefix + "%") as Array<{ key: string; item: string }>
+        for (const p of parts) {
+          db.query("DELETE FROM items WHERE shareId = ? AND key = ?").run(shareId, p.key)
         }
-      } else {
-        db.query("INSERT INTO items (shareId, key, item) VALUES (?, ?, ?) ON CONFLICT(shareId, key) DO UPDATE SET item = excluded.item").run(shareId, key, JSON.stringify(it))
-        batch.push(it)
       }
     }
     const status = body.status && STATUSES.has(body.status) ? body.status : share.status
@@ -311,14 +329,25 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
 }
 
 function shareData(share: ShareRow) {
-  const items = db.query("SELECT item FROM items WHERE shareId = ?").all(share.id) as Array<{ item: string }>
+  // full reads see live items only — del rows are markers for delta
+  // readers (rev > since re-emits the tombstone), invisible here
+  const items = db.query("SELECT item FROM items WHERE shareId = ? AND del = 0").all(share.id) as Array<{ item: string }>
   return items.map((r) => JSON.parse(r.item))
 }
 
+/** Viewer session-token validation: the cookie carries one of the share's
+ * minted random tokens (stored raw in shares.tokens with an expiry) —
+ * worker parity (ShareDO.validToken). NOT the password hash: comparing
+ * pbkdf2(cookieToken) against passHash could never match a minted token,
+ * which made every read-gated share on Bun permanently unviewable. */
 async function validViewerToken(share: ShareRow, token: string): Promise<boolean> {
   if (!token || !share.auth) return false
-  const auth = JSON.parse(share.auth) as { loginHash: string; passHash: string; salt: string }
-  return await pbkdf2(token, auth.salt).then((h) => h === auth.passHash)
+  let tokens: Array<{ token: string; expires: number }> = []
+  try { tokens = JSON.parse(share.tokens) } catch { tokens = [] }
+  const now = Date.now()
+  const live = tokens.filter((t) => t && typeof t.token === "string" && t.expires > now)
+  if (live.length !== tokens.length) db.query("UPDATE shares SET tokens = ? WHERE id = ?").run(JSON.stringify(live), share.id)
+  return live.some((t) => t.token === token)
 }
 
 // viewer sockets: in-memory subscribers (reconnect + refetch on restart)
@@ -328,6 +357,68 @@ function broadcast(shareId: string, frame: unknown) {
   if (!set) return
   const s = JSON.stringify({ v: 2, ...(frame as Record<string, unknown>) })
   for (const ws of set) try { ws.send(s) } catch {}
+}
+
+// per-rev /data render cache (worker parity): a polling viewer hits /data
+// every 5s — rebuilding + re-serializing the full share per request is
+// pure CPU burn when nothing changed. One slot per share holding BOTH
+// envelopes (/data body + WS first frame), items serialized ONCE and
+// both envelopes built by concatenation (worker renderCache parity —
+// two full serializations held two copies of the body in memory).
+// applySync bumps the rev so the slot self-invalidates; removeShare
+// drops it. Oversized shares (> 25 MB) skip caching. Bounded by a
+// global byte budget: an unbounded Map would hold ~1 GB+ resident with
+// a hundred large polled shares (audit N9). Map insertion order doubles
+// as the LRU (re-set on hit).
+const DATA_CACHE_MAX_BYTES = 128 * 1024 * 1024
+const dataCache = new Map<string, { rev: number; status: string; dataJson: string; frameJson: string; bytes: number }>()
+let dataCacheBytes = 0
+function dataCacheTrim() {
+  for (const [k, v] of dataCache) {
+    if (dataCacheBytes <= DATA_CACHE_MAX_BYTES) break
+    dataCache.delete(k)
+    dataCacheBytes -= v.bytes
+  }
+}
+function dataCacheSet(share: ShareRow, dataJson: string, frameJson: string) {
+  const hit = dataCache.get(share.id)
+  if (hit) dataCacheBytes -= hit.bytes
+  dataCache.delete(share.id)
+  dataCache.set(share.id, { rev: share.rev, status: share.status, dataJson, frameJson, bytes: dataJson.length + frameJson.length })
+  dataCacheBytes += dataJson.length + frameJson.length
+  dataCacheTrim()
+}
+/** Cached /data body for the share at its current rev. */
+function renderData(share: ShareRow): string {
+  const hit = dataCache.get(share.id)
+  if (hit && hit.rev === share.rev && hit.status === share.status) {
+    // LRU touch: reinsertion moves the key to the freshest position
+    dataCache.delete(share.id)
+    dataCache.set(share.id, hit)
+    return hit.dataJson
+  }
+  const body = JSON.stringify(redactItems(shareData(share)))
+  const dataJson = `{"v":2,"data":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev}}`
+  const frameJson = `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${body}}`
+  if (dataJson.length <= 25_000_000) dataCacheSet(share, dataJson, frameJson)
+  else if (hit) {
+    dataCache.delete(share.id)
+    dataCacheBytes -= hit.bytes
+  }
+  return dataJson
+}
+/** Cached WS first-frame body (same slot, same rev). */
+function renderFrame(share: ShareRow): string {
+  const hit = dataCache.get(share.id)
+  if (hit && hit.rev === share.rev && hit.status === share.status) {
+    dataCache.delete(share.id)
+    dataCache.set(share.id, hit)
+    return hit.frameJson
+  }
+  // populate the shared slot via renderData, then read it back
+  renderData(share)
+  const fresh = dataCache.get(share.id)
+  return fresh ? fresh.frameJson : `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${JSON.stringify(redactItems(shareData(share)))}}`
 }
 
 function json(code: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -344,11 +435,10 @@ async function httpHandler(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const path = url.pathname
 
-  if (path === "/health") return json(200, { ok: true, service: "openshare", policy: resolvePolicy(), auth: { mode: authMode() } })
+  if (path === "/health") return json(200, { ok: true, service: "openshare", policy: resolvePolicy(), auth: { mode: authMode() }, frameAuth: true })
 
   if (path === "/branding") {
-    const b = (f: string) => (process.env["BRAND_" + f.replace(/[a-z]/g, (c) => c === f[0] ? c.toUpperCase() : c)] ?? "")
-    return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "" })
+    return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "" })
   }
 
   // identity
@@ -371,8 +461,8 @@ async function httpHandler(req: Request): Promise<Response> {
     return json(200, { ok: true, removed: rows.length })
   }
 
-  // viewer socket upgrade
-  const wm = path.match(/^\/api\/share\/([0-9a-f]+)\/ws$/)
+  // viewer socket upgrade — {32}: share ids are exactly 32 hex chars
+  const wm = path.match(/^\/api\/share\/([0-9a-f]{32})\/ws$/)
   if (wm && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
     const share = q.share(wm[1])
     if (!share) return new Response("gone", { status: 404 })
@@ -384,23 +474,27 @@ async function httpHandler(req: Request): Promise<Response> {
     return new Response(null, { status: 200 }) // upgraded in fetch() below
   }
 
-  const am = path.match(/^\/api\/share\/([0-9a-f]+)\/auth$/)
+  const am = path.match(/^\/api\/share\/([0-9a-f]{32})\/auth$/)
   if (am && req.method === "POST") return shareAuthRoute(am[1], await bodyJson(req), req)
 
+  // share-referencing ops need a REAL share id (32 hex); the bare POST
+  // create keeps its flexible hex suffix (routing convention)
   const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|)$/)
   if (!sm) return staticOr404(req, url)
   const id = sm[1]
   const op = sm[2]
+  if (id.length !== 32 && !(req.method === "POST" && op === "")) return staticOr404(req, url)
 
   if (req.method === "POST" && op === "") {
     const auth = bearer(req)
     if (auth && CREATE_TOKEN && auth === CREATE_TOKEN) return httpCreate(await bodyJson(req), null, 0)
     const chk = await createCheck(auth)
     if (!chk.ok) return json(chk.httpStatus, { error: chk.error })
-    return httpCreate(await bodyJson(req), chk.userId ?? null, chk.ttlMaxDays ?? 0)
+    return httpCreate(await bodyJson(req), chk.userId ?? null, chk.ttlMaxDays ?? 0, chk.defaultTtlDays ?? 0)
   }
   if (req.method === "POST" && op === "/sync") {
-    const body = await bodyJson(req)
+    const body = await bodyJson(req, 8_000_000)
+    if (body._tooLarge) return json(413, { error: "payload too large" })
     const ident = await resolveIdentity(req, body)
     const r = applySync(id, { ...body, ownerId: ident.ownerId, root: ident.root })
     return json(r.status, r.body)
@@ -411,13 +505,33 @@ async function httpHandler(req: Request): Promise<Response> {
     if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, id)))) {
       return json(401, { authRequired: true })
     }
-    return json(200, { v: 2, data: redactItems(shareData(share)), status: share.status, rev: share.rev })
+    // `since` handshake (worker parity): unchanged rev answers an empty
+    // set; a changed rev answers only the items touched since — a
+    // polling viewer stops re-transferring the whole share every 5s.
+    // Only when the caller actually PASSED since (Number(null) is 0,
+    // which would collide with a fresh share's rev 0)
+    const sinceRaw = new URL(req.url).searchParams.get("since")
+    if (sinceRaw !== null) {
+      const since = Number(sinceRaw)
+      if (Number.isFinite(since)) {
+        if (since === share.rev) {
+          return json(200, { v: 2, data: [], status: share.status, rev: share.rev })
+        }
+        const delta = db.query("SELECT item FROM items WHERE shareId = ? AND rev > ?").all(share.id, since) as Array<{ item: string }>
+        return json(200, { v: 2, data: delta.map((r) => JSON.parse(r.item)), status: share.status, rev: share.rev })
+      }
+    }
+    return new Response(renderData(share), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
   }
   if (req.method === "DELETE" && op === "") {
     const body = await bodyJson(req)
     const share = q.share(id)
     if (!share) return json(404, { ok: true })
-    const gate = writeGate(share, body)
+    // NEVER trust client-asserted root/ownerId here (H1: the raw body
+    // reached writeGate and {"root":true} deleted any share by id).
+    // Resolve identity from the bearer like every other write path.
+    const ident = await resolveIdentity(req, body)
+    const gate = writeGate(share, { secret: body.secret, ownerId: ident.ownerId, root: ident.root })
     if (gate) return json(403, { ok: false, error: gate })
     removeShare(id)
     return json(200, { ok: true })
@@ -434,9 +548,10 @@ async function resolveIdentity(req: Request, body: { secret?: string }): Promise
   return chk.kind === "user" ? { ownerId: chk.userId, root: false } : { ownerId: null, root: false }
 }
 
-async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number): Promise<Response> {
+async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number, ownerDefault = 0): Promise<Response> {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
-  const ttlDays = clampTtl(body.ttlDays, ttlMax)
+  // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
+  const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), ttlMax)
   const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""))
   return json(200, { ok: true, id, secret, ttlDays })
 }
@@ -445,11 +560,28 @@ function removeShare(id: string) {
   broadcast(id, { op: "frame", status: "gone", rev: 1, items: [] })
   db.query("DELETE FROM shares WHERE id = ?").run(id)
   db.query("DELETE FROM items WHERE shareId = ?").run(id)
+  const cached = dataCache.get(id)
+  if (cached) {
+    dataCacheBytes -= cached.bytes
+    dataCache.delete(id)
+  }
+  // close viewer sockets: the gone frame already told them; closing moves
+  // them onto the poll path, where the 404 renders the gone page (parity
+  // with the worker, where the DO dies and takes the sockets with it)
+  const set = viewers.get(id)
+  if (set) {
+    for (const ws of set) try { ws.close(1000, "gone") } catch {}
+    viewers.delete(id)
+  }
 }
 
-async function bodyJson(req: Request): Promise<Record<string, unknown>> {
+async function bodyJson(req: Request, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
   try {
-    const b = await req.json()
+    const text = await req.text()
+    // request-size cap before parse: a hostile client posting a huge
+    // body must not burn CPU on the parse (the engine chunks at ~512 KB)
+    if (text.length > maxBytes) return { _tooLarge: true }
+    const b = JSON.parse(text)
     return b && typeof b === "object" ? (b as Record<string, unknown>) : {}
   } catch {
     return {}
@@ -484,9 +616,22 @@ async function enrollRoute(body: Record<string, unknown>, req: Request): Promise
     if (!row || row.resetAt < now) db.query("INSERT INTO rate (ip, n, resetAt) VALUES (?, 1, ?) ON CONFLICT(ip) DO UPDATE SET n = 1, resetAt = ?").run(ip, now + 3600000, now + 3600000)
     else if (row.n >= 10) return json(429, { ok: false, error: "too many enrollments, try later" })
     else db.query("UPDATE rate SET n = n + 1 WHERE ip = ?").run(ip)
+    // GLOBAL backstop: x-forwarded-for is client-controlled when the
+    // server is directly exposed (no trusted proxy), so per-IP limiting
+    // alone is dodgeable — cap anonymous enrollments process-wide too
+    const g = db.query("SELECT * FROM rate WHERE ip = '*'").get() as { n: number; resetAt: number } | undefined
+    if (!g || g.resetAt < now) db.query("INSERT INTO rate (ip, n, resetAt) VALUES ('*', 1, ?) ON CONFLICT(ip) DO UPDATE SET n = 1, resetAt = ?").run(now + 3600000, now + 3600000)
+    else if (g.n >= 100) return json(429, { ok: false, error: "too many enrollments, try later" })
+    else db.query("UPDATE rate SET n = n + 1 WHERE ip = '*'").run()
   }
   if (codeRow) {
-    db.query("UPDATE codes SET used = used + 1, activationsLeft = CASE WHEN activationsLeft = -1 THEN -1 ELSE activationsLeft - 1 END WHERE id = ?").run(codeRow.id)
+    // atomic budget consumption: the conditional UPDATE is the check AND
+    // the decrement in one statement — two concurrent enrollments on a
+    // 1-activation code cannot both pass (SELECT-then-UPDATE could)
+    const consumed = db.query(
+      "UPDATE codes SET used = used + 1, activationsLeft = CASE WHEN activationsLeft = -1 THEN -1 ELSE activationsLeft - 1 END WHERE id = ? AND disabled = 0 AND (expiresAt = 0 OR expiresAt >= ?) AND (activationsLeft = -1 OR activationsLeft > 0)",
+    ).run(codeRow.id, now)
+    if (!consumed.changes) return json(403, { ok: false, error: "invalid code" })
   }
   const label = String(body.label ?? "").trim().slice(0, 64) || (codeRow ? `${codeRow.label || "invite"}-${codeRow.used + 1}` : "user-" + randomId().slice(0, 4))
   const userId = "u_" + randomId().slice(0, 10)
@@ -636,7 +781,17 @@ async function shareAuthRoute(id: string, body: Record<string, unknown>, req: Re
   if (!share) return json(404, { ok: false, error: "share not found" })
   if (!share.auth) return json(200, { ok: true, note: "no auth required" })
   const auth = JSON.parse(share.auth) as { salt: string; loginHash: string; passHash: string }
-  const attempts = JSON.parse(share.attempts) as { ips: Record<string, { fails: number; lockUntil: number; streak: number }>; total: number; lockUntil: number }
+  // normalize: the column default is '{}' whose .ips is undefined (that
+  // 500'd every login before)
+  const attempts = (() => {
+    try {
+      const a = JSON.parse(share.attempts) as { ips?: Record<string, { fails: number; lockUntil: number; streak: number; at?: number }>; total?: number; lockUntil?: number }
+      return { ips: a.ips ?? {}, total: a.total ?? 0, lockUntil: a.lockUntil ?? 0 }
+    } catch { return { ips: {}, total: 0, lockUntil: 0 } }
+  })()
+  // NOTE: x-forwarded-for is only meaningful behind a trusted proxy that
+  // overwrites it — the per-IP lock is best-effort; the per-share global
+  // counters are the real brake on this backend.
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local"
   const now = Date.now()
   const ipState = attempts.ips[ip] ?? { fails: 0, lockUntil: 0, streak: 0 }
@@ -647,17 +802,30 @@ async function shareAuthRoute(id: string, body: Record<string, unknown>, req: Re
   if (loginHash !== auth.loginHash || passHash !== auth.passHash) {
     ipState.fails += 1
     ipState.streak += 1
+    ipState.at = now
     attempts.total += 1
     if (ipState.fails >= 5) {
       ipState.lockUntil = now + Math.min(60000 * 2 ** (ipState.streak - 5), 86400000)
       ipState.fails = 0
     }
     if (attempts.total >= 20) attempts.lockUntil = now + 86400000
+    // bound the tracker (distributed probes must not grow the row forever)
+    const ips = Object.entries(attempts.ips)
+    if (ips.length > 100) {
+      ips.sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0))
+      attempts.ips = Object.fromEntries(ips.slice(0, 100))
+    }
     db.query("UPDATE shares SET attempts = ? WHERE id = ?").run(JSON.stringify(attempts), id)
     return json(401, { ok: false, error: "wrong credentials", retryAfterMs: Math.max(ipState.lockUntil - now, attempts.lockUntil - now, 0) })
   }
   delete attempts.ips[ip]
   attempts.total = Math.max(0, attempts.total - 1)
+  // an elapsed global lock no longer counts (one failure/day must not
+  // keep the share read-locked forever)
+  if (attempts.lockUntil && attempts.lockUntil <= now) {
+    attempts.lockUntil = 0
+    attempts.total = 0
+  }
   const token = randomId() + randomId()
   const tokens = [{ token, expires: now + 7 * 86400000 }, ...JSON.parse(share.tokens)].slice(0, 5)
   db.query("UPDATE shares SET tokens = ?, attempts = ? WHERE id = ?").run(JSON.stringify(tokens), JSON.stringify(attempts), id)
@@ -667,9 +835,45 @@ async function shareAuthRoute(id: string, body: Record<string, unknown>, req: Re
 
 // --- static viewer -------------------------------------------------------------
 
+// link-preview crawlers (Discord/Telegram/Slack/... never run the SPA)
+// get index.html with og:/twitter: tags injected from the BRAND_* env.
+// og:title carries the DEPLOYMENT name, never the session title.
+const CRAWLER_RE = /(discordbot|discordapp|telegrambot|slackbot|slack-imgproxy|facebookexternalhit|facebookcatalog|whatsapp|twitterbot|x-bot|linkedinbot|pinterestbot|skypeuripreview|snapchat|bluefish|mattermost|gitter|flowdock)/i
+
+function htmlEscape(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!)
+}
+
+async function ogIndex(url: URL): Promise<Response> {
+  const index = Bun.file(join(VIEWER_DIR, "index.html"))
+  const name = process.env.BRAND_NAME ?? "openshare"
+  const desc = process.env.BRAND_DESCRIPTION ?? "shared agent sessions, self-hosted"
+  const image = process.env.BRAND_OG_IMAGE ?? process.env.BRAND_LOGO_URL ?? ""
+  const title = process.env.BRAND_OG_TITLE ?? `${name} · Open(code)Share`
+  const absImage = image && image.startsWith("/") ? url.origin + image : image
+  const tags = [
+    `<meta property="og:title" content="${htmlEscape(title)}">`,
+    `<meta property="og:description" content="${htmlEscape(desc)}">`,
+    `<meta property="og:site_name" content="${htmlEscape(name)}">`,
+    `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
+    `<meta name="twitter:title" content="${htmlEscape(title)}">`,
+    `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
+  ]
+  if (absImage) {
+    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(absImage)}">`)
+    tags.push(`<meta name="twitter:image" content="${htmlEscape(absImage)}">`)
+  }
+  const html = (await index.text()).replace(/<head>/i, "<head>\n    " + tags.join("\n    "))
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } })
+}
+
 async function staticOr404(req: Request, url: URL): Promise<Response> {
   if (!existsSync(VIEWER_DIR)) return json(404, { error: "not found" })
   const isSpa = url.pathname === "/" || url.pathname.startsWith("/s/")
+  if (isSpa && CRAWLER_RE.test(req.headers.get("user-agent") ?? "")) {
+    const index = Bun.file(join(VIEWER_DIR, "index.html"))
+    if (await index.exists()) return await ogIndex(url)
+  }
   const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1)
   const file = Bun.file(join(VIEWER_DIR, rel))
   if (await file.exists()) {
@@ -693,19 +897,30 @@ type ControlData = {
   attachRoot?: boolean
   earlySyncs: Frame[]
 }
-type ViewerData = { kind: "viewer"; shareId: string }
+type ViewerData = { kind: "viewer"; shareId: string; since?: string; delta?: string }
 type WsData = ControlData | ViewerData
 
 async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
   const data = ws.data as ControlData
   const send = (obj: unknown) => { try { ws.send(JSON.stringify(obj)) } catch {} }
   try {
+    // message-size cap before parse: a hostile socket posting a huge
+    // frame must not burn CPU on the parse (engine WS chunks at ~512KB)
+    if (String(raw).length > 8_000_000) return send({ op: "error", error: "payload too large" })
     const frame = JSON.parse(String(raw)) as Frame
+    // frame auth: /health advertises frameAuth — the plugin can keep the
+    // token out of the query string (proxy logs) by sending it as the
+    // first frame. The ?token= upgrade param still works (old plugins).
+    if (frame.op === "auth") {
+      data.token = typeof frame.token === "string" ? frame.token : ""
+      return send({ op: "authed", ok: true })
+    }
     if (frame.op === "init") {
       if (frame.create) {
         const chk = await createCheck(data.token)
         if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
-        const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays, chk.ttlMaxDays ?? 0)
+        // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
+        const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays ?? (chk.defaultTtlDays || undefined), chk.ttlMaxDays ?? 0)
         const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""))
         data.attachId = id
         data.attachSecret = secret
@@ -713,7 +928,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         for (const early of data.earlySyncs) {
           // WS sync frames carry `items`; the HTTP apply path takes `data`
           const r = applySync(id, { secret, ownerId: data.attachOwner, root: false, data: early.items ?? [], status: early.status })
-          send({ op: r.body.ok ? "ack" : "nack", ...r.body })
+          send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: (early as Frame).seq })
         }
         data.earlySyncs = []
         return send({ op: "init", ok: true, id, secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy() })
@@ -732,25 +947,59 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         data.attachSecret = String((frame.attach as Record<string, unknown>).secret ?? "")
         data.attachOwner = ownerId
         data.attachRoot = root
-        db.query("UPDATE shares SET pluginSeen = ?, finalizeAt = NULL WHERE id = ?").run(Date.now(), share.id)
+        // attach = the plugin is actively here: cancel finalize, note the
+        // contact, and keep TTL from expiring under a live-but-quiet session
+        db.query("UPDATE shares SET pluginSeen = ?, lastActive = ?, finalizeAt = NULL WHERE id = ?").run(Date.now(), Date.now(), share.id)
+        // resume retroactively applies/updates/clears the read gate (worker parity).
+        // The plugin sends BOTH fields on EVERY attach — only rotate when the
+        // credentials actually CHANGED (an unconditional re-hash logged every
+        // viewer out on each turn-mode reconnect)
+        const attach = frame.attach as Record<string, unknown>
+        if (attach.authLogin !== undefined && attach.authPassword !== undefined) {
+          const wantAuth = attach.authLogin && attach.authPassword
+          let sameAuth = false
+          if (wantAuth && share.auth) {
+            const auth = JSON.parse(share.auth) as { salt: string; loginHash: string; passHash: string }
+            sameAuth = auth.loginHash === await pbkdf2(String(attach.authLogin), auth.salt)
+              && auth.passHash === await pbkdf2(String(attach.authPassword), auth.salt)
+          }
+          if (wantAuth && !sameAuth) {
+            db.query("UPDATE shares SET auth = ?, tokens = ?, attempts = ? WHERE id = ?")
+              .run(await makeAuth(String(attach.authLogin), String(attach.authPassword)), "[]", JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), share.id)
+            console.log("[attach] auth updated, tokens rotated")
+          } else if (!wantAuth && share.auth) {
+            db.query("UPDATE shares SET auth = NULL WHERE id = ?").run(share.id)
+            console.log("[attach] auth removed (owner action)")
+          }
+        }
         const updated = q.share(share.id)!
         for (const early of data.earlySyncs) {
           const r = applySync(share.id, { secret: data.attachSecret, ownerId, root, data: early.items ?? [], status: early.status })
-          send({ op: r.body.ok ? "ack" : "nack", ...r.body })
+          send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: (early as Frame).seq })
         }
         data.earlySyncs = []
-        return send({ op: "init", ok: true, id: share.id, secret: data.attachSecret, rev: updated.rev, status: updated.status, data: redactItems(shareData(updated)), policy: resolvePolicy() })
+        // no `data` payload (worker parity): the plugin backfills from the
+        // host and ignores attach data
+        return send({ op: "init", ok: true, id: share.id, secret: data.attachSecret, rev: updated.rev, status: updated.status, policy: resolvePolicy() })
       }
       return send({ op: "init", ok: false, error: "init needs create|attach" })
     }
     if (frame.op === "sync") {
       if (!data.attachId) {
-        if (data.earlySyncs.length < 32) data.earlySyncs.push(frame)
+        // buffer while init is in flight; a huge cap (frames are chunk-
+        // sized client-side) with an error-and-close valve so a burst can
+        // never be silently dropped
+        if (data.earlySyncs.length < 1000) data.earlySyncs.push(frame)
+        else {
+          send({ op: "error", error: "early-sync buffer full" })
+          try { ws.close(4004, "early-sync overflow") } catch {}
+        }
         return
       }
       // WS sync frames carry `items`; the HTTP apply path takes `data`
       const r = applySync(data.attachId, { secret: data.attachSecret, ownerId: data.attachOwner, root: data.attachRoot, data: frame.items ?? [], status: frame.status })
-      return send({ op: r.body.ok ? "ack" : "nack", ...r.body })
+      // echo the client frame seq: the plugin clears pending per-chunk
+      return send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: frame.seq })
     }
     if (frame.op === "delete" && data.attachId) {
       const share = q.share(data.attachId)
@@ -797,6 +1046,15 @@ setInterval(() => {
     for (const r of rows) {
       if (r.lastActive + r.ttlDays * 86400000 < now) removeShare(r.id)
     }
+    // hygiene: daily-create counters and rate rows expire themselves out
+    // (k = "<tokenId>:<YYYY-MM-DD>" / ip rows carry resetAt) — without
+    // this both tables grow forever
+    try {
+      // k = "<tokenId>:<YYYY-MM-DD>" — the date is the trailing 10 chars
+      const cutoff = new Date(now - 2 * 86400000).toISOString().slice(0, 10)
+      db.query("DELETE FROM dcreates WHERE substr(k, length(k) - 9) < ?").run(cutoff)
+      db.query("DELETE FROM rate WHERE resetAt < ?").run(now - 2 * 3600000)
+    } catch {}
   } catch (e) {
     console.log("[sweep] error", (e as Error)?.message)
   }
@@ -817,7 +1075,7 @@ const server = Bun.serve<WsData>({
     if (wm && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return httpHandler(req).then((res) => {
         if (res.status !== 200) return res
-        if (srv.upgrade(req, { data: { kind: "viewer", shareId: wm[1] } satisfies ViewerData })) return
+        if (srv.upgrade(req, { data: { kind: "viewer", shareId: wm[1], since: url.searchParams.get("since") ?? undefined, delta: url.searchParams.get("delta") ?? undefined } satisfies ViewerData })) return
         return new Response("upgrade failed", { status: 400 })
       })
     }
@@ -831,7 +1089,22 @@ const server = Bun.serve<WsData>({
         set.add(ws)
         const share = q.share(ws.data.shareId)
         if (share) {
-          try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: redactItems(shareData(share)) })) } catch {}
+          // `since` handshake (worker parity): since === rev answers an
+          // empty frame; since < rev with delta=1 answers a DELTA (only
+          // items touched since, tombstones included — rev/del rows);
+          // anything else gets the full frame (incl. since > rev, where
+          // the viewer must prune). Deltas only for clients that
+          // announced capability (old bundles treat any non-empty first
+          // frame as the full set).
+          const since = Number(ws.data.since)
+          if (Number.isFinite(since) && since === share.rev) {
+            try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: [] })) } catch {}
+          } else if (ws.data.delta === "1" && Number.isFinite(since) && since >= 0 && since < share.rev) {
+            const delta = db.query("SELECT item FROM items WHERE shareId = ? AND rev > ?").all(share.id, since) as Array<{ item: string }>
+            try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: delta.map((r) => JSON.parse(r.item)), kind: "delta" })) } catch {}
+          } else {
+            try { ws.send(renderFrame(share)) } catch {}
+          }
         }
       }
     },

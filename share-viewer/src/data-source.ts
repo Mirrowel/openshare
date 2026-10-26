@@ -7,8 +7,11 @@
 //             everything resumes exactly as before.
 //   local   — served by the decrypt tool's localhost server at /s/<id>:
 //             window.__MIRROBOT_SNAPSHOT__ carries {items, sessionID} inline.
-import { createSignal } from "solid-js"
+//   demo    — ?demo in vite dev renders the built-in fixture (src/demo.ts);
+//             viewer development with no worker, share or auth.
+import { createMemo, createSignal } from "solid-js"
 import { fold, readPrefs, type ShareData } from "./fold"
+import { demoSnapshot } from "./demo"
 
 export type Branding = {
   name?: string
@@ -18,6 +21,14 @@ export type Branding = {
   accent?: string
   faviconUrl?: string
   backgroundUrl?: string
+  /** one-line deployment description: login card subtitle + og:description */
+  description?: string
+  /** full custom embed/link-preview title (verbatim). Empty = the
+   *  "<name> · Open(code)Share" template */
+  ogTitle?: string
+  /** social/link-preview image (og:image / twitter:image). Falls back to
+   *  logoUrl when unset. Deployment-branded, never session content. */
+  ogImage?: string
 }
 
 export type Source = {
@@ -59,7 +70,11 @@ async function fetchBranding(): Promise<Branding> {
 
 export function useShareSource(): Source {
   const { shareID, sub } = parsePath()
-  const embedded = (window as any).__MIRROBOT_SNAPSHOT__ as
+  // ?demo in vite dev serves the built-in fixture share (src/demo.ts) -
+  // viewer development with no worker, no share, no auth
+  const embedded = (import.meta.env.DEV && new URLSearchParams(location.search).has("demo")
+    ? demoSnapshot
+    : (window as any).__MIRROBOT_SNAPSHOT__) as
     | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string }
     | undefined
 
@@ -107,16 +122,51 @@ export function useShareSource(): Source {
     })
   }
 
+  // FULL-SET replace: /data responses and a WS socket's first frame carry
+  // the COMPLETE live item set - they must prune keys the server no
+  // longer has. A merge-only consumer keeps items deleted while its
+  // socket was down, so an undone turn resurrected on every reconnect
+  // until a hard reload (live-caught). Deltas (WS delta frames, poll
+  // since-responses) keep using merge() - they carry tombstone markers
+  // for what was deleted.
+  const replaceFull = (incoming: any[]) => {
+    setItems((prev) => {
+      const next = new Map<string, any>()
+      for (const it of incoming ?? []) {
+        const key = it.type === "session" ? `session/${it.data?.id ?? ""}`
+          : it.type === "message" ? `message/${it.sessionID ?? it.data?.sessionID ?? ""}/${it.data?.id ?? ""}`
+          : it.type === "model" ? `model/${it.sessionID ?? ""}`
+          : it.type === "prefs" ? "prefs"
+          : it.type === "session_diff" ? `session_diff/${it.sessionID ?? ""}`
+          : null
+        if (key && !it.del) next.set(key, it)
+      }
+      if (next.size === prev.size) {
+        let same = true
+        for (const [k, v] of next) {
+          if (prev.get(k) !== v) { same = false; break }
+        }
+        if (same) return prev
+      }
+      return next
+    })
+  }
+
   if (embedded) {
     merge(embedded.items ?? [])
     setStatus("cached")
     const all = () => Array.from(items().values())
     const sessionID = () => embedded.sessionID
+    // memoized fold: data() was a plain function called many times per
+    // update (8-10 call sites), each a full O(N) fold of every item —
+    // the single largest viewer CPU item during live sessions. The memo
+    // computes once per change epoch of its inputs.
+    const dataMemo = createMemo(() => fold(all(), sessionID(), shareID, status()))
     return {
       mode: "local",
-      shareID,
+      shareID: shareID || embedded.sessionID,
       sub,
-      data: () => fold(all(), sessionID(), shareID, status()),
+      data: dataMemo,
       ready: () => all().some((i) => i.type === "session"),
       status,
       rev,
@@ -129,7 +179,7 @@ export function useShareSource(): Source {
     }
   }
   return liveSource({
-    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge,
+    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull,
     setItems, setStatus, setRev, setError, setNeedsAuth, setAuthState, setBrand,
     all: () => Array.from(items().values()),
     sessionID: () => {
@@ -140,21 +190,30 @@ export function useShareSource(): Source {
 }
 
 function liveSource(ctx: any): Source {
-  const { shareID, sub, status, rev, error, needsAuth, authState, brand, merge, setNeedsAuth, setStatus, setRev, setError, setAuthState } = ctx
+  const { shareID, sub, status, rev, error, needsAuth, authState, brand, merge, replaceFull, setNeedsAuth, setStatus, setRev, setError, setAuthState } = ctx
   let stopped = false
   let ws: WebSocket | undefined
   let pollTimer: any
   let wsRetryTimer: any
+  // a socket's FIRST frame is the full item set, the empty since-hit, or
+  // (when we announced delta=1) a DELTA — every later frame is a delta.
+  // Full frames replace (pruning items deleted while we were away);
+  // deltas merge (the merge path deletes on tombstones)
+  let firstFrame = true
 
   const wire = () => {
     if (needsAuth()) return
+    firstFrame = true // a fresh socket's first frame arrives per the since handshake below
     try {
       // local http workers (bun server, wrangler dev) speak plain ws://
       const proto = location.protocol === "https:" ? "wss" : "ws"
-      // `since`: we already hold /data at rev — the worker answers with an
-      // empty frame when nothing changed instead of the full first frame
+      // `since`: we already hold /data at rev — the server answers with an
+      // empty frame (nothing changed) or a DELTA (only what we missed;
+      // delta=1 announces we can merge it — an old cached bundle that
+      // can't would prune everything not in the delta). No since (first
+      // ever load) or a rewound server gets the full frame.
       const r = typeof rev === "function" ? rev() : 0
-      const since = Number.isFinite(r) && r > 0 ? `?since=${r}` : ""
+      const since = Number.isFinite(r) && r > 0 ? `?since=${r}&delta=1` : ""
       ws = new WebSocket(`${proto}://${location.host}/api/share/${shareID}/ws${since}`)
     } catch {
       startPolling()
@@ -164,7 +223,17 @@ function liveSource(ctx: any): Source {
       let frame: any
       try { frame = JSON.parse(ev.data) } catch { return }
       if (frame.op !== "frame") return
-      merge(frame.items ?? [])
+      lastFrameAt = Date.now()
+      const isFirst = firstFrame
+      firstFrame = false
+      // a delta first frame (kind:"delta") MERGES — replacing with it
+      // would prune every item not in the delta (data-loss trap; the
+      // server only sends kind:"delta" to delta=1 clients). Any other
+      // non-empty first frame is the full set: replace, so items deleted
+      // while we were disconnected get pruned instead of resurrecting
+      // until a hard reload.
+      if (isFirst && frame.kind !== "delta" && (frame.items ?? []).length > 0) replaceFull(frame.items)
+      else merge(frame.items ?? [])
       setRev(frame.rev ?? 0)
       if (frame.status === "gone") {
         setStatus("gone")
@@ -196,9 +265,13 @@ function liveSource(ctx: any): Source {
 
   async function tick() {
     try {
-      const r = await fetch(`/api/share/${shareID}/data`, { cache: "no-store" })
-      if (r.status === 401) {
-        const body = await r.json().catch(() => ({}))
+      // `since`: an unchanged rev answers an empty set — the poll stops
+      // re-transferring the whole share every 5s (same handshake as the WS)
+      const r = typeof rev === "function" ? rev() : 0
+      const since = Number.isFinite(r) && r > 0 ? `?since=${r}` : ""
+      const res = await fetch(`/api/share/${shareID}/data${since}`, { cache: "no-store" })
+      if (res.status === 401) {
+        const body = await res.json().catch(() => ({}))
         if (body.authRequired) {
           setNeedsAuth(true)
           setStatus("login required")
@@ -207,15 +280,29 @@ function liveSource(ctx: any): Source {
         }
         return
       }
-      if (r.status === 404) {
+      if (res.status === 404) {
         setStatus("gone")
         setError("not found")
         stopped = true
         cleanup()
         return
       }
-      const body = await r.json()
-      merge(body.data ?? [])
+      const body = await res.json()
+      // Two shapes by request: without `since` the answer is the FULL
+      // live set — replace, so items deleted while we were disconnected
+      // get pruned instead of resurrecting. With `since` and a changed
+      // rev the answer is a DELTA (only items touched since, tombstones
+      // included) — merge it; the merge path already deletes on
+      // tombstones. Same rev = nothing changed: keep the container
+      // identity (no refold, no traffic-shaped work)
+      const curRev = typeof rev === "function" ? rev() : -1
+      if (typeof body.rev === "number" && body.rev === curRev) {
+        // unchanged
+      } else if (since) {
+        merge(body.data ?? [])
+      } else {
+        replaceFull(body.data ?? [])
+      }
       setRev(body.rev ?? 0)
       setStatus(body.status ?? "live")
     } catch (e) {
@@ -254,17 +341,38 @@ function liveSource(ctx: any): Source {
     }
   }
 
+  let lastFrameAt = 0
   tick().then(wire)
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && !stopped && !needsAuth() && ws?.readyState !== WebSocket.OPEN) tick()
+    if (document.hidden || stopped || needsAuth()) return
+    // heal on user intent: a socket that is OPEN but silently dead (no
+    // close event — sleep/wake, NAT timeout) freezes the page, because
+    // polling is stopped while a socket is open. No background watchdog:
+    // an always-on timer would bill idle pages (completed shares
+    // legitimately never frame again) — the tab coming back to focus is
+    // the free signal that it's time to check.
+    if (ws?.readyState !== WebSocket.OPEN) {
+      tick()
+      return
+    }
+    if (lastFrameAt && Date.now() - lastFrameAt > 60000) {
+      // stale open socket: force a poll + fresh wire; the since-handshake
+      // makes the poll cheap (empty on unchanged rev)
+      tick()
+      try { ws.close() } catch {}
+      wire()
+    }
   })
 
   const all = ctx.all
+  // memoized fold (see the local-source twin): one fold per change epoch
+  // instead of one per call site per update
+  const dataMemo = createMemo(() => fold(all(), ctx.sessionID(), shareID, status()))
   return {
     mode: "live" as const,
     shareID,
     sub,
-    data: () => fold(all(), ctx.sessionID(), shareID, status()),
+    data: dataMemo,
     ready: () => all().some((i: any) => i.type === "session"),
     status,
     rev,

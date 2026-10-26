@@ -47,41 +47,47 @@
   margin-bottom: -12px;
 }
 
+/* ONE code surface, exposed to views through the SDK (Skin.codeSurface):
+   a tint of the text colour, so light, dark and the premade themes all
+   get a surface in their own hue. The tokens are global and inert; the
+   applications below are OPT-IN per view via html[data-osh-code-surface]
+   (conversation applies it; classic and the skins keep their current
+   surfaces by default). */
+:root {
+  --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
+  /* the same tint over the page, opaque: the sticky line-number gutter
+     must hide code scrolling under it */
+  --osh-code-solid: color-mix(in oklab, var(--text-base) 7%, var(--background-stronger, var(--background-base)));
+}
+/* the kit sets the highlighter block's background inline */
+html[data-osh-code-surface] [data-component="markdown-code"] pre.shiki {
+  background-color: var(--osh-code-bg) !important;
+  border-color: var(--border-weaker-base);
+}
+
 /* === settings-driven bits === */
 /* text scaling via the design system's font-size tokens: the text
    utilities read var(--font-size-*), so overriding the tokens scales
    every text class (px-based utilities included) without touching
-   layout, zoom, or scrollbars */
-html[data-osh-text="compact"] {
-  --font-size-x-small: 10px;
-  --font-size-small: 12px;
-  --font-size-base: 13px;
-  --font-size-large: 15px;
-  --font-size-x-large: 18px;
-}
-html[data-osh-text="roomy"] {
-  --font-size-x-small: 12px;
-  --font-size-small: 14px;
-  --font-size-base: 15px;
-  --font-size-large: 17px;
-  --font-size-x-large: 22px;
+   layout, zoom, or scrollbars. Continuous: applySettings sets
+   --osh-text-scale (0.75-1.5), ratios from the kit's default ladder */
+html {
+  --font-size-x-small: calc(11px * var(--osh-text-scale, 1));
+  --font-size-small: calc(13px * var(--osh-text-scale, 1));
+  --font-size-base: calc(14px * var(--osh-text-scale, 1));
+  --font-size-large: calc(16px * var(--osh-text-scale, 1));
+  --font-size-x-large: calc(20px * var(--osh-text-scale, 1));
 }
 
 /* reading text: scoped to the content column (.osh-content) - the
-   control for what you read, independent of chrome scale */
-html[data-osh-read-text="compact"] .osh-content {
-  --font-size-x-small: 10px;
-  --font-size-small: 12px;
-  --font-size-base: 13px;
-  --font-size-large: 15px;
-  --font-size-x-large: 18px;
-}
-html[data-osh-read-text="large"] .osh-content {
-  --font-size-x-small: 12px;
-  --font-size-small: 14px;
-  --font-size-base: 15px;
-  --font-size-large: 17px;
-  --font-size-x-large: 22px;
+   control for what you read, independent of chrome scale. Continuous:
+   --osh-read-px (12-24) drives the whole ladder */
+.osh-content {
+  --font-size-x-small: calc(var(--osh-read-px, 14px) * 0.786);
+  --font-size-small: calc(var(--osh-read-px, 14px) * 0.929);
+  --font-size-base: var(--osh-read-px, 14px);
+  --font-size-large: calc(var(--osh-read-px, 14px) * 1.143);
+  --font-size-x-large: calc(var(--osh-read-px, 14px) * 1.429);
 }
 
 /* reader/view drawers */
@@ -181,10 +187,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   line-height: var(--line-height-large, 1.5);
 }
 
-/* task/subagent cards carried a visible border in v1 */
-[data-timeline-row] [data-component="task-tool-card"] {
-  border: 1px solid var(--border-weak-base);
-}
+/* task/subagent cards: NO outline (owner round 2026-10-26 - the
+   rectangle goes, the rounded background stays; see .osh-task-wrap
+   block for the full hint treatment) */
 
 /* tool output blocks keep v1 breathing room below */
 [data-component="tool-output"] {
@@ -418,11 +423,12 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   white-space: nowrap;
   min-width: 0;
 }
-/* titlebar of the unified file card: title left, overflow toggle right */
+/* titlebar of the unified file card: the controls sit next to the
+   filename (one consistent position across every view) */
 .osh-file-titlebar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
 }
 .osh-pre-wrap {
@@ -464,13 +470,56 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   color: var(--text-strong);
   font-weight: 600;
 }
+/* path-first layout: the directory reads before the name and truncates
+   from its START (rtl direction + plaintext keeps the text order, the
+   ellipsis lands on the left) so the name always stays whole; the name
+   never shrinks */
+.osh-title-path-first {
+  min-width: 0;
+}
+.osh-title-path-first .osh-dir-full {
+  flex: 0 1 auto;
+  min-width: 0;
+  direction: rtl;
+  unicode-bidi: plaintext;
+}
+.osh-file-sep {
+  flex: none;
+  color: var(--text-weaker);
+}
+/* --- file-card sizing (owner round 2026-10-25) --------------------------
+   ONE fixed card width for the whole file family: read, write and
+   unified edit all render at --osh-card (30rem); a split diff renders at
+   exactly 2x, so the first column NEVER changes size when toggling
+   U/S - split only adds the second pane. Every card caps at 100% so
+   narrow columns and skin sheets clamp automatically. Fixed width by
+   construction replaces the per-card measurement machinery (a collapsed
+   pierre scroller used to poison the measurement and refuse the split
+   forever). */
+:root {
+  /* +20% (owner round 2026-10-26): unified/text file cards render wider;
+     split = 2x the same token, still viewport-capped */
+  /* file-card width; applySettings overrides live from the cardWidth
+     setting (rem) - this is the pre-paint default */
+  --osh-card: 40rem;
+}
 [data-component="osh-file-body"] {
-  /* the whole card hugs its content (capped at the column): the titlebar
-     and the overflow toggle then sit on the CONTENT's real edge instead
-     of the page column's (live-caught: the toggle floated far right of a
-     narrow unified diff) */
-  width: fit-content;
-  max-width: min(100%, 75vw);
+  width: min(100%, var(--osh-card));
+}
+html[data-osh-code-surface] [data-component="osh-file-body"] {
+  background: var(--osh-code-solid);
+  /* the kit's hook for the diff/gutter background; opaque so scrolled
+     code never shows through the sticky gutter */
+  --opencode-diffs-bg: var(--osh-code-solid);
+}
+html[data-osh-code-surface] [data-component="osh-file-body"] diffs-container {
+  background-color: transparent;
+}
+html[data-osh-code-surface] .osh-pre {
+  background: var(--osh-code-bg);
+}
+[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
+  width: min(100%, calc(2 * var(--osh-card)));
 }
 [data-component="osh-file-body"] > [data-component="file"],
 [data-component="osh-file-body"] > [data-component="edit-content"],
@@ -478,34 +527,26 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   width: auto;
   max-width: 100%;
 }
-/* split escape: the edit card may grow past the 75vw text cap (its width
-   is set inline from content measurement) */
-[data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
-  max-width: calc(100vw - 48px);
+
+/* card controls ride the title row beside the filename: diff mode (edit
+   only) then the wrap/scroll selector */
+.osh-card-controls {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin-left: 0;
+  flex: none;
 }
 
-/* the file-title extension badge (TS/MD/JSON...) */
-[data-slot="osh-file-title"] .osh-file-ext {
-  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-weaker);
-  background: var(--surface-base);
-  border: 1px solid var(--border-weaker-base);
-  border-radius: 4px;
-  padding: 2px 4px;
-}
 
 
 /* --- tool output overflow (setting: scroll | wrap) --------------------
-   Every output surface is hard-capped at min(100%, 75vw) - one long line
-   must never stretch a card to page width; the setting only picks how
-   long lines behave inside the cap: hidden-scrollbar horizontal scroll
-   (VSCode-style, default) or wrapping. The split diff keeps its own
-   wider-but-capped escape. */
-[data-timeline-row] [data-component="osh-file-body"],
-[data-row-key] [data-component="osh-file-body"],
+    Every text output surface is hard-capped at min(100%, 75vw) - one long
+    line must never stretch a card to page width; the setting only picks
+    how long lines behave inside the cap: hidden-scrollbar horizontal
+    scroll (VSCode-style) or wrapping. File cards have their own fixed
+    width (--osh-card) and are not capped here. */
 [data-timeline-row] .osh-pre,
 [data-row-key] .osh-pre {
   max-width: min(100%, 75vw);
@@ -530,12 +571,54 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   overflow-x: hidden;
 }
 
+/* --- prompt style: bubble (default) or flat ------------------------------
+   Flat unhooks the kit's right-aligned chat bubble at the ROW level:
+   every user message renders full-width at the left with an accent
+   chevron marker and medium weight. Row+body both forced (the kit has
+   two user-message variants and a body-only override left half of them
+   right-bound, owner-caught); !important because the kit's own rules
+   are :root[data-color-scheme] body [attr] [attr] (4 attributes).
+   No background band: the marker alone distinguishes a prompt
+   (owner round 2026-10-25). Unlayered so it beats the kit's @layer. */
+html[data-osh-prompts="flat"] body [data-component="user-message"] {
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+  text-align: left;
+  /* flat mode's turn separators: a hairline above AND below each prompt
+     (flat mode only) - the prompt delimits the turn without a bubble */
+  border-top: 1px solid var(--border-weak-base);
+  border-bottom: 1px solid var(--border-weak-base);
+  padding-block: 10px;
+}
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-body"] {
+  width: auto !important;
+  max-width: none !important;
+  margin-inline: 0 !important;
+  align-self: flex-start !important;
+}
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"] {
+  padding: 2px 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  font-weight: 500;
+}
+html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="user-message-text"]::before {
+  content: "❯";
+  color: var(--openshare-accent, var(--text-weak));
+  margin-right: 8px;
+  font-weight: 600;
+  font-size: 0.9em;
+}
+/* skins' base-view prompt (already plain text; nothing to unhook, but the
+   wrapper keeps the setting legible if a skin styles its own bubble) */
+.osh-flat-prompt {
+  --osh-prompt-flat: 1;
+}
+
 /* --- split diff (VSCode-style) ------------------------------------------
-   The split card's width is set INLINE from measurement (viewport - card
-   left - margin) so it can never overflow the page (the old min(200%,
-   100vw-48) rule overflowed because the card is left-anchored inside a
-   CENTERED column). Panes scroll horizontally, hidden scrollbar, and
-   contain only their X axis so vertical wheel chains to the page. */
+   The split card is exactly 2x --osh-card (CSS above); panes scroll
+   horizontally with a hidden scrollbar and contain only their X axis so
+   the vertical wheel chains to the page. */
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="edit-content"] {
   overflow-x: auto;
   scrollbar-width: none;
@@ -570,6 +653,146 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 .osh-dm-btn.osh-dm-on {
   background: var(--surface-raised-base);
   color: var(--text-strong);
+}
+/* forced split that this card cannot fit: the button stays lit but
+   dimmed — it no longer silently claims a layout it refused */
+.osh-dm-btn.osh-dm-starved {
+  opacity: 0.5;
+}
+
+/* --- conversation layout: row only at 900px+ -----------------------------
+   TurnNav switches to its sidebar at 900px; the container must flip to
+   the row at the SAME width (Tailwind md:flex-row flipped at 768, and in
+   the 768-899px gap the narrow bar rendered inside the stretch row -
+   full-height button, popover anchored at the giant rect's left edge). */
+[data-osh-conv-layout] {
+  flex-direction: column;
+}
+@media (min-width: 900px) {
+  [data-osh-conv-layout] {
+    flex-direction: row;
+  }
+}
+
+/* --- conversation view (TurnNav - ported from the conversation PR) ----- */
+.osh-turn-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 0.375rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-base);
+  font: inherit;
+  cursor: pointer;
+}
+.osh-turn-button:hover:not(:disabled) { background: var(--surface-base); }
+.osh-turn-button:disabled { opacity: 0.4; cursor: default; }
+.osh-turn-tick {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 18px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.osh-turn-tick-line {
+  height: 2px;
+  width: 12px;
+  border-radius: 2px;
+  background: var(--icon-weak-base);
+  transition: width 150ms, background-color 150ms;
+}
+.osh-turn-tick-line[data-major] { width: 20px; }
+.osh-turn-tick:hover .osh-turn-tick-line,
+.osh-turn-tick[aria-current="step"] .osh-turn-tick-line {
+  width: 28px;
+  background: var(--icon-strong-base);
+}
+.osh-turn-tick[aria-current="step"] .osh-turn-tick-line { height: 3px; }
+.osh-turns-toggle {
+  position: absolute;
+  top: 6px;
+  right: -12px;
+  z-index: 50;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-weak-base);
+  background: var(--background-base);
+}
+@media (prefers-reduced-motion: reduce) {
+  .osh-turn-tick-line { transition: none; }
+}
+
+/* --- light-mode readability floor ----------------------------------------
+   The kit's light tokens ship --text-weaker at 1.6:1 on white (meta text
+   nearly invisible - owner-caught). Forced themes carry the fix from
+   build-themes.mjs; this rule covers SYSTEM-light (no forced block). */
+html[data-color-scheme="light"] {
+  --text-weak: #767676;
+  --text-weaker: #9e9e9e;
+}
+
+/* --- transcript scrollbar: classic, space-reserving ---------------------
+   ::-webkit-scrollbar styling ONLY. The standard scrollbar-width /
+   scrollbar-color props DISABLE the pseudo-element in Chromium and do
+   NOT opt the element out of Edge's Fluent OVERLAY mode - the thumb
+   keeps floating over live content (gutter stayed 0 with them set,
+   probe-measured). Without the standard props, the webkit block forces
+   a classic reserved-gutter scrollbar: the thumb is a real hit target,
+   so a thumb press can never start a text selection under it. */
+[data-transcript-scroll] {
+  /* reserve the strip explicitly: Fluent overlay scrollbars stay overlay
+     even under webkit thumb styling (gutter measured 0 with the pseudo
+     applied), and a reserved gutter is what makes a thumb press a REAL
+     scrollbar press that can never start a text selection under it */
+  scrollbar-gutter: stable;
+}
+[data-transcript-scroll]::-webkit-scrollbar {
+  width: 12px;
+}
+/* --- transcript scrollbar: slim, and hit-tested at every zoom --------
+   WHY THE OVERHANG: Chromium builds the scrollbar's hit rect from
+   integer-snapped layout geometry while painting at full precision; at
+   fractional device scale (e.g. 1.25 x zoom) the two grids disagree at
+   the right edge, and when frac(scrollerLeft x dpr) === 0.5 the hit
+   rect ends one physical pixel INSIDE the painted bar - the last pixel
+   column is dead (no hover, no grab). Classic's +18px indent made its
+   scroller left edge land on that half-pixel at 100% and 140% zoom
+   while the conversation view's 192px left edge never did. Letting the
+   scroller box overhang the viewport by 2px pushes the hit rect past
+   the last visible pixel at every dpr/zoom/sidebar width, so the edge
+   pixel is always a real scrollbar press. Scoped to the timeline
+   scrollers only (a global rule broke the skin scrollers' widths). */
+[data-transcript-scroll][data-osh-gutter] {
+  width: calc(100% + 2px);
+  margin-right: -2px;
+}
+[data-transcript-scroll][data-osh-gutter]::-webkit-scrollbar {
+  width: 14px;
+}
+[data-transcript-scroll]::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-transcript-scroll]::-webkit-scrollbar-thumb {
+  background: var(--border-weak-base);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+[data-transcript-scroll]::-webkit-scrollbar-thumb:hover {
+  background: var(--text-weaker);
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 
 /* --- agent/mode switch: a full-width centered EVENT row ------------------
@@ -606,7 +829,9 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   font-size: 12px;
 }
 [data-component="osh-agent-switch"] .osh-as-label .osh-as-agent {
-  color: var(--accent, var(--text-strong));
+  /* brand accent when configured (--openshare-accent), the theme accent
+   * otherwise */
+  color: var(--openshare-accent, var(--accent, var(--text-strong)));
 }
 /* entry slots are transparent under skins that need direct grid children
    (grove's 2-column turn body; atlas's sheet grid - without this the
@@ -616,6 +841,20 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 [data-view="grove"] .osh-entry-slot,
 [data-view="atlas"] .osh-entry-slot {
   display: contents;
+}
+
+/* [design-trial: ghost pill] one-time discoverability pulse on first
+   visit (per browser, localStorage osh_pill_pulse) */
+@keyframes osh-pill-pulse {
+  0%, 100% { opacity: 0; }
+  15%, 55% { opacity: 0.75; }
+  35%, 75% { opacity: 0.1; }
+}
+.osh-pill-pulse {
+  animation: osh-pill-pulse 1.9s ease-in-out 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .osh-pill-pulse { animation: none; }
 }
 
 /* The kit's expanded tool-group header is position:sticky (its own scroll
@@ -628,40 +867,242 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   position: static;
 }
 
-/* subagent rows: hover says what clicking does (owner directive - the
-   click already opens the child session; the hover just announces it) */
-[data-timeline-row] [data-component="task-tool-surface"],
-[data-row-key] [data-component="task-tool-surface"] {
+/* task cards: the kit's own chevron reveals on hover (unchanged) and
+   a 1px accent underline expands along the bottom edge - centered,
+   spanning a quarter of the card. The card keeps its rounded surface,
+   no outline; nothing else is animated and nothing below moves. */
+.osh-task-wrap {
+  display: block;
   position: relative;
 }
-[data-timeline-row] [data-component="task-tool-surface"]::after,
-[data-row-key] [data-component="task-tool-surface"]::after {
-  content: "open subagent \2197";
-  /* BELOW the card (live-caught: the previous right-side chip sat ON the
-     subtitle text and obscured it) */
+.osh-task-wrap [data-component="task-tool-card"] {
+  border: none;
+  outline: none;
+}
+.osh-task-wrap::after {
+  content: "";
   position: absolute;
-  left: 50%;
-  bottom: -22px;
-  transform: translateX(-50%) translateY(-3px);
-  font: 10.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  letter-spacing: 0.04em;
-  color: var(--text-weaker);
-  background: var(--surface-raised-base);
-  border: 1px solid var(--border-weaker-base);
-  padding: 3px 8px;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
-  opacity: 0;
+  left: 38%;
+  right: 38%;
+  bottom: 0;
+  height: 1px;
+  border-radius: 1px;
+  background: var(--openshare-accent, var(--icon-strong-base));
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 180ms ease-out;
   pointer-events: none;
-  transition: opacity 130ms ease, transform 130ms ease;
-  white-space: nowrap;
-  z-index: 5;
 }
-[data-timeline-row] [data-component="task-tool-surface"]:hover::after,
-[data-row-key] [data-component="task-tool-surface"]:hover::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
+.osh-task-wrap:hover::after {
+  transform: scaleX(1);
 }
+/* diff content sits flush in its card everywhere (the kit gives
+   edit-content a 12px indent and rounded corner, and the row rule
+   indents the body again) */
+[data-component="osh-file-body"] [data-component="edit-content"] {
+  margin-left: 0;
+  border-radius: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .osh-task-wrap::after {
+    transition: opacity 150ms ease-out;
+    transform: none;
+    opacity: 0;
+  }
+  .osh-task-wrap:hover::after {
+    opacity: 1;
+  }
+}
+/* the custom-grouping checklist reveal (settings panel): slides open
+   under the lever */
+.osh-reveal {
+  animation: osh-reveal-in 220ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  transform-origin: top center;
+}
+@keyframes osh-reveal-in {
+  from { opacity: 0; transform: translateY(-4px) scaleY(0.96); max-height: 0; }
+  to { opacity: 1; transform: translateY(0) scaleY(1); max-height: 320px; }
+}
+/* the debug reset: the resting row brightens into the armed warning
+   panel, which springs in */
+.osh-reset-arm { animation: osh-value-in 180ms ease-out; }
+.osh-reset-armed { animation: osh-reset-pop 260ms cubic-bezier(0.34, 1.4, 0.44, 1); transform-origin: left center; }
+@keyframes osh-reset-pop {
+  from { opacity: 0; transform: translateX(-6px) scale(0.97); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+/* the lever's value text + the slider's value chip swap with a gentle
+   fade-slide when the value changes (keyed remount re-runs it) */
+.osh-lever-value {
+  animation: osh-value-in 220ms ease-out;
+}
+@keyframes osh-value-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* the slider: accent-filled track progress + rounded thumb; native
+   input under the skin so arrow keys and dragging work everywhere */
+input[type="range"].osh-slider {
+  appearance: none;
+  height: 4px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    var(--openshare-accent, var(--icon-strong-base)) 0%,
+    var(--openshare-accent, var(--icon-strong-base)) var(--osh-slider-fill, 50%),
+    var(--border-weak-base) var(--osh-slider-fill, 50%),
+    var(--border-weak-base) 100%
+  );
+  cursor: pointer;
+  padding: 0;
+  border: none;
+}
+input[type="range"].osh-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--background-base);
+  border: 2px solid var(--openshare-accent, var(--icon-strong-base));
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+  transition: transform 120ms ease-out;
+}
+input[type="range"].osh-slider:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+input[type="range"].osh-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--background-base);
+  border: 2px solid var(--openshare-accent, var(--icon-strong-base));
+}
+
+/* the search palette: drops in from the header bar. Centering rides the
+   flex WRAPPER (the kit's tailwind emits `translate:` as a CSS property;
+   animating transform on a class-centered element applied both offsets
+   and landed the palette one width left mid-animation) - the animation
+   only touches opacity/translateY/scale */
+.osh-search-palette {
+  animation: osh-palette-in 180ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+@keyframes osh-palette-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.985); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* live search marks: browser-find yellow - maximum contrast on every
+   theme, near-black text on the highlight. The engine paints ranges
+   through the CSS Custom Highlight API (no DOM writes, so layout never
+   shifts and virtualizer measurements stay stable); the <mark> rules
+   remain for browsers without it. */
+::highlight(osh-search) {
+  background-color: #f6d944;
+  color: #16130a;
+}
+::highlight(osh-search-flash) {
+  background-color: #ffdf3d;
+  color: #16130a;
+}
+.osh-search-flash-row {
+  outline: 1px solid #f6d944;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+mark.osh-search-hit {
+  background: #f6d944;
+  color: #16130a;
+  border-radius: 2px;
+  /* NO padding: a mark must never change line height or wrapping (that
+     re-measured rows and moved the reader while searching) */
+}
+mark.osh-search-hit.osh-search-hit-active {
+  background: #ffdf3d;
+  animation: osh-hit-flash 1.6s ease-out;
+}
+@keyframes osh-hit-flash {
+  0%, 45% { background: #ffec8a; }
+  100% { background: #f6d944; }
+}
+
+/* the search palette surface */
+.osh-search-scrim {
+  background: rgb(0 0 0 / 0.22);
+  animation: osh-scrim-in 160ms ease-out;
+}
+@keyframes osh-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* scope chips: compact pill toggles */
+.osh-search-chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-weak-base);
+  background: transparent;
+  color: var(--text-weaker);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 140ms ease-out;
+}
+.osh-search-chip:hover {
+  color: var(--text-base);
+  border-color: var(--border-strong-base);
+}
+.osh-search-chip-on {
+  color: var(--text-strong);
+  border-color: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 55%, transparent);
+  background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 14%, transparent);
+}
+/* result rows: hairline separators, the selected row carries an accent
+   edge bar (the nav rail's language). Typography is set here so the row
+   never inherits the 16px page body: a 16px/24px line box in a 12px
+   snippet made 38px rows with the text sitting high in the highlight. */
+.osh-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  padding: 6px 14px 6px 12px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-weak-base) 40%, transparent);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  transition: background 100ms ease-out;
+}
+.osh-search-row:last-child { border-bottom: none; }
+.osh-search-row:hover { background: var(--surface-base); }
+.osh-search-row-sel {
+  background: var(--surface-raised-base);
+  box-shadow: inset 2px 0 0 var(--openshare-accent, var(--icon-strong-base));
+}
+.osh-search-row-sel:hover { background: var(--surface-raised-base); }
+
+/* thin decorative scrollbars for the nav lists and settings bodies:
+   4px rounded translucent thumb, invisible track - presence and
+   position only, not a drag target */
+.osh-thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-weaker) 45%, transparent) transparent;
+}
+.osh-thin-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.osh-thin-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-weaker) 45%, transparent);
+  border-radius: 4px;
+}
+.osh-thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 
 /* glob/grep/list rows inside a context group render through the kit's
    special compact branch (a bare tool-trigger, no BasicTool wrapper) -
@@ -705,23 +1146,42 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
    spans 8-38px at the viewport edge. 0.75x = 18px puts the first text at
    42px - pill right (38) + 4px clearance, no free space beyond it */
 .osh-indent {
-  padding-left: calc(1.5rem * 0.75) !important;
+  /* pill mode: the capsule clears the floating pill (measured: text at
+     35px, pill right 28 -> 7px gap; owner round 2026-10-27) */
+  padding-left: 11px !important;
+}
+/* sidebar mode: the sidebar-to-content gap is HALVED to 14px (owner
+   round 2026-10-27). The gap is .osh-indent + the content frame's 24px
+   left padding (the header/footer px-6 blocks and the kit row wrapper
+   px-4 md:px-6) - measured 28px total. 4 + 10 = 14. */
+html[data-osh-nav="sidebar"] .osh-indent {
+  padding-left: 4px !important;
+}
+html[data-osh-nav="sidebar"] .osh-indent .px-6 {
+  padding-left: 10px !important;
+}
+html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
+  padding-left: 10px !important;
 }
 
 /* HoverRail v4: floating pill (no gutter column). Popover opens only
    from the pill, scale+slide in from it, 150ms. Rest opacity is inline
    (0.4 rest / 1 near). */
+/* the popover is vertically CENTERED on the pill (owner round 2026-10-25:
+   bottom-aligned read as detached); the translateY lives INSIDE the
+   keyframes so the entry animation never fights the centering */
 @keyframes osh-rail-pop-in {
   from {
     opacity: 0;
-    transform: translateX(-6px) scale(0.96);
+    transform: translateY(-50%) translateX(-6px) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateX(0) scale(1);
+    transform: translateY(-50%) translateX(0) scale(1);
   }
 }
 .osh-rail-pop {
+  top: 50%;
   animation: osh-rail-pop-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
 }
 .osh-rail-pill-open {

@@ -166,6 +166,7 @@ function startMockLLM() {
           const text = JSON.stringify(JSON.parse(body))
           if (text.includes("RETRY_ONCE")) marker = "RETRY_ONCE"
           if (text.includes("FAIL_HARD")) marker = "FAIL_HARD"
+          if (text.includes("SLOW_TURN")) marker = "SLOW_TURN"
         } catch {}
         if (marker === "FAIL_HARD") {
           // 400, NOT 500: opencode retries 5xx with its own backoff
@@ -193,6 +194,17 @@ function startMockLLM() {
             choices: [{ index: 0, delta, finish_reason: finish }],
           })}\n\n`
         res.write(chunk({ role: "assistant", content: "" }))
+        if (marker === "SLOW_TURN") {
+          // mid-stream stall: the turn stays OPEN long enough for the
+          // scenario to queue a second prompt behind it (S13)
+          setTimeout(() => {
+            res.write(chunk({ content: "suite reply: slow turn complete" }))
+            res.write(chunk({}, "stop"))
+            res.write("data: [DONE]\n\n")
+            res.end()
+          }, 2500)
+          return
+        }
         res.write(chunk({ content: "suite reply: parity check complete" }))
         res.write(chunk({}, "stop"))
         res.write("data: [DONE]\n\n")

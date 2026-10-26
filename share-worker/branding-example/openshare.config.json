@@ -1,0 +1,13 @@
+{
+  "$comment": "Open(code)Share branding EXAMPLE - the Mirrobot deployment skin. To brand YOUR deployment: (1) copy your logo into share-viewer/public/branding/ (ships at /branding/<file>), (2) copy this file to share-worker/openshare.config.json and edit the values, (3) npm run build in share-viewer, deploy the worker. BRAND_* env vars override this file field-by-field. Fields: name (deployment label - header tooltips, footer, login card, og:title), logoUrl (left-header chip + login + gone pages), wordmarkUrl (footer image; empty = 'name · Open(code)Share' text), linkUrl (where the logo chip points), accent (hex - status dot, login card, prompt-rail marker, agent-switch name), faviconUrl, backgroundUrl (page background with readability overlay, user-toggleable), description (login subtitle + og:description), ogTitle (full custom embed title; empty = the name template), ogImage (link-preview image; falls back to logoUrl). All optional; empty = hide/fall back.",
+  "name": "mirrobot",
+  "logoUrl": "/branding/mirrobot.png",
+  "wordmarkUrl": "",
+  "linkUrl": "https://github.com/Mirrowel/Mirrobot-agent",
+  "accent": "#7aa2f7",
+  "faviconUrl": "/branding/mirrobot.png",
+  "backgroundUrl": "",
+  "description": "Mirrobot agent workspace",
+  "ogImage": "/branding/mirrobot.png",
+  "ogTitle": "Mirrobot — agent sessions, live"
+}

@@ -15,6 +15,9 @@ export type ToolEntry = {
   input?: Record<string, unknown>
   // the v2 content block (type:"tool") — carries name/state/time
   part: AnyPart
+  /** host message id: the kit keys some tool disclosures by message
+   *  (`message:<id>`), which the palette uses to pre-open rows */
+  messageID: string
   state?: any
   status?: string
   // the vendored per-tool rule (edit/write/patch open naturally unless
@@ -22,7 +25,7 @@ export type ToolEntry = {
   defaultOpen?: boolean
 }
 
-export type ReasoningEntry = { kind: "reasoning"; text: string; part: AnyPart }
+export type ReasoningEntry = { kind: "reasoning"; text: string; part: AnyPart; /** host message + per-message ordinal: the kit's synthesized part id is `${messageID}:reasoning:${ordinal}` */ messageID?: string; ordinal?: number }
 
 // a completion text block, positioned in the sequence where it occurred
 export type TextEntry = { kind: "text"; text: string; part: AnyPart }
@@ -74,8 +77,14 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
         continue
       }
       if (m?.type !== "assistant" || !current) continue
+      // per-message ordinals for text/reasoning: the kit's projection
+      // synthesizes part ids as `${message.id}:${type}:${ordinal}` for
+      // non-tool content (projection.ts contentEntries) - the search
+      // engine targets rows by that scheme
+      const ordinals = { text: 0, reasoning: 0 }
       for (const c of m.content ?? []) {
         if (c?.type === "text") {
+          const ordinal = ordinals.text++
           current.response += (current.response ? "\n\n" : "") + (c.text ?? "")
           current.ordered.push({ kind: "text", text: c.text ?? "", part: c })
         } else if (c?.type === "tool") {
@@ -85,6 +94,7 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
           const state = c.state ?? {}
           const entry: ToolEntry = {
             kind: "tool",
+            messageID: m.id,
             tool: c.name ?? "tool",
             title: String(state.input?.description ?? state.title ?? c.name ?? "tool"),
             output: isTask ? undefined : toolOutputText(state),
@@ -97,7 +107,8 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
           current.tools.push(entry)
           current.ordered.push(entry)
         } else if (c?.type === "reasoning") {
-          const entry: ReasoningEntry = { kind: "reasoning", text: c.text ?? "", part: c }
+          const ordinal = ordinals.reasoning++
+          const entry: ReasoningEntry = { kind: "reasoning", text: c.text ?? "", part: c, messageID: m.id, ordinal }
           current.reasoning.push(entry)
           current.ordered.push(entry)
         }
@@ -197,6 +208,18 @@ export function sessionModelLabel(data: ShareData, sessionID: string): string {
   const m = info?.model
   if (m?.providerID && m?.modelID) return `${m.providerID}/${m.modelID}`
   return ""
+}
+
+/** every tool name this session used (the auto-expand picker appends
+ *  them to the known vocabulary: mcp, ctx_*, custom tools) */
+export function sessionToolNamesOf(data: ShareData, sessionID: string): string[] {
+  const out = new Set<string>()
+  for (const m of (data.message as any)?.[sessionID] ?? []) {
+    for (const c of m?.content ?? []) {
+      if (c?.type === "tool" && typeof c.name === "string") out.add(c.name)
+    }
+  }
+  return [...out]
 }
 
 // Aggregate facts for the info panel: tokens, cost, counts, timing.

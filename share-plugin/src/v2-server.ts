@@ -229,7 +229,20 @@ export function createV2ServerSetup() {
     // the client adapter and feed them into the engine as the v1 events it
     // understands (session.updated / message.updated / message.part.updated).
     // The engine's keyed queue makes repeated re-syncs idempotent.
+    // NOTE: no content-hash dedupe here — a refresh that runs while the
+    // session is still dormant (pre-flag) would poison the cache without
+    // emitting anything, and the flag-time refresh would then SKIP the
+    // unchanged messages (live-caught in the v2 mock suite: the share's
+    // first assistant content arrived only as the next change). The dedupe
+    // belongs engine-side, where dormancy is known, if it's ever needed.
     const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
+    // queued inbox inputs per session: v2 persists the prompt in the inbox
+    // (delivery "queue") while the current turn still runs — the message
+    // row can exist before the model ever sees it, and a mid-turn refresh
+    // would surface it early. Held here until session.inbox.delivered
+    // fires (the turn actually starts); "steer" inputs inject into the
+    // live run, so they pass straight through.
+    const queuedInbox = new Map<string, Set<string>>()
     const refresh = (sessionID: string) => {
       let timer = pendingRefresh.get(sessionID)
       if (timer) clearTimeout(timer)
@@ -243,7 +256,9 @@ export function createV2ServerSetup() {
             })
             const messages = await (client as NonNullable<typeof client>).session.messages?.({ path: { id: sessionID } })
             const list = ((messages as { data?: unknown })?.data ?? []) as Array<{ info: MessageInfo; parts: PartInfo[] }>
+            const held = queuedInbox.get(sessionID)
             for (const message of list) {
+              if (held?.has(message.info.id)) continue // still queued — not sent to the model yet
               await engine.hooks.event({
                 event: { type: "message.updated", properties: { sessionID, info: message.info } },
               })
@@ -275,6 +290,41 @@ export function createV2ServerSetup() {
 
             if (type === "session.deleted") {
               await engine.hooks.event({ event: { type, properties: { sessionID: sid } } })
+              continue
+            }
+            if (type.startsWith("session.inbox.")) {
+              // queued-prompt lifecycle: hold delivery="queue" inputs off
+              // the share until they are actually delivered to the model
+              // (cancelled ones never appear). inboxID shares the message
+              // id space (the inbox item promotes into that message row).
+              const data = (event.data ?? {}) as { inboxID?: string; item?: { delivery?: string } }
+              const inboxID = data.inboxID
+              if (inboxID) {
+                let set = queuedInbox.get(sid)
+                if (!set) {
+                  set = new Set()
+                  queuedInbox.set(sid, set)
+                }
+                if (type === "session.inbox.enqueued" && data.item?.delivery === "queue") {
+                  set.add(inboxID)
+                } else if (type === "session.inbox.delivered") {
+                  set.delete(inboxID)
+                  refresh(sid) // the held prompt's turn is starting now
+                } else if (type === "session.inbox.cancelled") {
+                  // cancelled-before-run: the prompt never reaches the
+                  // model — keep it held forever so no later refresh
+                  // surfaces the orphaned row
+                  set.add(inboxID)
+                } else if (type === "session.inbox.delivery.changed") {
+                  // steer inputs inject into the live run — the model
+                  // sees them; only "queue" holds
+                  if (data.item?.delivery === "queue") set.add(inboxID)
+                  else {
+                    set.delete(inboxID)
+                    refresh(sid)
+                  }
+                }
+              }
               continue
             }
             if (type === "message.removed" || type === "message.part.removed") {

@@ -42,7 +42,7 @@ import {
   readShadowLineSelection,
 } from "../pierre/file-selection"
 import { createLineNumberSelectionBridge, restoreShadowTextSelection } from "../pierre/selection-bridge"
-import { acquireVirtualizer, virtualMetrics } from "../pierre/virtualizer"
+import { acquireVirtualizer, scrollRoot as scrollParent, virtualMetrics } from "../pierre/virtualizer"
 import { getWorkerPool } from "../pierre/worker"
 import { FileMedia, type FileMediaOptions } from "./file-media"
 import { FileSearchBar } from "./file-search"
@@ -601,17 +601,6 @@ function preserve(viewer: Viewer) {
     const delta = next - top
 
     if (delta) root.scrollTop += delta
-  }
-}
-
-function scrollParent(el: HTMLElement): HTMLElement | undefined {
-  let parent = el.parentElement
-
-  while (parent) {
-    const style = getComputedStyle(parent)
-
-    if (style.overflowY === "auto" || style.overflowY === "scroll") return parent
-    parent = parent.parentElement
   }
 }
 

@@ -2,19 +2,20 @@
 // quiet section markers, continuous-leaning single column.
 import { For, Show, createSignal } from "solid-js"
 import { BaseSessionView } from "./views/base-view"
+import { useView } from "./views/view-context"
+import { SkinHeader } from "./views/chrome"
 import type { Skin, SkinWrappers } from "./views/base-view"
 import type { ViewEntry } from "./views/registry"
+import { SkinSettingsPopover } from "./settings-panel"
+import { sessionToolNamesOf } from "./views/session-data"
+import { BrandMark } from "./views/chrome"
 import { MetaLine } from "./views/meta-line"
-import { Icon } from "@opencode/ui/icon"
-import { Mark } from "@opencode/ui/logo"
-import { ProviderIcon } from "@opencode/ui/provider-icon"
-import { sessionModelLabel } from "./views/session-data"
 
 function promptTitle(s: { prompt: string }) {
   return s.prompt.trim().split("\n")[0].slice(0, 60) || "(no prompt)"
 }
 
-function HoverToc(props: { sections: { id: string; prompt: string }[]; active: number; onSelect: (i: number) => void }) {
+function HoverToc(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
   return (
     <div class="w-48 flex flex-col gap-0.5">
       <div class="text-12-medium text-text-weaker tracking-[0.14em] uppercase mb-2 px-2">prompts</div>
@@ -38,46 +39,56 @@ function HoverToc(props: { sections: { id: string; prompt: string }[]; active: n
   )
 }
 
+// reader owns the FULL header (the classic chrome bar is hidden for
+// reader - it duplicated this row, live-caught): branding mark, title,
+// version/model/status, copy, GitHub and the settings trigger all ride
+// SkinHeader once
 function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
-  const info = () => (props.data.session as any[]).find((s) => s.id === props.sessionID)
+  const view = useView()
+  const b = () => view.source.branding()
   return (
-    <header class="h-14 px-6 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
-      <div class="flex items-center gap-3 min-w-0">
-        <Show when={props.isSub && props.onBack}>
-          <button
-            class="flex items-center gap-1 text-12-regular text-text-weaker hover:text-text-base bg-transparent border-none cursor-pointer shrink-0"
-            onClick={() => props.onBack?.()}
-          >
-            <Icon name="arrow-left" size="small" />
-            main
-          </button>
+    <SkinHeader
+      class="h-14 px-6 self-stretch bg-background-base border-b border-border-weak-base relative z-30"
+      leadClass="flex items-center gap-3 min-w-0"
+      titleClass="text-16-medium text-text-strong truncate"
+      afterBack={
+        <Show
+          when={b().logoUrl && b().linkUrl}
+          fallback={
+            <Show when={b().logoUrl}>
+              <span class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base">
+                <BrandMark branding={b()} class="h-5 rounded" />
+              </span>
+            </Show>
+          }
+        >
+          {(href) => (
+            <a href={href()} target="_blank" rel="noreferrer" class="p-0.5 flex items-center rounded-md border border-border-weak-base bg-background-base hover:border-border-strong-base" title={b().name || ""}>
+              <BrandMark branding={b()} class="h-5 rounded" />
+            </a>
+          )}
         </Show>
-        <h1 class="text-16-medium text-text-strong truncate">{info()?.title ?? "session"}</h1>
-      </div>
-      <div class="flex items-center gap-2.5 shrink-0">
-        <span class="flex items-center gap-1.5 bg-surface-strong px-2 py-0.5 rounded-md shadow-xs-border-base">
-          <Mark class="w-3" />
-          <span class="text-12-mono text-text-base">v{info()?.version ?? "?"}</span>
-          <Show when={(info()?.model as any)?.providerID}>
-            <ProviderIcon id={(info()?.model as any).providerID} class="w-3.5 text-icon-base" />
-          </Show>
-          <Show when={props.model}>
-            <span class="text-12-mono text-text-base">{props.model}</span>
-          </Show>
-        </span>
-        <span class="text-12-regular text-text-weaker">{props.status}</span>
-      </div>
-    </header>
+      }
+      settingsTrigger={
+        <SkinSettingsPopover
+          settings={view.settings}
+          update={view.updateSettings}
+          branding={b()}
+          search={view.search}
+          onSearch={view.onSearch}
+          sessionTools={sessionToolNamesOf(view.data, view.sessionID)}
+        />
+      }
+    />
   )
 }
 
 export const readerSkin: Skin = {
   id: "reader",
-  mode: "composed",
   columnClass: "max-w-[46rem] mx-auto px-6 py-8 flex flex-col gap-10",
   wrappers: {
     Header: ReaderHeader,
-    Nav: HoverToc as any,
+    Nav: HoverToc,
     PromptWrap: (p) => (
       <div class="pt-4 border-t border-border-weak-base first:border-none first:pt-0">
         <div class="flex items-baseline gap-3 mb-1">

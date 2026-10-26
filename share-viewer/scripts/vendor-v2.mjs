@@ -341,6 +341,87 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: reads no longer MERGE inside a context group. Upstream
+// collapses consecutive reads into one inner array, rendered as the inline
+// CurrentReadToolGroup subtitle row - but our forks bypass that renderer,
+// so the merged array flows into a single ToolDisplay row that shows only
+// group()[0] (live-caught: "Used 4 Read" expanded to one row, three reads
+// invisible). Reads render as individual expandable rows, like every other
+// grouped tool (owner directive: grouping groups individual tools).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: reads no longer merge inside a context group")) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const A = [
+        "      if (",
+        "        currentToolGroupedRead(tool) &&",
+        "        Array.isArray(previous) &&",
+        "        previous[0] &&",
+        "        currentToolGroupedRead(previous[0])",
+        "      ) {",
+        "        previous.push(tool)",
+        "",
+        "        return groups",
+        "      }",
+      ].join(nl)
+      const B = [
+        "      // openshare fork: reads no longer merge inside a context group -",
+        "      // the merged array rendered through one ToolDisplay row showing",
+        "      // only the first tool (live-caught: \"Used 4 Read\" expanded to a",
+        "      // single row). Reads stay individual expandable rows, like every",
+        "      // other grouped tool (owner directive). CurrentReadToolGroup is",
+        "      // bypassed below either way.",
+      ].join(nl)
+      if (!s.includes(A)) throw new Error("vendor-v2: read-merge anchor missing - upstream drifted")
+      s = s.replace(A, B)
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: the subagent hover hint as a REAL element. The hint needs
+// to carve room below the card without touching the card's bordered box;
+// CSS-only attempts (:has() on ancestors, ::after on wrappers) broke in
+// views whose nesting differs (flex-row trigger containers put the
+// pseudo-element mid-page). A wrapper div + span element is deterministic
+// in every view: the wrap is a block flex-item, the hint sits in-flow
+// under the card, height-animated from 0 (app.css styles it).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("osh-task-wrap")) {
+      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const openA = ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
+      const openB = [
+        "    const trigger = () => (",
+        "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
+        '      // card (app.css: height 0 -> 22px on hover; the card box never grows)',
+        '      <div class="osh-task-wrap">',
+        "      <div",
+        '        data-component="task-tool-card"',
+      ].join(nl)
+      // close anchor rides the task-unique `delegating()` Show that follows
+      const closeA = ["      </div>", "    )", "", "    return (", "      <Show", "        when={delegating()}"].join(nl)
+      const closeB = [
+        "      </div>",
+        "      </div>",
+        "    )",
+        "",
+        "    return (",
+        "      <Show",
+        "        when={delegating()}",
+      ].join(nl)
+      if (!s.includes(openA)) throw new Error("vendor-v2: task trigger open anchor missing - upstream drifted")
+      if (!s.includes(closeA)) throw new Error("vendor-v2: task trigger close anchor missing - upstream drifted")
+      s = s.replace(openA, openB).replace(closeA, closeB)
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: grouped task rows label the agent that ACTUALLY ran.
 // Upstream's grouped label ignores the task input's agent entirely (it
 // always reads ui.tool.agent.default = "Agent"). The viewer's fold
@@ -559,6 +640,49 @@ $2`,
     }
   }
 }
+
+// Inline line virtualization must use the transcript's bounded viewport.
+// pierre's inline file virtualizer picked the nearest overflowY ancestor
+// as its scroll root - a horizontal tool-output wrapper - so line
+// virtualization inside large files misbehaved (wrong scroll root, wrong
+// content target). The fork prefers the transcript viewport element and
+// the transcript content node, and file.tsx drops its now-duplicate
+// scrollParent walker in favor of the shared one.
+{
+  let p = join(ROOT, "vendor/session-ui-v2/src/pierre/virtualizer.ts")
+  let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+  const patch = (from, to) => {
+    const next = s.replace(from, to)
+    if (next === s) throw new Error(`vendor-v2: transcript viewport anchor missing in ${p}`)
+    s = next
+  }
+  if (!s.includes("openshare fork: use the transcript viewport")) {
+    patch(
+      "function scrollRoot(container: HTMLElement) {",
+      `export function scrollRoot(container: HTMLElement) {
+  // openshare fork: use the transcript viewport, not horizontal tool wrappers.
+  const transcript = container.closest<HTMLElement>("[data-transcript-scroll]")
+  if (transcript) return transcript`,
+    )
+    patch(
+      `root.querySelector("[role='log']")`,
+      `root.querySelector("[data-transcript-content], [role='log']")`,
+    )
+    writeFileSync(p, s)
+  }
+
+  p = join(ROOT, "vendor/session-ui-v2/src/components/file.tsx")
+  s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+  if (!s.includes("scrollRoot as scrollParent")) {
+    patch(
+      `import { acquireVirtualizer, virtualMetrics } from "../pierre/virtualizer"`,
+      `import { acquireVirtualizer, scrollRoot as scrollParent, virtualMetrics } from "../pierre/virtualizer"`,
+    )
+    patch(/function scrollParent\(el: HTMLElement\): HTMLElement \| undefined \{[\s\S]+?\n\}\n\n/, "")
+    writeFileSync(p, s)
+  }
+}
+
 writeFileSync(
   join(ROOT, "vendor/session-ui-v2/package.json"),
   JSON.stringify(

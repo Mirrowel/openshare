@@ -14,6 +14,7 @@ import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
 import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { sessionStatus, type ShareData } from "../fold"
 import { armToggleAnchor, settleToggleAnchor } from "../toggle-anchor"
+import { claimDisclosure, disclosureOwned, dismissSearchKey, engineClicking, releaseDisclosure, searchKeyDismissed, searchOwnsDisclosure } from "../search-state"
 import { createStore } from "solid-js/store"
 import type { OshSettings } from "../settings"
 import type { ToolEntry } from "./session-data"
@@ -43,7 +44,14 @@ armToggleAnchor()
 export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; data?: ShareData }) {
   const data = () => props.data ?? currentData
   const entryId = () => String((props.entry.part as any)?.id ?? props.entry.tool + ":" + ((props.entry.part as any)?.time?.created ?? "x"))
-  const open = () => partOpen[entryId()] ?? (props.settings.autoExpand.includes(props.entry.tool) || undefined)
+  // a live search PRE-OPENS its hits (open on first paint, never clicked
+  // at arrival); a manual collapse during that search wins for that
+  // search; then stored/engine-owned state, then auto-expand
+  const open = () =>
+    (searchKeyDismissed(entryId()) ? undefined : searchOwnsDisclosure(entryId()) ? true : undefined) ??
+    partOpen[entryId()] ??
+    (disclosureOwned(entryId()) ? true : undefined) ??
+    (props.settings.autoExpand.includes(props.entry.tool) || undefined)
   return (
     <DataProvider
       data={{
@@ -83,7 +91,18 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
               defaultOpen={props.settings.autoExpand.includes(props.entry.tool) || undefined}
               open={open()}
               onOpenChange={(next: boolean) => {
-                setPartOpen(entryId(), next)
+                const key = entryId()
+                if (engineClicking()) {
+                  claimDisclosure(key, next)
+                  setPartOpen(key, next)
+                  return
+                }
+                if (searchOwnsDisclosure(key)) {
+                  dismissSearchKey(key, next)
+                  return
+                }
+                if (!next) releaseDisclosure(key)
+                setPartOpen(key, next)
                 settleToggleAnchor()
               }}
             />

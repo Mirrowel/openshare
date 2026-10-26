@@ -11,20 +11,22 @@
 // Shape follows the v1 viewer: one compact row (icon + label + path +
 // change counts), collapsible, content below it, output in a
 // preformatted surface block instead of markdown paragraphs.
-import { createMemo, createSignal, onCleanup, For, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, For, Show, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useData } from "@opencode/session-ui/context"
 import { useFileComponent } from "@opencode/ui/context"
+import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
-import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow } from "./settings"
+import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
 
 /** Per-card overflow toggle (owner directive): on the EXPANDED card body -
  *  never the collapsed trigger row. Wraps vs hidden-scrollbar scroll for
- *  long lines; writes the global setting (cookie + html attr). */
-function OverflowToggle() {
-  const wrapping = () => overflowSignal() === "wrap"
+ *  long lines. FILE cards carry a tool prop and write their own tool's
+ *  entry (read/write/edit can differ); other surfaces write the global. */
+function OverflowToggle(props: { tool?: "read" | "write" | "edit" }) {
+  const wrapping = () => (props.tool ? (fileOverflowSignal()[props.tool] ?? "wrap") === "wrap" : overflowSignal() === "wrap")
   return (
     <button
       type="button"
@@ -32,7 +34,8 @@ function OverflowToggle() {
       title={wrapping() ? "wrap: on (click to scroll instead)" : "wrap: off (click to wrap instead)"}
       onClick={(e) => {
         e.stopPropagation()
-        setOutputOverflow(wrapping() ? "scroll" : "wrap")
+        if (props.tool) setFileOverflow(props.tool, wrapping() ? "scroll" : "wrap")
+        else setOutputOverflow(wrapping() ? "scroll" : "wrap")
       }}
     >
       {wrapping() ? "⏎" : "→"}
@@ -66,7 +69,32 @@ const dirname = (path: string) => {
   const clean = path.split(/[/\\]/).filter(Boolean)
   return clean.slice(0, -1).join("/")
 }
-const countLines = (text: string) => (text ? text.split("\n").length : 0)
+/** the header's directory display: session-relative inside the session
+ * dir, last-two-segments outside, separators normalized to "/" */
+function displayPathDir(path: string): string {
+  let directory: string | undefined
+  try {
+    directory = (useData() as any)?.directory
+  } catch {
+    directory = undefined
+  }
+  const norm = (p: string) => p.replace(/\\/g, "/")
+  const dir = dirname(path)
+  if (!dir) return ""
+  if (!directory || directory === "/" || directory === "\\") return norm(dir)
+  // dirname() drops the leading slash; strip it from BOTH sides or the
+  // prefix compare never matches an absolute session dir
+  const strip = (p: string) => p.replace(/^\/+/, "")
+  const base = strip(norm(directory).replace(/\/+$/, ""))
+  const nd = strip(norm(dir))
+  if (!base) return norm(dir)
+  if (nd === base) return "."
+  if (nd.startsWith(base + "/")) return nd.slice(base.length + 1)
+  // full directory otherwise: the row ellipsizes only when it truly
+  // cannot fit (owner directive 2026-10-26 - no segment collapsing)
+  return norm(dir)
+}
+const countLines = (text: string) => (text ? text.replace(/\n$/, "").split("\n").length : 0)
 
 /** v1 read rows said which slice of the file they took ("from 284"). */
 function readRange(props: ToolProps, lines: number): string {
@@ -94,7 +122,7 @@ function counts(props: ToolProps) {
 
 function ChangeCounts(props: { adds: number; dels: number }) {
   return (
-    <span class="font-mono text-11-regular whitespace-nowrap">
+    <span class="font-mono text-12-regular whitespace-nowrap">
       <span style={{ color: "var(--syntax-diff-add)" }}>+{props.adds}</span>{" "}
       <span style={{ color: "var(--syntax-diff-delete)" }}>−{props.dels}</span>
     </span>
@@ -103,93 +131,65 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** Auto/forced unified-split (owner spec): `diffMode` setting = auto |
- * split | unified. Split width is CONTENT-DERIVED (longest diff line),
- * clamped to the measured available space (viewport - card left - margin)
- * so a split card never overflows the page and never sprawls half-empty
- * (live-caught both ways). Panes scroll horizontally with a hidden
- * scrollbar. The settle race (identical edits rendering different modes -
- * measured mid-animation) dies via re-check after Kobalte's spring; the
- * <Show keyed> branch pair re-creates the File when the mode flips
- * (Dynamic has no remount API - a `key` prop does nothing). */
-// mono char width at the kit's 12px code size (measured once, lazily)
-let monoCharWidth = 0
-function measureMonoChar(): number {
-  if (monoCharWidth > 0) return monoCharWidth
-  try {
-    const canvas = document.createElement("canvas")
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return 7.2
-    ctx.font = '12px ui-monospace, SFMono-Regular, Consolas, monospace'
-    monoCharWidth = ctx.measureText("0123456789abcdef").width / 16
-  } catch {
-    monoCharWidth = 7.2
+/** File-card sizing (owner round 2026-10-25): one fixed card width for the
+ * whole file family — read, write and unified edit all render at
+ * `--osh-card` (30rem); a split diff renders at exactly 2x that, so the
+ * first column NEVER changes size when toggling U/S — split only adds the
+ * second pane. Widths live in CSS (app.css); JS keeps a single shared
+ * measurement of the transcript column for the auto split decision and
+ * the "forced split but no room" indicator. The old per-card measurement
+ * machinery (spring re-checks, per-card ResizeObservers, mono-char canvas
+ * math) is gone: card width is stable by construction, so the class of
+ * hug-poisons-measurement bugs (a 264px collapsed scroller refusing the
+ * split forever) cannot exist. */
+const [colWidth, setColWidth] = createSignal(0)
+let colEl: HTMLElement | undefined
+let colRO: ResizeObserver | undefined
+function trackColumn(el: HTMLElement) {
+  const host =
+    el.closest<HTMLElement>("[data-transcript-content]") ??
+    el.closest<HTMLElement>("[data-transcript-scroll]") ??
+    el
+  if (host === colEl) {
+    if (colRO) setColWidth(host.clientWidth)
+    return
   }
-  return monoCharWidth
+  colEl = host
+  colRO?.disconnect()
+  colRO = new ResizeObserver(() => setColWidth(host.clientWidth))
+  colRO.observe(host)
+  setColWidth(host.clientWidth)
+}
+const CARD_W = 480 // px — mirrors --osh-card: 30rem in app.css
+const splitFits = () => colWidth() >= CARD_W * 2 + 24
+
+/** effective diff layout: forced unified stays unified; forced split needs
+ * the room (falls back unified with the starved indicator); auto splits
+ * exactly when the column fits two cards side by side */
+function effectiveDiffMode(): () => "split" | "unified" {
+  return createMemo<"split" | "unified">(() => {
+    const m = diffModeSignal()
+    if (m === "unified") return "unified"
+    return splitFits() ? "split" : "unified"
+  })
 }
 
-function useSplitFit(contentChars?: () => number) {
-  const [maxPx, setMaxPx] = createSignal(0)
-  const ref = (el: HTMLDivElement) => {
-    // edit-content itself hugs (fit-content); measure the CARD (its
-    // parent osh-file-body, full column width) and its left edge
-    const card = el.parentElement ?? el
-    const measure = () => {
-      const rect = card.getBoundingClientRect()
-      const avail = window.innerWidth - rect.left - 24
-      const col = rect.width || 0
-      let cap = avail
-      // skin sheets (atlas): a split card must not jut past the sheet's
-      // right edge into the page margin (live-caught on atlas with the
-      // widened sheet)
-      const sheet = card.closest("[data-view]")?.querySelector(":scope > div > div > .osh-indent, :scope .atlas-sheet") ?? card.closest(".atlas-sheet")
-      if (sheet) {
-        const sr = sheet.getBoundingClientRect()
-        cap = Math.min(cap, Math.max(0, sr.right - rect.left - 24))
-      }
-      setMaxPx(Math.max(0, Math.min(col * 2, cap)))
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(card)
-    // ONE delayed re-check past the expand spring (a mid-spring
-    // measurement can be transiently wrong). The old t2=1100ms +
-    // transitionend listeners raced the spring: a late split()/unified
-    // flip remounted the File and shifted layout AGAIN, after every
-    // compensator had settled - live-caught as flicker + pushed-up titles
-    // on the 3-edit cluster (headless skips springs, automation never
-    // saw it). One check, past the spring, is bounce-proof.
-    const t1 = setTimeout(measure, 450)
-    onCleanup(() => {
-      clearTimeout(t1)
-      ro.disconnect()
-    })
-  }
-  const mode = () => diffModeSignal()
-  // the width the split card actually wants: longest line x2 panes +
-  // gutter allowance, clamped to [780, maxPx]
-  const splitWidth = createMemo(() => {
-    const chars = contentChars?.() ?? 0
-    if (chars <= 0) return maxPx()
-    const wanted = Math.ceil(chars * measureMonoChar()) * 2 + 140
-    return Math.max(780, Math.min(wanted, maxPx() || wanted))
-  })
-  const split = createMemo(() => {
-    const m = mode()
-    if (m === "unified") return false
-    return splitWidth() >= 780 && maxPx() >= 600
-  })
-  return { ref, split, width: splitWidth, maxPx }
-}
-
-/** One header for every file tool: label, directory, filename, meta. */
+/** One header for every file tool: label, directory, filename, meta.
+ * The directory is session-relative (like the v1 viewer): inside the
+ * session dir it shows the sub-path only; the full path appears only
+ * for files outside it. Live-caught: the raw absolute dirname stretched
+ * rows even for same-folder files. */
 function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) {
+  const dir = createMemo(() => {
+    const shown = displayPathDir(props.path)
+    return shown
+  })
   return (
     <div data-slot="basic-tool-tool-info-structured">
       <div data-slot="basic-tool-tool-info-main">
         <span data-slot="basic-tool-tool-title">{props.label}</span>
-        <Show when={dirname(props.path)}>
-          <span data-slot="osh-tool-dir">{dirname(props.path)}/</span>
+        <Show when={dir()}>
+          <span data-slot="osh-tool-dir">{dir()}/</span>
         </Show>
         <span data-slot="osh-tool-file">{basename(props.path)}</span>
         {props.meta}
@@ -198,17 +198,29 @@ function FileHeader(props: { label: string; path: string; meta?: JSX.Element }) 
   )
 }
 
+/** File-title layout: PATH FIRST by default (the directory reads before
+ * the name, like a file listing; the dir truncates from its START when
+ * long so the name always stays whole). Views that keep the name-first
+ * arrangement (the conversation view, verbatim from its PR) flip
+ * setFileTitlePathFirst(false). */
+const [fileTitlePathFirst, setFileTitlePathFirst] = createSignal(true)
+export { setFileTitlePathFirst }
+
 /** The expanded body's title bar - icon-badge, file name, muted directory.
  * Duplicates the header row on purpose: when a long transcript scrolls the
  * row away, the card still says what you are reading. */
 function FileTitle(props: { path: string }) {
   const name = basename(props.path)
-  const ext = name.includes(".") ? name.split(".").at(-1)!.slice(0, 4) : "file"
+  const dir = createMemo(() => displayPathDir(props.path))
   return (
-    <div data-slot="osh-file-title">
-      <span class="osh-file-icon osh-file-ext">{ext}</span>
+    <div data-slot="osh-file-title" classList={{ "osh-title-path-first": fileTitlePathFirst() }}>
+      <FileIcon node={{ path: props.path, type: "file" }} class="osh-file-icon size-4 shrink-0" />
+      <Show when={fileTitlePathFirst() && dir()}>
+        <span class="osh-file-dir osh-dir-full" title={dir()}>{dir()}</span>
+        <span class="osh-file-sep">/</span>
+      </Show>
       <span class="osh-file-name">{name}</span>
-      <Show when={dirname(props.path)}>
+      <Show when={!fileTitlePathFirst() && dirname(props.path)}>
         <span class="osh-file-dir">{dirname(props.path).split("/").at(-1)}</span>
       </Show>
     </div>
@@ -275,9 +287,12 @@ function FileCard(props: {
   contents: string
   /** first REAL file line (reads sliced from an offset); 1 = whole file */
   lineStart?: number
+  /** which file tool this card is - drives the PER-TOOL overflow setting */
+  tool: "read" | "write"
   onRendered?: () => void
 }) {
   const fileComponent = useFileComponent()
+  const ov = () => fileOverflowSignal()[props.tool] ?? "wrap"
   let inner: HTMLDivElement | undefined
   const [attempt, setAttempt] = createSignal(0)
   let retried = false
@@ -293,7 +308,7 @@ function FileCard(props: {
     }, 1200)
   }
   return (
-    <FileBody title={props.path}>
+    <FileBody title={props.path} tool={props.tool}>
       <div ref={(el) => (inner = el)} style={{ display: "contents" }}>
         <GutterOffset start={props.lineStart ?? 1}>
           {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
@@ -305,7 +320,7 @@ function FileCard(props: {
               component={fileComponent as any}
               mode="text"
               file={{ name: props.path, contents: props.contents }}
-              overflow="scroll"
+              overflow={ov()}
               onRendered={() => {
                 settle()
                 props.onRendered?.()
@@ -317,7 +332,7 @@ function FileCard(props: {
               component={fileComponent as any}
               mode="text"
               file={{ name: props.path, contents: props.contents }}
-              overflow="scroll"
+              overflow={ov()}
               onRendered={() => props.onRendered?.()}
             />
           </Show>
@@ -327,16 +342,20 @@ function FileCard(props: {
   )
 }
 
-/** Shared body frame: tools indent under their trigger. The overflow
- *  toggle rides the title row (expanded only by construction). */
-function FileBody(props: { title?: string; children: JSX.Element }) {
+/** Shared body frame: tools indent under their trigger. The card controls
+ *  (diff mode when present, overflow toggle always) stack on the title
+ *  row's right edge. */
+function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; controls?: JSX.Element; children: JSX.Element }) {
   return (
-    <div data-component="osh-file-body">
+    <div data-component="osh-file-body" ref={(el) => queueMicrotask(() => trackColumn(el))}>
       <div class="osh-file-titlebar">
         <Show when={props.title}>
           <FileTitle path={props.title!} />
         </Show>
-        <OverflowToggle />
+        <div class="osh-card-controls">
+          {props.controls}
+          <OverflowToggle tool={props.tool} />
+        </div>
       </div>
       {props.children}
     </div>
@@ -381,7 +400,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>
@@ -417,16 +436,10 @@ const EditTool = (props: ToolProps) => {
         (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
       : undefined,
   )
-  // longest diff line (content chars) drives the split width; from the
-  // host patch when present, else before/after. NOTE: memos are EAGER -
-  // this must be declared after `patch` or it reads a TDZ const
-  // (live-caught: "Cannot access 'patch' before initialization").
-  const contentChars = createMemo(() => {
-    const lines = (t: string) => t.split("\n").map((l) => l.replace(/^[+-@ ]/, "").length)
-    const all = patch() != null ? lines(patch()!) : [...lines(oldText()), ...lines(newText())]
-    return all.reduce((a, b) => Math.max(a, b), 0)
-  })
-  const fit = useSplitFit(contentChars)
+  // fixed card widths (owner round 2026-10-25): the split/unified decision
+  // rides the shared column measurement — no per-card measurement left
+  const effMode = effectiveDiffMode()
+  const starved = () => diffModeSignal() === "split" && !splitFits()
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -441,7 +454,7 @@ const EditTool = (props: ToolProps) => {
     return { adds, dels }
   })
   return (
-    <div data-component="osh-edit-tool" data-osh-split={fit.split() ? "on" : "off"}>
+    <div data-component="osh-edit-tool" data-osh-split={effMode() === "split" ? "on" : "off"}>
       <BasicTool
         {...props}
         icon="code-lines"
@@ -452,35 +465,9 @@ const EditTool = (props: ToolProps) => {
             label={props.tool === "patch" ? "Patch" : "Edit"}
             path={path()}
             meta={
-              <div class="flex items-center gap-2">
-                <Show when={stats().adds || stats().dels}>
-                  <ChangeCounts adds={stats().adds} dels={stats().dels} />
-                </Show>
-                {/* per-card diff mode toggle (writes the global setting) */}
-                <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "unified" }}
-                    title="Unified (forced)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("unified") }}
-                  >U</button>
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "auto" }}
-                    title="Auto (split when it fits)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("auto") }}
-                  >A</button>
-                  <button
-                    type="button"
-                    class="osh-dm-btn"
-                    classList={{ "osh-dm-on": diffModeSignal() === "split" }}
-                    title="Split (forced, needs width)"
-                    onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
-                  >S</button>
-                </div>
-              </div>
+              <Show when={stats().adds || stats().dels}>
+                <ChangeCounts adds={stats().adds} dels={stats().dels} />
+              </Show>
             }
           />
         )}
@@ -489,35 +476,64 @@ const EditTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileBody title={path()}>
-            <div
-              data-component="edit-content"
-              ref={fit.ref}
-              style={fit.split() ? { width: `${fit.width()}px` } : undefined}
-            >
+          <FileBody
+            title={path()}
+            tool="edit"
+            controls={
+              /* per-card diff mode toggle (writes the global setting) —
+                 right edge of the card, directly above the wrap/scroll
+                 selector (owner round 2026-10-25) */
+              <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
+                <button
+                  type="button"
+                  class="osh-dm-btn"
+                  classList={{ "osh-dm-on": diffModeSignal() === "unified" }}
+                  title="Unified (forced)"
+                  onclick={(e) => { e.stopPropagation(); setDiffMode("unified") }}
+                >U</button>
+                <button
+                  type="button"
+                  class="osh-dm-btn"
+                  classList={{ "osh-dm-on": diffModeSignal() === "auto" }}
+                  title="Auto (split when it fits)"
+                  onclick={(e) => { e.stopPropagation(); setDiffMode("auto") }}
+                >A</button>
+                <button
+                  type="button"
+                  class="osh-dm-btn"
+                  classList={{ "osh-dm-on": diffModeSignal() === "split", "osh-dm-starved": starved() }}
+                  title={starved() ? "Split — not enough width here; showing unified" : "Split (forced, needs width)"}
+                  onclick={(e) => { e.stopPropagation(); setDiffMode("split") }}
+                >S</button>
+              </div>
+            }
+          >
+            <div data-component="edit-content">
               {/* keyed branch pair: Solid's Dynamic has NO remount API (a
                   `key` prop is passed through, does nothing - live-caught:
                   the first card of a batch rendered split, the rest stayed
                   unified forever). Distinct <Show keyed> branches actually
                   re-create the File when the mode flips. */}
-              <Show when={fit.split()} keyed>
+              <Show when={effMode() === "split"} keyed>
                 <Dynamic
                   component={fileComponent as any}
                   mode="diff"
                   virtualize={false}
                   diffStyle="split"
+                  overflow={fileOverflowSignal().edit ?? "wrap"}
                   {...(fileDiff()
                     ? { fileDiff: fileDiff() }
                     : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
                   onRendered={() => props.onContentRendered?.()}
                 />
               </Show>
-              <Show when={!fit.split()} keyed>
+              <Show when={effMode() === "unified"} keyed>
                 <Dynamic
                   component={fileComponent as any}
                   mode="diff"
                   virtualize={false}
                   diffStyle="unified"
+                  overflow={fileOverflowSignal().edit ?? "wrap"}
                   {...(fileDiff()
                     ? { fileDiff: fileDiff() }
                     : { before: { name: path(), contents: oldText() }, after: { name: path(), contents: newText() } })}
@@ -557,7 +573,7 @@ const WriteTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard path={path()} contents={content()} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="write" path={path()} contents={content()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>

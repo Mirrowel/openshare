@@ -42,8 +42,8 @@ function ok(name, cond, detail = "") {
   }
 }
 
-async function req(url, method, path, { token, body } = {}) {
-  const headers = { "content-type": "application/json" }
+async function req(url, method, path, { token, body, headers: extra } = {}) {
+  const headers = { "content-type": "application/json", ...(extra ?? {}) }
   if (token) headers.authorization = `Bearer ${token}`
   const r = await fetch(url + path, {
     method,
@@ -53,7 +53,7 @@ async function req(url, method, path, { token, body } = {}) {
   })
   let json = null
   try { json = await r.json() } catch {}
-  return { status: r.status, json }
+  return { status: r.status, json, res: r }
 }
 
 /** Open a plugin control socket, send frames, collect replies until an
@@ -208,6 +208,154 @@ try {
   // delete one via secret to free a slot and prove registry bookkeeping
   ok("T16e secret delete frees slot", (await req(W1, "DELETE", `/api/share/${c1.json.id}`, { body: { secret: c1.json.secret } })).json?.ok === true)
   ok("T16f create passes after free", (await req(W1, "POST", CREATE, { token: B, body: { sessionID: "ses_c4" } })).json?.ok === true)
+
+  // T16g-j — user defaultTtlDays applies when create omits ttlDays (explicit wins)
+  const u5 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "def-ttl" } })
+  const U5 = u5.json?.userId ?? ""
+  const u5tok = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U5, limits: { maxTtlDays: 30 } } })
+  const E = u5tok.json?.token ?? ""
+  ok("T16g user settings persist", (await req(W1, "PUT", "/api/me/settings", { token: E, body: { defaultTtlDays: 7 } })).json?.settings?.defaultTtlDays === 7)
+  const d1 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl" } })
+  ok("T16h default TTL applied on create", d1.json?.ttlDays === 7, String(d1.json?.ttlDays))
+  const d2 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl2", ttlDays: 3 } })
+  ok("T16i explicit ttlDays beats default", d2.json?.ttlDays === 3, String(d2.json?.ttlDays))
+  const ws6 = wsSession(W1, E)
+  await ws6.open()
+  ws6.send({ op: "init", create: { sessionID: "ses_defttlws" } })
+  const ws6init = await ws6.wait("init")
+  ok("T16j ws create applies default TTL", ws6init.ok === true && ws6init.ttlDays === 7, JSON.stringify(ws6init).slice(0, 120))
+  ws6.close()
+
+  // T21 — DELETE auth enforcement (Bun once trusted raw-body root/ownerId:
+  // any viewer could delete any share by id). Spoofed identity must 403;
+  // the real secret must work.
+  const d3 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_spoof" } })
+  ok("T21 share staged", d3.json?.ok === true)
+  const spoofRoot = await req(W1, "DELETE", `/api/share/${d3.json.id}`, { body: { root: true } })
+  ok("T21b spoofed root rejected", spoofRoot.status === 403, `${spoofRoot.status} ${spoofRoot.json?.error}`)
+  const spoofOwner = await req(W1, "DELETE", `/api/share/${d3.json.id}`, { body: { ownerId: U5 } })
+  ok("T21c spoofed ownerId rejected", spoofOwner.status === 403, `${spoofOwner.status}`)
+  ok("T21d share survived the spoofs", (await req(W1, "GET", `/api/share/${d3.json.id}/data`)).status === 200)
+  ok("T21e real secret deletes", (await req(W1, "DELETE", `/api/share/${d3.json.id}`, { body: { secret: d3.json.secret } })).json?.ok === true)
+
+  // T22 — read auth end-to-end: login mints a cookie token that /data and
+  // the WS actually accept (Bun once compared the token hash against the
+  // PASSWORD hash — gated shares were unviewable forever)
+  const gated = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_gated", authLogin: "view", authPassword: "pw123" } })
+  ok("T22 gated share created", gated.json?.ok === true, JSON.stringify(gated.json).slice(0, 120))
+  await req(W1, "POST", `/api/share/${gated.json.id}/sync`, { body: { secret: gated.json.secret, data: [{ type: "message", data: { id: "msg_gated", role: "user", content: [{ type: "text", text: "secret text" }] } }] } })
+  ok("T22b unauthenticated data 401", (await req(W1, "GET", `/api/share/${gated.json.id}/data`)).status === 401)
+  const login = await req(W1, "POST", `/api/share/${gated.json.id}/auth`, { body: { login: "view", password: "pw123" } })
+  const setCookie = login.res?.headers?.get?.("set-cookie") ?? ""
+  const cookieToken = /osh_[0-9a-f]+=([^;]+)/.exec(setCookie)?.[1] ?? ""
+  ok("T22c login mints cookie", login.status === 200 && cookieToken.length > 20, `${login.status} ${setCookie.slice(0, 40)}`)
+  const withCookie = await req(W1, "GET", `/api/share/${gated.json.id}/data`, { headers: { cookie: `osh_${gated.json.id}=${cookieToken}` } })
+  ok("T22d cookie token reads data", withCookie.status === 200 && (withCookie.json?.data ?? []).some((i) => i?.data?.id === "msg_gated"), `${withCookie.status} items=${withCookie.json?.data?.length}`)
+  const wrongCookie = await req(W1, "GET", `/api/share/${gated.json.id}/data`, { headers: { cookie: `osh_${gated.json.id}=deadbeef` } })
+  ok("T22e wrong cookie rejected", wrongCookie.status === 401)
+  ok("T22f cleanup", (await req(W1, "DELETE", `/api/share/${gated.json.id}`, { body: { secret: gated.json.secret } })).json?.ok === true)
+
+  // T23 — route shape: share-referencing paths need a real 32-hex id
+  ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)
+  ok("T23b junk id 404s", (await req(W1, "POST", `/api/share/zzzz/sync`, { body: {} })).status === 404)
+
+  // T24 — WS sync acks echo the client frame seq (the plugin tracks
+  // pending per-chunk; an unsequenced ack would fall back to clear-all)
+  const ws7 = wsSession(W1, E)
+  await ws7.open()
+  ws7.send({ op: "init", create: { sessionID: "ses_seq" } })
+  await ws7.wait("init")
+  ws7.send({ op: "sync", seq: 41, items: [{ type: "message", data: { id: "msg_seq", role: "user", content: [{ type: "text", text: "hi" }] } }] })
+  const ws7ack = await ws7.wait("ack")
+  ok("T24 ack echoes seq", ws7ack.seq === 41, JSON.stringify(ws7ack).slice(0, 120))
+  ws7.close()
+  // T24b — the seq-test share actually gets cleaned up (root delete, then gone)
+  const seqShare = (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares?.find((s) => s.sessionID === "ses_seq")
+  ok("T24b seq share found for cleanup", !!seqShare, JSON.stringify(seqShare).slice(0, 120))
+  if (seqShare) {
+    ok("T24b2 root delete works", (await req(W1, "DELETE", `/api/share/${seqShare.id}`, { token: CREATE_TOKEN })).json?.ok === true)
+    const after = (await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })).json?.shares ?? []
+    ok("T24b3 seq share gone", !after.some((s) => s.id === seqShare.id))
+  }
+
+  // T25 — request-size cap: a >8MB sync body is refused BEFORE parsing
+  // (the engine's HTTP fallback chunks at 4MB; only a hostile/buggy
+  // client exceeds 8MB). The route 413s before the share lookup, so a
+  // synthetic id works.
+  {
+    const big = "x".repeat(8_500_000)
+    const capRes = await fetch(`${W1}/api/share/${"a".repeat(32)}/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${CREATE_TOKEN}` },
+      body: JSON.stringify({ secret: "irrelevant", data: [{ type: "message", data: { id: big } }] }),
+      signal: AbortSignal.timeout(15000),
+    })
+    ok("T25 oversized sync body refused (413)", capRes.status === 413, String(capRes.status))
+    const okRes = await req(W1, "POST", `/api/share/${"a".repeat(32)}/sync`, { body: { secret: "x", data: [] } })
+    ok("T25b normal-size body reaches the route (not 413)", okRes.status !== 413, String(okRes.status))
+  }
+
+  // T26 — /data?since handshake (poll delta): flat rev answers EMPTY,
+  // changed rev answers ONLY the touched items, tombstones ride the
+  // delta, and the full read prunes deleted items. Regression lock for
+  // the router forward (the delta was once dead on Cloudflare while Bun
+  // served it — the router hardcoded ?token= and dropped url.search).
+  {
+    const c = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_since" } })
+    ok("T26 share staged", c.json?.ok === true, JSON.stringify(c.json))
+    const SID = c.json?.id ?? ""
+    const SECRET = c.json?.secret ?? ""
+    const s1 = await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", data: { id: "msg_s1", role: "user" } }, { type: "message", data: { id: "msg_s2", role: "user" } }] } })
+    const rev1 = s1.json?.rev ?? 0
+    ok("T26a initial sync", s1.json?.ok === true && rev1 > 0, JSON.stringify(s1.json))
+    const flat = await req(W1, "GET", `/api/share/${SID}/data?since=${rev1}`)
+    ok("T26b flat rev answers empty delta", flat.json?.rev === rev1 && (flat.json?.data ?? []).length === 0, JSON.stringify({ rev: flat.json?.rev, n: (flat.json?.data ?? []).length }))
+    const s2 = await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", data: { id: "msg_s3", role: "user" } }] } })
+    const rev2 = s2.json?.rev ?? 0
+    const delta = await req(W1, "GET", `/api/share/${SID}/data?since=${rev1}`)
+    const deltaIds = (delta.json?.data ?? []).map((i) => i.data?.id)
+    ok("T26c changed rev answers only the delta", delta.json?.rev === rev2 && deltaIds.length === 1 && deltaIds[0] === "msg_s3", JSON.stringify(deltaIds))
+    const s3 = await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", del: true, data: { id: "msg_s1", role: "user" } }] } })
+    const rev3 = s3.json?.rev ?? 0
+    const dtd = await req(W1, "GET", `/api/share/${SID}/data?since=${rev2}`)
+    const td = (dtd.json?.data ?? []).find((i) => i.data?.id === "msg_s1")
+    ok("T26d tombstone rides the delta", dtd.json?.rev === rev3 && td?.del === true, JSON.stringify(dtd.json?.data))
+    const full = await req(W1, "GET", `/api/share/${SID}/data`)
+    const fullIds = (full.json?.data ?? []).map((i) => i.data?.id)
+    ok("T26e full read prunes the deleted item", fullIds.includes("msg_s2") && fullIds.includes("msg_s3") && !fullIds.includes("msg_s1"), JSON.stringify(fullIds))
+    // WS first-frame delta: a reconnecting viewer (since=rev1, delta=1)
+    // gets ONLY what it missed (msg_s3 + the tombstone), not the whole
+    // share — the full first frame on rev-miss was the last whole-share
+    // transfer on the reconnect path
+    const wsFirst = await new Promise((resolve, reject) => {
+      const w = new WebSocket(`${W1.replace(/^http/, "ws")}/api/share/${SID}/ws?since=${rev1}&delta=1`)
+      const timer = setTimeout(() => { try { w.close() } catch {} ; reject(new Error("ws first-frame timeout")) }, 10000)
+      w.addEventListener("message", (ev) => {
+        clearTimeout(timer)
+        try { w.close() } catch {}
+        try { resolve(JSON.parse(ev.data)) } catch { reject(new Error("bad json")) }
+      })
+      w.addEventListener("error", () => { clearTimeout(timer); reject(new Error("ws error")) })
+    })
+    const wsIds = (wsFirst.items ?? []).map((i) => i.data?.id)
+    ok("T26f WS first frame is a delta (kind marker)", wsFirst.kind === "delta" && wsFirst.rev === rev3, JSON.stringify({ kind: wsFirst.kind, rev: wsFirst.rev, ids: wsIds }))
+    ok("T26g WS delta carries only the missed items + tombstone", wsIds.includes("msg_s3") && wsIds.includes("msg_s1") && !wsIds.includes("msg_s2") && (wsFirst.items ?? []).some((i) => i.data?.id === "msg_s1" && i.del === true), JSON.stringify(wsIds))
+    // and an old-style client (no delta=1) still gets the FULL first
+    // frame — backward compat for cached bundles that can only replace
+    const wsOld = await new Promise((resolve, reject) => {
+      const w = new WebSocket(`${W1.replace(/^http/, "ws")}/api/share/${SID}/ws?since=${rev1}`)
+      const timer = setTimeout(() => { try { w.close() } catch {} ; reject(new Error("ws first-frame timeout")) }, 10000)
+      w.addEventListener("message", (ev) => {
+        clearTimeout(timer)
+        try { w.close() } catch {}
+        try { resolve(JSON.parse(ev.data)) } catch { reject(new Error("bad json")) }
+      })
+      w.addEventListener("error", () => { clearTimeout(timer); reject(new Error("ws error")) })
+    })
+    const oldIds = (wsOld.items ?? []).map((i) => i.data?.id)
+    ok("T26h no-delta client gets the full first frame", wsOld.kind !== "delta" && oldIds.includes("msg_s2") && !oldIds.includes("msg_s1"), JSON.stringify(oldIds))
+    await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
+  }
 
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)

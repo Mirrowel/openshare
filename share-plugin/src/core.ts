@@ -43,9 +43,11 @@
 //    secret must never reach viewers.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
+import { queueBindingWrite } from "./binding-queue.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -107,13 +109,21 @@ type RemoteState = {
   initTimer: ReturnType<typeof setTimeout> | null
   initWasAttach: boolean
   backoff: number
+  /** deferred backoff reset: released after 30s of socket stability or a
+   * second acked sync — never right after init (init-then-drop servers
+   * would cycle at 1/s otherwise) */
+  backoffResetTimer: ReturnType<typeof setTimeout> | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   intentionalClose: boolean
   connectQueued: boolean
   /** identity dead-end for THIS server (frozen owner, unenrollable
    * private server): stop reconnecting it; other servers unaffected. */
   authBlocked: boolean
-  pending: Array<{ items: unknown[]; status: string }> // frames awaiting ack (spool)
+  pending: Array<{ items: unknown[]; status: string; seq?: number; wire?: string }> // chunk-frames awaiting ack (spool; wire = prebuilt frame string)
+  frozenRemote?: boolean // server froze the owner mid-session: stop writing
+  spoolAppendFailed?: boolean // last append errored: memory-only frame exists
+  spoolSaveTimer: ReturnType<typeof setTimeout> | null // debounced ack-path spool rewrite
+  authWaiter?: (() => void) | undefined // frame-auth handshake resolver
   announced: boolean
   settleTimer: ReturnType<typeof setTimeout> | null
   idleDropTimer: ReturnType<typeof setTimeout> | null
@@ -153,6 +163,12 @@ type SessionState = {
    * item embeds content, so the engine holds the assembled view per
    * message and re-emits the normalized whole on every update */
   merged: Map<string, { info?: Record<string, unknown>; parts: Map<string, Record<string, unknown>> }>
+  /** content hash of the LAST item enqueued per key: identical re-feeds
+   * (v2 hosts re-sync the whole transcript on every refresh; unchanged
+   * session info on every session.updated) are skipped instead of being
+   * flushed to every remote, bumping rev and re-folding every viewer.
+   * Cleared on activation — re-activation re-backfills by design. */
+  sentHash: Map<string, string>
 }
 
 type Message = { info?: Record<string, unknown>; parts?: Record<string, unknown>[] }
@@ -420,6 +436,8 @@ export function createEngine(deps: EngineDeps): Engine {
         initTimer: null,
         initWasAttach: false,
         backoff: 1000,
+        backoffResetTimer: null,
+        spoolSaveTimer: null,
         reconnectTimer: null,
         intentionalClose: false,
         connectQueued: false,
@@ -485,12 +503,19 @@ export function createEngine(deps: EngineDeps): Engine {
         if (b && typeof b === "object" && (b as { policy?: unknown }).policy) {
           applyPolicy((b as { policy: unknown }).policy, url)
         }
+        // frame auth capability: the server accepts the token as the
+        // first WS frame — lets us keep it off the query string (proxy
+        // and access logs otherwise capture the full credential)
+        if (b && typeof b === "object" && (b as { frameAuth?: unknown }).frameAuth) {
+          frameAuthUrls.add(url)
+        }
       })
       .catch(() => {
         // unreachable worker: defaults stay; the init ack will correct us
         policyAsked.delete(url)
       })
   }
+  const frameAuthUrls = new Set<string>()
   const wsUrl = (url: string) => url.replace(/^http/, "ws")
 
   // ---- spool root ---------------------------------------------------------
@@ -534,6 +559,7 @@ export function createEngine(deps: EngineDeps): Engine {
     wroteBinding: false,
     everConnected: false,
     merged: new Map(),
+    sentHash: new Map(),
   })
 
   const refreshConfig = () => {
@@ -572,6 +598,9 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     st.activated = true
     st.opts = opts
+    // re-activation re-backfills the whole session (unshare -> share
+    // again): the enqueue dedupe must not skip the returning content
+    st.sentHash.clear()
     const gated = mode === "manual" || opts2?.gated === true
     if (gated) {
       // seed the share status from the session's CURRENT state before
@@ -647,26 +676,31 @@ export function createEngine(deps: EngineDeps): Engine {
 
   async function writeMetadata(st: SessionState, value: Record<string, unknown> | null) {
     if (!st.client) return
-    try {
-      const info = unwrap(
-        await st.client.session.get({
-          path: { id: st.sid },
-          ...(deps.directory ? { query: { directory: deps.directory } } : {}),
-        }),
-      )
-      const metadata = { ...(info?.metadata ?? {}) }
-      if (value === null) delete metadata[METADATA_KEY]
-      else metadata[METADATA_KEY] = value
-      unwrap(
-        await st.client.session.update({
-          path: { id: st.sid },
-          body: { metadata },
-          ...(deps.directory ? { query: { directory: deps.directory } } : {}),
-        }),
-      )
-    } catch (e) {
-      log("metadata write failed (spool still covers reconnects):", (e as Error)?.message || e)
-    }
+    // the read-modify-write runs inside the shared per-session queue: the
+    // TUI patches the same metadata (opt-outs, collisions) and interleaved
+    // RMWs silently lose one side's update (see binding-queue.ts)
+    await queueBindingWrite(st.sid, async () => {
+      try {
+        const info = unwrap(
+          await st.client!.session.get({
+            path: { id: st.sid },
+            ...(deps.directory ? { query: { directory: deps.directory } } : {}),
+          }),
+        )
+        const metadata = { ...(info?.metadata ?? {}) }
+        if (value === null) delete metadata[METADATA_KEY]
+        else metadata[METADATA_KEY] = value
+        unwrap(
+          await st.client!.session.update({
+            path: { id: st.sid },
+            body: { metadata },
+            ...(deps.directory ? { query: { directory: deps.directory } } : {}),
+          }),
+        )
+      } catch (e) {
+        log("metadata write failed (spool still covers reconnects):", (e as Error)?.message || e)
+      }
+    })
   }
 
   /** Parse the metadata binding: v2 map ({v:2, servers:{url:{id,secret,
@@ -777,21 +811,51 @@ export function createEngine(deps: EngineDeps): Engine {
   const spoolSave = (st: SessionState, r: RemoteState) => {
     try {
       writeFileSync(metaPath(st, r.url), JSON.stringify({ shareId: r.shareId, secret: r.secret, ackedRev: r.ackedRev, sid: st.sid, url: r.url }))
-      writeFileSync(queuePath(st, r.url), r.pending.map((f) => JSON.stringify(f)).join("\n") + (r.pending.length ? "\n" : ""))
+      // the queue line IS the wire frame when prebuilt (single
+      // serialization end-to-end); a pending frame without wire (legacy
+      // spool load) serializes here
+      writeFileSync(queuePath(st, r.url), r.pending.map((f) => f.wire ?? JSON.stringify(f)).join("\n") + (r.pending.length ? "\n" : ""))
+      // the migrated content now lives in the new queue (or was acked):
+      // retire the single-server-era files so they don't accumulate forever
+      rmSync(legacyMetaPath(st), { force: true })
+      rmSync(legacyQueuePath(st), { force: true })
     } catch (e) {
       logError("spool save failed", (e as Error)?.message || e)
     }
   }
   // hot path: appending one pending frame must not re-serialize the whole
   // queue (O(n^2) during backfill bursts) — append the line instead
-  const spoolAppend = (st: SessionState, r: RemoteState, f: { items: unknown[]; status: string }) => {
+  const spoolAppend = (st: SessionState, r: RemoteState, f: { items: unknown[]; status: string; seq?: number; wire?: string }) => {
     try {
-      appendFileSync(queuePath(st, r.url), JSON.stringify(f) + "\n")
+      appendFileSync(queuePath(st, r.url), (f.wire ?? JSON.stringify(f)) + "\n")
     } catch (e) {
+      // the frame lives ONLY in memory now — flag the remote so the next
+      // spoolLoad does NOT replace in-memory pending with the shorter
+      // disk queue (silent loss otherwise; live-caught class in review)
+      r.spoolAppendFailed = true
       logError("spool append failed", (e as Error)?.message || e)
     }
   }
+  /** Debounced ack-path spool rewrite: one ack per chunk during a
+   * multi-chunk replay each rewrote the WHOLE queue file (O(n^2) —
+   * ~160MB of sync disk churn on a 25-chunk outage recovery). A crash
+   * inside the 300ms window only loses "these frames were acked" — the
+   * next connect replays idempotent keyed upserts, which the protocol
+   * already tolerates. init-ok keeps the immediate save (binding/
+   * recovery info). */
+  const scheduleSpoolSave = (st: SessionState, r: RemoteState) => {
+    if (r.spoolSaveTimer) return
+    r.spoolSaveTimer = setTimeout(() => {
+      r.spoolSaveTimer = null
+      if (!st.closed) spoolSave(st, r)
+    }, 300)
+  }
   const spoolLoad = (st: SessionState, r: RemoteState) => {
+    // meta first (share binding recovery), in its OWN try: a missing meta
+    // file is normal (it's only written after the first successful
+    // handshake) and must NOT touch pending (live-caught class: the old
+    // blanket catch wiped in-memory pending AND skipped the queue read,
+    // so everything queued before the first successful connect was lost).
     try {
       const meta = JSON.parse(readFileSync(metaPath(st, r.url), "utf8"))
       // metadata binding (db) is authoritative when both exist and disagree
@@ -800,23 +864,40 @@ export function createEngine(deps: EngineDeps): Engine {
         r.secret = meta.secret
         r.ackedRev = meta.ackedRev ?? 0
       }
+    } catch {}
+    try {
       if (existsSync(queuePath(st, r.url))) {
         // append-only spool: a crash mid-append can tear the LAST line —
-        // keep the valid prefix instead of dropping the whole queue
-        r.pending = []
+        // keep the valid prefix instead of dropping the whole queue.
+        // The disk queue is the authority: every in-memory frame was
+        // appended before it was tracked, so replacing pending with the
+        // parsed queue loses nothing. A FAILED read keeps in-memory
+        // pending untouched.
+        const disk: Array<{ items: unknown[]; status: string; seq?: number }> = []
         for (const line of readFileSync(queuePath(st, r.url), "utf8").split("\n")) {
           if (!line.trim()) continue
           try {
-            r.pending.push(JSON.parse(line))
+            disk.push(JSON.parse(line))
           } catch {
             log(`spool load: dropped torn tail line for ${st.sid.slice(0, 18)}`)
             break
           }
         }
+        // seq hygiene: re-stamp pre-seq spool lines (an ack without seq
+        // would otherwise clear ALL pending — the H2 wipe, once per
+        // upgrade) and seed the counter past every restored seq (a
+        // restart resetting to 0 would collide new frames with old ones)
+        for (const f of disk) {
+          if (typeof f.seq !== "number") f.seq = ++nextSeq
+          else if (f.seq >= nextSeq) nextSeq = f.seq + 1
+        }
+        // a failed append means the disk queue can be SHORTER than
+        // memory — the disk is only authoritative when every append
+        // landed (otherwise the replace would drop the memory-only frame)
+        if (!r.spoolAppendFailed) r.pending = disk
+        else r.spoolAppendFailed = false
       }
-    } catch {
-      r.pending = []
-    }
+    } catch {}
     // single-server-era spool (no url suffix): belongs to the first target
     if (!r.shareId && targets[0]?.url === r.url) {
       try {
@@ -838,12 +919,27 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const spoolClear = (st: SessionState, r: RemoteState) => {
     try {
+      if (r.spoolSaveTimer) {
+        clearTimeout(r.spoolSaveTimer)
+        r.spoolSaveTimer = null
+      }
       rmSync(metaPath(st, r.url), { force: true })
       rmSync(queuePath(st, r.url), { force: true })
+      // single-server-era files die with the session too
+      rmSync(legacyMetaPath(st), { force: true })
+      rmSync(legacyQueuePath(st), { force: true })
     } catch {}
   }
 
   // ---- websocket transport (per remote) ----------------------------------
+  /** Monotonic client frame sequence: every chunk-frame gets one; the
+   * server echoes it in the ack, and the plugin clears exactly that
+   * chunk from pending. (Live-caught class: one logical frame split into
+   * N chunks — the worker acks EACH chunk, and a blanket "pending = []"
+   * on the first ack erased chunks 2..N; a socket death right there lost
+   * them permanently.) */
+  let nextSeq = 0
+
   const wsSend = (r: RemoteState, obj: unknown) => {
     if (debugEvents) log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send ${(obj as { op?: string })?.op} (ready=${r.wsReady})`)
     try {
@@ -861,29 +957,59 @@ export function createEngine(deps: EngineDeps): Engine {
    * and rebroadcast; worker apply is keyed-idempotent, so chunks just
    * bump rev. An item larger than the whole budget rides alone in its
    * own frame (the worker fits oversize items to its storage cap).
-   * Status rides each chunk; last write wins. */
-  const chunkItems = (items: unknown[], maxItems: number, maxBytes: number): unknown[][] => {
-    const chunks: unknown[][] = []
+   * Status rides each chunk; last write wins.
+   * Returns each chunk's PREBUILT items JSON: the wire frame and the
+   * spool line are derived from it by concatenation — every item used
+   * to be serialized 3-5x per remote per flush (chunk measure, spool
+   * append, ws send, sendSync re-chunk). */
+  const chunkedFrames = (items: unknown[], maxItems: number, maxBytes: number): Array<{ items: unknown[]; json: string }> => {
+    const chunks: Array<{ items: unknown[]; json: string }> = []
     let cur: unknown[] = []
+    let curJson: string[] = []
     let curBytes = 0
     for (const it of items) {
-      const n = (JSON.stringify(it) ?? "null").length
-      if (cur.length && (cur.length >= maxItems || curBytes + n > maxBytes)) {
-        chunks.push(cur)
+      const j = JSON.stringify(it) ?? "null"
+      if (cur.length && (cur.length >= maxItems || curBytes + j.length > maxBytes)) {
+        chunks.push({ items: cur, json: "[" + curJson.join(",") + "]" })
         cur = []
+        curJson = []
         curBytes = 0
       }
       cur.push(it)
-      curBytes += n
+      curJson.push(j)
+      curBytes += j.length
     }
-    if (cur.length) chunks.push(cur)
+    if (cur.length) chunks.push({ items: cur, json: "[" + curJson.join(",") + "]" })
     return chunks
   }
-  const sendSync = (r: RemoteState, f: { items: unknown[]; status: string }) => {
-    if (!f.items.length) return wsSend(r, { op: "sync", items: [], status: f.status })
-    for (const chunk of chunkItems(f.items, 200, 512 * 1024)) {
-      wsSend(r, { op: "sync", items: chunk, status: f.status })
+  /** legacy chunker (count/byte split without prebuilt JSON) — replay
+   * paths that only need the split */
+  const chunkItems = (items: unknown[], maxItems: number, maxBytes: number): unknown[][] =>
+    chunkedFrames(items, maxItems, maxBytes).map((c) => c.items)
+  /** the wire sync frame, built by concatenation over the prebuilt items
+   * JSON — byte-identical to JSON.stringify({op,items,status,seq}) */
+  const syncFrameStr = (itemsJson: string, status: string, seq: number | undefined) =>
+    `{"op":"sync","items":${itemsJson},"status":${JSON.stringify(status)}${seq !== undefined ? `,"seq":${seq}` : ""}}`
+  const wsSendRaw = (r: RemoteState, s: string) => {
+    if (debugEvents) log(`ws ${r.url.slice(0, 24)} #${r.socketSeq} send raw (${Math.round(s.length / 1024)}KB, ready=${r.wsReady})`)
+    try {
+      r.ws?.send(s)
+    } catch {
+      return false
     }
+    return true
+  }
+  const sendSync = (r: RemoteState, f: { items: unknown[]; status: string; seq?: number; wire?: string }) => {
+    if (!f.items.length) return wsSend(r, { op: "sync", items: [], status: f.status, seq: f.seq })
+    // prebuilt wire (the hot flush path): one serialization total
+    if (f.wire) return wsSendRaw(r, f.wire)
+    // replayed/legacy frames: chunk-shaped by construction — only an
+    // oversize one (a pre-chunking spool line) needs re-splitting
+    const itemsJson = JSON.stringify(f.items)
+    if (f.items.length <= 200 && itemsJson.length <= 512 * 1024) {
+      return wsSendRaw(r, syncFrameStr(itemsJson, f.status, f.seq))
+    }
+    for (const c of chunkedFrames(f.items, 200, 512 * 1024)) wsSendRaw(r, syncFrameStr(c.json, f.status, f.seq))
     return true
   }
 
@@ -1062,7 +1188,12 @@ export function createEngine(deps: EngineDeps): Engine {
         logError(`sharing to ${r.url} disabled (no credential): ${cred.error}`)
         return
       }
-      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws?token=${encodeURIComponent(token ?? "")}`)
+      // frame auth: when the server advertises it, keep the token off the
+      // URL (query strings land in proxy/access logs). The auth frame
+      // rides the socket in order — the server sets its identity before
+      // our init arrives. Old servers fall back to ?token=.
+      const useFrameAuth = !!token && frameAuthUrls.has(r.url)
+      const ws = new WebSocket(`${wsUrl(r.url)}/api/ws${useFrameAuth ? "" : `?token=${encodeURIComponent(token ?? "")}`}`)
       r.ws = ws
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("ws open timeout")), 15000)
@@ -1100,6 +1231,31 @@ export function createEngine(deps: EngineDeps): Engine {
         if (!st.closed) scheduleReconnect(st, r)
       })
 
+      if (useFrameAuth) {
+        wsSend(r, { op: "auth", token })
+        // the auth and init frames can interleave in the worker's
+        // concurrent webSocketMessage invocations — wait for the authed
+        // ack before authenticating anything (timeout -> fall back to a
+        // query-token reconnect)
+        const authed = await new Promise<boolean>((resolve) => {
+          const t = setTimeout(() => resolve(false), 3000)
+          r.authWaiter = () => {
+            clearTimeout(t)
+            resolve(true)
+          }
+        })
+        r.authWaiter = undefined
+        if (!authed) {
+          logError(`ws ${r.url.slice(0, 24)}: frame-auth ack timeout - reconnecting with query token`)
+          frameAuthUrls.delete(r.url)
+          try {
+            ws.close(4000, "auth timeout")
+          } catch {}
+          if (!st.closed) scheduleReconnect(st, r)
+          return
+        }
+      }
+
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
       } else {
@@ -1129,7 +1285,9 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const scheduleReconnect = (st: SessionState, r: RemoteState) => {
     if (st.closed || r.reconnectTimer) return
-    const wait = r.backoff
+    // jitter (±20%) so fan-out remotes and multiple sessions never sync
+    // their retry storms onto the same second
+    const wait = Math.max(250, Math.round(r.backoff * (0.8 + Math.random() * 0.4)))
     r.backoff = Math.min(r.backoff * 2, 60000)
     r.reconnectTimer = setTimeout(() => {
       r.reconnectTimer = null
@@ -1215,6 +1373,15 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   const handleFrame = async (st: SessionState, r: RemoteState, frame: Record<string, unknown>) => {
+    if (frame.op === "authed") {
+      // frame-auth handshake ack: release the init (the auth and init
+      // frames can interleave server-side — webSocketMessage invocations
+      // run concurrently — so the init must WAIT for this, else it
+      // authenticates as anonymous/tokenless)
+      r.authWaiter?.()
+      r.authWaiter = undefined
+      return
+    }
     if (frame.op === "init") {
       if (!frame.ok) {
         const err = String(frame.error ?? "")
@@ -1268,6 +1435,19 @@ export function createEngine(deps: EngineDeps): Engine {
         // bad base (mismatch protocol). Content REPLAYS to the new share —
         // pending is never dropped on a reset (live-caught: the recreate
         // husk had the title but zero messages).
+        if (/limit|too many|rate/i.test(err)) {
+          // quota/429 ("max shares reached", "daily create limit", the
+          // anonymous caps): an immediate re-init on the same socket is a
+          // hot loop against the server — back off through the normal
+          // reconnect cadence instead
+          logError(`${r.url}: create refused:`, frame.error, "- retrying with backoff")
+          r.connecting = false
+          try {
+            r.ws?.close(4000, "rate limited")
+          } catch {}
+          if (!st.closed) scheduleReconnect(st, r)
+          return
+        }
         logError(`${r.url}: init refused:`, frame.error, "- creating fresh share")
         deleteAbandoned(r)
         r.shareId = null
@@ -1298,11 +1478,23 @@ export function createEngine(deps: EngineDeps): Engine {
       r.connecting = false
       r.initWasAttach = false
       r.collided = null
+      // a successful handshake proves write access: an admin unfreeze
+      // revives the remote from here (frozenRemote is otherwise sticky)
+      if (r.frozenRemote && !frame.error) r.frozenRemote = false
       if (r.initTimer) {
         clearTimeout(r.initTimer)
         r.initTimer = null
       }
-      r.backoff = 1000
+      // backoff reset is DEFERRED until the socket proves stable: a
+      // server that accepts init then immediately drops would otherwise
+      // reconnect once per second forever (~1 cycle/s per session-server
+      // pair, live-caught in the optimization audit). 30s alive (socket
+      // still ready, no reconnect pending) or a second acked sync.
+      if (r.backoffResetTimer) clearTimeout(r.backoffResetTimer)
+      r.backoffResetTimer = setTimeout(() => {
+        r.backoffResetTimer = null
+        if (r.wsReady && !r.reconnectTimer) r.backoff = 1000
+      }, 30000)
       st.everConnected = true
       if (frame.policy) applyPolicy(frame.policy, r.url)
       r.intentionalClose = false
@@ -1324,19 +1516,67 @@ export function createEngine(deps: EngineDeps): Engine {
       if (wasFanoutCreate) {
         // a server joined an ALREADY-live session (fan-out add, or a
         // post-mismatch recreate): its fresh share needs the full history —
-        // backfill is keyed-idempotent, other servers just re-upsert
+        // backfill is keyed-idempotent, other servers just re-upsert.
+        // The enqueue dedupe must step aside: those hashes say "already
+        // entered the machinery", but the NEW remote never received any
+        // of it (live-caught by F3: the join's backfill was fully
+        // deduped away and the joined share stayed empty).
+        st.sentHash.clear()
         chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", (e as Error)?.message || e))
       }
       return
     }
     if (frame.op === "ack") {
       r.ackedRev = (frame.rev as number) ?? r.ackedRev
-      r.pending = []
-      spoolSave(st, r)
+      // a second acked sync also proves the socket stable — release the
+      // backoff reset timer early (complements the 30s-alive timer)
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer)
+        r.backoffResetTimer = null
+        r.backoff = 1000
+      }
+      // seq-scoped retirement: an ack identifies the chunk it applied.
+      // An ack WITHOUT seq = old server: legacy clear-all (correct there —
+      // old servers acked the whole pending batch together).
+      if (typeof frame.seq === "number") {
+        r.pending = r.pending.filter((p) => p.seq !== frame.seq)
+      } else {
+        r.pending = []
+      }
+      scheduleSpoolSave(st, r)
       scheduleBindingWrite(st)
       return
     }
     if (frame.op === "nack" || frame.op === "error") {
+      const errText = String(frame.error ?? "")
+      if (frame.op === "nack") {
+        // classify: the share dying server-side under a live socket
+        // (sweeper TTL, admin delete, purge) surfaces as nacks — the
+        // socket is "healthy" so nothing else recovers it. Same reset as
+        // the init-refused path: fresh create + content replay.
+        if (/not found|gone/i.test(errText)) {
+          logError(`${r.url}: share vanished server-side (nack: ${errText}) - recreating`)
+          deleteAbandoned(r)
+          r.shareId = null
+          r.secret = null
+          r.ackedRev = 0
+          try {
+            r.ws?.close(4000, "share gone")
+          } catch {}
+          if (!st.closed) queueConnect(st, r)
+          return
+        }
+        if (/frozen/i.test(errText)) {
+          // owner frozen mid-session: every write is refused. Stop
+          // spooling NEW frames for this remote (unbounded growth) but
+          // KEEP what's already queued — an unfreeze revives the remote
+          // on the next successful handshake (init-ok clears the flag)
+          // and the backlog replays from there.
+          r.frozenRemote = true
+          logError(`${r.url}: share frozen by the hoster - edits refused; contact the server admin`)
+          return
+        }
+      }
       logError(`${r.url}: worker refused frame:`, JSON.stringify(frame).slice(0, 200))
       // the control socket lost its attach state (worker-side eviction of
       // the control DO): force a reconnect — init attach replays pending
@@ -1371,7 +1611,7 @@ export function createEngine(deps: EngineDeps): Engine {
     // stamps run at frame time: the whole family's data is indexed by now
     // (child prompts are created during the task call, well inside the
     // flush debounce), and any re-enqueued message lands in this frame
-    stampsPass()
+    stampsPass(st)
     const items = Array.from(st.queue.values())
     st.queue.clear()
     const statusChanged = st.status !== st.lastSentStatus
@@ -1393,24 +1633,64 @@ export function createEngine(deps: EngineDeps): Engine {
     if (!f) return
     // fan out to every remote; each carries its own pending copy and acks
     // independently. Remotes mid-handshake or auth-blocked just buffer.
+    // PENDING IS CHUNK-SHAPED (seq-tagged): one logical frame becomes N
+    // chunk-frames so a partial-ack can never erase unsent chunks
+    // (live-caught class: chunk-1 ack + socket death erased chunks 2..N).
+    const chunks: Array<{ items: unknown[]; json: string }> = f.items.length ? chunkedFrames(f.items, 200, 512 * 1024) : []
     let httpWork: Promise<unknown> | undefined
     for (const r of st.remotes.values()) {
+      if (r.frozenRemote) continue // refused server-side; stop spooling
+      const fresh: Array<{ items: unknown[]; status: string; seq: number; wire?: string }> = []
+      if (chunks.length) {
+        for (const c of chunks) {
+          const seq = ++nextSeq
+          const cf = { items: c.items, status: f.status, seq, wire: syncFrameStr(c.json, f.status, seq) }
+          fresh.push(cf)
+          r.pending.push(cf)
+          spoolAppend(st, r, cf)
+        }
+      } else {
+        // status-only frame (empty items): one chunk-less frame
+        const seq = ++nextSeq
+        const cf = { items: [] as unknown[], status: f.status, seq }
+        fresh.push(cf)
+        r.pending.push(cf)
+        spoolAppend(st, r, cf)
+      }
       // never send syncs before the init ack: the worker's per-socket
       // ControlDO has no attach until OUR init completes, and a racing
       // sync dies as "unknown op" (live-caught: post-drop reconnects
       // lost whole turns). The init-ok handler flushes pending itself.
-      r.pending.push(f)
-      spoolAppend(st, r, f)
       if (r.ws && !r.wsReady) continue
       if (r.wsReady) {
-        sendSync(r, f)
+        for (const cf of fresh) sendSync(r, cf)
         continue
       }
       const viaHttp = flushViaHttp(st, r)
       if (viaHttp) httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp)
     }
     if (st.remotes.size) st.lastFlushAt = Date.now()
+    // the HTTP work runs detached from the flush chain (one dead server
+    // must not stall the fan-out); dispose awaits its own final flush
+    if (httpWork) void httpWork.catch((e) => logError("http flush error", (e as Error)?.message || e))
     return httpWork
+  }
+
+  /** Client-side key derivation mirroring the server's itemKey — used only
+   * for deduping the HTTP fallback batch (keyed upserts: the LAST item
+   * for a key wins, matching apply() semantics). */
+  const httpDedupeKey = (it: unknown): string | null => {
+    if (!it || typeof it !== "object") return null
+    const o = it as { type?: string; data?: { id?: string; messageID?: string; sessionID?: string }; sessionID?: string }
+    switch (o.type) {
+      case "session": return "session/" + (o.data?.id ?? "")
+      case "session_diff": return "session_diff/" + (o.sessionID ?? o.data?.sessionID ?? "")
+      case "message": return "message/" + (o.data?.id ?? "")
+      case "part": return "part/" + (o.data?.messageID ?? "") + "/" + (o.data?.id ?? "")
+      case "model": return "model/" + (o.sessionID ?? o.data?.sessionID ?? "")
+      case "prefs": return "prefs"
+      default: return null
+    }
   }
 
   const flushViaHttp = async (st: SessionState, r: RemoteState) => {
@@ -1418,19 +1698,34 @@ export function createEngine(deps: EngineDeps): Engine {
     // ALL pending frames, merged (keyed upserts — later wins). Sending
     // only the last frame dropped every earlier batch's items whenever
     // the HTTP fallback carried more than one (live-caught class:
-    // content loss on reconnect paths).
-    const items: unknown[] = []
+    // content loss on reconnect paths). DEDUPE BY KEY before chunking:
+    // a streaming message appearing in k pending frames shipped k
+    // copies (up to 25x on a replay burst) — every duplicate was also a
+    // server row-write + a rebroadcast frame.
+    const byKey = new Map<string, unknown>()
+    const unkeyed: unknown[] = []
     let status: string | undefined
+    const sentSeqs = new Set<number>()
     for (const f of r.pending) {
-      for (const it of f.items as unknown[]) items.push(it)
+      for (const it of f.items as unknown[]) {
+        const k = httpDedupeKey(it)
+        if (k) byKey.set(k, it)
+        else unkeyed.push(it)
+      }
       if (f.status) status = f.status
+      if (typeof f.seq === "number") sentSeqs.add(f.seq)
     }
+    const items = [...byKey.values(), ...unkeyed]
     const cred = credOf(r.url)
     // chunked like WS frames: one unbounded body is a whole-backlog
     // bomb after a mid-backfill socket drop (backfill = full history).
     // Failure stops the loop with pending intact — replaying already-
     // applied chunks is idempotent.
-    for (const chunk of chunkItems(items, 500, 4 * 1024 * 1024)) {
+    // status-only frames (items empty, e.g. the terminal completed
+    // flush in HTTP-only mode) still need ONE request or the status
+    // never lands (the share stays "live" forever)
+    const chunks = items.length ? chunkItems(items, 500, 4 * 1024 * 1024) : [[]]
+    for (const chunk of chunks) {
       const res = await fetch(`${r.url}/api/share/${r.shareId}/sync`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(cred.credential ? { authorization: `Bearer ${cred.credential}` } : {}) },
@@ -1441,8 +1736,12 @@ export function createEngine(deps: EngineDeps): Engine {
       const body = (await res.json().catch(() => ({}))) as { rev?: number }
       r.ackedRev = body.rev ?? r.ackedRev
     }
-    r.pending = []
-    spoolSave(st, r)
+    // retire EXACTLY what this run sent: a concurrent flush may have
+    // queued new frames while our fetches were in flight (the HTTP work
+    // is deliberately detached from the flush chain) — a blanket clear
+    // would erase them before anything transmitted them
+    r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq as number))
+    scheduleSpoolSave(st, r)
   }
 
   const scheduleFlush = (st: SessionState) => {
@@ -1457,12 +1756,38 @@ export function createEngine(deps: EngineDeps): Engine {
     st.timer = setTimeout(() => {
       st.timer = null
       if (debugEvents) log(`flush timer fired sid=${st.sid.slice(0, 18)} queue=${st.queue.size} remotes=${st.remotes.size}`)
-      chain = chain.then(() => flush(st)).catch((e) => logError("flush error", (e as Error)?.message || e))
+      // NOTE: the flush's HTTP-fallback promise is deliberately NOT
+      // chained — one black-holing server (15s timeout per chunk) must
+      // not stall every other remote's flushes behind it. Dispose awaits
+      // its own final flush explicitly.
+      chain = chain
+        .then(() => {
+          flush(st)
+        })
+        .catch((e) => logError("flush error", (e as Error)?.message || e))
     }, wait)
   }
 
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
+    // content dedupe at the machinery boundary: an identical re-feed has
+    // either entered the queue already or been flushed into every
+    // remote's pending/spool (the per-remote delivery machinery owns it
+    // from there) — re-sending it bumps rev, rewrites storage and
+    // re-folds every viewer for nothing. This is the engine-side home
+    // the v2-adapter dedupe lacked (an adapter-side cache poisoned while
+    // dormant and skipped the flag-time content — live-caught).
+    let h: string
+    try {
+      h = createHash("sha256").update(JSON.stringify(entry.item)).digest("hex")
+    } catch {
+      h = ""
+    }
+    if (h && st.sentHash.get(entry.key) === h) {
+      if (debugEvents) log(`enqueue dedupe ${entry.item.type} ${entry.key.slice(0, 40)}`)
+      return
+    }
+    if (h) st.sentHash.set(entry.key, h)
     st.queue.set(entry.key, entry.item)
     indexMessage(entry)
     if (debugEvents) log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`)
@@ -1485,6 +1810,12 @@ export function createEngine(deps: EngineDeps): Engine {
     data: Record<string, unknown>
   }
   const msgIndex = new Map<string, IndexedMessage>() // `${sid}:${messageID}`
+  /** message ids tombstoned this run: stampsPass must never re-upsert an
+   * undone message (live-caught class: dropMergedMessage removed the
+   * merged entry but msgIndex kept the corpse; a neighboring-segment
+   * change recomputed its stamps and reEnqueueMessage resurrected the
+   * deleted turn server-side). */
+  const tombstoned = new Set<string>()
 
   const indexMessage = (entry: ItemEntry) => {
     if (entry.item.type !== "message") return
@@ -1514,6 +1845,9 @@ export function createEngine(deps: EngineDeps): Engine {
     sessions.get(childToParent.get(sid) ?? sid)
 
   const reEnqueueMessage = (m: IndexedMessage) => {
+    // tombstone guard: an undone message stays dead even if a stamp pass
+    // recomputes its segment metadata
+    if (tombstoned.has(`${m.sid}:${m.data.id}`)) return
     const st = sessionStateOf(m.sid)
     if (st) enqueue(st, itemFor("message", m.data, m.sid))
   }
@@ -1534,13 +1868,7 @@ export function createEngine(deps: EngineDeps): Engine {
   /** user messages whose segment runs a DIFFERENT agent than the previous
    * segment carry metadata.agentSwitch = <agent> - the viewer renders the
    * transition chip from the stamp alone. */
-  const stampAgentSwitches = () => {
-    const bySession = new Map<string, IndexedMessage[]>()
-    for (const m of msgIndex.values()) {
-      const list = bySession.get(m.sid)
-      if (list) list.push(m)
-      else bySession.set(m.sid, [m])
-    }
+  const stampAgentSwitches = (bySession: Map<string, IndexedMessage[]>) => {
     for (const [, list] of bySession) {
       list.sort((a, b) => a.created - b.created)
       const users = list.map((m, i) => (m.role === "user" ? i : -1)).filter((i) => i >= 0)
@@ -1548,11 +1876,19 @@ export function createEngine(deps: EngineDeps): Engine {
       for (let k = 0; k < users.length; k++) {
         const agent = segmentAgent(list, users[k])
         const d = list[users[k]].data as Record<string, any>
-        const meta = (d.metadata ??= {}) as Record<string, unknown>
         const want = k > 0 && agent && prev && agent !== prev ? agent : undefined
-        if (want !== (meta.agentSwitch as string | undefined)) {
-          if (want) meta.agentSwitch = want
-          else delete meta.agentSwitch
+        // only touch metadata when the stamp actually CHANGES — a blanket
+        // `d.metadata ??= {}` polluted every user message (including the
+        // host's live objects on v2 pass-through) with an empty metadata
+        // object, which re-emitted the message once per refresh (rev churn
+        // per feed — live-caught by the enqueue-dedupe rev check)
+        if (want !== (d.metadata?.agentSwitch as string | undefined)) {
+          if (want) {
+            const meta = (d.metadata ??= {}) as Record<string, unknown>
+            meta.agentSwitch = want
+          } else if (d.metadata) {
+            delete d.metadata.agentSwitch
+          }
           reEnqueueMessage(list[users[k]])
         }
         if (agent) prev = agent
@@ -1565,13 +1901,7 @@ export function createEngine(deps: EngineDeps): Engine {
    * started (v1 prompts carry the agent; v2 resolves via the response).
    * Rank-free pairing - a resumed child's second call lands on its second
    * prompt by construction time. */
-  const stampTaskAgents = () => {
-    const bySession = new Map<string, IndexedMessage[]>()
-    for (const m of msgIndex.values()) {
-      const list = bySession.get(m.sid)
-      if (list) list.push(m)
-      else bySession.set(m.sid, [m])
-    }
+  const stampTaskAgents = (bySession: Map<string, IndexedMessage[]>) => {
     for (const list of bySession.values()) list.sort((a, b) => a.created - b.created)
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant") continue
@@ -1665,9 +1995,31 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
-  const stampsPass = () => {
-    stampAgentSwitches()
-    stampTaskAgents()
+  const stampsPass = (st: SessionState) => {
+    // skip entirely when this flush carries no message items: every
+    // index mutation rides a message item through the queue (inserts via
+    // enqueue, deletes via tombstones — both are type "message"), so no
+    // message in the queue means the stamps' inputs are unchanged. A
+    // status-only/model/prefs/diff flush costs zero stamp work.
+    let any = false
+    for (const it of st.queue.values()) {
+      if ((it as { type?: string }).type === "message") {
+        any = true
+        break
+      }
+    }
+    if (!any) return
+    // one grouping + one sort shared by both passes (each used to build
+    // and sort its own identical bySession map per flush)
+    const bySession = new Map<string, IndexedMessage[]>()
+    for (const m of msgIndex.values()) {
+      const list = bySession.get(m.sid)
+      if (list) list.push(m)
+      else bySession.set(m.sid, [m])
+    }
+    for (const list of bySession.values()) list.sort((a, b) => a.created - b.created)
+    stampAgentSwitches(bySession)
+    stampTaskAgents(bySession)
     stampFileLanguages()
   }
 
@@ -1730,8 +2082,15 @@ export function createEngine(deps: EngineDeps): Engine {
     emitMerged(st, sid, part.messageID)
   }
 
-  const dropMergedMessage = (st: SessionState, messageID: string) => {
+  const dropMergedMessage = (st: SessionState, messageID: string, evSid?: string) => {
+    // the index corpse must go too: stampsPass iterates msgIndex, and a
+    // re-stamp of a deleted message would re-upsert it (resurrection).
+    // Key by the EVENT's session (children tombstone under their own sid;
+    // the merged map is per main session)
+    const sid = evSid ?? st.sid
     st.merged.delete(messageID)
+    msgIndex.delete(`${sid}:${messageID}`)
+    tombstoned.add(`${sid}:${messageID}`)
   }
 
   const dropMergedPart = (st: SessionState, sid: string, messageID: string, partID: string) => {
@@ -1757,6 +2116,10 @@ export function createEngine(deps: EngineDeps): Engine {
         clearTimeout(r.initTimer)
         r.initTimer = null
       }
+      if (r.backoffResetTimer) {
+        clearTimeout(r.backoffResetTimer)
+        r.backoffResetTimer = null
+      }
       if (r.reconnectTimer) {
         clearTimeout(r.reconnectTimer)
         r.reconnectTimer = null
@@ -1766,8 +2129,28 @@ export function createEngine(deps: EngineDeps): Engine {
         clearTimeout(r.idleDropTimer)
         r.idleDropTimer = null
       }
-      if (r.wsReady) wsSend(r, { op: "delete" })
-      else if (r.shareId && r.secret) {
+      // wsReady delete only when THIS remote still owns a share: a stray
+      // child teardown clears shareId after adopting into the parent —
+      // the ControlDO's server-side attach would otherwise delete the
+      // very share the parent just inherited (live-caught adoption churn)
+      if (r.wsReady && r.shareId) {
+        wsSend(r, { op: "delete" })
+        // backstop: the WS delete is fire-and-forget on the wire — a
+        // socket dying right after leaves the page public until TTL. The
+        // HTTP goodbye is idempotent (404/ok both fine).
+        if (r.shareId && r.secret) {
+          const sid = r.shareId
+          const sec = r.secret
+          setTimeout(() => {
+            void fetch(`${r.url}/api/share/${sid}`, {
+              method: "DELETE",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ secret: sec }),
+              signal: AbortSignal.timeout(8000),
+            }).catch(() => {})
+          }, 2000)
+        }
+      } else if (r.shareId && r.secret) {
         // turn mode may have dropped the socket after the last settle; the
         // goodbye still must land — say it over HTTP
         void fetch(`${r.url}/api/share/${r.shareId}`, {
@@ -1786,6 +2169,15 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }, 1000)
     for (const r of st.remotes.values()) spoolClear(st, r)
+    // memory hygiene: the session is gone — its index corpses, tombstone
+    // guards and child routing must not linger (msgIndex/tombstoned are
+    // engine-global and otherwise only grow; sentHash rides the session
+    // state and dies with it)
+    const stSid = st.sid
+    const pfx = `${stSid}:`
+    for (const k of msgIndex.keys()) if (k.startsWith(pfx)) msgIndex.delete(k)
+    for (const k of tombstoned) if (k.startsWith(pfx)) tombstoned.delete(k)
+    for (const [child, parent] of childToParent) if (parent === stSid || child === stSid) childToParent.delete(child)
     sessions.delete(st.sid)
     try {
       chain = chain.then(async () => {
@@ -1857,6 +2249,11 @@ export function createEngine(deps: EngineDeps): Engine {
       const nextBefore = cursorFor(lastID, lastTime)
       if (nextBefore === before) break
       before = nextBefore
+    }
+    // the page cap is a hard truncation: surface it instead of silently
+    // sharing a partial history (oldest pages dropped)
+    if (out.length >= MAX_PAGES * PAGE_SIZE) {
+      logError(`backfill truncated at ${out.length} messages (page cap) for ${sid.slice(0, 18)} — oldest history not shared`)
     }
     return out
   }
@@ -2145,8 +2542,13 @@ export function createEngine(deps: EngineDeps): Engine {
             // runs still land their final status.
             if (st.timer) clearTimeout(st.timer)
             st.timer = null
+            // detached flush (HTTP fallback off the shared chain — one
+            // black-holing server must not stall the fan-out; same rule
+            // as scheduleFlush)
             chain = chain
-              .then(() => flush(st))
+              .then(() => {
+                flush(st)
+              })
               .catch((e) => logError("idle flush error", (e as Error)?.message || e))
             const epoch = st.statusEpoch
             const settle = () => {
@@ -2155,7 +2557,9 @@ export function createEngine(deps: EngineDeps): Engine {
               if (st.timer) clearTimeout(st.timer)
               st.timer = null
               chain = chain
-                .then(() => flush(st))
+                .then(() => {
+                  flush(st)
+                })
                 .then(() => {
                   armSettleDrop(st)
                 })
@@ -2195,8 +2599,12 @@ export function createEngine(deps: EngineDeps): Engine {
           const messageID = p.messageID as string | undefined
           if (!messageID) return
           if (t === "message.removed") {
-            dropMergedMessage(st, messageID)
-            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(st.sid, messageID) })
+            // key/tombstone by the EVENT's session id (a child's message
+            // must not be keyed onto the parent — the worker deletes the
+            // item but the viewer's tombstone key would miss and the
+            // msgIndex corpse could re-upsert it)
+            dropMergedMessage(st, messageID, sid)
+            enqueue(st, { key: `message/${messageID}`, item: messageTombstone(sid, messageID) })
           } else {
             const partID = p.partID as string | undefined
             if (!partID) return
@@ -2324,6 +2732,16 @@ export function createEngine(deps: EngineDeps): Engine {
           for (const r of st.remotes.values()) {
             if (!r.wsReady && r.shareId && r.pending.length) {
               await flushViaHttp(st, r).catch(() => {})
+            }
+          }
+          // resolve any pending debounced spool rewrite before exit: the
+          // queue lines are already on disk (appends are sync), but the
+          // meta's ackedRev and the compacted queue should be final
+          for (const r of st.remotes.values()) {
+            if (r.spoolSaveTimer) {
+              clearTimeout(r.spoolSaveTimer)
+              r.spoolSaveTimer = null
+              spoolSave(st, r)
             }
           }
           if (st.metaTimer) clearTimeout(st.metaTimer)

@@ -633,16 +633,12 @@ export function CurrentContextToolGroup(props: {
         return groups
       }
 
-      if (
-        currentToolGroupedRead(tool) &&
-        Array.isArray(previous) &&
-        previous[0] &&
-        currentToolGroupedRead(previous[0])
-      ) {
-        previous.push(tool)
-
-        return groups
-      }
+      // openshare fork: reads no longer merge inside a context group -
+      // the merged array rendered through one ToolDisplay row showing
+      // only the first tool (live-caught: "Used 4 Read" expanded to a
+      // single row). Reads stay individual expandable rows, like every
+      // other grouped tool (owner directive). CurrentReadToolGroup is
+      // bypassed below either way.
 
       if (
         tool.name === "skill" &&
@@ -1921,6 +1917,9 @@ ToolRegistry.register({
     }
 
     const trigger = () => (
+      // openshare fork: .osh-task-wrap carries the in-flow hint below the
+      // card (app.css: height 0 -> 22px on hover; the card box never grows)
+      <div class="osh-task-wrap">
       <div
         data-component="task-tool-card"
         style={{
@@ -1957,6 +1956,7 @@ ToolRegistry.register({
             </Show>
           </div>
         </div>
+      </div>
       </div>
     )
 

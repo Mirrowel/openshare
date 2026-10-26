@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { loadConfig, moduleDir, configPaths, configHomePath, resolveServer, saveServerEntry, deleteServerEntry, METADATA_KEY, type ShareConfig, type ServerEntry } from "./config.js"
 import { dbg, dbgLog } from "./sidebar.js"
 import type { ClientApi, SessionInfo, SessionOpts } from "./core.js"
+import { queueBindingWrite } from "./binding-queue.js"
 import type { ShareHostApi } from "./tui-host.js"
 
 export type SessionBinding = {
@@ -28,8 +29,6 @@ export type SessionBinding = {
   enabled?: boolean
   opts?: SessionOpts
 }
-
-export const CONSENT_KV_KEY = "openshare_consent"
 
 export function pluginConfigPaths(baseDir: string = moduleDir()): string[] {
   return configPaths(baseDir)
@@ -174,18 +173,23 @@ export async function patchSessionBinding(
   sid: string,
   mutator: (servers: Record<string, unknown>, binding: Record<string, unknown>) => void,
 ): Promise<boolean> {
-  const info = await getSession(client, sid)
-  if (!info) return false
-  const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
-  const raw = info.metadata?.[METADATA_KEY]
-  const binding: Record<string, unknown> =
-    raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : { v: 2, servers: {} }
-  const servers: Record<string, unknown> =
-    binding.servers && typeof binding.servers === "object" ? { ...(binding.servers as Record<string, unknown>) } : {}
-  mutator(servers, binding)
-  binding.servers = servers
-  metadata[METADATA_KEY] = binding
-  return patchMetadata(client, sid, metadata)
+  // the whole read-modify-write runs inside the shared per-session queue:
+  // the engine patches the same metadata (binding refresh) and interleaved
+  // RMWs silently lose one side's update (see binding-queue.ts)
+  return queueBindingWrite(sid, async () => {
+    const info = await getSession(client, sid)
+    if (!info) return false
+    const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
+    const raw = info.metadata?.[METADATA_KEY]
+    const binding: Record<string, unknown> =
+      raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : { v: 2, servers: {} }
+    const servers: Record<string, unknown> =
+      binding.servers && typeof binding.servers === "object" ? { ...(binding.servers as Record<string, unknown>) } : {}
+    mutator(servers, binding)
+    binding.servers = servers
+    metadata[METADATA_KEY] = binding
+    return patchMetadata(client, sid, metadata)
+  })
 }
 
 /** The display/primary binding: the active server's entry when bound
@@ -482,7 +486,20 @@ export async function waitForBinding(
 
 export type FlowResult = { ok: boolean; message: string; url?: string; unconfigured?: boolean }
 
-export async function runShareFlow(host: ShareHostApi, sessionID: string | undefined): Promise<FlowResult> {
+/** Consent gate: EVERY share creation asks explicitly (per owner
+ * directive — no remembered consent, no silent creates). */
+export async function requestShareConsent(host: ShareHostApi): Promise<boolean> {
+  return host.ui.showConfirm({
+    title: "Share Session",
+    message: "Publish this session (and its subagent sessions) to your openshare worker?\nThe link lets anyone with it read the conversation.",
+    confirmLabel: "Share",
+  })
+}
+
+/** runShareFlow with the consent gate applied: share copies the link,
+ * unshared asks consent once, then creates. Every create path routes
+ * through here (/share, settings, gone-again). */
+export async function shareWithConsent(host: ShareHostApi, sessionID: string | undefined): Promise<FlowResult> {
   if (!sessionID) return { ok: false, message: "No active session to share." }
   const cfg = currentConfig()
   if (!isConfigured(cfg)) {
@@ -495,10 +512,7 @@ export async function runShareFlow(host: ShareHostApi, sessionID: string | undef
     await host.clipboard.write(existing.url)
     return { ok: true, message: `Share URL copied to clipboard: ${existing.url}`, url: existing.url }
   }
-  if (!host.kv.get(CONSENT_KV_KEY, false)) {
-    // caller shows the consent dialog before invoking confirmShare()
-    return { ok: false, message: "consent required" }
-  }
+  if (!(await requestShareConsent(host))) return { ok: false, message: "Share cancelled." }
   return confirmShare(host, root)
 }
 
