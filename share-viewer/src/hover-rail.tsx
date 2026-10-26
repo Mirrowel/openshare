@@ -310,7 +310,7 @@ function NavRow(props: {
         }}
         style={props.active ? { background: "var(--openshare-accent, var(--text-base))" } : undefined}
       />
-      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums self-start leading-4 pt-px">{props.i + 1}</span>
+      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums self-start leading-4">{props.i + 1}</span>
       <span class="min-w-0 flex-1 flex flex-col gap-0.5 py-px">
         <span class="text-12-regular" style={navRowsSignal().promptLines > 1 ? clampStyle(navRowsSignal().promptLines) : undefined} classList={{ truncate: navRowsSignal().promptLines <= 1 }}>
           {props.label ?? "turn"}

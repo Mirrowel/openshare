@@ -479,6 +479,7 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 .osh-title-path-first .osh-dir-full {
   flex: 0 1 auto;
+  min-width: 0;
   direction: rtl;
   unicode-bidi: plaintext;
 }

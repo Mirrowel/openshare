@@ -82,8 +82,12 @@ function displayPathDir(path: string): string {
   const dir = dirname(path)
   if (!dir) return ""
   if (!directory || directory === "/" || directory === "\\") return norm(dir)
-  const base = norm(directory).replace(/\/+$/, "")
-  const nd = norm(dir)
+  // dirname() drops the leading slash; strip it from BOTH sides or the
+  // prefix compare never matches an absolute session dir
+  const strip = (p: string) => p.replace(/^\/+/, "")
+  const base = strip(norm(directory).replace(/\/+$/, ""))
+  const nd = strip(norm(dir))
+  if (!base) return norm(dir)
   if (nd === base) return "."
   if (nd.startsWith(base + "/")) return nd.slice(base.length + 1)
   // full directory otherwise: the row ellipsizes only when it truly
