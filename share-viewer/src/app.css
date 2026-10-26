@@ -51,6 +51,9 @@
    premade themes all get a surface in their own hue. */
 :root {
   --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
+  /* the same tint over the page, opaque: the sticky line-number gutter
+     must hide code scrolling under it */
+  --osh-code-solid: color-mix(in oklab, var(--text-base) 7%, var(--background-stronger, var(--background-base)));
 }
 /* the kit sets the highlighter block's background inline */
 [data-component="markdown-code"] pre.shiki {
@@ -480,9 +483,10 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
-  background: var(--osh-code-bg);
-  /* the kit paints an opaque diff background; this is its hook */
-  --opencode-diffs-bg: transparent;
+  background: var(--osh-code-solid);
+  /* the kit's hook for the diff/gutter background; opaque so scrolled
+     code never shows through the sticky gutter */
+  --opencode-diffs-bg: var(--osh-code-solid);
 }
 [data-component="osh-file-body"] diffs-container {
   background-color: transparent;
@@ -878,6 +882,27 @@ html[data-color-scheme="light"] {
 }
 .osh-task-wrap:hover::after {
   transform: scaleX(1);
+}
+/* conversation view: diff content sits flush in its card (the kit gives
+   edit-content a 12px indent and rounded corner, and the row rule above
+   indents it again) */
+[data-osh-conv-layout] [data-component="osh-file-body"] [data-component="edit-content"] {
+  margin-left: 0;
+  border-radius: 0;
+}
+/* conversation view: the overflow toggle sits next to the file name */
+[data-osh-conv-layout] .osh-file-titlebar {
+  justify-content: flex-start;
+}
+[data-osh-conv-layout] .osh-card-controls {
+  margin-left: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+/* conversation view: no floating hint, the card is the affordance */
+[data-osh-conv-layout] .osh-subagent-hint {
+  display: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .osh-task-wrap::after {
