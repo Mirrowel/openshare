@@ -313,7 +313,6 @@ export function BaseSessionView(props: ViewProps & { skin: Skin }) {
               variant={props.settings.promptNav}
               pillGhost={props.settings.pillGhost}
               onSetPillGhost={(pillGhost) => props.updateSettings({ pillGhost })}
-              pillMenu={props.settings.pillMenu}
               onSetVariant={(promptNav) => props.updateSettings({ promptNav })}
               width={props.settings.turnNavWidth}
               onResize={(turnNavWidth) => props.updateSettings({ turnNavWidth })}

@@ -25,6 +25,7 @@ import { Portal } from "solid-js/web"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Popover } from "@kobalte/core/popover"
 import { Icon } from "@opencode/ui/icon"
+import { navRowsSignal, setNavSearchBar, setRowLines } from "./settings"
 
 // panel-left glyph: a framed rectangle with a left column bar - drawn,
 // not fonted, so it renders identically everywhere (no emoji, no ligature)
@@ -112,10 +113,6 @@ export function TurnContextMenu(props: { x: number; y: number; onClose: () => vo
 
 export type PromptNavVariant = "pill" | "sidebar"
 
-// [design-trial: pill menu] — the four candidate pop-open layouts.
-// DELETE with the whole trial after the owner picks.
-export type PillMenuStyle = "mini" | "map" | "palette" | "annotated"
-
 export function PromptNav(props: {
   count: number
   /** currently active turn index (paged) or undefined (continuous) */
@@ -156,8 +153,6 @@ export function PromptNav(props: {
    *  placement only; the config toggle is shared with the sidebar) */
   pillGhost?: boolean
   onSetPillGhost?: (v: boolean) => void
-  /** [design-trial: pill menu] which pop-open layout the pill renders */
-  pillMenu?: PillMenuStyle
 }) {
   // the sidebar state only applies on desktop widths; below 900px the
   // control is the compact "Turn N of M" top bar (the conversation view's
@@ -247,16 +242,25 @@ function NavRow(props: {
   active: boolean
   filled?: boolean
   label: string | undefined
+  /** response preview text - shown INLINE when rowResponseLines > 0 */
+  response?: string
   onHover?: (i: number, el: HTMLElement) => void
   onSelect: (i: number) => void
   onFocus?: (i: number) => void
 }) {
   const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | undefined>()
+  const rows = navRowsSignal()
+  const clampStyle = (n: number) => ({
+    display: "-webkit-box" as const,
+    "-webkit-box-orient": "vertical" as const,
+    "-webkit-line-clamp": String(n),
+    overflow: "hidden" as const,
+  })
   const button = (
     <button
       type="button"
       role="menuitem"
-      class="osh-pnav-row group relative w-full flex items-center gap-1.5 min-h-6 px-2 py-0.5 rounded-md border-none cursor-pointer text-left"
+      class="osh-pnav-row group relative w-full flex items-start gap-1.5 min-h-6 px-2 py-0.5 rounded-md border-none cursor-pointer text-left"
       classList={{
         "bg-surface-raised-base text-text-strong": props.active,
         "bg-transparent text-text-base hover:bg-surface-base": !props.active,
@@ -282,8 +286,15 @@ function NavRow(props: {
         classList={{ "opacity-100": props.active, "opacity-0": !props.active }}
         style={{ background: "var(--openshare-accent, var(--text-base))" }}
       />
-      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums">{props.i + 1}</span>
-      <span class="truncate text-12-regular">{props.label ?? "turn"}</span>
+      <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums leading-5">{props.i + 1}</span>
+      <span class="min-w-0 flex-1 flex flex-col gap-0.5 py-px">
+        <span class="text-12-regular" style={rows.promptLines > 1 ? clampStyle(rows.promptLines) : undefined} classList={{ truncate: rows.promptLines <= 1 }}>
+          {props.label ?? "turn"}
+        </span>
+        <Show when={rows.responseLines > 0 && props.response}>
+          <span class="text-12-regular text-text-weaker leading-4" style={clampStyle(rows.responseLines)}>{props.response}</span>
+        </Show>
+      </span>
       <Show when={props.onFocus}>
         {/* the focus reticle: a span (interactive content inside a button
             is invalid HTML) - clickable via handler + stopPropagation.
@@ -368,35 +379,45 @@ function ParentRow(props: { label: string; onParent: () => void; compact?: boole
 }
 
 /** "- [n] +" stepper: the number is editable directly (type a value,
- *  clamp on change/blur), the buttons step by 1. Range 1..10. */
-function LineStepper(props: { label: string; value: number; onSet: (n: number) => void }) {
-  const clamp = (n: number) => Math.max(1, Math.min(10, n))
+ *  clamp on change/blur), the buttons step by 1. Range defaults 1..10;
+ *  row-content steppers pass their own (e.g. response lines 0..5). */
+function LineStepper(props: { label: string; value: number; onSet: (n: number) => void; min?: number; max?: number }) {
+  const min = props.min ?? 1
+  const max = props.max ?? 10
+  const clamp = (n: number) => Math.max(min, Math.min(max, n))
   const btn =
     "flex items-center justify-center size-6 rounded border border-border-weak-base bg-transparent text-text-weaker hover:text-text-base hover:bg-surface-base cursor-pointer text-14-regular leading-none"
   return (
     <span class="flex items-center gap-1.5">
-      <button type="button" class={btn} aria-label={`fewer ${props.label}`} disabled={props.value <= 1} onClick={() => props.onSet(clamp(props.value - 1))}>
+      <button type="button" class={btn} aria-label={`fewer ${props.label}`} disabled={props.value <= min} onClick={() => props.onSet(clamp(props.value - 1))}>
         −
       </button>
       <input
         type="number"
-        min="1"
-        max="10"
+        min={min}
+        max={max}
         value={props.value}
         aria-label={props.label}
-        class="w-10 h-6 text-center rounded border border-border-weak-base bg-transparent text-12-mono text-text-base [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-        onChange={(e) => props.onSet(clamp(parseInt((e.target as HTMLInputElement).value, 10) || 1))}
+        class="w-[3ch] p-0 h-6 text-center rounded border border-border-weak-base bg-transparent text-12-mono text-text-base [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        onChange={(e) => props.onSet(clamp(parseInt((e.target as HTMLInputElement).value, 10) || min))}
       />
-      <button type="button" class={btn} aria-label={`more ${props.label}`} disabled={props.value >= 10} onClick={() => props.onSet(clamp(props.value + 1))}>
+      <button type="button" class={btn} aria-label={`more ${props.label}`} disabled={props.value >= max} onClick={() => props.onSet(clamp(props.value + 1))}>
         +
       </button>
     </span>
   )
 }
 
-/** the sidebar's OWN config popover (not the shared settings panel) -
- *  holds the sidebar's own knobs only: hover-preview size for now.
- *  Anchored under the gear, closed by outside pointerdown/Escape. */
+/** the nav's OWN config popover (not the shared settings panel) - the
+ *  knobs that shape the prompt views: hover-preview sizes, row content
+ *  (prompt/response line counts), the search bar, and ghost mode.
+ *  Anchored beside its trigger (sidebar: to the right; pill: FIXED past
+ *  the POPOVER's right edge - the pill's own wrapper is pill-wide and
+ *  put the panel straight over the rows, live-caught). Closed by outside
+ *  pointerdown/Escape - EXCEPT pointerdowns on the gear itself, which
+ *  the gear's click handler turns into a clean toggle (the capture-close
+ *  fired first and the click re-opened it: close-then-open on every
+ *  second click, live-caught). */
 function SidebarConfig(props: {
   previewLines: { prompt: number; response: number }
   onSet: (v: { prompt: number; response: number }) => void
@@ -404,23 +425,38 @@ function SidebarConfig(props: {
   ghost?: boolean
   onSetGhost?: (v: boolean) => void
   ghostRelevant?: boolean
+  /** fixed-anchor mode: position past this element's right edge (pill) */
+  anchorEl?: () => HTMLElement | undefined
 }) {
   let panel: HTMLDivElement | undefined
+  const [at, setAt] = createSignal<{ left: number; top: number } | undefined>()
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
-  const onDown = (e: PointerEvent) => { if (panel && !panel.contains(e.target as Node)) props.onClose() }
+  const onDown = (e: PointerEvent) => {
+    const t = e.target as Element
+    if (t?.closest?.('button[aria-label="turn nav settings"]')) return
+    if (panel && !panel.contains(t as Node)) props.onClose()
+  }
   onMount(() => {
     window.addEventListener("keydown", onKey)
     window.addEventListener("pointerdown", onDown, true)
+    if (props.anchorEl) {
+      const r = props.anchorEl()?.getBoundingClientRect()
+      if (r) setAt({ left: Math.min(r.right + 8, window.innerWidth - 240), top: Math.min(r.top, window.innerHeight - 320) })
+    }
   })
   onCleanup(() => {
     window.removeEventListener("keydown", onKey)
     window.removeEventListener("pointerdown", onDown, true)
   })
-  return (
+  const rows = navRowsSignal()
+  const body = (
     <div
       ref={panel}
-      class="absolute top-8 z-30 w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl"
-      style={{ left: "calc(100% + 8px)" }}
+      classList={{
+        "absolute top-8 z-30 w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl": !props.anchorEl,
+        "fixed z-[60] w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl": !!props.anchorEl,
+      }}
+      style={props.anchorEl ? (at() ? { left: `${at()!.left}px`, top: `${at()!.top}px` } : { visibility: "hidden" }) : { left: "calc(100% + 8px)" }}
       role="dialog"
       aria-label="turn nav settings"
     >
@@ -433,8 +469,42 @@ function SidebarConfig(props: {
         <span class="text-12-regular text-text-base">response lines</span>
         <LineStepper label="response lines" value={props.previewLines.response} onSet={(response) => props.onSet({ ...props.previewLines, response })} />
       </div>
+      <div class="border-t border-border-weak-base pt-2">
+        <div class="text-12-medium text-text-weaker pb-1.5">Rows</div>
+        <div class="flex items-center justify-between pb-1.5">
+          <span class="text-12-regular text-text-base">prompt lines</span>
+          <LineStepper label="row prompt lines" min={1} max={5} value={rows.promptLines} onSet={(promptLines) => setRowLines({ promptLines })} />
+        </div>
+        <div class="flex items-center justify-between pb-1.5">
+          <span class="text-12-regular text-text-base">response lines</span>
+          <LineStepper label="row response lines" min={0} max={5} value={rows.responseLines} onSet={(responseLines) => setRowLines({ responseLines })} />
+        </div>
+        <button
+          type="button"
+          class="flex items-center justify-between gap-2 w-full bg-transparent border-none cursor-pointer text-left"
+          onClick={() => setNavSearchBar(!rows.searchBar)}
+          title="show the filter field in the pill pop-open and the sidebar"
+        >
+          <span class="text-12-regular text-text-base">search bar</span>
+          <span
+            classList={{
+              "relative shrink-0 w-8 h-4.5 rounded-full transition-colors duration-200": true,
+              "bg-icon-strong-base": rows.searchBar,
+              "bg-border-strong-base": !rows.searchBar,
+            }}
+          >
+            <span
+              classList={{
+                "absolute top-0.5 size-3.5 rounded-full bg-background-base shadow-sm transition-transform duration-200": true,
+                "translate-x-0.5": !rows.searchBar,
+                "translate-x-4": rows.searchBar,
+              }}
+            />
+          </span>
+        </button>
+      </div>
       <Show when={props.onSetGhost}>
-        <div class="border-t border-border-weak-base pt-2">
+        <div class="border-t border-border-weak-base pt-2 mt-2">
           <button
             type="button"
             class="flex items-center justify-between gap-2 w-full bg-transparent border-none cursor-pointer text-left"
@@ -463,12 +533,18 @@ function SidebarConfig(props: {
       </Show>
     </div>
   )
+  // the pill's anchored config renders through a PORTAL: the pill wrapper
+  // carries -translate-y-1/2, and a transformed ancestor becomes the
+  // containing block for position:fixed - the panel rendered ~400px off
+  // (live-caught). Portaled to body, the fixed coords hit the viewport.
+  return props.anchorEl ? <Portal mount={document.body}>{body}</Portal> : body
 }
 
 // ------------------------------------------------------------- sidebar ----
 function Sidebar(props: Parameters<typeof PromptNav>[0]) {
   const [preview, setPreview] = createSignal<{ i: number; top: number; left: number } | undefined>()
   const [configOpen, setConfigOpen] = createSignal(false)
+  const [sbFilter, setSbFilter] = createSignal("")
   let panel: HTMLDivElement | undefined
 
   const onHover = (i: number, el: HTMLElement) => {
@@ -525,6 +601,19 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
           </button>
         </span>
       </div>
+      {/* the search field (nav config toggle) */}
+      <Show when={navRowsSignal().searchBar}>
+        <div class="px-2 pt-2 shrink-0">
+          <input
+            type="text"
+            value={sbFilter()}
+            onInput={(e) => setSbFilter(e.currentTarget.value)}
+            placeholder="filter turns…"
+            class="w-full box-border px-2 py-1 rounded-md border border-border-weak-base bg-background-stronger text-text-base text-12-regular outline-none focus:border-icon-strong-base transition-colors duration-150"
+            aria-label="filter turns"
+          />
+        </div>
+      </Show>
       <div
         class="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-0.5"
         role="menu"
@@ -538,13 +627,14 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
         <Show
           when={props.children}
           fallback={
-            <For each={Array.from({ length: props.count }, (_, i) => i)}>
+            <For each={sbFilter().trim() ? Array.from({ length: props.count }, (_, i) => i).filter((i) => (props.label(i) ?? "").toLowerCase().includes(sbFilter().trim().toLowerCase()) || (props.preview?.(i) ?? "").toLowerCase().includes(sbFilter().trim().toLowerCase())) : Array.from({ length: props.count }, (_, i) => i)}>
               {(i) => (
                 <NavRow
                   i={i}
                   active={props.active === i}
                   filled={props.focusedIndex === i}
                   label={props.label(i)}
+                  response={props.preview?.(i)}
                   onHover={onHover}
                   onSelect={(i) => props.onSelect(i)}
                   onFocus={props.onFocusTurn}
@@ -555,7 +645,7 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
         >
           {props.children}
         </Show>
-        <Show when={props.count === 0}>
+        <Show when={navRowsSignal().searchBar && sbFilter().trim() && props.count > 0 && !props.children}>
           <div class="px-2 py-1 text-12-regular text-text-weaker">no turns match</div>
         </Show>
       </div>
@@ -646,9 +736,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
     setPreview({ i, top: er.top - wr.top, left: popRect.right - wr.left + 8 })
   }
 
-  // [design-trial: pill menu] the four pop-open layouts share one shell
-  // (header, footer, config, previews); only the LIST region differs
-  const menu = () => props.pillMenu ?? "mini"
+  // the search field (nav config toggle) filters the rows in both states
   const filtered = () => {
     const q = filter().trim().toLowerCase()
     if (!q) return Array.from({ length: props.count }, (_, i) => i)
@@ -736,8 +824,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
         <Show when={open()}>
           <div
             ref={popEl}
-            class="osh-rail-pop absolute left-full z-50 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
-            classList={{ "w-60": menu() === "mini", "w-80": menu() !== "mini" }}
+            class="osh-rail-pop absolute left-full z-50 w-60 rounded-xl border border-border-weak-base bg-background-base shadow-2xl overflow-hidden"
             style={{ "margin-left": "6px" }}
             role="menu"
             aria-label="turns"
@@ -776,8 +863,8 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               </span>
             </div>
 
-            {/* palette: the filter field */}
-            <Show when={menu() === "palette"}>
+            {/* the search field (nav config toggle) */}
+            <Show when={navRowsSignal().searchBar}>
               <div class="px-2 pt-2">
                 <input
                   type="text"
@@ -790,38 +877,16 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               </div>
             </Show>
 
-            {/* the LIST region - one of the four trial layouts */}
+            {/* the LIST region: one layout (mini) + the always-on progress
+                rail (adopted from the annotated trial - reading position
+                at a glance) */}
             <div
-              class="max-h-[56vh] overflow-y-auto p-1.5 flex gap-1"
-              classList={{ "flex-col": menu() !== "map", "flex-row": menu() === "map" }}
+              class="max-h-[56vh] overflow-y-auto p-1.5 flex flex-col"
               onMouseLeave={() => setPreview(undefined)}
               onScroll={() => setPreview(undefined)}
             >
-              {/* map: the tick column - position at a glance, click jumps */}
-              <Show when={menu() === "map"}>
-                <div class="flex flex-col justify-between items-end py-1 w-6 shrink-0 border-r border-border-weak-base/60 pr-1.5" style={{ "min-height": `${Math.min(props.count, 12) * 26}px` }}>
-                  <For each={Array.from({ length: props.count }, (_, i) => i)}>
-                    {(i) => (
-                      <span class="flex items-center justify-end w-4 h-4 cursor-pointer" onClick={() => props.onSelect(i)}>
-                        <span
-                          classList={{
-                            "block bg-text-weaker/70": true,
-                            "w-2.5 h-px": i % 5 !== 4 && props.active !== i && props.focusedIndex !== i,
-                            "w-3.5 h-px": i % 5 === 4 && props.active !== i && props.focusedIndex !== i,
-                            "w-3.5 h-[2px] rounded-full": props.active === i && props.focusedIndex !== i,
-                            "w-3.5 h-[5px] rounded-sm": props.focusedIndex === i,
-                          }}
-                          style={props.active === i || props.focusedIndex === i ? { background: "var(--openshare-accent, var(--text-base))" } : undefined}
-                        />
-                      </span>
-                    )}
-                  </For>
-                </div>
-              </Show>
-
               <div class="flex flex-col gap-0.5 min-w-0 flex-1 relative">
-                {/* annotated: the progress rail down the list's left edge */}
-                <Show when={menu() === "annotated" && props.active !== undefined}>
+                <Show when={props.active !== undefined}>
                   <div class="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-border-weak-base/60">
                     <div
                       class="absolute left-0 w-[2px] rounded-full"
@@ -839,43 +904,35 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                 <Show
                   when={props.children}
                   fallback={
-                    <For each={menu() === "palette" ? filtered() : Array.from({ length: props.count }, (_, i) => i)}>
+                    <For each={filtered()}>
                       {(i) => (
-                        <>
-                          <NavRow
-                            i={i}
-                            active={props.active === i}
-                            filled={props.focusedIndex === i}
-                            label={props.label(i)}
-                            onHover={menu() === "palette" ? undefined : onHover}
-                            onSelect={(i) => {
-                              // the popover STAYS OPEN after acting (owner
-                              // round: closing on every click made
-                              // multi-turn hopping needlessly heavy); Esc and
-                              // clicking away still close it
-                              props.onSelect(i)
-                              setPreview(undefined)
-                            }}
-                            onFocus={(i) => {
-                              props.onFocusTurn?.(i)
-                              setPreview(undefined)
-                            }}
-                          />
-                          {/* palette + annotated: the response snippet
-                              INLINE - no hover needed */}
-                          <Show when={(menu() === "palette" || menu() === "annotated") && props.preview?.(i)}>
-                            <div class="pl-9 pr-2 -mt-0.5 mb-0.5 text-12-regular text-text-weaker truncate" aria-hidden="true">
-                              {props.preview!(i)}
-                            </div>
-                          </Show>
-                        </>
+                        <NavRow
+                          i={i}
+                          active={props.active === i}
+                          filled={props.focusedIndex === i}
+                          label={props.label(i)}
+                          response={props.preview?.(i)}
+                          onHover={onHover}
+                          onSelect={(i) => {
+                            // the popover STAYS OPEN after acting (owner
+                            // round: closing on every click made
+                            // multi-turn hopping needlessly heavy); Esc and
+                            // clicking away still close it
+                            props.onSelect(i)
+                            setPreview(undefined)
+                          }}
+                          onFocus={(i) => {
+                            props.onFocusTurn?.(i)
+                            setPreview(undefined)
+                          }}
+                        />
                       )}
                     </For>
                   }
                 >
                   {props.children}
                 </Show>
-                <Show when={menu() === "palette" && filtered().length === 0}>
+                <Show when={navRowsSignal().searchBar && filtered().length === 0}>
                   <div class="px-2 py-1 text-12-regular text-text-weaker">no turns match</div>
                 </Show>
               </div>
@@ -902,6 +959,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               ghost={props.pillGhost}
               onSetGhost={props.onSetPillGhost}
               ghostRelevant={true}
+              anchorEl={() => popEl}
             />
           </Show>
         </Show>
