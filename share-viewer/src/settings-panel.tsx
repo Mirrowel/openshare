@@ -254,7 +254,7 @@ function Segmented<T extends string>(props: {
   )
 }
 
-function Switch(props: { on: boolean; label: string; hint?: string; onChange: () => void }) {
+function Toggle(props: { on: boolean; label: string; hint?: string; onChange: () => void }) {
   return (
     <button
       class="flex items-center justify-between gap-3 w-full py-1 bg-transparent border-none cursor-pointer text-left group"
@@ -296,7 +296,7 @@ function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings;
   const value = () => (props.settings as Record<string, unknown>)[props.def.key]
   if (props.def.kind === "switch") {
     return (
-      <Switch
+      <Toggle
         label={props.def.label}
         hint={props.def.hint}
         on={value() === true}
@@ -433,7 +433,7 @@ export function SettingsBody(props: {
       <Section label="transcript">
         <div class="flex flex-col">
           <Show when={viewSupportsPaged(props.settings.view)}>
-            <Switch
+            <Toggle
               label="Paged mode"
               hint="one prompt at a time, the rail switcher pages (per view; off = one continuous scroll)"
               on={pagedFor(props.settings, props.settings.view)}
@@ -446,23 +446,23 @@ export function SettingsBody(props: {
           </Show>
           {/* prompt nav state lives in the control itself (sidebar gear +
               collapse / popover sidebar button) - no panel duplicate */}
-          <Switch
+          <Toggle
             label="Center content"
             on={props.settings.centerContent}
             onChange={() => props.update({ centerContent: !props.settings.centerContent })}
           />
-          <Switch
+          <Toggle
             label="Follow live"
             hint="keep the newest content visible while you are at the bottom"
             on={props.settings.followLive}
             onChange={() => props.update({ followLive: !props.settings.followLive })}
           />
-          <Switch
+          <Toggle
             label="Expanded reasoning"
             on={props.settings.reasoningOpen}
             onChange={() => props.update({ reasoningOpen: !props.settings.reasoningOpen })}
           />
-          <Switch
+          <Toggle
             label="Tool call info"
             hint="invocation titles and queries"
             on={props.settings.toolInfo}
@@ -571,7 +571,7 @@ export function SettingsBody(props: {
              {(def) => <ViewSettingControl def={def} settings={props.settings} update={props.update} />}
             </For>
           <Show when={props.branding.backgroundUrl}>
-            <Switch
+            <Toggle
               label="Background image"
               on={props.settings.backgroundOn}
               onChange={() => props.update({ backgroundOn: !props.settings.backgroundOn })}
