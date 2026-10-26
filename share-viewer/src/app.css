@@ -978,20 +978,75 @@ input[type="range"].osh-slider::-moz-range-thumb {
   60% { opacity: 1; }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-/* live search marks + the active-hit flash */
+/* live search marks: browser-find yellow - maximum contrast on every
+   theme, near-black text on the highlight */
 mark.osh-search-hit {
-  background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 26%, transparent);
-  color: inherit;
+  background: #f6d944;
+  color: #16130a;
   border-radius: 2px;
   padding: 0 1px;
 }
 mark.osh-search-hit.osh-search-hit-active {
+  background: #ffdf3d;
   animation: osh-hit-flash 1.6s ease-out;
 }
 @keyframes osh-hit-flash {
-  0%, 45% { background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 70%, transparent); }
-  100% { background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 26%, transparent); }
+  0%, 45% { background: #ffec8a; }
+  100% { background: #f6d944; }
 }
+
+/* the search palette surface */
+.osh-search-scrim {
+  background: rgb(0 0 0 / 0.22);
+  animation: osh-scrim-in 160ms ease-out;
+}
+@keyframes osh-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* scope chips: compact pill toggles */
+.osh-search-chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-weak-base);
+  background: transparent;
+  color: var(--text-weaker);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 140ms ease-out;
+}
+.osh-search-chip:hover {
+  color: var(--text-base);
+  border-color: var(--border-strong-base);
+}
+.osh-search-chip-on {
+  color: var(--text-strong);
+  border-color: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 55%, transparent);
+  background: color-mix(in srgb, var(--openshare-accent, var(--icon-strong-base)) 14%, transparent);
+}
+/* result rows: hairline separators, the selected row carries an accent
+   edge bar (the nav rail's language) */
+.osh-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 14px 6px 12px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-weak-base) 40%, transparent);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  transition: background 100ms ease-out;
+}
+.osh-search-row:last-child { border-bottom: none; }
+.osh-search-row:hover { background: var(--surface-base); }
+.osh-search-row-sel {
+  background: var(--surface-raised-base);
+  box-shadow: inset 2px 0 0 var(--openshare-accent, var(--icon-strong-base));
+}
+.osh-search-row-sel:hover { background: var(--surface-raised-base); }
 
 /* thin decorative scrollbars for the nav lists and settings bodies:
    4px rounded translucent thumb, invisible track - presence and

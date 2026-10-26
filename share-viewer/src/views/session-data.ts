@@ -22,7 +22,7 @@ export type ToolEntry = {
   defaultOpen?: boolean
 }
 
-export type ReasoningEntry = { kind: "reasoning"; text: string; part: AnyPart }
+export type ReasoningEntry = { kind: "reasoning"; text: string; part: AnyPart; /** host message + per-message ordinal: the kit's synthesized part id is `${messageID}:reasoning:${ordinal}` */ messageID?: string; ordinal?: number }
 
 // a completion text block, positioned in the sequence where it occurred
 export type TextEntry = { kind: "text"; text: string; part: AnyPart }
@@ -74,8 +74,14 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
         continue
       }
       if (m?.type !== "assistant" || !current) continue
+      // per-message ordinals for text/reasoning: the kit's projection
+      // synthesizes part ids as `${message.id}:${type}:${ordinal}` for
+      // non-tool content (projection.ts contentEntries) - the search
+      // engine targets rows by that scheme
+      const ordinals = { text: 0, reasoning: 0 }
       for (const c of m.content ?? []) {
         if (c?.type === "text") {
+          const ordinal = ordinals.text++
           current.response += (current.response ? "\n\n" : "") + (c.text ?? "")
           current.ordered.push({ kind: "text", text: c.text ?? "", part: c })
         } else if (c?.type === "tool") {
@@ -97,7 +103,8 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
           current.tools.push(entry)
           current.ordered.push(entry)
         } else if (c?.type === "reasoning") {
-          const entry: ReasoningEntry = { kind: "reasoning", text: c.text ?? "", part: c }
+          const ordinal = ordinals.reasoning++
+          const entry: ReasoningEntry = { kind: "reasoning", text: c.text ?? "", part: c, messageID: m.id, ordinal }
           current.reasoning.push(entry)
           current.ordered.push(entry)
         }

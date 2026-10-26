@@ -69,7 +69,7 @@ export const demoSnapshot = {
     { type: "prefs", data: { openTasksInNewTab: false } },
     user("msg_demo_user_1", "The share page feels cramped on my phone. Can you review the layout, identify the biggest issues, and suggest a focused fix?", 0),
     assistant("msg_demo_assistant_1", 1, [
-      { type: "reasoning", text: "I should inspect the existing page structure and responsive rules first, then make the smallest useful change.", time: { created: now + 65_000 } },
+      { type: "reasoning", id: "prt_demo_thought_1", text: "I should inspect the existing page structure and responsive rules first, then make the smallest useful change.", time: { created: now + 65_000 } },
       tool("tool_demo_glob", "glob", { pattern: "share-viewer/src/**/*" }, "share-viewer/src/app.tsx\nshare-viewer/src/app.css\nshare-viewer/src/turn-nav.tsx\nshare-viewer/src/settings-panel.tsx"),
       tool("tool_demo_read", "read", { filePath: "share-viewer/src/app.css" }, ":root {\n  --page-gutter: 2rem;\n}\n\n.session-content {\n  max-width: 72rem;\n  margin: 0 auto;\n}\n\n/* one deliberately long line: exercises the wrap vs scroll overflow choice for file cards */\n  --a-very-long-css-custom-property-line: this line is intentionally far longer than the card width so that the overflow behavior (wrap or horizontal scroll) is directly observable in the rendered transcript;\n\n@media (max-width: 640px) {\n  .session-content { padding: 1.5rem; }\n}"),
       text("I found the main issue: the mobile breakpoint keeps desktop-sized padding, and the transcript has no narrow-screen width constraint. I’ll check the component and nearby styles before changing anything."),
@@ -81,19 +81,19 @@ export const demoSnapshot = {
       // case (a floating hint clipped into the sibling card)
       tool("tool_demo_task_2", "subagent", { description: "Audit theme tokens", prompt: "Verify the gutter tokens resolve on both themes." }, "Checked both themes: the gutter tokens resolve, and the mobile override wins under 640px.", { metadata: { sessionID: childID } }),
       tool("tool_demo_edit", "edit", { filePath: "share-viewer/src/app.css", oldString: ".session-content { padding: 1.5rem; }", newString: ".session-content { padding: 1rem; }" }, "Updated mobile page gutter and constrained transcript width.", { title: "Tighten mobile page spacing", metadata: { files: [cssDiff] } }),
-      { type: "reasoning", text: "The narrow-screen changes are intentionally limited to spacing and overflow, so the desktop reading width stays unchanged." },
+      { type: "reasoning", id: "prt_demo_thought_2", text: "The narrow-screen changes are intentionally limited to spacing and overflow, so the desktop reading width stays unchanged." },
       text("The layout review found three practical mobile fixes: reduce page gutters, let code scroll horizontally, and preserve independent scrolling inside large outputs."),
     ]),
     user("msg_demo_user_3", "Show me a small CSS example for the scrolling code block, then summarize what you changed.", 12),
     assistant("msg_demo_assistant_3", 13, [
       text("For code blocks, keep the transcript width fluid and scroll only the code itself:"),
       text("```css\npre {\n  max-width: 100%;\n  overflow-x: auto;\n  overscroll-behavior-inline: contain;\n}\n```"),
-      { type: "reasoning", text: "The demo should exercise multiple message types and realistic widths without making the main thread excessively long." },
+      { type: "reasoning", id: "prt_demo_thought_3", text: "The demo should exercise multiple message types and realistic widths without making the main thread excessively long." },
       text("This demo includes user and assistant turns, reasoning, file tools, an edit diff, a subagent task, long output, and formatted code. The main layout change is a smaller mobile gutter with overflow contained in the content that needs it."),
     ]),
     user("msg_demo_user_4", "Now clean it up: split the gutter styles into their own file, drop the legacy stylesheet, and tighten the tool output.", 30),
     assistant("msg_demo_assistant_4", 31, [
-      { type: "reasoning", text: "Four separate changes: tune app.css in a few places, shrink the turn rows, add a small mobile stylesheet, and remove the legacy one that nothing imports any more.", time: { created: now + 31 * 60_000 } },
+      { type: "reasoning", id: "prt_demo_thought_4", text: "Four separate changes: tune app.css in a few places, shrink the turn rows, add a small mobile stylesheet, and remove the legacy one that nothing imports any more.", time: { created: now + 31 * 60_000 } },
       tool("tool_demo_edit_multi", "edit", { filePath: "share-viewer/src/app.css", oldString: "--page-gutter: 2rem;", newString: "--page-gutter: 1rem;" }, "Applied 3 changes to app.css.", { title: "Tune gutters and tool output", metadata: { files: [multiHunkDiff] } }),
       tool("tool_demo_edit_nav", "edit", { filePath: "share-viewer/src/turn-nav.tsx", oldString: "min-h-11", newString: "min-h-7" }, "Updated the turn row height.", { title: "Shrink turn rows", metadata: { files: [navDiff] } }),
       tool("tool_demo_edit_long", "edit", { filePath: "share-viewer/src/views/skins.css", oldString: "minmax(0, 14rem);", newString: "minmax(0, 12rem) [end] 0;" }, "Tightened the transcript grid.", { title: "Tighten grid columns", metadata: { files: [longLineDiff] } }),

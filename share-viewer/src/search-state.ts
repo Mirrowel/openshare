@@ -23,9 +23,13 @@ type SearchState = {
   query: string
   scopes: SearchScope[]
   active: SearchHit | null
+  /** part ids whose DATA text matched (published by the palette) - the
+   *  expansion engine is data-driven: collapsed rows unmount their
+   *  content, so DOM text can never reveal a body-only hit */
+  hitPartIds: string[]
 }
 
-const [state, setState] = createStore<SearchState>({ query: "", scopes: [...SEARCH_SCOPES], active: null })
+const [state, setState] = createStore<SearchState>({ query: "", scopes: [...SEARCH_SCOPES], active: null, hitPartIds: [] })
 
 export const searchState = { get: () => state }
 export const searchQuery = () => state.query
@@ -42,6 +46,10 @@ export function setSearchScopes(scopes: SearchScope[]) {
 }
 export function setActiveHit(hit: SearchHit) {
   setState("active", hit)
+}
+export function setHitPartIds(ids: string[]) {
+  setState("hitPartIds", ids)
+  if (ids.length) scheduleRun()
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +90,7 @@ function runPass() {
     clearMarksIn(sc)
     if (q) {
       markMatches(sc, q)
-      expandCollapsedWithHits(sc, q)
+      expandHitRows(sc)
     }
   } finally {
     running = false
@@ -130,27 +138,43 @@ function markMatches(root: HTMLElement, q: string) {
   }
 }
 
-/** any collapsed collapsible whose visible-or-hidden text carries a hit
- *  opens (once per element; manual re-collapses stick until clear) */
-function expandCollapsedWithHits(root: HTMLElement, q: string) {
-  for (const c of Array.from(root.querySelectorAll('[data-component="collapsible"]'))) {
-    const el = c as HTMLElement
-    if (handledCollapsibles.has(el) || expandedBySearch.has(el)) continue
-    const closed = el.getAttribute("data-closed")
-    if (closed === null) {
-      // open already: mark handled so we never fight it
-      handledCollapsibles.add(el)
+/** expand the rows whose PARTS carry hits - decided by DATA (the
+ *  palette publishes hit part ids), never by DOM text: Kobalte unmounts
+ *  closed collapsible content, so a collapsed row's body text is not in
+ *  the DOM and DOM inspection can never see a body-only hit. Triggers
+ *  that are links (subagent task cards render their trigger as an <a
+ *  href> - triggerAsLink) are NEVER clicked: clicking one navigates to
+ *  the subagent page (owner-caught). */
+function expandHitRows(root: HTMLElement) {
+  if (!state.hitPartIds.length) return
+  const idSet = new Set(state.hitPartIds)
+  const rows = Array.from(
+    root.querySelectorAll("[data-timeline-part-id], [data-timeline-part-ids]"),
+  ) as HTMLElement[]
+  for (const row of rows) {
+    const ids = row.getAttribute("data-timeline-part-ids")?.split(",").map((s) => s.trim()) ?? []
+    const own = row.getAttribute("data-timeline-part-id")
+    if (own) ids.push(own)
+    if (!ids.some((id) => idSet.has(id))) continue
+    // the collapsible to expand: tool rows carry it as an ANCESTOR
+    // (tool-part-wrapper inside the collapsible); reasoning rows carry
+    // it as a DESCENDANT (the reasoning-part wrapper around its own
+    // BasicTool collapsible)
+    const collapsible =
+      (row.closest('[data-component="collapsible"]') as HTMLElement | null) ??
+      (row.matches('[data-component="collapsible"]') ? row : ((row.querySelector(':scope [data-component="collapsible"]') as HTMLElement | null) ?? null))
+    if (!collapsible) continue
+    if (handledCollapsibles.has(collapsible) || expandedBySearch.has(collapsible)) continue
+    if (collapsible.getAttribute("data-closed") === null) {
+      handledCollapsibles.add(collapsible)
       continue
     }
-    const text = (el.textContent ?? "").toLowerCase()
-    if (!text.includes(q)) continue
-    // expand: click the trigger, remember for restore
-    const trigger = el.querySelector('[data-slot="collapsible-trigger"]') ?? el.querySelector("button, a")
-    if (trigger) {
-      expandedBySearch.add(el)
-      handledCollapsibles.add(el)
-      ;(trigger as HTMLElement).click()
-    }
+    const trigger = collapsible.querySelector('[data-slot="collapsible-trigger"]') as HTMLElement | null
+    // a link trigger navigates (task cards) - skip, never click
+    if (!trigger || trigger.tagName === "A" || trigger.closest("a")) continue
+    expandedBySearch.add(collapsible)
+    handledCollapsibles.add(collapsible)
+    trigger.click()
   }
 }
 
