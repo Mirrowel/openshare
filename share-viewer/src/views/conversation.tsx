@@ -220,23 +220,22 @@ export function ConversationView(props: ViewProps) {
                   </button>
                 </div>
               </div>
-              {/* subagent pages: back to the spawning parent turn, on the
-                  right (the conversation view's signature placement) */}
+            </div>
+            <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
+              <Show when={info()?.parentID}>
+                <span class="text-12-regular text-text-weaker">subagent</span>
+              </Show>
+              {/* back to the spawning parent turn, right after the tag */}
               <Show when={parentTurn()}>
                 <button
-                  class="self-center inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-12-regular text-text-weak hover:text-text-strong hover:bg-surface-base no-underline bg-transparent border-none cursor-pointer transition-colors duration-150"
+                  class="self-center inline-flex items-center gap-1 h-6 pl-1.5 pr-2.5 rounded-full bg-surface-base text-12-regular text-text-weak hover:text-text-strong hover:bg-surface-raised-base border-none cursor-pointer transition-colors duration-150"
                   title={`back to parent: ${parentTurn()!.label}`}
                   onClick={goParent}
                 >
                   <Icon name="arrow-left" size="small" />
                   Back to parent
                 </button>
-              </Show>
-            </div>
-            <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <div class="text-left text-16-medium text-text-strong">{displayTitle()}</div>
-              <Show when={info()?.parentID}>
-                <span class="text-12-regular text-text-weaker">subagent</span>
               </Show>
             </div>
           </div>

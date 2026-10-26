@@ -47,6 +47,20 @@
   margin-bottom: -12px;
 }
 
+/* ONE code surface: a tint of the text colour, so light, dark and the
+   premade themes all get a surface in their own hue. */
+:root {
+  --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
+  /* the same tint over the page, opaque: the sticky line-number gutter
+     must hide code scrolling under it */
+  --osh-code-solid: color-mix(in oklab, var(--text-base) 7%, var(--background-stronger, var(--background-base)));
+}
+/* the kit sets the highlighter block's background inline */
+[data-component="markdown-code"] pre.shiki {
+  background-color: var(--osh-code-bg) !important;
+  border-color: var(--border-weaker-base);
+}
+
 /* === settings-driven bits === */
 /* text scaling via the design system's font-size tokens: the text
    utilities read var(--font-size-*), so overriding the tokens scales
@@ -318,7 +332,7 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--surface-base);
+  background: var(--osh-code-bg);
   border: 1px solid var(--border-weaker-base);
   font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: pre-wrap;
@@ -469,6 +483,13 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
+  background: var(--osh-code-solid);
+  /* the kit's hook for the diff/gutter background; opaque so scrolled
+     code never shows through the sticky gutter */
+  --opencode-diffs-bg: var(--osh-code-solid);
+}
+[data-component="osh-file-body"] diffs-container {
+  background-color: transparent;
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(100%, calc(2 * var(--osh-card)));
@@ -491,18 +512,6 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   flex: none;
 }
 
-/* the file-title extension badge (TS/MD/JSON...) */
-[data-slot="osh-file-title"] .osh-file-ext {
-  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-weaker);
-  background: var(--surface-base);
-  border: 1px solid var(--border-weaker-base);
-  border-radius: 4px;
-  padding: 2px 4px;
-}
 
 
 /* --- tool output overflow (setting: scroll | wrap) --------------------
@@ -873,6 +882,27 @@ html[data-color-scheme="light"] {
 }
 .osh-task-wrap:hover::after {
   transform: scaleX(1);
+}
+/* conversation view: diff content sits flush in its card (the kit gives
+   edit-content a 12px indent and rounded corner, and the row rule above
+   indents it again) */
+[data-osh-conv-layout] [data-component="osh-file-body"] [data-component="edit-content"] {
+  margin-left: 0;
+  border-radius: 0;
+}
+/* conversation view: the overflow toggle sits next to the file name */
+[data-osh-conv-layout] .osh-file-titlebar {
+  justify-content: flex-start;
+}
+[data-osh-conv-layout] .osh-card-controls {
+  margin-left: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+/* conversation view: no floating hint, the card is the affordance */
+[data-osh-conv-layout] .osh-subagent-hint {
+  display: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .osh-task-wrap::after {
