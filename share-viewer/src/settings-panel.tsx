@@ -478,8 +478,6 @@ export function SettingsBody(props: {
                { id: "chip" as const, label: "chip" },
                { id: "swap" as const, label: "swap" },
                { id: "leader" as const, label: "leader" },
-               { id: "edge" as const, label: "edge" },
-               { id: "shift" as const, label: "shift" },
              ]}
              onChange={(subagentHint) => props.update({ subagentHint })}
            />

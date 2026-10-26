@@ -3,7 +3,7 @@
 import { createSignal } from "solid-js"
 
 /** the subagent-hint design trial variants */
-const HINTS = ["chip", "swap", "leader", "edge", "shift"] as const
+const HINTS = ["chip", "swap", "leader"] as const
 
 export type OshSettings = {
   view: string
@@ -69,10 +69,11 @@ export type OshSettings = {
    *  (near), or smooth always (long jumps included) */
   smoothScroll: "instant" | "near" | "always"
   /** [design-trial: subagent hint] how the "open subagent" hover hint
-   *  appears on a task card: chip (in-flow pill replacing the chevron),
-   *  swap (subtitle trades places with it), leader (dotted leader line),
-   *  edge (accent bar), shift (content slides left). Only horizontal
-   *  movement, always inside the row; the accent underline is always on. */
+   *  appears on a task card: chip (overlay pill flipping out from the
+   *  card's right edge, the card itself never changes), swap (the
+   *  subtitle crossfades into the action in place), leader (dotted
+   *  leader line to the right edge). Only horizontal movement, always
+   *  inside the row; the accent underline is always on. */
   subagentHint: (typeof HINTS)[number]
   /** ghost mode: the pill rests invisible (0 opacity); the proximity
    * strip wakes it and a one-time pulse carries discoverability */
