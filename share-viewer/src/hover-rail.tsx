@@ -249,7 +249,8 @@ function NavRow(props: {
   onFocus?: (i: number) => void
 }) {
   const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | undefined>()
-  const rows = navRowsSignal()
+  // signal reads live INLINE in the JSX below: a body-level read is a
+  // one-time snapshot and the rows never re-render on setting changes
   const clampStyle = (n: number) => ({
     display: "-webkit-box" as const,
     "-webkit-box-orient": "vertical" as const,
@@ -288,11 +289,11 @@ function NavRow(props: {
       />
       <span class="text-12-mono text-text-weaker w-[2ch] shrink-0 tabular-nums leading-5">{props.i + 1}</span>
       <span class="min-w-0 flex-1 flex flex-col gap-0.5 py-px">
-        <span class="text-12-regular" style={rows.promptLines > 1 ? clampStyle(rows.promptLines) : undefined} classList={{ truncate: rows.promptLines <= 1 }}>
+        <span class="text-12-regular" style={navRowsSignal().promptLines > 1 ? clampStyle(navRowsSignal().promptLines) : undefined} classList={{ truncate: navRowsSignal().promptLines <= 1 }}>
           {props.label ?? "turn"}
         </span>
-        <Show when={rows.responseLines > 0 && props.response}>
-          <span class="text-12-regular text-text-weaker leading-4" style={clampStyle(rows.responseLines)}>{props.response}</span>
+        <Show when={navRowsSignal().responseLines > 0 && props.response}>
+          <span class="text-12-regular text-text-weaker leading-4" style={clampStyle(navRowsSignal().responseLines)}>{props.response}</span>
         </Show>
       </span>
       <Show when={props.onFocus}>
@@ -418,49 +419,22 @@ function LineStepper(props: { label: string; value: number; onSet: (n: number) =
  *  the gear's click handler turns into a clean toggle (the capture-close
  *  fired first and the click re-opened it: close-then-open on every
  *  second click, live-caught). */
-function SidebarConfig(props: {
+/** the nav settings CONTROLS - shared by the sidebar's side popover and
+ *  the pill pop-open (where they REPLACE the turn list). Every dynamic
+ *  value reads its signal INLINE in JSX: reading a signal in the
+ *  component body is a one-time snapshot - nothing subscribes, the
+ *  controls display mount-time values forever and steppers compute from
+ *  the stale original (live-caught: "click twice still only subtracts
+ *  one"). */
+function NavSettingsBody(props: {
   previewLines: { prompt: number; response: number }
   onSet: (v: { prompt: number; response: number }) => void
-  onClose: () => void
   ghost?: boolean
   onSetGhost?: (v: boolean) => void
-  ghostRelevant?: boolean
-  /** fixed-anchor mode: position past this element's right edge (pill) */
-  anchorEl?: () => HTMLElement | undefined
 }) {
-  let panel: HTMLDivElement | undefined
-  const [at, setAt] = createSignal<{ left: number; top: number } | undefined>()
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
-  const onDown = (e: PointerEvent) => {
-    const t = e.target as Element
-    if (t?.closest?.('button[aria-label="turn nav settings"]')) return
-    if (panel && !panel.contains(t as Node)) props.onClose()
-  }
-  onMount(() => {
-    window.addEventListener("keydown", onKey)
-    window.addEventListener("pointerdown", onDown, true)
-    if (props.anchorEl) {
-      const r = props.anchorEl()?.getBoundingClientRect()
-      if (r) setAt({ left: Math.min(r.right + 8, window.innerWidth - 240), top: Math.min(r.top, window.innerHeight - 320) })
-    }
-  })
-  onCleanup(() => {
-    window.removeEventListener("keydown", onKey)
-    window.removeEventListener("pointerdown", onDown, true)
-  })
-  const rows = navRowsSignal()
-  const body = (
-    <div
-      ref={panel}
-      classList={{
-        "absolute top-8 z-30 w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl": !props.anchorEl,
-        "fixed z-[60] w-56 p-3 rounded-lg border border-border-weak-base bg-background-base shadow-xl": !!props.anchorEl,
-      }}
-      style={props.anchorEl ? (at() ? { left: `${at()!.left}px`, top: `${at()!.top}px` } : { visibility: "hidden" }) : { left: "calc(100% + 8px)" }}
-      role="dialog"
-      aria-label="turn nav settings"
-    >
-      <div class="text-12-medium text-text-weaker pb-2">Hover preview</div>
+  return (
+    <div class="p-3 flex flex-col gap-1">
+      <div class="text-12-medium text-text-weaker pb-1">Hover preview</div>
       <div class="flex items-center justify-between pb-1.5">
         <span class="text-12-regular text-text-base">prompt lines</span>
         <LineStepper label="prompt lines" value={props.previewLines.prompt} onSet={(prompt) => props.onSet({ ...props.previewLines, prompt })} />
@@ -473,46 +447,45 @@ function SidebarConfig(props: {
         <div class="text-12-medium text-text-weaker pb-1.5">Rows</div>
         <div class="flex items-center justify-between pb-1.5">
           <span class="text-12-regular text-text-base">prompt lines</span>
-          <LineStepper label="row prompt lines" min={1} max={5} value={rows.promptLines} onSet={(promptLines) => setRowLines({ promptLines })} />
+          <LineStepper label="row prompt lines" min={1} max={5} value={navRowsSignal().promptLines} onSet={(promptLines) => setRowLines({ promptLines })} />
         </div>
         <div class="flex items-center justify-between pb-1.5">
           <span class="text-12-regular text-text-base">response lines</span>
-          <LineStepper label="row response lines" min={0} max={5} value={rows.responseLines} onSet={(responseLines) => setRowLines({ responseLines })} />
+          <LineStepper label="row response lines" min={0} max={5} value={navRowsSignal().responseLines} onSet={(responseLines) => setRowLines({ responseLines })} />
         </div>
         <button
           type="button"
           class="flex items-center justify-between gap-2 w-full bg-transparent border-none cursor-pointer text-left"
-          onClick={() => setNavSearchBar(!rows.searchBar)}
+          onClick={() => setNavSearchBar(!navRowsSignal().searchBar)}
           title="show the filter field in the pill pop-open and the sidebar"
         >
           <span class="text-12-regular text-text-base">search bar</span>
           <span
             classList={{
               "relative shrink-0 w-8 h-4.5 rounded-full transition-colors duration-200": true,
-              "bg-icon-strong-base": rows.searchBar,
-              "bg-border-strong-base": !rows.searchBar,
+              "bg-icon-strong-base": navRowsSignal().searchBar,
+              "bg-border-strong-base": !navRowsSignal().searchBar,
             }}
           >
             <span
               classList={{
                 "absolute top-0.5 size-3.5 rounded-full bg-background-base shadow-sm transition-transform duration-200": true,
-                "translate-x-0.5": !rows.searchBar,
-                "translate-x-4": rows.searchBar,
+                "translate-x-0.5": !navRowsSignal().searchBar,
+                "translate-x-4": navRowsSignal().searchBar,
               }}
             />
           </span>
         </button>
       </div>
       <Show when={props.onSetGhost}>
-        <div class="border-t border-border-weak-base pt-2 mt-2">
+        <div class="border-t border-border-weak-base pt-2">
           <button
             type="button"
             class="flex items-center justify-between gap-2 w-full bg-transparent border-none cursor-pointer text-left"
             onClick={() => props.onSetGhost!(!props.ghost)}
-            disabled={!props.ghostRelevant}
-            title={props.ghostRelevant ? "pill rests invisible until the cursor approaches" : "ghost mode applies to the pill only"}
+            title="the pill rests invisible until the cursor approaches (applies to the pill)"
           >
-            <span class="text-12-regular" classList={{ "text-text-base": props.ghostRelevant, "text-text-weaker": !props.ghostRelevant }}>ghost mode</span>
+            <span class="text-12-regular text-text-base">ghost mode</span>
             <span
               classList={{
                 "relative shrink-0 w-8 h-4.5 rounded-full transition-colors duration-200": true,
@@ -533,11 +506,45 @@ function SidebarConfig(props: {
       </Show>
     </div>
   )
-  // the pill's anchored config renders through a PORTAL: the pill wrapper
-  // carries -translate-y-1/2, and a transformed ancestor becomes the
-  // containing block for position:fixed - the panel rendered ~400px off
-  // (live-caught). Portaled to body, the fixed coords hit the viewport.
-  return props.anchorEl ? <Portal mount={document.body}>{body}</Portal> : body
+}
+
+/** the sidebar's config popover: the shared settings body, anchored to
+ *  the sidebar's right edge. Closed by outside pointerdown/Escape -
+ *  EXCEPT pointerdowns on the gear itself (the gear's own click toggles;
+ *  the capture-close fired first and the click re-opened it). */
+function SidebarConfig(props: {
+  previewLines: { prompt: number; response: number }
+  onSet: (v: { prompt: number; response: number }) => void
+  onClose: () => void
+  ghost?: boolean
+  onSetGhost?: (v: boolean) => void
+}) {
+  let panel: HTMLDivElement | undefined
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
+  const onDown = (e: PointerEvent) => {
+    const t = e.target as Element
+    if (t?.closest?.('button[aria-label="turn nav settings"]')) return
+    if (panel && !panel.contains(t as Node)) props.onClose()
+  }
+  onMount(() => {
+    window.addEventListener("keydown", onKey)
+    window.addEventListener("pointerdown", onDown, true)
+  })
+  onCleanup(() => {
+    window.removeEventListener("keydown", onKey)
+    window.removeEventListener("pointerdown", onDown, true)
+  })
+  return (
+    <div
+      ref={panel}
+      class="absolute top-8 z-30 w-56 rounded-lg border border-border-weak-base bg-background-base shadow-xl overflow-hidden"
+      style={{ left: "calc(100% + 8px)" }}
+      role="dialog"
+      aria-label="turn nav settings"
+    >
+      <NavSettingsBody previewLines={props.previewLines} onSet={props.onSet} ghost={props.ghost} onSetGhost={props.onSetGhost} />
+    </div>
+  )
 }
 
 // ------------------------------------------------------------- sidebar ----
@@ -615,7 +622,7 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
         </div>
       </Show>
       <div
-        class="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-0.5"
+        class="flex-1 min-h-0 overflow-y-auto osh-thin-scroll p-1.5 flex flex-col gap-0.5"
         role="menu"
         aria-label="turns"
         onMouseLeave={() => setPreview(undefined)}
@@ -661,7 +668,6 @@ function Sidebar(props: Parameters<typeof PromptNav>[0]) {
           onClose={() => setConfigOpen(false)}
           ghost={props.pillGhost}
           onSetGhost={props.onSetPillGhost ? (v) => props.onSetPillGhost!(v) : undefined}
-          ghostRelevant={props.variant === "pill"}
         />
       </Show>
       {/* the resize handle: a hairline grab zone on the right edge */}
@@ -703,6 +709,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
     hideTimer = setTimeout(() => {
       setNear(false)
       setOpen(false)
+      setConfigOpen(false)
       setPreview(undefined)
     }, 220)
   }
@@ -715,6 +722,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
     if (e.key === "Escape") {
       setOpen(false)
       setNear(false)
+      setConfigOpen(false)
       setPreview(undefined)
     }
   }
@@ -863,6 +871,25 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               </span>
             </div>
 
+            {/* the settings REPLACE the list (owner round 2026-10-26): the
+                gear swaps the pop-open's body - no stacked panel, no
+                anchoring, nothing to travel the mouse to; the gear swaps
+                back, and closing the pop-open resets to the list */}
+            <Show
+              when={!configOpen()}
+              fallback={
+                <Show when={props.onSetPreviewLines}>
+                  <div class="max-h-[56vh] overflow-y-auto osh-thin-scroll">
+                    <NavSettingsBody
+                      previewLines={props.previewLines ?? { prompt: 3, response: 4 }}
+                      onSet={props.onSetPreviewLines!}
+                      ghost={props.pillGhost}
+                      onSetGhost={props.onSetPillGhost}
+                    />
+                  </div>
+                </Show>
+              }
+            >
             {/* the search field (nav config toggle) */}
             <Show when={navRowsSignal().searchBar}>
               <div class="px-2 pt-2">
@@ -881,7 +908,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                 rail (adopted from the annotated trial - reading position
                 at a glance) */}
             <div
-              class="max-h-[56vh] overflow-y-auto p-1.5 flex flex-col"
+              class="max-h-[56vh] overflow-y-auto osh-thin-scroll p-1.5 flex flex-col"
               onMouseLeave={() => setPreview(undefined)}
               onScroll={() => setPreview(undefined)}
             >
@@ -947,21 +974,11 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                 <Kbd>J</Kbd><Kbd>K</Kbd><span class="px-0.5">turns</span><Kbd>ESC</Kbd><span class="px-0.5">close</span>
               </span>
             </div>
+            </Show>
           </div>
           {/* the hover preview renders at the WRAPPER level: the popover is
               overflow-hidden (rounded header/footer) and would clip it */}
           <Show when={preview()}>{(p) => <PreviewCard label={props.label(p().i)} text={props.preview?.(p().i) ?? ""} top={p().top} left={p().left} promptLines={props.previewLines?.prompt} responseLines={props.previewLines?.response} />}</Show>
-          <Show when={configOpen() && props.onSetPreviewLines}>
-            <SidebarConfig
-              previewLines={props.previewLines ?? { prompt: 3, response: 4 }}
-              onSet={props.onSetPreviewLines!}
-              onClose={() => setConfigOpen(false)}
-              ghost={props.pillGhost}
-              onSetGhost={props.onSetPillGhost}
-              ghostRelevant={true}
-              anchorEl={() => popEl}
-            />
-          </Show>
         </Show>
       </div>
     </>
