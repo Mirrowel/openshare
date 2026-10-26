@@ -423,11 +423,12 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   white-space: nowrap;
   min-width: 0;
 }
-/* titlebar of the unified file card: title left, overflow toggle right */
+/* titlebar of the unified file card: the controls sit next to the
+   filename (one consistent position across every view) */
 .osh-file-titlebar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
 }
 .osh-pre-wrap {
@@ -510,14 +511,14 @@ html[data-osh-code-surface] .osh-pre {
   max-width: 100%;
 }
 
-/* card controls stack on the title row's right edge: diff mode (edit
-   only) directly above the wrap/scroll selector */
+/* card controls ride the title row beside the filename: diff mode (edit
+   only) then the wrap/scroll selector */
 .osh-card-controls {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-  margin-left: auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin-left: 0;
   flex: none;
 }
 
@@ -892,26 +893,12 @@ html[data-color-scheme="light"] {
 .osh-task-wrap:hover::after {
   transform: scaleX(1);
 }
-/* conversation view: diff content sits flush in its card (the kit gives
-   edit-content a 12px indent and rounded corner, and the row rule above
-   indents it again) */
-[data-osh-conv-layout] [data-component="osh-file-body"] [data-component="edit-content"] {
+/* diff content sits flush in its card everywhere (the kit gives
+   edit-content a 12px indent and rounded corner, and the row rule
+   indents the body again) */
+[data-component="osh-file-body"] [data-component="edit-content"] {
   margin-left: 0;
   border-radius: 0;
-}
-/* conversation view: the overflow toggle sits next to the file name */
-[data-osh-conv-layout] .osh-file-titlebar {
-  justify-content: flex-start;
-}
-[data-osh-conv-layout] .osh-card-controls {
-  margin-left: 0;
-  flex-direction: row;
-  align-items: center;
-  gap: 4px;
-}
-/* conversation view: no floating hint, the card is the affordance */
-[data-osh-conv-layout] .osh-subagent-hint {
-  display: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .osh-task-wrap::after {
