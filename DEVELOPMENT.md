@@ -2,6 +2,8 @@
 
 Working on the repo? This is the map. User-facing docs: [README](README.md).
 
+Working on the repo? This is the map. User-facing docs: [README](README.md). The complete configuration surface across all packages: [CONFIGURATION.md](CONFIGURATION.md).
+
 ## Repo layout
 
 ```

@@ -3,6 +3,8 @@
 The opencode side of [Open(code)Share](../README.md) — session sharing for
 OpenCode v1 and v2, self-hosted on your own worker.
 
+Every plugin config key, its file chain, and the cross-package config surface are inventoried in [../CONFIGURATION.md](../CONFIGURATION.md).
+
 ## Artifacts
 
 | Artifact | What it is | Share mode |

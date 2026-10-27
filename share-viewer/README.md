@@ -1,5 +1,7 @@
 # Open(code)Share viewer
 
+Every viewer setting (the osh_settings cookie) is tabulated in [../CONFIGURATION.md](../CONFIGURATION.md) §5; this file covers how the viewer runs and renders.
+
 The share page your viewers open — built on the vendored **opencode v2 component kit** (`@opencode/session-ui` v2 + `@opencode/ui`), speaking the OpenShare protocol. One build serves two jobs: **live** pages on the share worker, and **local** snapshots via the export tool. Same rendering, same views, same settings either way.
 
 ## How it runs

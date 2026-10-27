@@ -1,5 +1,7 @@
 # Open(code)Share — portable server
 
+Every environment variable this server reads is listed below; the cross-package config surface (worker, plugin, viewer) is inventoried in [../CONFIGURATION.md](../CONFIGURATION.md).
+
 The same share backend as the Cloudflare worker
 ([../share-worker](../share-worker)) as **one Bun process**: SQLite
 storage, native WebSockets, the built viewer served statically. For VPS

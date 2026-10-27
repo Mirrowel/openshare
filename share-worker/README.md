@@ -1,5 +1,7 @@
 # Open(code)Share — re:share
 
+Deploy-time settings (vars, secrets, branding) and the whole cross-package config surface are inventoried in [../CONFIGURATION.md](../CONFIGURATION.md); this file is the API and policy reference.
+
 Self-hosted session sharing for opencode. Upstream discontinued share
 links (opncd.ai); this replaces the whole chain with infrastructure you
 own. One data contract everywhere: the OpenShare envelope `v: 2`

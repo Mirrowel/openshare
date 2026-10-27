@@ -278,6 +278,8 @@ Viewer internals, branding, and the vendored components: [`share-viewer/README.m
 
 ## Configuration
 
+The full config surface across every package - worker vars and secrets, branding, server-side objects and token limits, the plugin's file chain, the Bun server, and the viewer cookie - is inventoried in one place: **[CONFIGURATION.md](CONFIGURATION.md)**. This section covers the plugin's own files.
+
 Priority (highest wins, per key): `OPENSHARE_*` env > plugin options (the config's plugin array entry) > adjacent `openshare.config.json` (next to the plugin) > package-root config > `openshare.local.json` (repo walk-up) > `~/.config/opencode/openshare.config.json` (settings home) > defaults. For everyday interactive use, edit the settings home (or just use `/openshare` — that's where it writes); the earlier links in the chain exist for CI bundles and packaging. An empty string means *unset* for `workerUrl`, `createToken`, `urlFile`, and `spoolDir`; for the other string keys an explicit empty value is meaningful (`modelLabel: ""` hides the model; `authLogin`/`authPassword: ""` removes the read gate).
 
 **Where the TUI writes:** `/openshare` saves to the **global settings home** (`~/.config/opencode/openshare.config.json`) by default; any *other* config file in the chain can be chosen as the write target if it already exists on disk (Write target row — the TUI never creates deploy-time override files). Each setting row shows `[source]` when a file or env var higher in the chain overrides it, and *Where values come from* lists every attribution.
