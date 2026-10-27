@@ -357,6 +357,63 @@ try {
     await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
   }
 
+  // T27 - live settings sync: a re-attach over an OPEN control socket
+  // retroactively applies read auth (rotating viewer tokens) and REMOVES
+  // it when the pair goes empty - settings changes must not wait for a
+  // reconnect (owner rule: every connection heals all staleness)
+  {
+    const c = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_liveauth" } })
+    const SID = c.json?.id ?? ""
+    const SECRET = c.json?.secret ?? ""
+    await req(W1, "POST", `/api/share/${SID}/sync`, { body: { secret: SECRET, data: [{ type: "message", data: { id: "msg_la1", role: "user" } }] } })
+    ok("T27 share staged ungated", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 200)
+    const w = wsSession(W1, CREATE_TOKEN)
+    await w.open()
+    w.send({ op: "init", attach: { id: SID, secret: SECRET, authLogin: "live", authPassword: "gate" } })
+    ok("T27a re-attach ok", (await w.wait("init")).ok === true)
+    ok("T27b gate applied live (no reconnect)", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 401)
+    const login = await req(W1, "POST", `/api/share/${SID}/auth`, { body: { login: "live", password: "gate" } })
+    const setCookie27 = login.res?.headers?.get?.("set-cookie") ?? ""
+    const cookie27 = /osh_[0-9a-f]+=([^;]+)/.exec(setCookie27)?.[1] ?? ""
+    ok("T27c viewer can log in", login.status === 200 && cookie27.length > 20, `${login.status} ${setCookie27.slice(0, 40)}`)
+    w.send({ op: "init", attach: { id: SID, secret: SECRET, authLogin: "", authPassword: "" } })
+    ok("T27d empty pair re-attach ok", (await w.wait("init")).ok === true)
+    ok("T27e gate removed live", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 200)
+    w.close()
+    await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
+  }
+
+  // T28 - revocation freezes control (owner rule): a user whose LAST valid
+  // token is revoked loses control of ALL their shares - user token AND
+  // share secret both - while viewing continues; rotation keeps control
+  {
+    const u4 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "revokeme" } })
+    const U4 = u4.json?.userId ?? ""
+    const t4a = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U4 } })
+    const T4 = t4a.json?.token ?? ""
+    const sh = await req(W1, "POST", CREATE, { token: T4, body: { sessionID: "ses_rev" } })
+    const RS = sh.json?.id ?? ""
+    const RSEC = sh.json?.secret ?? ""
+    ok("T28 user+token+share staged", sh.json?.ok === true)
+    // rotate first: old token dies, fresh one keeps control
+    const rot = await req(W1, "POST", "/api/token/rotate", { token: T4 })
+    ok("T28a rotate mints a replacement", rot.json?.ok === true && !!rot.json?.token, JSON.stringify(rot.json))
+    const T4b = rot.json?.token ?? ""
+    ok("T28b rotation keeps control", (await req(W1, "POST", `/api/share/${RS}/sync`, { body: { secret: RSEC, data: [{ type: "message", data: { id: "msg_rot", role: "user" } }] } })).json?.ok === true)
+    // revoke the (rotated) only token: everything freezes
+    const rev = await req(W1, "DELETE", "/api/token", { token: T4b })
+    ok("T28c self-revoke reports freeze", rev.json?.ok === true && rev.json?.frozen === true, JSON.stringify(rev.json))
+    const deadSecret = await req(W1, "POST", `/api/share/${RS}/sync`, { body: { secret: RSEC, data: [{ type: "message", data: { id: "msg_dead", role: "user" } }] } })
+    ok("T28d secret path frozen after revoke", deadSecret.status === 403 && deadSecret.json?.error === "frozen", `${deadSecret.status} ${deadSecret.json?.error}`)
+    const deadToken = await req(W1, "GET", "/api/me", { token: T4b })
+    ok("T28e revoked token dead", deadToken.status === 401, String(deadToken.status))
+    ok("T28f viewing unaffected", (await req(W1, "GET", `/api/share/${RS}/data`)).status === 200)
+    ok("T28g admin unfreeze is the rescue", (await req(W1, "POST", `/api/admin/users/${U4}/unfreeze`, { token: CREATE_TOKEN })).json?.ok === true)
+    const rescued = await req(W1, "POST", `/api/share/${RS}/sync`, { body: { secret: RSEC, data: [{ type: "message", data: { id: "msg_rescue", role: "user" } }] } })
+    ok("T28h unfreeze restores the secret path", rescued.json?.ok === true, JSON.stringify(rescued.json))
+    await req(W1, "DELETE", `/api/admin/users/${U4}`, { token: CREATE_TOKEN, body: { mode: "delete" } })
+  }
+
   // T17 — freeze severs both control paths, keeps view
   ok("T17 freeze user", (await req(W1, "POST", `/api/admin/users/${U1}/freeze`, { token: CREATE_TOKEN })).json?.ok === true)
   const frozenSecretSync = await req(W1, "POST", `/api/share/${U1_SHARE}/sync`, { body: { secret: U1_SECRET, data: [{ type: "message", data: { id: "msg_frozen", role: "user" } }] } })

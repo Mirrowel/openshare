@@ -255,6 +255,20 @@ try {
     const bindingNow = (await after.json())?.metadata?.openshare
     check("F2: no duplicate share created", bindingUrlOf(bindingNow)?.split("/").pop() === shareId)
 
+    // F12a: opts persistence NEVER publishes (D1). The TTL/read-auth
+    // editors once routed through setShareFlag, which stamps enabled:true
+    // - editing a preference on an unshared session published it with no
+    // consent. On a live share the opts must land without touching
+    // enabled or the share id.
+    {
+      const set = await flows.setShareOpts(client, sid, { ttlDays: 33 })
+      check("F12a: setShareOpts ok", set === true)
+      const rec = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F12a: opts stored", rec?.opts?.ttlDays === 33, JSON.stringify(rec?.opts))
+      check("F12a: enabled state untouched", rec?.enabled === true, JSON.stringify({ enabled: rec?.enabled }))
+      check("F12a: no new share", bindingUrlOf(rec)?.split("/").pop() === shareId, bindingUrlOf(rec))
+    }
+
     // F3: unshare deletes the page and clears the flag
     const unshared = await flows.runUnshareFlow(host, sid)
     check("F3: unshare flow reports deletion", unshared.ok === true, unshared.message)
@@ -265,6 +279,67 @@ try {
     check("F3: worker page deleted", true)
     const cleared = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata
     check("F3: flag cleared from metadata", !cleared?.openshare)
+
+    // F12b: on an UNSHARED session, opts sit dormant - no enabled, no
+    // share. This is the D1 consent-bypass lock: the editor saves the
+    // preference and publishes nothing.
+    {
+      check("F12b: setShareOpts ok (unshared)", (await flows.setShareOpts(client, sid, { ttlDays: 21 })) === true)
+      const rec = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F12b: opts stored dormant", rec?.opts?.ttlDays === 21 && rec?.enabled !== true, JSON.stringify(rec))
+      check("F12b: no binding url (nothing published)", bindingUrlOf(rec) === undefined, bindingUrlOf(rec))
+    }
+
+    // F13: read-auth editor enforces both-or-none (D2). A login without a
+    // password rendered "protected" while the server never built a gate.
+    {
+      const h2 = mockHost(client)
+      h2.state.menuAnswers.push("group:session", "session:auth", "__back", "action:exit")
+      h2.state.promptAnswers.push("alice", "")
+      await settings.settingsDialog(h2.host, sid)
+      check("F13: half pair rejected with an explicit toast", h2.state.toasts.some((t) => /both a login and a password/i.test(t.message ?? "")), JSON.stringify(h2.state.toasts.map((t) => t.message)))
+      const rec = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F13: opts unchanged after rejection", rec?.opts?.authLogin === undefined && rec?.opts?.ttlDays === 21, JSON.stringify(rec?.opts))
+      const h3 = mockHost(client)
+      h3.state.menuAnswers.push("group:session", "session:auth", "__back", "action:exit")
+      h3.state.promptAnswers.push("alice", "wonderland")
+      await settings.settingsDialog(h3.host, sid)
+      const rec2 = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F13b: full pair saved", rec2?.opts?.authLogin === "alice" && rec2?.opts?.authPassword === "wonderland", JSON.stringify(rec2?.opts))
+    }
+
+    // F14: leave-as-is keeps control (D4). The snapshot path once dropped
+    // id/secret - the page could never be deleted or re-shared from the
+    // TUI again. Now the entry keeps both under an optedOut marker, a
+    // fully opted-out session re-asks consent, and re-share re-attaches
+    // the SAME page.
+    {
+      const reshared = await flows.shareWithConsent(host, sid)
+      check("F14: re-share after unshare works", reshared.ok === true && !!reshared.url, reshared.message)
+      const shareId2 = reshared.url.split("/").pop()
+      // the re-share inherits the session opts (F13b set alice/wonderland)
+      // - the gate applying on create is itself D1/D3 coverage
+      await waitFor(async () => {
+        const r = await httpGet(`${WORKER_URL}/api/share/${shareId2}/data`)
+        if (r.status === 404) throw new Error("not there yet")
+        return r.status === 401 ? true : undefined
+      }, "F14: share #2 live and gated")
+      const h4 = mockHost(client)
+      h4.state.menuAnswers.push("group:session", "session:unshare", "leave", "__back", "action:exit")
+      await settings.settingsDialog(h4.host, sid)
+      const rec = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      const entry = Object.values(rec?.servers ?? {})[0]
+      check("F14a: snapshot keeps id+secret+optedOut", entry?.id === shareId2 && typeof entry?.secret === "string" && entry?.optedOut === true, JSON.stringify(entry))
+      const bindings = await flows.readBindings(client, sid)
+      check("F14b: TUI still sees the snapshot (deletable later)", bindings.length === 1 && bindings[0].optedOut === true, JSON.stringify(bindings))
+      const declinedSnap = await flows.shareWithConsent(mockHost(client, { consent: false }).host, sid)
+      check("F14c: opted-out session re-asks consent (decline = nothing)", declinedSnap.ok === false && !declinedSnap.url, declinedSnap.message)
+      const again2 = await flows.shareWithConsent(host, sid)
+      check("F14d: re-share after snapshot succeeds", again2.ok === true && !!again2.url, again2.message)
+      const rec2 = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      const entry2 = Object.values(rec2?.servers ?? {})[0]
+      check("F14e: same page re-attached, marker cleared", again2.url.endsWith(shareId2) && entry2?.optedOut !== true, `${again2.url} entry=${JSON.stringify(entry2)}`)
+    }
 
     // F4: config round-trip in a sandbox base dir ($comment preserved).
     // env is set for the flows, so assert on a non-env key (ttlDays).
@@ -389,7 +464,13 @@ try {
     // F8: gone detection — a binding whose page died server-side (purge /
     // TTL / delete) is auto-cleared when /share opens, with a
     // "Share is gone" modal; the probe is credential-free (/data 404 before
-    // the read-auth gate).
+    // the read-auth gate). shareWithConsent itself does NOT probe liveness
+    // (the /share command's gone sweep owns that) - clear the stale
+    // binding the way the sweep does, then a consented re-share creates
+    // the fresh page.
+    await flows.clearShareFlag(client, sid)
+    // drop the inherited read-auth override so F8's plain reads work
+    await flows.setShareOpts(client, sid, { ttlDays: 21 })
     const reshard = await flows.shareWithConsent(host, sid)
     check("F8: re-share after purge creates a fresh page", reshard.ok === true && !!reshard.url, reshard.message)
     const shareId2 = reshard.url.split("/").pop()

@@ -175,7 +175,10 @@ function loadConfig(pluginDir, options) {
           continue;
         cfg[key] = value;
       }
-    } catch {}
+    } catch (e) {
+      if (existsSync(path))
+        console.error(`[openshare] config file ${path} could not be parsed - ignored:`, e?.message ?? e);
+    }
   }
   if (options && typeof options === "object") {
     const serversOpt = normalizeServers(options.servers);
@@ -220,6 +223,14 @@ function loadConfig(pluginDir, options) {
     cfg.shareMode = env.OPENSHARE_SHARE_MODE;
   if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE)
     cfg.urlFile = URL_FILE_NONE;
+  if (cfg.workerUrl)
+    cfg.workerUrl = cfg.workerUrl.trim().replace(/\/+$/, "");
+  if (cfg.servers) {
+    const fixed = {};
+    for (const [u, e] of Object.entries(cfg.servers))
+      fixed[u.trim().replace(/\/+$/, "")] = e;
+    cfg.servers = fixed;
+  }
   return cfg;
 }
 function spoolDirFor(cfg) {
@@ -345,7 +356,7 @@ function resolveShareMode(cfg, input) {
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { createHash } from "node:crypto";
-import { join as join2 } from "node:path";
+import { isAbsolute, join as join2 } from "node:path";
 
 // src/contract.ts
 function messageTombstone(sessionID, messageID) {
@@ -637,6 +648,7 @@ function shareFlag(info) {
   }
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined };
 }
+var liveTargets = [];
 function createEngine(deps) {
   let cfg = loadConfig(deps.pluginDir, deps.options);
   const mode = resolveShareMode(cfg, deps);
@@ -668,8 +680,13 @@ function createEngine(deps) {
   log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
   const resolveTargets = () => {
     const merged = {};
-    if (cfg.workerUrl)
+    const hasServers = !!cfg.servers && Object.keys(cfg.servers).length > 0;
+    const envWorker = !!process.env.OPENSHARE_WORKER_URL;
+    if (cfg.workerUrl && (!hasServers || envWorker))
       merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true };
+    if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers[cfg.workerUrl]) {
+      log(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`);
+    }
     if (cfg.servers)
       for (const [u, e] of Object.entries(cfg.servers))
         merged[u] = { ...merged[u], ...e };
@@ -679,6 +696,7 @@ function createEngine(deps) {
     return chosen.map((url) => ({ url, entry: merged[url] }));
   };
   let targets = resolveTargets();
+  liveTargets = targets.map((t) => t.url);
   const credState = new Map;
   const credOf = (url) => {
     let s = credState.get(url);
@@ -852,6 +870,8 @@ function createEngine(deps) {
     badSignal: false,
     lastSentStatus: null,
     closed: false,
+    lastError: null,
+    ttlClamped: null,
     binding: null,
     bindingQueried: false,
     optOuts: new Set,
@@ -870,6 +890,7 @@ function createEngine(deps) {
       spoolRoot = spoolDirFor(cfg);
       const before = new Set(targets.map((t) => t.url));
       targets = resolveTargets();
+      liveTargets = targets.map((t) => t.url);
       seedCredentials();
       clampToPolicy();
       if (debugEvents) {
@@ -1043,6 +1064,10 @@ function createEngine(deps) {
     const value = { v: 2, servers, enabled: true };
     if (mode === "manual" && st.opts)
       value.opts = st.opts;
+    if (st.lastError)
+      value.lastError = st.lastError;
+    if (st.ttlClamped)
+      value.ttlClamped = st.ttlClamped;
     st.binding = value;
     st.wroteBinding = true;
     await writeMetadata(st, value);
@@ -1223,7 +1248,7 @@ function createEngine(deps) {
     if (cfg.announceStderr)
       log(`live: ${url}`);
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
-      const file = cfg.urlFile || join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
+      const file = cfg.urlFile ? isAbsolute(cfg.urlFile) ? cfg.urlFile : join2(deps.directory ?? process.cwd(), cfg.urlFile) : join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
       try {
         appendFileSync(file, url + `
 `);
@@ -1232,15 +1257,43 @@ function createEngine(deps) {
           lastUrlFile = file;
           log(`url file: ${file}`);
         }
-      } catch {}
+      } catch (e) {
+        logError(`url file write failed (${file}):`, e?.message || e);
+      }
     }
   };
+  let halfAuthWarned = false;
   const authFrame = (st) => {
     const login = st.opts?.authLogin ?? cfg.authLogin ?? "";
     const password = st.opts?.authPassword ?? cfg.authPassword ?? "";
+    if (login === "" !== (password === "")) {
+      if (!halfAuthWarned) {
+        halfAuthWarned = true;
+        logError("read auth needs BOTH a login and a password - gate disabled until fixed");
+      }
+      return { authLogin: "", authPassword: "" };
+    }
     return { authLogin: login, authPassword: password };
   };
   const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
+  const applyOpts = (st, opts) => {
+    if (!opts)
+      return;
+    const prev = st.opts ? JSON.stringify(st.opts) : "";
+    st.opts = opts;
+    if (prev === JSON.stringify(opts))
+      return;
+    for (const [url, r] of st.remotes) {
+      if (!r.shareId || !r.secret || !r.wsReady)
+        continue;
+      const attach = { id: r.shareId, secret: r.secret, ...authFrame(st) };
+      if (st.opts?.ttlDays)
+        attach.ttlDays = st.opts.ttlDays;
+      const sent = wsSend(r, { op: "init", attach });
+      if (sent)
+        log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlDays ? ` (ttl ${st.opts.ttlDays}d)` : ""}`);
+    }
+  };
   const deleteAbandoned = (r) => {
     const id = r.shareId;
     const secret = r.secret;
@@ -1323,6 +1376,25 @@ function createEngine(deps) {
         r.pending = [];
         r.announced = false;
         queueConnect(st, r);
+      }
+      let rearmed = false;
+      for (const [url, e] of Object.entries(servers)) {
+        if (st.optOuts.has(url) || st.remotes.has(url))
+          continue;
+        const ee = e;
+        if (typeof ee.id !== "string" || typeof ee.secret !== "string" || !ee.id)
+          continue;
+        const r = remoteFor(st, url);
+        r.shareId = ee.id;
+        r.secret = ee.secret;
+        r.ackedRev = typeof ee.rev === "number" ? ee.rev : 0;
+        log(`re-share: re-arming ${url.slice(0, 24)} on share ${ee.id}`);
+        queueConnect(st, r);
+        rearmed = true;
+      }
+      if (rearmed) {
+        st.sentHash.clear();
+        chain = chain.then(() => backfill(st)).catch((e) => logError("re-share backfill error", e?.message || e));
       }
     } catch {}
   };
@@ -1532,6 +1604,8 @@ function createEngine(deps) {
         const err = String(frame.error ?? "");
         if (/frozen/i.test(err)) {
           r.authBlocked = true;
+          st.lastError = `share frozen by the hoster (owner frozen) - contact the server admin`;
+          scheduleBindingWrite(st);
           logError(`${r.url}: share frozen by the hoster (owner frozen) - edits refused; contact the server admin`);
           try {
             r.ws?.close(4000, "frozen");
@@ -1566,6 +1640,8 @@ function createEngine(deps) {
           return;
         }
         if (/limit|too many|rate/i.test(err)) {
+          st.lastError = `create refused: ${frame.error ?? "rate limited"}`;
+          scheduleBindingWrite(st);
           logError(`${r.url}: create refused:`, frame.error, "- retrying with backoff");
           r.connecting = false;
           try {
@@ -1576,6 +1652,8 @@ function createEngine(deps) {
           return;
         }
         logError(`${r.url}: init refused:`, frame.error, "- creating fresh share");
+        st.lastError = `init refused: ${frame.error ?? "unknown"}`;
+        scheduleBindingWrite(st);
         deleteAbandoned(r);
         r.shareId = null;
         r.secret = null;
@@ -1621,6 +1699,18 @@ function createEngine(deps) {
         applyPolicy(frame.policy, r.url);
       r.intentionalClose = false;
       touch(st);
+      if (typeof frame.ttlDays === "number") {
+        const wanted = ttlFor(st);
+        const clamp = wanted != null && frame.ttlDays !== wanted ? { requested: wanted, effective: frame.ttlDays } : null;
+        if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
+          st.ttlClamped = clamp;
+          scheduleBindingWrite(st);
+        }
+      }
+      if (st.lastError) {
+        st.lastError = null;
+        scheduleBindingWrite(st);
+      }
       announceUrl(st, r);
       if (!st.wroteBinding) {
         chain = chain.then(() => writeBinding(st)).catch(() => {});
@@ -2404,7 +2494,7 @@ function createEngine(deps) {
       if (flag.enabled) {
         if (st2?.activated && !st2.closed) {
           if (flag.opts)
-            st2.opts = flag.opts;
+            applyOpts(st2, flag.opts);
           if (info)
             enqueue(st2, itemFor("session", redact(info), sid));
           if (t === "session.updated")
@@ -2665,6 +2755,21 @@ function createEngine(deps) {
             clearTimeout(st.metaTimer);
           st.metaTimer = null;
           await writeBinding(st).catch(() => {});
+        }
+        const barrierStart = Date.now();
+        while (Date.now() - barrierStart < 5000) {
+          let pendingAnnounce = false;
+          for (const st of sessions.values()) {
+            for (const r of st.remotes.values()) {
+              if (r.authBlocked || r.collided)
+                continue;
+              if (r.shareId && !r.announced || !r.shareId && (r.ws || r.connecting))
+                pendingAnnounce = true;
+            }
+          }
+          if (!pendingAnnounce)
+            break;
+          await new Promise((res) => setTimeout(res, 100));
         }
         for (const st of sessions.values()) {
           for (const r of st.remotes.values()) {
