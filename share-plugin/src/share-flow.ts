@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { loadConfig, moduleDir, configPaths, configHomePath, resolveServer, saveServerEntry, deleteServerEntry, METADATA_KEY, type ShareConfig, type ServerEntry } from "./config.js"
 import { dbg, dbgLog } from "./sidebar.js"
-import type { ClientApi, SessionInfo, SessionOpts } from "./core.js"
+import { engineTargetUrls, type ClientApi, type SessionInfo, type SessionOpts } from "./core.js"
 import { queueBindingWrite } from "./binding-queue.js"
 import type { ShareHostApi } from "./tui-host.js"
 
@@ -28,6 +28,12 @@ export type SessionBinding = {
   url: string
   enabled?: boolean
   opts?: SessionOpts
+  /** per-server "leave as-is" marker: a snapshot, not a live mirror */
+  optedOut?: boolean
+  /** engine-recorded last create/attach refusal (quota, frozen, ...) */
+  lastError?: string
+  /** server policy clamped the requested TTL */
+  ttlClamped?: { requested: number; effective: number }
 }
 
 export function pluginConfigPaths(baseDir: string = moduleDir()): string[] {
@@ -99,8 +105,10 @@ export function serverEntries(cfg: ShareConfig = currentConfig()): Array<{ url: 
   if (cfg.workerUrl) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
   if (cfg.servers) for (const [url, entry] of Object.entries(cfg.servers)) merged[url] = { ...merged[url], ...entry }
   const urls = Object.keys(merged)
-  const activeUrl = urls.find((u) => merged[u].active) ?? urls[0]
-  return urls.map((url) => ({ url, entry: merged[url], active: url === activeUrl }))
+  // EVERY explicit active is active (the engine fans out to all of them);
+  // only when none is marked does the first entry act as the default
+  const anyActive = urls.some((u) => merged[u].active)
+  return urls.map((url) => ({ url, entry: merged[url], active: anyActive ? merged[url].active === true : url === urls[0] }))
 }
 
 export { saveServerEntry, deleteServerEntry }
@@ -114,6 +122,8 @@ export function bindingsOf(info: SessionInfo | undefined): Array<SessionBinding 
   const record = raw as Record<string, unknown>
   const opts = (record.opts as SessionOpts | undefined) ?? undefined
   const enabled = record.enabled === true ? true : undefined
+  const lastError = typeof record.lastError === "string" ? record.lastError : undefined
+  const ttlClamped = record.ttlClamped && typeof record.ttlClamped === "object" ? (record.ttlClamped as { requested: number; effective: number }) : undefined
   const out: Array<SessionBinding & { server: string; collided?: string }> = []
   if (record.servers && typeof record.servers === "object") {
     for (const [server, entry] of Object.entries(record.servers as Record<string, unknown>)) {
@@ -130,6 +140,9 @@ export function bindingsOf(info: SessionInfo | undefined): Array<SessionBinding 
         opts,
         server,
         collided,
+        optedOut: e.optedOut === true ? true : undefined,
+        lastError,
+        ttlClamped,
       })
     }
     return out
@@ -146,6 +159,8 @@ export function bindingsOf(info: SessionInfo | undefined): Array<SessionBinding 
       opts,
       server: "",
       collided,
+      lastError,
+      ttlClamped,
     })
   }
   return out
@@ -249,7 +264,8 @@ export async function readBinding(client: ClientApi | undefined, sid: string): P
 
 /** Sets metadata.openshare = { ...existing(v2 structure preserved),
  * enabled: true, opts? }. The per-server binding entries are the ENGINE's
- * to manage; the flag just opts the session in. */
+ * to manage; the flag just opts the session in. CONSENT ONLY: every call
+ * here means the user agreed to publish. */
 export async function setShareFlag(
   client: ClientApi | undefined,
   sid: string,
@@ -265,6 +281,30 @@ export async function setShareFlag(
       : { v: 2, servers: {} }
   value.enabled = true
   if (opts && Object.keys(opts).length) value.opts = opts
+  metadata[METADATA_KEY] = value
+  return patchMetadata(client, sid, metadata)
+}
+
+/** Persists per-session opts WITHOUT touching the enabled state. On an
+ * unshared session the opts sit dormant until a consented create consumes
+ * them; on a live share the engine picks them up and re-syncs the server
+ * (auth/TTL apply immediately). This must never publish anything - the
+ * TTL/auth editors use it, and consent is the only path to enabled. */
+export async function setShareOpts(
+  client: ClientApi | undefined,
+  sid: string,
+  opts: SessionOpts,
+): Promise<boolean> {
+  const info = await getSession(client, sid)
+  if (!info) return false
+  const metadata: Record<string, unknown> = { ...(info.metadata ?? {}) }
+  const existing = info.metadata?.[METADATA_KEY]
+  const value: Record<string, unknown> =
+    existing && typeof existing === "object"
+      ? { ...(existing as Record<string, unknown>) }
+      : { v: 2, servers: {} }
+  if (Object.keys(opts).length) value.opts = opts
+  else delete value.opts
   metadata[METADATA_KEY] = value
   return patchMetadata(client, sid, metadata)
 }
@@ -455,6 +495,31 @@ export function adminClient(workerUrl: string, token: string) {
   }
 }
 
+/** Self-service client for the /api/me surface (the entry's user osk_
+ * token - NOT the root token). Answers "what are my limits, how many
+ * shares do I have, when does my token expire". */
+export function meClient(workerUrl: string, token: string) {
+  const base = normServerUrl(workerUrl)
+  const call = async <T>(method: string, path: string): Promise<{ ok: boolean; status: number; data?: T; error?: string }> => {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(12000),
+      })
+      const parsed = (await res.json().catch(() => ({}))) as T & { ok?: boolean; error?: string }
+      if (!res.ok) return { ok: false, status: res.status, error: parsed?.error ?? `HTTP ${res.status}` }
+      return { ok: parsed?.ok !== false, status: res.status, data: parsed, error: parsed?.error }
+    } catch (error) {
+      return { ok: false, status: 0, error: (error as Error).message }
+    }
+  }
+  return {
+    me: () => call<{ userId: string; label: string; token: { id: string; label: string; limits: Record<string, number>; expiresAt: number }; settings: Record<string, unknown> }>("GET", "/api/me"),
+    myShares: () => call<{ shares: Array<{ id: string; sessionID: string; createdAt: number; status: string }> }>("GET", "/api/me/shares"),
+  }
+}
+
 /** Resolve the admin credential for a server: the entry's adminToken, the
  * legacy createToken (when it points at this server), or prompt. */
 export function adminTokenFor(url: string, cfg: ShareConfig = currentConfig()): string {
@@ -486,11 +551,22 @@ export async function waitForBinding(
 export type FlowResult = { ok: boolean; message: string; url?: string; unconfigured?: boolean }
 
 /** Consent gate: EVERY share creation asks explicitly (per owner
- * directive — no remembered consent, no silent creates). */
-export async function requestShareConsent(host: ShareHostApi): Promise<boolean> {
+ * directive — no remembered consent, no silent creates). The dialog
+ * carries the live context (server, TTL, gate state) so the decision is
+ * informed, not ceremonial. */
+export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlDays?: number; auth: boolean }): Promise<boolean> {
+  const lines: string[] = ["Publish this session (and its subagent sessions) to your openshare worker?"]
+  if (context) {
+    const bits: string[] = []
+    if (context.server) bits.push(`server: ${context.server}`)
+    if (context.ttlDays !== undefined) bits.push(`TTL: ${context.ttlDays}d`)
+    bits.push(`read auth: ${context.auth ? "on" : "off"}`)
+    lines.push(bits.join(" - "))
+  }
+  lines.push("Anyone with the link can read the conversation (login-gated only when read auth is on).")
   return host.ui.showConfirm({
     title: "Share Session",
-    message: "Publish this session (and its subagent sessions) to your openshare worker?\nThe link lets anyone with it read the conversation.",
+    message: lines.join("\n"),
     confirmLabel: "Share",
   })
 }
@@ -501,17 +577,31 @@ export async function requestShareConsent(host: ShareHostApi): Promise<boolean> 
 export async function shareWithConsent(host: ShareHostApi, sessionID: string | undefined): Promise<FlowResult> {
   if (!sessionID) return { ok: false, message: "No active session to share." }
   const cfg = currentConfig()
-  if (!isConfigured(cfg)) {
-    return { ok: false, message: "No share server connected — run /openshare to connect one.", unconfigured: true }
+  // engine-aware: plugin-options-layer config can target servers the file
+  // chain cannot see (TUI blindness would push onboarding at a configured user)
+  if (!isConfigured(cfg) && !engineTargetUrls().length) {
+    return { ok: false, message: "No share server connected - run /openshare to connect one.", unconfigured: true }
   }
   const root = await resolveRoot(host.client, sessionID)
-  const existing = await readBinding(host.client, root)
-  if (existing?.url && existing.enabled !== false) {
+  const all = await readBindings(host.client, root)
+  // fully opted-out (leave-as-is everywhere) is NOT live: consent again
+  // instead of silently copying a snapshot link
+  const live = all.find((b) => b.url && b.enabled !== false && !b.optedOut)
+  if (live) {
     // already sharing: copy the link
-    await host.clipboard.write(existing.url)
-    return { ok: true, message: `Share URL copied to clipboard: ${existing.url}`, url: existing.url }
+    await host.clipboard.write(live.url)
+    return { ok: true, message: `Share URL copied to clipboard: ${live.url}`, url: live.url }
   }
-  if (!(await requestShareConsent(host))) return { ok: false, message: "Share cancelled." }
+  const opts = all[0]?.opts
+  const server = serverEntries(cfg).find((s) => s.active) ?? serverEntries(cfg)[0] ?? (engineTargetUrls()[0] ? { url: engineTargetUrls()[0] } : undefined)
+  if (
+    !(await requestShareConsent(host, {
+      server: server ? hostOf(server.url) : undefined,
+      ttlDays: opts?.ttlDays ?? cfg.ttlDays,
+      auth: !!(opts?.authLogin ?? cfg.authLogin) && !!(opts?.authPassword ?? cfg.authPassword),
+    }))
+  )
+    return { ok: false, message: "Share cancelled." }
   return confirmShare(host, root)
 }
 
@@ -521,13 +611,25 @@ export async function confirmShare(host: ShareHostApi, rootSessionID: string): P
   const set = await setShareFlag(host.client, rootSessionID)
   dbgLog(`confirmShare: setShareFlag -> ${set}`)
   if (!set) return { ok: false, message: "Could not write the share flag into session metadata." }
+  // fresh consent: clear any leave-as-is markers so the engine re-arms
+  // (re-attaching the same pages wherever the secrets still exist)
+  await patchSessionBinding(host.client, rootSessionID, (servers) => {
+    for (const e of Object.values(servers)) {
+      if (e && typeof e === "object") delete (e as Record<string, unknown>).optedOut
+    }
+  })
   const binding = await waitForBinding(host.client, rootSessionID)
   dbgLog(`confirmShare: waitForBinding -> ${binding?.url ? binding.url : "timeout"}`)
   if (!binding?.url) {
+    // a failed create must NOT leave the flag armed - the engine would
+    // publish LATER with no further consent (live-caught). Disarm now;
+    // re-running /share re-consents.
+    await clearShareFlag(host.client, rootSessionID)
+    const fresh = await readBinding(host.client, rootSessionID)
+    const why = fresh?.lastError ? `\nReason: ${fresh.lastError}` : ""
     return {
       ok: false,
-      message:
-        "Share did not come up (timeout waiting for the URL). Is the worker reachable? Check the server plugin log for [openshare] lines.",
+      message: `Share did not come up (timed out waiting for the URL); the share flag was disarmed.${why}\nCheck the [openshare] stderr lines for details.`,
     }
   }
   await host.clipboard.write(binding.url)

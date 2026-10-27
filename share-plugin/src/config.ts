@@ -346,7 +346,13 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
         if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
         ;(cfg as Record<string, unknown>)[key] = value
       }
-    } catch {}
+    } catch (e) {
+      // a malformed config file is a real setup error the user must hear
+      // about - silence here looks like "no share server configured".
+      // (Absent files are normal chain candidates - only broken content
+      // is worth a line.)
+      if (existsSync(path)) console.error(`[openshare] config file ${path} could not be parsed - ignored:`, (e as Error)?.message ?? e)
+    }
   }
 
   if (options && typeof options === "object") {
@@ -379,6 +385,16 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
 
   // normalize the disable sentinel (case-insensitive from any source)
   if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE) cfg.urlFile = URL_FILE_NONE
+
+  // URL hygiene: a trailing slash on a server url becomes
+  // wss://host//api/ws and https://host//s/<id> downstream - strip once,
+  // at the source, so every consumer agrees
+  if (cfg.workerUrl) cfg.workerUrl = cfg.workerUrl.trim().replace(/\/+$/, "")
+  if (cfg.servers) {
+    const fixed: Record<string, ServerEntry> = {}
+    for (const [u, e] of Object.entries(cfg.servers)) fixed[u.trim().replace(/\/+$/, "")] = e
+    cfg.servers = fixed
+  }
 
   return cfg
 }

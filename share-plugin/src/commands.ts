@@ -27,6 +27,7 @@ import {
   verifyShare,
 } from "./share-flow.js"
 import { onboardingDialog, settingsDialog } from "./settings.js"
+import { engineTargetUrls } from "./core.js"
 import { dbgLog } from "./sidebar.js"
 import type { ShareHostApi, ShareHostLayerCommand } from "./tui-host.js"
 
@@ -152,7 +153,9 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
       dbgLog(`/share run: entered (sid=${sessionID() ?? "none"})`)
       host.ui.dialog.clear()
       const cfg = currentConfig()
-      if (!isConfigured(cfg)) {
+      // engine-aware gate: project-level plugin options can configure
+      // targets the TUI's file chain cannot see - trust the live engine
+      if (!isConfigured(cfg) && !engineTargetUrls().length) {
         void onboardingDialog(host)
         return
       }
@@ -171,12 +174,12 @@ export function buildShareCommand(host: ShareHostApi, sessionID: () => string | 
       // enabled:true; legacy all-mode bindings without the field are live
       // too — only an explicit false is dormant)
       if (all.some((b) => b.url && b.enabled !== false)) {
-        // THE session menu — identical to /openshare → This session by
-        // construction (one surface, no duplicated manager). No
-        // dialog.clear() after: settings owns its chain end-to-end (the
-        // old fire-and-forget menu + immediate clear wiped it instantly —
-        // live-caught as "/share did nothing" on a shared session).
-        await settingsDialog(host, sid)
+        // THE session menu - identical to /openshare  This session by
+        // construction (one surface, no duplicated manager), opened
+        // DIRECTLY (owner: "/share is supposed to be the same menu, not
+        // the settings root one hop away"). No dialog.clear() after:
+        // settings owns its chain end-to-end.
+        await settingsDialog(host, sid, "session")
         return
       }
       // everything was just cleared by the gone modal and the user chose

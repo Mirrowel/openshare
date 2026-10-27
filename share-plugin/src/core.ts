@@ -44,7 +44,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
@@ -146,6 +146,12 @@ type SessionState = {
   badSignal: boolean
   lastSentStatus: string | null
   closed: boolean
+  /** last create/attach refusal reason surfaced to the TUI (cleared on a
+   * successful init-ok); rides the session binding so /share failures can
+   * say WHY instead of a generic timeout */
+  lastError: string | null
+  /** server/token policy clamped our requested TTL: {requested, effective} */
+  ttlClamped: { requested: number; effective: number } | null
   binding: Record<string, unknown> | null // mirrors what was written into session metadata (v2 map)
   bindingQueried: boolean
   /** per-session server opt-outs (TUI "stop sharing here" / "leave as-is"):
@@ -295,6 +301,15 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined }
 }
 
+/** The LIVE engine's resolved target urls (shared module state: the TUI
+ * entry reads this so surfaces that gate on "is anything configured" agree
+ * with what the engine actually targets - file config alone can miss
+ * plugin-options-layer config the TUI cannot see). */
+let liveTargets: string[] = []
+export function engineTargetUrls(): string[] {
+  return liveTargets
+}
+
 export function createEngine(deps: EngineDeps): Engine {
   let cfg = loadConfig(deps.pluginDir, deps.options)
   const mode: ShareMode = resolveShareMode(cfg, deps)
@@ -341,7 +356,15 @@ export function createEngine(deps: EngineDeps): Engine {
   type ServerTarget = { url: string; entry: ServerEntry }
   const resolveTargets = (): ServerTarget[] => {
     const merged: Record<string, ServerEntry> = {}
-    if (cfg.workerUrl) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
+    const hasServers = !!cfg.servers && Object.keys(cfg.servers).length > 0
+    // layer-aware legacy rule: a FILE workerUrl beside a FILE servers
+    // group would silently dual-home the session (live-caught surprise);
+    // an ENV workerUrl is the highest-priority layer and always joins.
+    const envWorker = !!process.env.OPENSHARE_WORKER_URL
+    if (cfg.workerUrl && (!hasServers || envWorker)) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
+    if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers![cfg.workerUrl]) {
+      log(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`)
+    }
     if (cfg.servers) for (const [u, e] of Object.entries(cfg.servers)) merged[u] = { ...merged[u], ...e }
     const urls = Object.keys(merged)
     const actives = urls.filter((u) => merged[u].active)
@@ -349,6 +372,7 @@ export function createEngine(deps: EngineDeps): Engine {
     return chosen.map((url) => ({ url, entry: merged[url] }))
   }
   let targets = resolveTargets()
+  liveTargets = targets.map((t) => t.url)
 
   // ---- per-server credentials (identity) ----------------------------------
   // Each server enrolls INDEPENDENTLY: a legacy root CREATE_TOKEN works
@@ -549,6 +573,8 @@ export function createEngine(deps: EngineDeps): Engine {
     badSignal: false,
     lastSentStatus: null,
     closed: false,
+    lastError: null,
+    ttlClamped: null,
     binding: null,
     bindingQueried: false,
     optOuts: new Set(),
@@ -570,6 +596,7 @@ export function createEngine(deps: EngineDeps): Engine {
       spoolRoot = spoolDirFor(cfg)
       const before = new Set(targets.map((t) => t.url))
       targets = resolveTargets()
+      liveTargets = targets.map((t) => t.url)
       seedCredentials()
       clampToPolicy()
       if (debugEvents) {
@@ -779,6 +806,8 @@ export function createEngine(deps: EngineDeps): Engine {
     // live is now uniformly "url && enabled !== false").
     const value: Record<string, unknown> = { v: 2, servers, enabled: true }
     if (mode === "manual" && st.opts) value.opts = st.opts
+    if (st.lastError) value.lastError = st.lastError
+    if (st.ttlClamped) value.ttlClamped = st.ttlClamped
     st.binding = value
     st.wroteBinding = true
     await writeMetadata(st, value)
@@ -1023,7 +1052,11 @@ export function createEngine(deps: EngineDeps): Engine {
       // Append: CI reads the file after each run; keeping every share
       // URL lets one file serve a whole workflow (the legacy original
       // overwrote with the latest only).
-      const file = cfg.urlFile || join(deps.directory ?? process.cwd(), "openshare.urls.txt")
+      const file = cfg.urlFile
+        ? isAbsolute(cfg.urlFile)
+          ? cfg.urlFile
+          : join(deps.directory ?? process.cwd(), cfg.urlFile)
+        : join(deps.directory ?? process.cwd(), "openshare.urls.txt")
       try {
         appendFileSync(file, url + "\n")
         if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
@@ -1031,20 +1064,55 @@ export function createEngine(deps: EngineDeps): Engine {
           lastUrlFile = file
           log(`url file: ${file}`)
         }
-      } catch {}
+      } catch (e) {
+        // a CI pipeline reads this file after the process exits; a silent
+        // failure means the run's share URL is simply gone
+        logError(`url file write failed (${file}):`, (e as Error)?.message || e)
+      }
     }
   }
 
+  let halfAuthWarned = false
   const authFrame = (st: SessionState) => {
     // always send both (empty strings included): attach with empty values
-    // REMOVES protection — an intentional owner action. Session opts
+    // REMOVES protection - an intentional owner action. Session opts
     // override the global config when set.
     const login = st.opts?.authLogin ?? cfg.authLogin ?? ""
     const password = st.opts?.authPassword ?? cfg.authPassword ?? ""
+    // both-or-none: the server builds a gate only from a full pair, so a
+    // half pair silently means "no gate" - refuse to send one and say so
+    if ((login === "") !== (password === "")) {
+      if (!halfAuthWarned) {
+        halfAuthWarned = true
+        logError("read auth needs BOTH a login and a password - gate disabled until fixed")
+      }
+      return { authLogin: "", authPassword: "" }
+    }
     return { authLogin: login, authPassword: password }
   }
 
   const ttlFor = (st: SessionState) => st.opts?.ttlDays ?? cfg.ttlDays
+
+  /** Apply a metadata opts update. On a CHANGED opts set for a session with
+   * live sockets, re-send the attach frame over each open socket: the
+   * worker's attach path applies read-auth retroactively (rotating viewer
+   * tokens on change) and now also honors an explicit ttlDays override -
+   * so settings heal immediately instead of waiting for a reconnect.
+   * Re-attach is idempotent (no once-guard on init; earlySyncs empty at
+   * steady state) and revalidates the token. */
+  const applyOpts = (st: SessionState, opts: SessionOpts | undefined) => {
+    if (!opts) return
+    const prev = st.opts ? JSON.stringify(st.opts) : ""
+    st.opts = opts
+    if (prev === JSON.stringify(opts)) return
+    for (const [url, r] of st.remotes) {
+      if (!r.shareId || !r.secret || !r.wsReady) continue
+      const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st) }
+      if (st.opts?.ttlDays) attach.ttlDays = st.opts.ttlDays
+      const sent = wsSend(r, { op: "init", attach })
+      if (sent) log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlDays ? ` (ttl ${st.opts.ttlDays}d)` : ""}`)
+    }
+  }
 
   /** Best-effort cleanup of a share we are about to abandon (refused
    * attach, mismatch recreate). Prevents husk litter; failures are fine —
@@ -1128,7 +1196,7 @@ export function createEngine(deps: EngineDeps): Engine {
         st.remotes.delete(url)
       }
       // collisions resolved by the TUI: the binding entry for the server
-      // was removed — re-arm unless the same patch also opted out
+      // was removed - re-arm unless the same patch also opted out
       for (const r of [...st.remotes.values()]) {
         if (!r.collided || st.optOuts.has(r.url)) continue
         if (entryUrls.has(r.url)) continue
@@ -1140,6 +1208,27 @@ export function createEngine(deps: EngineDeps): Engine {
         r.pending = []
         r.announced = false
         queueConnect(st, r)
+      }
+      // re-share after "leave as-is": the entry kept its id/secret and the
+      // opt-out marker is gone - re-arm a remote that ATTACHES the same
+      // page (same URL), then backfill so the frozen gap catches up
+      // (dedupe hashes describe the OLD remote set, not this revival)
+      let rearmed = false
+      for (const [url, e] of Object.entries(servers as Record<string, unknown>)) {
+        if (st.optOuts.has(url) || st.remotes.has(url)) continue
+        const ee = e as Record<string, unknown>
+        if (typeof ee.id !== "string" || typeof ee.secret !== "string" || !ee.id) continue
+        const r = remoteFor(st, url)
+        r.shareId = ee.id
+        r.secret = ee.secret
+        r.ackedRev = typeof ee.rev === "number" ? ee.rev : 0
+        log(`re-share: re-arming ${url.slice(0, 24)} on share ${ee.id}`)
+        queueConnect(st, r)
+        rearmed = true
+      }
+      if (rearmed) {
+        st.sentHash.clear()
+        chain = chain.then(() => backfill(st)).catch((e) => logError("re-share backfill error", (e as Error)?.message || e))
       }
     } catch {}
   }
@@ -1385,8 +1474,10 @@ export function createEngine(deps: EngineDeps): Engine {
         const err = String(frame.error ?? "")
         if (/frozen/i.test(err)) {
           // owner frozen: every control path is severed server-side.
-          // Re-enrolling would orphan the shares — surface and stop.
+          // Re-enrolling would orphan the shares - surface and stop.
           r.authBlocked = true
+          st.lastError = `share frozen by the hoster (owner frozen) - contact the server admin`
+          scheduleBindingWrite(st)
           logError(`${r.url}: share frozen by the hoster (owner frozen) - edits refused; contact the server admin`)
           try {
             r.ws?.close(4000, "frozen")
@@ -1436,8 +1527,10 @@ export function createEngine(deps: EngineDeps): Engine {
         if (/limit|too many|rate/i.test(err)) {
           // quota/429 ("max shares reached", "daily create limit", the
           // anonymous caps): an immediate re-init on the same socket is a
-          // hot loop against the server — back off through the normal
+          // hot loop against the server - back off through the normal
           // reconnect cadence instead
+          st.lastError = `create refused: ${frame.error ?? "rate limited"}`
+          scheduleBindingWrite(st)
           logError(`${r.url}: create refused:`, frame.error, "- retrying with backoff")
           r.connecting = false
           try {
@@ -1447,6 +1540,8 @@ export function createEngine(deps: EngineDeps): Engine {
           return
         }
         logError(`${r.url}: init refused:`, frame.error, "- creating fresh share")
+        st.lastError = `init refused: ${frame.error ?? "unknown"}`
+        scheduleBindingWrite(st)
         deleteAbandoned(r)
         r.shareId = null
         r.secret = null
@@ -1497,6 +1592,21 @@ export function createEngine(deps: EngineDeps): Engine {
       if (frame.policy) applyPolicy(frame.policy, r.url)
       r.intentionalClose = false
       touch(st)
+      // the ack carries the RESOLVED ttl: surface a server/token clamp to
+      // the binding once, and a successful handshake clears any stale
+      // refusal reason the TUI may be showing
+      if (typeof frame.ttlDays === "number") {
+        const wanted = ttlFor(st)
+        const clamp = wanted != null && frame.ttlDays !== wanted ? { requested: wanted, effective: frame.ttlDays } : null
+        if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
+          st.ttlClamped = clamp
+          scheduleBindingWrite(st)
+        }
+      }
+      if (st.lastError) {
+        st.lastError = null
+        scheduleBindingWrite(st)
+      }
       announceUrl(st, r)
       // first binding write is immediate (the TUI waits on the URL in
       // session metadata); ack-driven rev updates stay debounced
@@ -2407,7 +2517,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (flag.enabled) {
         if (st?.activated && !st.closed) {
           // already sharing: opts updates apply, flag removal handled below
-          if (flag.opts) st.opts = flag.opts
+          if (flag.opts) applyOpts(st, flag.opts)
           if (info) enqueue(st, itemFor("session", redact(info), sid))
           if (t === "session.updated") chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
           return
@@ -2709,7 +2819,7 @@ export function createEngine(deps: EngineDeps): Engine {
           const flushed = flush(st)
           if (flushed && typeof (flushed as Promise<unknown>).then === "function") await flushed.catch(() => {})
           // dispose with a mid-handshake socket: the deferred pending
-          // would die with the process — land it over HTTP instead
+          // would die with the process - land it over HTTP instead
           for (const r of st.remotes.values()) {
             if (!r.wsReady && r.shareId && r.pending.length) {
               await flushViaHttp(st, r).catch(() => {})
@@ -2728,6 +2838,23 @@ export function createEngine(deps: EngineDeps): Engine {
           if (st.metaTimer) clearTimeout(st.metaTimer)
           st.metaTimer = null
           await writeBinding(st).catch(() => {})
+        }
+        // URL-at-exit barrier: a very short `opencode run` can exit before
+        // the create handshake finishes, and CI reads the urlFile the
+        // moment the process ends. Bounded 5s wait for every share that is
+        // mid-handshake or not yet announced (a dead worker costs exactly
+        // the cap; a healthy one is instant).
+        const barrierStart = Date.now()
+        while (Date.now() - barrierStart < 5000) {
+          let pendingAnnounce = false
+          for (const st of sessions.values()) {
+            for (const r of st.remotes.values()) {
+              if (r.authBlocked || r.collided) continue
+              if ((r.shareId && !r.announced) || (!r.shareId && (r.ws || r.connecting))) pendingAnnounce = true
+            }
+          }
+          if (!pendingAnnounce) break
+          await new Promise((res) => setTimeout(res, 100))
         }
         for (const st of sessions.values()) {
           for (const r of st.remotes.values()) {

@@ -28,8 +28,10 @@ import {
   runUnshareFlow,
   saveConfig,
   saveServerEntry,
+  meClient,
   serverEntries,
   setShareFlag,
+  setShareOpts,
   shareWithConsent,
   workerDeleteShare,
   type AdminShare,
@@ -113,11 +115,11 @@ const LABELS: Record<string, LabelMeta> = {
   },
   shareMode: {
     label: "Share mode",
-    help: '"all" shares every session; "manual" needs /share. Default: TUI presence.',
+    help: '"all" shares every session; "manual" needs /share. Default: TUI presence. Takes effect after opencode restarts.',
     kind: "text",
     options: ["auto", "all", "manual"],
     section: "Sharing",
-    info: 'all: every NEW session shares automatically (CI posture). Sessions that existed before the plugin started are never auto-shared — share those explicitly. manual: sessions stay private until you run /share.\n\nDefault (empty): TUI presence decides — installing the TUI part means manual, server-only means all.',
+    info: 'all: every NEW session shares automatically (CI posture). Sessions that existed before the plugin started are never auto-shared - share those explicitly. manual: sessions stay private until you run /share.\n\nDefault (empty): TUI presence decides - installing the TUI part means manual, server-only means all.\n\nNOTE: the mode is resolved once at plugin load. Changing it here saves immediately but only takes effect after opencode restarts - until then new sessions keep following the OLD mode.',
     def: "auto (TUI presence)",
   },
   debounceMs: {
@@ -320,6 +322,7 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
     }
     if (!mine.entry.token || holdsRoot) options.push({ title: "Enroll now", value: "enroll", description: holdsRoot ? "join as a user via code/public enrollment" : "get a user token immediately" })
     if (mine.entry.token && !holdsRoot) options.push({ title: "Rotate token", value: "rotate", description: "new token, old one revoked" })
+    if (mine.entry.token && !holdsRoot) options.push({ title: "Your account", value: "account", description: "limits, token expiry, your shares" })
     if (mine.entry.token && !holdsRoot) options.push({ title: "Disconnect", value: "disconnect", description: "revoke the token server-side and forget it", danger: true })
     options.push({
       title: "Admin panel",
@@ -335,11 +338,16 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
     if (choice === undefined || choice === "__back") return
 
     if (choice === "active") {
-      for (const other of entries) {
-        if (other.url !== url) saveServerEntry(other.url, { active: undefined })
-      }
+      // make-primary WITHOUT collapsing fan-out: other explicit actives
+      // stay active (the engine targets every active entry); silently
+      // deactivating them destroyed hand-built multi-server setups
       saveServerEntry(url, { active: true })
-      host.ui.toast({ variant: "success", title: "OpenShare", message: `${url} is now the active server.` })
+      const stillActive = serverEntries().filter((s) => s.active)
+      host.ui.toast({
+        variant: "success",
+        title: "OpenShare",
+        message: stillActive.length > 1 ? `${url} is primary - ${stillActive.length} servers stay ACTIVE (fan-out): new sessions mirror to all of them.` : `${url} is now the active server.`,
+      })
       return
     }
     if (choice === "adopt") {
@@ -388,6 +396,30 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       }
       continue
     }
+    if (choice === "account") {
+      const me = meClient(url, mine.entry.token ?? "")
+      const [meRes, sharesRes] = await Promise.all([me.me(), me.myShares()])
+      if (!meRes.ok) {
+        await showInfo(host.ui, { title: "Account", message: `Could not read your account: ${meRes.error ?? "error"}.\nIf the token was revoked server-side, use Enroll now instead.` })
+        continue
+      }
+      const d = meRes.data!
+      const lim = d.token?.limits ?? {}
+      const fmt = (v: number | undefined) => (v ? String(v) : "unlimited")
+      const lines = [
+        `User: ${d.label} (${d.userId})`,
+        `Token: ${d.token?.label ?? "?"} - expires ${d.token?.expiresAt ? new Date(d.token.expiresAt).toISOString().slice(0, 10) : "never"}`,
+        `Limits: live shares ${fmt(lim.maxLiveShares)} - max TTL ${fmt(lim.maxTtlDays)}d - daily creates ${fmt(lim.dailyCreates)}`,
+      ]
+      if (sharesRes.ok) {
+        const shares = sharesRes.data?.shares ?? []
+        lines.push(`Shares: ${shares.length} (${shares.filter((s) => s.status === "live").length} live)`)
+        for (const s of shares.slice(0, 10)) lines.push(`  ${s.id} - ${s.status} - ${new Date(s.createdAt).toISOString().slice(0, 10)}`)
+        if (shares.length > 10) lines.push(`  ...and ${shares.length - 10} more`)
+      }
+      await showInfo(host.ui, { title: "Your account", message: lines.join("\n") })
+      continue
+    }
     if (choice === "rotate") {
       const res = await rotateAtServer(url, mine.entry.token ?? "")
       if (res.ok && res.token) {
@@ -399,7 +431,12 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       continue
     }
     if (choice === "disconnect") {
-      const sure = await showConfirm(host.ui, { title: "Disconnect", message: `Revoke the token at ${url} and forget it?\nYour shares stay (read-only for you until TTL).`, confirmLabel: "Disconnect", danger: true })
+      const sure = await showConfirm(host.ui, {
+        title: "Disconnect",
+        message: `Revoke the token at ${url} and forget it?\nRevoking your last token freezes control of ALL your shares there (even with the share secrets) - pages stay readable until their TTL; only the server admin can restore control.`,
+        confirmLabel: "Disconnect",
+        danger: true,
+      })
       if (!sure) continue
       const res = await disconnectAtServer(url, mine.entry.token ?? "")
       saveServerEntry(url, { token: undefined })
@@ -811,7 +848,7 @@ async function adminSharesMenu(host: ShareHostApi, client: ReturnType<typeof adm
  * ~25-row dump was unreadable (owner-directed regroup 2026-10-19).
  * Save semantics unchanged: root Exit saves when dirty; submenu Back
  * just returns. */
-export async function settingsDialog(host: ShareHostApi, startAtSession?: string): Promise<void> {
+export async function settingsDialog(host: ShareHostApi, startAtSession?: string, startGroup?: "session"): Promise<void> {
   let cfg = currentConfig()
   let dirty = false
   // Write target (owner rule): global settings home by default; any other
@@ -971,17 +1008,23 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       }
     }
     const binding = bindings[0]
+    if (binding?.lastError || binding?.ttlClamped) {
+      const bits: string[] = []
+      if (binding?.ttlClamped) bits.push(`TTL clamped ${binding.ttlClamped.requested}d -> ${binding.ttlClamped.effective}d by server/token policy`)
+      if (binding?.lastError) bits.push(`last share error: ${binding.lastError}`)
+      rows.push({ title: "Share status notes", value: "__notes", description: bits[0].slice(0, 60), disabled: true, help: `Engine-recorded notes for this session's share(s):\n\n${bits.join("\n")}\n\nThe clamp note appears when the server or your token's policy reduced a requested TTL. The error note is the engine's last create/attach refusal (quota, freeze, rate limit) - it clears on the next successful sync.` })
+    }
     rows.push({
       title: "Session TTL override (days)",
       value: "session:ttl",
       description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)",
-      help: `Per-session share lifetime. Overrides the config ttlDays for THIS session's pages; still capped by the server's MAX_TTL_DAYS and the token's maxTtlDays. Applied at the next create/attach.\n\nCurrent: ${binding?.opts?.ttlDays !== undefined ? `${binding.opts.ttlDays} days` : "(none — config default)"}`,
+      help: `Per-session share lifetime. Overrides the config ttlDays for THIS session's pages; still capped by the server's MAX_TTL_DAYS and the token's maxTtlDays. On a live share it applies immediately (shortening may end an older page at once); otherwise it is used when you share.\n\nCurrent: ${binding?.opts?.ttlDays !== undefined ? `${binding.opts.ttlDays} days` : "(none — config default)"}`,
     })
     rows.push({
       title: "Session read auth",
       value: "session:auth",
       description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)",
-      help: `Login gate for THIS session's page only — viewers must log in (7-day cookie, lockout). Overrides the config read auth. Applied at the next create/attach; removing the login removes the gate.\n\nCurrent: ${binding?.opts?.authLogin ? `${binding.opts.authLogin} / (password set)` : "(none — config default applies)"}`,
+      help: `Login gate for THIS session's page only — viewers must log in (7-day cookie, lockout). Overrides the config read auth; a login and password are both required (or neither). On a live share it applies immediately; otherwise when you share. Removing the login removes the gate.\n\nCurrent: ${binding?.opts?.authLogin ? `${binding.opts.authLogin} / (password set)` : "(none — config default applies)"}`,
     })
     return rows
   }
@@ -1167,9 +1210,11 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           options: [...otherServers.map((s) => ({ title: hostOf(s.url), value: s.url, description: s.entry.label })), { title: "Cancel", value: "__cancel" }],
         })
         if (!pick || pick === "__cancel") return
-        for (const s of serverEntries()) if (s.url !== pick) saveServerEntry(s.url, { active: undefined })
+        // fan-out add: activate the picked server WITHOUT deactivating the
+        // current ones - this session (and new sessions) mirror everywhere
         saveServerEntry(pick, { active: true })
-        host.ui.toast({ variant: "success", title: "OpenShare", message: `${hostOf(pick)} activated — this session mirrors there within seconds.` })
+        const nActive = serverEntries().filter((s) => s.active).length
+        host.ui.toast({ variant: "success", title: "OpenShare", message: `${hostOf(pick)} activated (${nActive} active) - this session mirrors there within seconds.` })
         return
       }
       if (choice === "session:unshare") {
@@ -1183,17 +1228,27 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         })
         if (how === undefined || how === "__cancel") return
         if (how === "leave") {
-          const all = await readBindings(host.client, root)
+          const allB = await readBindings(host.client, root)
           const okPatch = await patchSessionBinding(host.client, root, (servers) => {
-            for (const b of all) {
+            for (const b of allB) {
               if (!b.server) continue
-              delete servers[b.server]
-              servers[b.server] = { optedOut: true }
+              // keep id/secret on the opt-out marker: the snapshot stays
+              // deletable later and re-sharing reuses the binding instead
+              // of stalling on a secret-less marker (live-caught as "can
+              // never unshare or re-share after leave-as-is")
+              servers[b.server] = { ...(servers[b.server] as Record<string, unknown> | undefined), id: b.id, secret: b.secret, rev: b.rev, url: b.url, optedOut: true }
             }
           })
-          host.ui.toast({ variant: okPatch ? "success" : "error", title: "OpenShare", message: okPatch ? "Left as-is — snapshots until their TTLs." : "Could not update the binding." })
+          host.ui.toast({ variant: okPatch ? "success" : "error", title: "OpenShare", message: okPatch ? "Left as-is — snapshots until their TTLs (delete stays available here)." : "Could not update the binding." })
           return
         }
+        const sureAll = await showConfirm(host.ui, {
+          title: "Delete every page?",
+          message: `Permanently delete ${live.length} share page(s) and stop sharing?\nEvery link stops working for everyone. This cannot be undone.`,
+          confirmLabel: "Delete every page",
+          danger: true,
+        })
+        if (!sureAll) return
         const result = await runUnshareFlow(host, startAtSession)
         host.ui.toast({ variant: result.ok ? "success" : "error", title: "OpenShare", message: result.message })
         return
@@ -1211,26 +1266,39 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           }
           opts.ttlDays = Math.floor(days)
         }
-        await setShareFlag(host.client, root, opts)
-        host.ui.toast({ variant: "success", title: "OpenShare", message: opts.ttlDays !== undefined ? `Session TTL: ${opts.ttlDays}d (applies at the next attach/create)` : "Session TTL override cleared" })
+        await setShareOpts(host.client, root, opts)
+        const liveNow = live.length > 0
+        host.ui.toast({
+          variant: "success",
+          title: "OpenShare",
+          message: liveNow
+            ? `Session TTL: ${opts.ttlDays !== undefined ? `${opts.ttlDays}d - applied now (shortening may end an older page immediately)` : "(default) - applied now"}.`
+            : `Session TTL: ${opts.ttlDays !== undefined ? `${opts.ttlDays}d` : "(default)"} - saved, applies when you share.`,
+        })
         return
       }
       if (choice === "session:auth") {
-        const login = await showPrompt(host.ui, { title: "Session read auth: login", placeholder: "empty = use config default", value: current?.opts?.authLogin ?? "" })
+        const login = await showPrompt(host.ui, { title: "Session read auth: login", placeholder: "empty = no read auth", value: current?.opts?.authLogin ?? "" })
         if (login === undefined) return
-        const password = await showPrompt(host.ui, { title: "Session read auth: password", placeholder: "empty = no password" })
+        const password = await showPrompt(host.ui, { title: "Session read auth: password", placeholder: login === "" ? "(unused)" : "password (required with a login)" })
         if (password === undefined) return
+        // both-or-none: the server builds a gate only from a full pair, and
+        // rendering half a pair would show protection that does not exist
+        if ((login === "") !== (password === "")) {
+          host.ui.toast({ variant: "error", title: "OpenShare", message: "Read auth needs both a login and a password - or neither (no gate)." })
+          return
+        }
         const opts: SessionOpts = { ...(current?.opts ?? {}) }
         if (login === "") {
           delete opts.authLogin
           delete opts.authPassword
         } else {
           opts.authLogin = login
-          if (password !== "") opts.authPassword = password
-          else delete opts.authPassword
+          opts.authPassword = password
         }
-        await setShareFlag(host.client, root, opts)
-        host.ui.toast({ variant: "success", title: "OpenShare", message: "Session read auth saved (applies at the next attach/create)." })
+        await setShareOpts(host.client, root, opts)
+        const liveNow2 = live.length > 0
+        host.ui.toast({ variant: "success", title: "OpenShare", message: liveNow2 ? `Read auth ${login === "" ? "removed" : "saved"} - applied now.` : `Read auth ${login === "" ? "cleared" : "saved"} - applies when you share.` })
         return
       }
     }
@@ -1250,6 +1318,10 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
   }
 
   // ---- root: compact group list with live summaries --------------------------
+
+  // /share on a shared session lands HERE, straight in the session menu -
+  // one selection sooner (Back still reaches the full root)
+  if (startAtSession && startGroup === "session") await groupMenu("session")
 
   const seconds = (ms: number | undefined, fallback: number) => `${Math.round((ms ?? fallback) / 100) / 10}s`
   while (true) {
