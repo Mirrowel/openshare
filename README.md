@@ -193,7 +193,7 @@ You are the hoster — the code the plugin asks for is one you mint yourself, ri
 
 ### 4. Connect the plugin
 
-In opencode: `/share` → **Connect to a server** → paste the server's base URL (the `https://your-host` part — not a `/s/…` share link) and the code, if private → **enrolled, token saved**. That's the one-time setup — no share exists yet. Run `/share` once more: the consent dialog, then the link is copied. Every later share is one keystroke, but the consent question itself always appears — no share is ever created silently.
+In opencode: `/share` → **Connect to a server** → paste the server's base URL (the `https://your-host` part — not a `/s/…` share link) and the code, if private → **enrolled, token saved**. That's the one-time setup — no share exists yet. Run `/share` once more: the consent dialog, then the link is copied. Every later share is one keystroke, and the consent question appears every time. One exception by design: **all mode** (no TUI part installed, or `shareMode: "all"`) publishes every NEW session automatically — that is the CI posture, and it is why all-mode installs should only point at servers you want reading everything.
 
 For CI, bundle `ci/openshare.js` and drop a config next to it:
 

@@ -70,7 +70,7 @@ Long-lived user tokens, SHA-256 hashed server-side, minted at enrollment or by t
 - `label` (≤64 chars)
 - `limits` — `{ maxLiveShares, maxTtlDays, dailyCreates }`, each `0` = unlimited; enforced atomically at share create. New enrollments inherit the `DEFAULT_*` vars as their limits
 - `expiresAt` — optional expiry
-- lifecycle — rotation (`POST /api/token/rotate`, valid token in hand), self-revoke (`DELETE /api/token`), admin revoke (`DELETE /api/admin/tokens/:id`)
+- lifecycle — rotation (`POST /api/token/rotate`, valid token in hand), self-revoke (`DELETE /api/token`), admin revoke (`DELETE /api/admin/tokens/:id`). **Revocation freezes control**: when a user's last valid token is revoked (or they all expire), every share that user created becomes read-only for anyone holding its secret too — only the admin can unfreeze or reassign. Rotation never triggers this (the replacement is minted first).
 
 ### Access codes (`osc_…`)
 Invite-gated enrollment for private servers. Parameters: `label`, `activations` (budget; one activation = one user+token; `-1` = unlimited), `ttlHours`, disable. Minted via `POST /api/admin/codes`.
@@ -114,7 +114,7 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `completedDelayMs` | `5000` | Grace before the status flips to `completed` (server-capped). Dispose flushes a pending flip |
 | `modelLabel` | `"$Provider/$Model"` | Template for the model label in share data |
 | `ttlDays` | `90` | Default TTL for this plugin's shares (still server-clamped) |
-| `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none |
+| `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
 | `urlFile` | `""` → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
 | `announceStderr` | `true` | `false` silences the `[openshare] live:` and `url file:` stderr lines (errors still print; the TUI carries the URL) |

@@ -235,7 +235,15 @@ explicit value always wins).
 
 Self-service: `GET /api/me`, `GET /api/me/shares`,
 `GET`/`PUT /api/me/settings`, `POST /api/token/rotate`,
-`DELETE /api/token` (self-revoke).
+`DELETE /api/token` (self-revoke). **Revocation freezes control**: when a
+user's last valid token is revoked (self or admin) — or they all expire —
+every share that user created turns read-only for EVERYONE holding its
+secret too (both write paths reject with `frozen`); viewing continues to
+TTL, and only the admin can unfreeze or reassign. Rotation never
+triggers this (the replacement is minted first). An `init` attach may
+also carry `ttlDays` (explicit per-session override only): clamped like
+create and applied to the live share — the plugin sends it when the
+session's TTL override changes mid-life.
 
 Admin API (Bearer `CREATE_TOKEN`):
 

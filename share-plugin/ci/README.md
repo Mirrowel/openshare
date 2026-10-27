@@ -46,12 +46,23 @@ OPENSHARE_URL_FILE=share-urls.txt   # each share URL appended + stderr line
 
 With no token held, the bundle **enrolls itself** on first contact
 (public servers take anyone; private ones consume the one-time code) and
-persists the token to `~/.config/opencode/openshare.config.json` —
+persists the token to `~/.config/opencode/openshare.config.json` -
 enroll once, then every run just shares. A revoked token re-enrolls the
 same way; if enrollment is impossible the error lands on stderr and
-sharing stops (no retry storms). The bundle also supports **fan-out**:
-multiple `active` servers in the `servers` group each get the session
-(one urlFile line per server).
+sharing stops (no retry storms).
+
+**Ephemeral runners** (GitHub-hosted, containers): do NOT enroll through
+a code - each fresh machine would burn one activation. Ask the hoster
+for a pre-minted registered token (`osk_…`) and pass it via
+`OPENSHARE_CREATE_TOKEN` (or the config's token field) - registered
+tokens skip enrollment entirely and never expire on their own. Point
+`OPENSHARE_CONFIG_DIR` (or mount) the settings home at a cached path
+only if you want the token persisted; env alone is enough. Note:
+revoking that token (when it is the user's last) freezes control of all
+its shares server-side, even ones holding the share secret.
+
+The bundle also supports **fan-out**: multiple `active` servers in the
+`servers` group each get the session (one urlFile line per server).
 
 On OpenCode v2, plugin targets should be directories/packages — wrap this
 file in a folder with a `package.json` exporting it (`{"exports": {".": "./openshare.js"}}`)
