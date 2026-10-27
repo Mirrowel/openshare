@@ -22,10 +22,15 @@ set -euo pipefail
 #        npm run release:intent -- <version|patch|minor|major>
 #      (run in share-plugin/). Writes .release.json "next" and updates
 #      package.json + package-lock.json to match; the CI release gate
-#      (release:intent:check) fails unless all three agree. The intent is a
-#      floor: released version = max(intent, existing prerelease line, auto
-#      bump) - it can raise the line any distance (0.3.x -> 1.0.0 included),
-#      while commits alone never can.
+#      (release:intent:check) fails unless all three agree. When "next"
+#      sits ABOVE the latest stable tag it is an EXACT PIN: that version
+#      releases regardless of what the commits would compute (holding a
+#      fix round at 0.2.1 under a feat-heavy range), and the pin is
+#      self-consuming - once that version ships, latest == next and auto
+#      versioning resumes. At or below latest it acts as a floor only
+#      (released version = max(intent, existing prerelease line, auto
+#      bump)), so it can still raise the line any distance (0.3.x ->
+#      1.0.0 included), while commits alone never can.
 #   2. One-shot exact version: dispatch the Release workflow with
 #      target_version=x.y.z - stable and prerelease releases both use exactly
 #      that version for that run.
@@ -218,6 +223,18 @@ require_relevant_changes="${REQUIRE_RELEVANT_CHANGES:-false}"
 if [ -n "$target_version" ]; then
   stable_candidate="$target_version"
   prerelease_base="$target_version"
+fi
+
+# Manual pin (owner semantics): .release.json "next" set ABOVE the latest
+# stable tag pins the release EXACTLY, overriding the computed bump - it
+# can hold the line DOWN when commits alone (feat/breaking range) would
+# bump higher, which the floor semantics above cannot. Self-consuming:
+# once the pinned version ships, latest == next, the pin stops applying,
+# and auto versioning resumes. A one-shot TARGET_VERSION still wins.
+if [ -z "$target_version" ] && [ "$intent_version" != "$stable_version" ] \
+  && [ "$(printf '%s\n%s\n' "$stable_version" "$intent_version" | semver_sort | tail -n 1)" = "$intent_version" ]; then
+  stable_candidate="$intent_version"
+  prerelease_base="$intent_version"
 fi
 
 prerelease="false"

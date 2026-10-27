@@ -98,7 +98,7 @@ Lifted from the family (agent-variants/config-studio), adapted to the monorepo (
 
 - Conventional commits drive semver (`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:`/`!` → major) — `.github/scripts/compute-version.sh`.
 - Channels: `master` → `latest`; `dev`/`alpha`/`beta`/`rc` branches → `0.x.y-<channel>.N` prereleases under the matching npm tag (`main` maps to `latest` too; `canary` is available via manual workflow dispatch, not a push trigger).
-- `share-plugin/.release.json` pins the next intended version (`npm run release:intent -- patch|minor|major`); CI refuses drift.
+- `share-plugin/.release.json` pins the next intended version (`npm run release:intent -- <version|patch|minor|major>`); CI refuses drift. Set **above** the latest stable tag, `"next"` is an exact pin: that version releases regardless of what the commits would compute (holding a fix round at 0.2.1 under a feat-heavy range). The pin is self-consuming — once that version ships, latest == next and auto versioning resumes. At or below latest it acts as a floor only (`max(intent, prerelease line, auto bump)`).
 - Publishing uses npm trusted publishing (GitHub OIDC) — no tokens stored. First publish was bootstrapped manually; everything after goes through the workflow.
 - Release notes: git-cliff (`.github/cliff.toml`) grouped by commit type.
 - `ci/openshare.js` is a **tracked build artifact** — rebuilds land in the same commit as their source changes.
