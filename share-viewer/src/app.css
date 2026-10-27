@@ -274,6 +274,31 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   padding-top: 24px;
 }
 
+/* Upstream gives every [data-component="text-part"] margin-top: 24px and
+   neutralizes it only for spacing=content rows (message-part.css:240,286).
+   Our per-message "message" break rows are a fork addition upstream never
+   neutralized for, so a no-think completion stacked the kit margin on top
+   of the Frame's 24px padding and started 48px down - exactly as if a
+   thinking row had rendered there (live-measured: one-line completion
+   46.4px inner / 70.4px row instead of 22.4 / 46.4). Within timeline rows
+   the Frame padding owns inter-row air; the part margin never applies. */
+[data-timeline-row] [data-component="text-part"] {
+  margin-top: 0;
+}
+
+/* A text part's markdown code block: the shiki pre carries its own
+   margin (12px 0 24px) and the preceding paragraph a 12px bottom margin,
+   so text->code showed a collapsed 12px gap and code->next-row 24px of
+   unowned air inside the row (live-measured on the owner's share). Both
+   seams are owned here at one 10px gap - not cumulative, not flush. */
+[data-timeline-row] [data-component="text-part"] pre {
+  margin: 10px 0 0;
+}
+[data-timeline-row] [data-component="text-part"] p:has(+ [data-component="markdown-code"]),
+[data-timeline-row] [data-component="text-part"] p:has(+ pre) {
+  margin-bottom: 10px;
+}
+
 /* agent transition chip: quiet mono, reads as structure not content */
 [data-component="osh-agent-switch"] {
   font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;

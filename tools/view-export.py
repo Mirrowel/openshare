@@ -228,7 +228,7 @@ def export_to_data(export: dict, session_id: str, label_template: str) -> list[d
     items: list[dict] = []
     info = export.get("info")
     if info:
-        items.append({"type": "session", "data": info})
+        items.append({"type": "session", "sessionID": session_id, "data": info})
     # first pass: normalize every message; compaction summaries refill
     # their parent compaction message
     normalized: list[dict] = []
@@ -258,8 +258,44 @@ def export_to_data(export: dict, session_id: str, label_template: str) -> list[d
     for message in normalized:
         if message.get("type") == "compaction" and refills.get(message["id"]):
             message["summary"] = refills[message["id"]]
-        items.append({"type": "message", "data": message})
+        items.append({"type": "message", "sessionID": session_id, "data": message})
     return items
+
+
+def stamp_task_agents(items: list[dict]) -> None:
+    """Plugin parity (core.ts's rank-join): stamp metadata.agent on task
+    tool calls - the k-th call targeting a child session gets the child's
+    k-th user prompt's agent, in time order. Without it the viewer falls
+    back to the raw subagent_type ("explore-seek") instead of the resolved
+    agent ("explore")."""
+    prompts: dict[str, list[str]] = {}
+    calls: list[tuple[float, str, dict]] = []
+    for it in items:
+        if it.get("type") != "message":
+            continue
+        data = it.get("data") or {}
+        sid = str(it.get("sessionID") or "")
+        if data.get("type") == "user":
+            agent = str((data.get("metadata") or {}).get("agent") or "build")
+            prompts.setdefault(sid, []).append(agent)
+        elif data.get("type") == "assistant":
+            for c in data.get("content") or []:
+                if not isinstance(c, dict) or c.get("type") != "tool" or c.get("name") != "subagent":
+                    continue
+                child = ((c.get("state") or {}).get("metadata") or {}).get("sessionID")
+                if isinstance(child, str) and child:
+                    created = ((c.get("time") or {}).get("created")) or 0
+                    calls.append((created, child, c))
+    seen: dict[str, int] = {}
+    for _, child, content in sorted(calls, key=lambda t: t[0]):
+        seg = prompts.get(child) or []
+        if not seg:
+            continue
+        k = seen.get(child, 0)
+        seen[child] = k + 1
+        meta = content.setdefault("metadata", {})
+        if isinstance(meta, dict) and not meta.get("agent"):
+            meta["agent"] = seg[min(k, len(seg) - 1)]
 
 
 def load_export_file(path: Path) -> dict:
@@ -493,6 +529,7 @@ def main(argv: list[str]) -> int:
     items: list[dict] = []
     for sid, ex in exports:
         items.extend(export_to_data(ex, sid, args.model_label))
+    stamp_task_agents(items)
     if not items:
         sys.exit("error: exports contained no items")
 

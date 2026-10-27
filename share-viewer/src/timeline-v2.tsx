@@ -179,6 +179,10 @@ export function VirtualTimeline(props: {
 
   let scrollElement: HTMLDivElement | undefined
   const [pinned, setPinned] = createSignal(props.anchor !== "start")
+  // scroll pulse: the virtualizer is not a Solid store, so effects that
+  // must re-run per scroll position subscribe to this counter (bumped in
+  // onScroll) instead of hoping adapter property reads are tracked
+  const [scrollTick, setScrollTick] = createSignal(0)
   const rows = projection.rows
   const rowKeys = createMemo(() => (rows() ?? []).map(TimelineRow.key))
 
@@ -235,16 +239,52 @@ export function VirtualTimeline(props: {
     if (!scrollElement) return
     let how = behavior
     if (how === "smooth" && !force) {
+      // Neighbor-aware smoothing: smooth is for adjacent-turn moves (j/k,
+      // rail stepping) measured from the ACTIVE turn - the first visible
+      // row is a half-cut row that can belong to the previous turn, which
+      // made the same jump smooth in one direction and instant in the
+      // other. A far jump (search hit, palette, rail click across the
+      // session) animating past dozens of turns was the "smooth scroll is
+      // broken" report - snap instead. `force` (the smooth-scroll "always"
+      // setting) keeps smooth regardless.
       try {
+        const rank = userTurnRank(idx)
+        const hereRank = lastActive !== undefined ? userTurnRankOfId(lastActive) : userTurnRank(virtualizer.getVirtualItems()[0]?.index ?? 0)
         const offset = virtualizer.getOffsetForIndex?.(idx, "start")
-        if (offset != null && scrollElement && Math.abs(offset[0] - scrollElement.scrollTop) > scrollElement.clientHeight * 4) {
-          how = "auto"
-        }
+        const far = offset != null && scrollElement && Math.abs(offset[0] - scrollElement.scrollTop) > scrollElement.clientHeight * 4
+        if (far || Math.abs(rank - hereRank) > 1) how = "auto"
       } catch {}
     }
+    // a deliberate jump announces its turn immediately - the scroll spy
+    // only corrects after the scroll settles (it cannot see intermediate
+    // turns during an instant jump)
+    const target = rows[idx] as any
+    if (target?._tag === "UserMessage" && props.onActiveMessageChange) props.onActiveMessageChange(target.userMessageID)
     // tanstack's own offset math (estimate-based; the measurement pass
     // corrects around the jump)
     virtualizer.scrollToIndex(idx, { align: "start", behavior: how })
+  }
+
+  // which turn (0-based user-message rank) a row index belongs to
+  const userTurnRank = (idx: number): number => {
+    const rows = projection.rows()
+    let rank = -1
+    for (let i = 0; i <= Math.min(idx, rows.length - 1); i++) {
+      if ((rows[i] as any)?._tag === "UserMessage") rank++
+    }
+    return rank
+  }
+
+  // the rank of a user-message id (its position among the turns)
+  const userTurnRankOfId = (id: string): number => {
+    const rows = projection.rows()
+    let rank = -1
+    for (const row of rows as any[]) {
+      if (row?._tag !== "UserMessage") continue
+      rank++
+      if (row.userMessageID === id) break
+    }
+    return rank
   }
 
   // continuous-mode fast-skip: jump to a user message row by id
@@ -265,6 +305,7 @@ export function VirtualTimeline(props: {
     if (!el) return
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON
     if (atEnd !== pinned()) setPinned(atEnd)
+    setScrollTick((n) => n + 1)
     saveSnapshot()
   }
 
@@ -310,20 +351,50 @@ export function VirtualTimeline(props: {
 
   const items = virtualizer.getVirtualItems()
 
-  // active turn tracking: the last user-message row at or above the
-  // viewport start is "the turn you are reading" — the title's model and
-  // the rail's marker follow it. Emits only on change.
+  // active turn tracking: the turn whose content spans the viewport CENTER
+  // is "the turn you are reading" - a turn is its prompt AND its responses,
+  // so the switch to the next turn happens when the center passes that
+  // turn's prompt, not the viewport top. The title's model and the rail's
+  // marker follow it. Emits only on change.
+  // Resolved from the virtualizer's FULL measurement cache, not the
+  // mounted window: during an instant jump the window teleports and the
+  // turns it flew over are never mounted, so a window-based spy skipped
+  // them (progress 1 -> 4, never 2/3). With full measurements every turn
+  // boundary is visible even unmounted.
   let lastActive: string | undefined
   createEffect(() => {
     if (!props.onActiveMessageChange) return
-    const vis = items
-    const offset = virtualizer.scrollOffset ?? 0
+    void scrollTick()
+    const rows = projection.rows()
+    const el = scrollElement
+    const scrollTop = el?.scrollTop ?? 0
+    // the virtualizer's offsets are relative to the CONTENT div, which sits
+    // below the header block inside the scroller - convert to scroller
+    // coordinates or every boundary lands ~headerHeight early
+    const origin = host && el ? host.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop : 0
+    const center = scrollTop + (el?.clientHeight ?? 0) / 2
+    const cache = (virtualizer as any).measurementsCache as Array<{ start: number }> | undefined
     let current: string | undefined
-    for (const item of vis) {
-      const key = String(item.key)
-      if (key.startsWith("user-message:")) current = key.slice("user-message:".length)
-      if (item.start > offset + 4 && current) break
+    let last = ""
+    for (const row of rows as any[]) {
+      if (row?._tag === "UserMessage") last = row.userMessageID
     }
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] as any
+      if (row?._tag !== "UserMessage") continue
+      const start = cache?.[i]?.start
+      // unmeasured tail (estimates only): positions before the center are
+      // settled, positions after are approximations
+      const pos = start !== undefined ? origin + start : Number.POSITIVE_INFINITY
+      if (pos > center && current) break
+      current = row.userMessageID
+    }
+    // end of page: the last turn's prompt can never reach the center (not
+    // enough content below it), so bottom-rest means the last turn.
+    // Computed from the element - pinned()'s pre-scroll initial state
+    // cannot be trusted here.
+    const atEnd = !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON
+    if (atEnd && last) current = last
     if (current && current !== lastActive) {
       lastActive = current
       props.onActiveMessageChange(current)

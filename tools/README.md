@@ -4,7 +4,7 @@ Small standalone utilities around the share ecosystem. Nothing here is needed to
 
 ## view-export.py
 
-View any exported opencode session locally, exactly like a live share page: it serves the real viewer (`../share-viewer/dist`) on localhost with the session(s) injected — same rendering, same views, subagent pages included when the exports cover the family. No crypto, no network beyond localhost; nothing is uploaded anywhere.
+View any exported opencode session locally, exactly like a live share page: it serves the real viewer (`../share-viewer/dist`) on localhost with the session(s) injected — same rendering, same views, subagent pages included when the exports cover the family. The conversion is plugin-parity: every item carries its `sessionID` (main and child sessions stay separate), and task calls are stamped with the child's resolved agent via the same rank-join the plugin uses, so subagent rows and labels render exactly as online. No crypto, no network beyond localhost; nothing is uploaded anywhere.
 
 ```bash
 # newest session in your local opencode db, plus its subagent family
