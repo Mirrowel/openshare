@@ -681,7 +681,25 @@ async function tokenDeleteRoute(token: string): Promise<Response> {
   const chk = await checkToken(token)
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
   db.query("UPDATE tokens SET revokedAt = ? WHERE id = ?").run(Date.now(), chk.token.id)
-  return json(200, { ok: true })
+  const frozen = freezeIfNoValidTokens(chk.userId)
+  return json(200, { ok: true, frozen })
+}
+
+/** Revocation kills control (owner directive, worker parity): a user whose
+ * LAST valid token is gone loses write access to ALL their shares - user
+ * token AND share secret - until an admin unfreezes/reassigns. Viewing is
+ * never touched. Rotation never lands here (replacement minted first). */
+function freezeIfNoValidTokens(userId: string): boolean {
+  const now = Date.now()
+  const alive = (db.query("SELECT id FROM tokens WHERE userId = ? AND revokedAt = 0 AND (expiresAt = 0 OR expiresAt > ?)").all(userId, now) as unknown[]).length
+  if (alive) return false
+  const n = db.query("UPDATE shares SET frozen = 1 WHERE ownerId = ? AND frozen = 0").run(userId).changes
+  if (n > 0) {
+    db.query("UPDATE users SET frozen = 1 WHERE id = ?").run(userId)
+    console.log("[auth] no valid tokens left - froze", n, "shares of user", userId)
+    return true
+  }
+  return false
 }
 
 async function adminRoute(req: Request, path: string, body: Record<string, unknown>): Promise<Response> {
@@ -741,8 +759,11 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
   }
   m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
   if (m && req.method === "DELETE") {
+    const row = db.query("SELECT userId FROM tokens WHERE id = ?").get(m[1]) as { userId: string } | undefined
     const res = db.query("UPDATE tokens SET revokedAt = ? WHERE id = ?").run(Date.now(), m[1])
-    return res.changes ? json(200, { ok: true }) : json(404, { ok: false, error: "no such token" })
+    if (!res.changes) return json(404, { ok: false, error: "no such token" })
+    const frozen = row ? freezeIfNoValidTokens(row.userId) : false
+    return json(200, { ok: true, frozen })
   }
   if (path === "/api/admin/codes" && req.method === "POST") {
     const activations = Math.floor(Number(body.activations))
@@ -972,6 +993,20 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
             console.log("[attach] auth removed (owner action)")
           }
         }
+        // explicit per-session TTL override changing mid-life: clamp like
+        // create (server cap + the token's maxTtlDays), then rebase the
+        // sweeper deadline (worker parity)
+        const attachTtlRaw = Number(attach.ttlDays)
+        if (attach.ttlDays !== undefined && Number.isFinite(attachTtlRaw) && attachTtlRaw > 0) {
+          let ttlMax = 0
+          try {
+            const capChk = await createCheck(data.token)
+            ttlMax = capChk.ttlMaxDays ?? 0
+          } catch {}
+          const ttlDays = clampTtl(attachTtlRaw, ttlMax)
+          db.query("UPDATE shares SET ttlDays = ? WHERE id = ?").run(ttlDays, share.id)
+          console.log("[attach] ttl updated to", ttlDays, "days")
+        }
         const updated = q.share(share.id)!
         for (const early of data.earlySyncs) {
           const r = applySync(share.id, { secret: data.attachSecret, ownerId, root, data: early.items ?? [], status: early.status })
@@ -1047,8 +1082,18 @@ setInterval(() => {
       if (r.lastActive + r.ttlDays * 86400000 < now) removeShare(r.id)
     }
     // hygiene: daily-create counters and rate rows expire themselves out
-    // (k = "<tokenId>:<YYYY-MM-DD>" / ip rows carry resetAt) — without
+    // (k = "<tokenId>:<YYYY-MM-DD>" / ip rows carry resetAt) - without
     // this both tables grow forever
+    // revocation-by-expiry (worker parity, eventual): a user whose tokens
+    // ALL expired loses control of their shares like an explicit revoke
+    try {
+      const dead = db.query(
+        "SELECT DISTINCT u.id AS id FROM users u JOIN shares s ON s.ownerId = u.id WHERE u.frozen = 0 AND NOT EXISTS (SELECT 1 FROM tokens t WHERE t.userId = u.id AND t.revokedAt = 0 AND (t.expiresAt = 0 OR t.expiresAt > ?))",
+      ).all(now) as Array<{ id: string }>
+      for (const u of dead) freezeIfNoValidTokens(u.id)
+    } catch (e) {
+      console.log("[auth] expiry sweep error", e)
+    }
     try {
       // k = "<tokenId>:<YYYY-MM-DD>" — the date is the trailing 10 chars
       const cutoff = new Date(now - 2 * 86400000).toISOString().slice(0, 10)

@@ -698,6 +698,20 @@ export class ControlDO {
         }
         if (frame.attach) {
           const ident = await this.socketIdentity()
+          // explicit per-session TTL override changing mid-life: clamp it
+          // exactly like create (server cap + the token's maxTtlDays)
+          let attachTtl
+          const rawTtl = Number(frame.attach.ttlDays)
+          if (Number.isFinite(rawTtl) && rawTtl > 0) {
+            let ttlMax = 0
+            if (ident.ownerId) {
+              try {
+                const chk = await this.authCall("/create-check", { token: this.token ?? "" })
+                ttlMax = chk.ttlMaxDays ?? 0
+              } catch {}
+            }
+            attachTtl = clampTtl(rawTtl, this.env, ttlMax)
+          }
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(frame.attach.id)).fetch("https://do/attach", {
             method: "POST",
             body: JSON.stringify({
@@ -706,6 +720,7 @@ export class ControlDO {
               root: ident.root,
               authLogin: frame.attach.authLogin,
               authPassword: frame.attach.authPassword,
+              ...(attachTtl ? { ttlDays: attachTtl } : {}),
             }),
           })
         const body = await r.json()
@@ -1080,6 +1095,15 @@ export class ShareDO {
           console.log("[attach] auth removed (owner action)")
         }
         await this.state.storage.put("meta", meta)
+      }
+
+      // explicit per-session TTL override (clamped by the ControlDO against
+      // server + token caps): rebase the sweeper deadline. Shortening can
+      // legitimately end an old page at once - that is the owner's ask.
+      if (Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) {
+        meta.ttlDays = Math.floor(Number(body.ttlDays))
+        await this.state.storage.put("meta", meta)
+        console.log("[attach] ttl updated to", meta.ttlDays, "days")
       }
 
       // no `data` payload: the plugin backfills from the host and never
@@ -1560,6 +1584,29 @@ export class AuthDO {
         }
         cursor = page.list_complete ? undefined : page.cursor
       } while (cursor)
+      // revocation-by-expiry (eventual, daily): a user whose tokens ALL
+      // expired loses control of their shares exactly like an explicit
+      // revoke. One freeze per invocation - userFreeze's fan-out already
+      // spends the subrequest budget, remaining users ride the next alarm.
+      const expiredDead = []
+      let uc
+      do {
+        const page = await this.state.storage.list({ prefix: "u:", cursor: uc })
+        for (const [, u] of page) if (u && !u.frozen) expiredDead.push(u.id)
+        uc = page.list_complete ? undefined : page.cursor
+      } while (uc)
+      if (expiredDead.length) {
+        const tokens = await this.listPrefix("t:")
+        const aliveUsers = new Set(tokens.filter((t) => !t.revokedAt && !(t.expiresAt && t.expiresAt < now)).map((t) => t.userId))
+        for (const uid of expiredDead) {
+          if (aliveUsers.has(uid)) continue
+          const reg = (await this.state.storage.get(`uShares:${uid}`)) ?? []
+          if (!reg.length) continue
+          await this.userFreeze(true, { userId: uid })
+          await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+          break
+        }
+      }
     } catch (e) {
       console.log("[authdo] hygiene error", e?.message || e)
     }
@@ -1770,13 +1817,32 @@ export class AuthDO {
     return [200, { ok: true, token: fresh.value, userId: t.userId }]
   }
 
+  /** Revocation kills control (owner directive): a user whose LAST valid
+   * token is gone loses write access to ALL their shares - user token AND
+   * share secret both - until an admin unfreezes/reassigns. Viewing is
+   * never touched. Rotation never lands here (the replacement is minted
+   * before the old token dies). */
+  async freezeIfNoValidTokens(userId) {
+    if (!userId) return false
+    const tokens = await this.listPrefix("t:")
+    const now = Date.now()
+    const alive = tokens.filter((x) => x.userId === userId && !x.revokedAt && !(x.expiresAt && x.expiresAt < now))
+    if (alive.length) return false
+    const reg = (await this.state.storage.get(`uShares:${userId}`)) ?? []
+    if (!reg.length) return false
+    console.log("[authdo] no valid tokens left - freezing shares of user", userId)
+    await this.userFreeze(true, { userId })
+    return true
+  }
+
   async tokenDelete(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
     const t = chk.token
     t.revokedAt = Date.now()
     await this.state.storage.put("t:" + t.hash, t)
-    return [200, { ok: true }]
+    const frozen = await this.freezeIfNoValidTokens(t.userId)
+    return [200, { ok: true, frozen }]
   }
 
   // ---- self-service ---------------------------------------------------------
@@ -1978,7 +2044,8 @@ export class AuthDO {
     if (!t) return [404, { ok: false, error: "no such token" }]
     t.revokedAt = Date.now()
     await this.state.storage.put("t:" + t.hash, t)
-    return [200, { ok: true }]
+    const frozen = await this.freezeIfNoValidTokens(t.userId)
+    return [200, { ok: true, frozen }]
   }
 
   async codeCreate(body) {
