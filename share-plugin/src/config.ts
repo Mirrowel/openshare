@@ -49,7 +49,6 @@ export type ShareConfig = {
   completedDelayMs: number
   modelLabel: string
   ttlDays: number
-  openTasksInNewTab: boolean
   authLogin: string
   authPassword: string
   spoolDir: string
@@ -78,7 +77,6 @@ export const DEFAULTS: ShareConfig = {
   completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
   ttlDays: 90,
-  openTasksInNewTab: true,
   authLogin: "",
   authPassword: "",
   spoolDir: "",

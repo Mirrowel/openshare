@@ -100,7 +100,6 @@ async function verifyShare(label, shareId, expectSubagent) {
   console.log(`  items: ${[...new Set(types)].join(",")}`)
   check(`${label}: model item present`, types.includes("model"))
   check(`${label}: session_diff present`, types.includes("session_diff"))
-  check(`${label}: prefs present`, types.includes("prefs"))
 
   const tools = [...new Set(items.filter((i) => i.type === "part" && i.data?.type === "tool").map((i) => i.data.tool))]
   console.log(`  tool parts: ${tools.join(",")}`)

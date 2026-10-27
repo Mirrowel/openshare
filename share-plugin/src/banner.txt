@@ -19,7 +19,7 @@
 // > code defaults. Keys: servers (multi-server: url -> {token, code,
 // label, active, adminToken}), workerUrl, createToken (legacy pair),
 // shareMode ("all" | "manual"; default = TUI presence), debounceMs,
-// completedDelayMs, modelLabel, ttlDays, openTasksInNewTab,
+// completedDelayMs, modelLabel, ttlDays,
 // authLogin, authPassword, spoolDir, urlFile ("none" = off),
 // announceStderr.
 //

@@ -1,9 +1,9 @@
 // Open(code)Share regression suite — phase 1 parity gate.
 //
-// Proves the built artifacts behave like the legacy single-file plugin:
-//   1. reference/openshare.legacy.js  (the original, byte-preserved)
-//   2. openshare.js                   (the new standalone bundle)
-//   3. dist/server.js                 (the package server entry)
+// Proves the built artifacts behave identically through the real
+// production path:
+//   1. openshare.js                   (the new standalone bundle)
+//   2. dist/server.js                 (the package server entry)
 //
 // Method: REAL production path, no shortcuts — a local `wrangler dev`
 // worker, a mock OpenAI-compatible provider (so a real `opencode serve`
@@ -138,10 +138,6 @@ try {
   console.log("worker ready")
 
   const variants = [
-    // the frozen v1 legacy emitter (reference/openshare.legacy.js) is
-    // RETIRED from parity: contract v2 moved the standalone+package to
-    // the v2 content model; the legacy file stays in-repo as the v1
-    // port-fidelity reference only
     { name: "standalone", path: join(ROOT, "ci", "openshare.js") },
     { name: "package", path: join(ROOT, "dist", "server.js") },
     // the owner's install mode: the package DIRECTORY via file:// URL —
@@ -173,7 +169,6 @@ try {
     check(`${result.name}: user+assistant messages`, types.filter((t) => t === "message").length >= 2)
     check(`${result.name}: assistant content embedded`, result.normalized.items.some((i) => i.type === "message" && Array.isArray(i?.data?.content)))
     check(`${result.name}: model item`, types.includes("model"))
-    check(`${result.name}: prefs item`, types.includes("prefs"))
     check(`${result.name}: status completed`, result.normalized.status === "completed", `got ${result.normalized.status}`)
     check(`${result.name}: spool queue cleared`, result.spoolCleared)
   }

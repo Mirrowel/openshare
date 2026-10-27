@@ -10,7 +10,7 @@
 //   demo    — ?demo in vite dev renders the built-in fixture (src/demo.ts);
 //             viewer development with no worker, share or auth.
 import { createMemo, createSignal } from "solid-js"
-import { fold, readPrefs, type ShareData } from "./fold"
+import { fold, type ShareData } from "./fold"
 import { demoSnapshot } from "./demo"
 
 export type Branding = {
@@ -39,7 +39,6 @@ export type Source = {
   ready: () => boolean
   status: () => string
   rev: () => number
-  prefs: () => { openTasksInNewTab?: boolean }
   error: () => string | undefined
   needsAuth: () => boolean
   authState: () => { busy?: boolean; message?: string; retryAfterMs?: number }
@@ -170,7 +169,6 @@ export function useShareSource(): Source {
       ready: () => all().some((i) => i.type === "session"),
       status,
       rev,
-      prefs: () => readPrefs(all()),
       error,
       needsAuth,
       authState,
@@ -376,7 +374,6 @@ function liveSource(ctx: any): Source {
     ready: () => all().some((i: any) => i.type === "session"),
     status,
     rev,
-    prefs: () => readPrefs(all()),
     error,
     needsAuth,
     authState,

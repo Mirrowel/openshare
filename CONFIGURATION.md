@@ -114,7 +114,6 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `completedDelayMs` | `5000` | Grace before the status flips to `completed` (server-capped). Dispose flushes a pending flip |
 | `modelLabel` | `"$Provider/$Model"` | Template for the model label in share data |
 | `ttlDays` | `90` | Default TTL for this plugin's shares (still server-clamped) |
-| `openTasksInNewTab` | `true` | Task/subagent links open in a new tab |
 | `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
 | `urlFile` | `""` → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |

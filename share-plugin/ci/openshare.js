@@ -19,7 +19,7 @@
 // > code defaults. Keys: servers (multi-server: url -> {token, code,
 // label, active, adminToken}), workerUrl, createToken (legacy pair),
 // shareMode ("all" | "manual"; default = TUI presence), debounceMs,
-// completedDelayMs, modelLabel, ttlDays, openTasksInNewTab,
+// completedDelayMs, modelLabel, ttlDays,
 // authLogin, authPassword, spoolDir, urlFile ("none" = off),
 // announceStderr.
 //
@@ -36,7 +36,6 @@ var DEFAULTS = {
   completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
   ttlDays: 90,
-  openTasksInNewTab: true,
   authLogin: "",
   authPassword: "",
   spoolDir: "",
@@ -853,7 +852,6 @@ function createEngine(deps) {
     badSignal: false,
     lastSentStatus: null,
     closed: false,
-    prefsSent: false,
     binding: null,
     bindingQueried: false,
     optOuts: new Set,
@@ -2396,10 +2394,6 @@ function createEngine(deps) {
       if (parent) {
         const st3 = sessions.get(parent);
         if (st3?.activated && !st3.closed) {
-          if (!st3.prefsSent) {
-            st3.prefsSent = true;
-            enqueue(st3, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid));
-          }
           if (info)
             enqueue(st3, itemFor("session", redact(info), sid));
         }
@@ -2411,10 +2405,6 @@ function createEngine(deps) {
         if (st2?.activated && !st2.closed) {
           if (flag.opts)
             st2.opts = flag.opts;
-          if (!st2.prefsSent) {
-            st2.prefsSent = true;
-            enqueue(st2, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid));
-          }
           if (info)
             enqueue(st2, itemFor("session", redact(info), sid));
           if (t === "session.updated")
@@ -2422,11 +2412,6 @@ function createEngine(deps) {
           return;
         }
         activate(sid, flag.opts, info);
-        const fresh = sessions.get(sid);
-        if (fresh && !fresh.prefsSent) {
-          fresh.prefsSent = true;
-          enqueue(fresh, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid));
-        }
         return;
       }
       if (st2?.activated && !st2.closed && t === "session.updated") {
@@ -2472,10 +2457,6 @@ function createEngine(deps) {
     }
     if (!st)
       return;
-    if (!st.prefsSent) {
-      st.prefsSent = true;
-      enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid));
-    }
     if (info)
       enqueue(st, itemFor("session", redact(info), sid));
     if (t === "session.updated" && st.activated && !st.closed) {

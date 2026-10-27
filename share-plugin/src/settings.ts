@@ -152,15 +152,6 @@ const LABELS: Record<string, LabelMeta> = {
     info: "How long pages live before the server's sweeper deletes them. Capped server-side: the deployment's MAX_TTL_DAYS and the token's maxTtlDays limit both apply.\n\nA per-session override lives in the This-session section; it is sent at create/attach time.",
     def: "worker cap (90 on the reference deployment)",
   },
-  openTasksInNewTab: {
-    label: "Open tasks in new tab",
-    help: "Viewer: task rows open subagent pages in a new tab.",
-    kind: "text",
-    options: ["true", "false"],
-    section: "Sharing",
-    info: "Viewer behavior only: clicking a task (subagent) row opens its sub-page in a new browser tab instead of navigating. true/false.",
-    def: "true",
-  },
   authLogin: {
     label: "Read auth: login",
     help: "Optional read gate for share pages. Empty removes protection on the next attach.",
@@ -218,8 +209,7 @@ function helpForKey(key: string, cfg: ShareConfig, sources: Record<string, strin
 
 function displayValue(key: string, cfg: ShareConfig): string {
   if (key === "createToken" || key === "authPassword") return mask(String(cfg[key] ?? ""))
-  if (key === "openTasksInNewTab") return String(cfg.openTasksInNewTab !== false)
-  if (key === "announceStderr") return String(cfg.announceStderr !== false)
+  if (key === "announceStderr") return cfg.announceStderr !== false ? "on" : "off"
   const value = (cfg as unknown as Record<string, unknown>)[key]
   return value === undefined || value === "" ? "(not set)" : String(value)
 }
@@ -243,7 +233,7 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
     if (picked === undefined) return undefined
     const next = { ...cfg } as unknown as Record<string, unknown>
     if (key === "shareMode") next[key] = picked === "auto" ? undefined : picked
-    else if (key === "openTasksInNewTab" || key === "announceStderr") next[key] = picked === "true"
+    else if (key === "announceStderr") next[key] = picked === "true"
     else next[key] = picked
     return next as ShareConfig
   }

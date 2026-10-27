@@ -146,7 +146,6 @@ type SessionState = {
   badSignal: boolean
   lastSentStatus: string | null
   closed: boolean
-  prefsSent: boolean
   binding: Record<string, unknown> | null // mirrors what was written into session metadata (v2 map)
   bindingQueried: boolean
   /** per-session server opt-outs (TUI "stop sharing here" / "leave as-is"):
@@ -550,7 +549,6 @@ export function createEngine(deps: EngineDeps): Engine {
     badSignal: false,
     lastSentStatus: null,
     closed: false,
-    prefsSent: false,
     binding: null,
     bindingQueried: false,
     optOuts: new Set(),
@@ -2400,10 +2398,6 @@ export function createEngine(deps: EngineDeps): Engine {
         // activates anything on its own
         const st = sessions.get(parent)
         if (st?.activated && !st.closed) {
-          if (!st.prefsSent) {
-            st.prefsSent = true
-            enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
-          }
           if (info) enqueue(st, itemFor("session", redact(info), sid))
         }
         return
@@ -2414,20 +2408,11 @@ export function createEngine(deps: EngineDeps): Engine {
         if (st?.activated && !st.closed) {
           // already sharing: opts updates apply, flag removal handled below
           if (flag.opts) st.opts = flag.opts
-          if (!st.prefsSent) {
-            st.prefsSent = true
-            enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
-          }
           if (info) enqueue(st, itemFor("session", redact(info), sid))
           if (t === "session.updated") chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
           return
         }
         activate(sid, flag.opts, info)
-        const fresh = sessions.get(sid)
-        if (fresh && !fresh.prefsSent) {
-          fresh.prefsSent = true
-          enqueue(fresh, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
-        }
         return
       }
       if (st?.activated && !st.closed && t === "session.updated") {
@@ -2483,10 +2468,6 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }
     if (!st) return
-    if (!st.prefsSent) {
-      st.prefsSent = true
-      enqueue(st, itemFor("prefs", { openTasksInNewTab: cfg.openTasksInNewTab !== false }, sid))
-    }
     if (info) enqueue(st, itemFor("session", redact(info), sid))
     if (t === "session.updated" && st.activated && !st.closed) {
       chain = chain.then(() => refreshOptOuts(st)).catch(() => {})

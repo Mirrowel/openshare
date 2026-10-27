@@ -293,7 +293,6 @@ Priority (highest wins, per key): `OPENSHARE_*` env > plugin options (the config
 | `completedDelayMs` | `5000` | How long a session must stay idle before the share says **completed** (busy cancels; a graceful opencode exit flushes the pending flip). `0` = immediate. |
 | `modelLabel` | `"$Provider/$Model"` | Label template; `""` hides the model. |
 | `ttlDays` | `90` | Share lifetime (capped at the worker's `MAX_TTL_DAYS` and the token's `maxTtlDays`). |
-| `openTasksInNewTab` | `true` | Viewer: task rows open sub-pages in a new tab. |
 | `authLogin` / `authPassword` | `""` | Default read gate for share pages. |
 | `spoolDir` | XDG data | Unacked-frame buffer (one spool per session per server). |
 | `urlFile` | `openshare.urls.txt` in the session's working directory | Share-URL log (all-mode; appends; manual mode never writes it). **`"none"` disables the file entirely.** |

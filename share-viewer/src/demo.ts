@@ -66,7 +66,6 @@ export const demoSnapshot = {
     { type: "session", data: { id: sessionID, title: "Make the share page feel at home on every screen", directory: "/workspace/openshare", time: { created: now, updated: now + 50 * 60_000 } } },
     { type: "session", data: { id: childID, parentID: sessionID, title: "Check mobile layout edge cases", directory: "/workspace/openshare", time: { created: now + 20 * 60_000, updated: now + 30 * 60_000 } } },
     { type: "model", sessionID, data: [{ id: "claude-sonnet-4", providerID: "anthropic", name: "Claude Sonnet 4" }] },
-    { type: "prefs", data: { openTasksInNewTab: false } },
     user("msg_demo_user_1", "The share page feels cramped on my phone. Can you review the layout, identify the biggest issues, and suggest a focused fix?", 0),
     assistant("msg_demo_assistant_1", 1, [
       { type: "reasoning", id: "prt_demo_thought_1", text: "I should inspect the existing page structure and responsive rules first, then make the smallest useful change.", time: { created: now + 65_000 } },

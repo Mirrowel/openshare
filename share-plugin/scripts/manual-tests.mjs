@@ -203,7 +203,6 @@ try {
         types.filter((t) => t === "message").length >= 2 &&
         assistantWithContent &&
         types.includes("model") &&
-        types.includes("prefs") &&
         types.includes("session_diff")
       return ready ? parsed : undefined
     }, "S2: backfilled share complete")

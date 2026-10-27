@@ -69,13 +69,9 @@ function FullPageView(props: {
     navigateToSession: (id) => {
       const href = subHref(props.source, id)
       if (!href) return
-      if (props.source.prefs().openTasksInNewTab !== false) {
-        window.open(href, "_blank")
-      } else {
-        scrollMemory.set(location.pathname, window.scrollY)
-        window.history.pushState({}, "", href)
-        window.dispatchEvent(new PopStateEvent("popstate"))
-      }
+      scrollMemory.set(location.pathname, window.scrollY)
+      window.history.pushState({}, "", href)
+      window.dispatchEvent(new PopStateEvent("popstate"))
     },
   })
   return (
@@ -905,13 +901,9 @@ function SessionView(props: {
             onNavigateToSession={(id) => {
               const href = subHref(props.source, id)
               if (!href) return
-              if (props.source.prefs().openTasksInNewTab !== false) {
-                window.open(href, "_blank")
-              } else {
-                scrollMemory.set(location.pathname, window.scrollY)
-                window.history.pushState({}, "", href)
-                window.dispatchEvent(new PopStateEvent("popstate"))
-              }
+              scrollMemory.set(location.pathname, window.scrollY)
+              window.history.pushState({}, "", href)
+              window.dispatchEvent(new PopStateEvent("popstate"))
             }}
           >
             {/* a REAL component boundary: this body was an IIFE child of
@@ -1142,12 +1134,9 @@ export function App() {
                   onNavigateToSession={(id) => {
                     const href = subHref(source, id)
                     if (!href) return
-                    if (source.prefs().openTasksInNewTab !== false) window.open(href, "_blank")
-                    else {
-                      scrollMemory.set(location.pathname, window.scrollY)
-                      window.history.pushState({}, "", href)
-                      window.dispatchEvent(new PopStateEvent("popstate"))
-                    }
+                    scrollMemory.set(location.pathname, window.scrollY)
+                    window.history.pushState({}, "", href)
+                    window.dispatchEvent(new PopStateEvent("popstate"))
                   }}
                 >
                   <FullPageView source={source} settings={settings()} updateSettings={updateSettings} search={search()} onSearch={setSearch} sub={sub} />

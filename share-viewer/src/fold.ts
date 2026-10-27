@@ -135,13 +135,6 @@ export function sessionStatus(shareStatus: string): SessionStatus {
   return shareStatus === "live" ? { type: "busy" } : { type: "idle" }
 }
 
-export function readPrefs(items: { type: string; data?: any }[]): { openTasksInNewTab?: boolean } {
-  for (const item of items) {
-    if (item.type === "prefs" && item.data && typeof item.data === "object") return item.data
-  }
-  return {}
-}
-
 /** Messages of one session in timeline order, with opencode's undo
  * semantics applied (session.revert hides everything from the marker on;
  * the hard delete + tombstones follow on the next prompt). */

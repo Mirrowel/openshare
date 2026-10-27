@@ -66,7 +66,6 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
       "completedDelayMs",
       "modelLabel",
       "ttlDays",
-      "openTasksInNewTab",
       "authLogin",
       "authPassword",
       "spoolDir",
