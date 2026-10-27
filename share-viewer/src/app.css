@@ -286,13 +286,29 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   margin-top: 0;
 }
 
-/* A text part's markdown code block: the shiki pre carries its own
-   margin (12px 0 24px) and the preceding paragraph a 12px bottom margin,
-   so text->code showed a collapsed 12px gap and code->next-row 24px of
-   unowned air inside the row (live-measured on the owner's share). Both
-   seams are owned here at one 10px gap - not cumulative, not flush. */
+/* A text part's markdown code block. The kit's pre is a plain block: it
+   fills the whole column, so a two-word snippet rendered a 1400px card
+   around 185px of content. Standard chat-transcript behavior instead:
+   the card hugs its content with a floor (a snippet is not a 212px
+   sliver - same shape as the bash-output rule), caps at the column, and
+   long lines WRAP inside the card rather than scroll (the code font and
+   shiki token colors are untouched). The seams are owned here too: the
+   kit's pre margin (12px 0 24px) and the preceding paragraph's 12px
+   bottom margin collapse into one 10px gap. The markdown-code wrapper
+   hugs as well - the copy button anchors to its corner and would
+   otherwise float at the column's far edge. */
 [data-timeline-row] [data-component="text-part"] pre {
   margin: 10px 0 0;
+  width: fit-content;
+  min-width: 18rem;
+  max-width: min(100%, 68rem);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-timeline-row] [data-component="text-part"] [data-component="markdown-code"] {
+  width: fit-content;
+  min-width: 18rem;
+  max-width: min(100%, 68rem);
 }
 [data-timeline-row] [data-component="text-part"] p:has(+ [data-component="markdown-code"]),
 [data-timeline-row] [data-component="text-part"] p:has(+ pre) {
