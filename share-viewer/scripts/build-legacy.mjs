@@ -6,7 +6,8 @@
 //
 // Output: dist/legacy.html + the legacy bundle's hashed assets copied into
 // dist/assets (hashes cannot collide with the current build). The worker
-// serves legacy.html for page requests carrying ?legacy (sticky cookie).
+// serves legacy.html verbatim under /legacy (e.g. /legacy/s/<id>), so the
+// URL alone decides which build renders; no cookie, no query flag.
 // Temporary comparison tooling: delete dist/legacy.html and the copied
 // assets, or simply rebuild dist, to remove it.
 import { execFileSync } from "node:child_process"

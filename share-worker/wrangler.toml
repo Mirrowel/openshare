@@ -94,4 +94,4 @@ binding = "ASSETS"
 directory = "../share-viewer/dist"
 html_handling = "auto-trailing-slash"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/health", "/branding", "/s/*", "/"]
+run_worker_first = ["/api/*", "/health", "/branding", "/s/*", "/legacy", "/legacy/*", "/"]
