@@ -10,12 +10,20 @@
 //   packages/util        -> vendor/util-v2        (@opencode/util, path+encode)
 //
 // Stories/tests are excluded (storybook/test deps are not vendored).
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync as writeFileImpl, existsSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
+import { tmpdir } from "node:os"
 import { execSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+// `--check` runs the whole port into a throwaway directory: every anchor is
+// validated against the candidate checkout and no repo file is touched. This
+// is the manual canary before an update.
+const DRY = process.argv.includes("--check")
+
+const REAL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const ROOT = DRY ? mkdtempSync(join(tmpdir(), "osh-vendor-check-")) : REAL_ROOT
+const writeFileSync = writeFileImpl
 const SRC = process.env.OPENSHARE_BETA_SRC ?? "c:/tools/opencode-beta"
 
 if (!existsSync(join(SRC, "packages/session-ui"))) {
@@ -1011,4 +1019,10 @@ writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), `vendored from ${SRC}\ngit: ${
     if (existsSync(p))     writeFileSync(p, `// @ts-nocheck — upstream beta type bug: ${notes[rel]}\n` + readFileSync(p, "utf8"))
   }
 }
-console.log("vendor complete")
+if (DRY) {
+  const count = readdirSync(join(ROOT, "vendor"), { recursive: true }).length
+  console.log(`check complete — every anchor applies; a real run would rewrite vendor/ (${count} entries)`)
+  rmSync(ROOT, { recursive: true, force: true })
+} else {
+  console.log("vendor complete")
+}

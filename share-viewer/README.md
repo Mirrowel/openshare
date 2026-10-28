@@ -77,7 +77,7 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 | `src/views/` | the views SDK: registry, ViewContext, chrome primitives, and the nine skins — see [`src/views/README.md`](src/views/README.md) |
 | `src/copy-markdown.ts`, `src/subagent-map.ts`, `src/toggle-anchor.ts` | shared helpers (markdown export, agent attribution, disclosure anchoring) |
 | `scripts/build-themes.mjs` | theme CSS build (bundler-safe file URLs) |
-| `scripts/vendor-v2.mjs` / `vendor-solid.mjs` | deterministic vendoring + fork re-application (run via `npm run vendor`) |
+| `scripts/vendor-v2.mjs` / `vendor-solid.mjs` | deterministic vendoring + fork re-application (run via `npm run vendor`). `npm run vendor:check` validates the whole port against a candidate checkout into a temp dir and reports drift without touching the tree — run it before any kit bump. |
 
 (Key files — `reader.tsx` and the smaller view helpers live alongside these.)
 
