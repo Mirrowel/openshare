@@ -117,10 +117,14 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
 | `urlFile` | `""` → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
+| `urlFileFormat` | `"url"` | Line format: `url` = one bare URL per line; `json` = one JSON object per line (`{"id","url","status","gated"}`) for CI consumers that parse fields instead of URLs |
+| `meta` | - | Free-form string labels (max 20 keys, 64-char names, 500-char values) stamped onto every share at create; shown in the server's admin shares listing. Values may reference env vars as `${NAME}` - resolved when the share is created; unresolved refs stay literal so misconfiguration is visible |
 | `announceStderr` | `true` | `false` silences the `[openshare] live:` and `url file:` stderr lines (errors still print; the TUI carries the URL) |
 | `shareMode` | presence-detected | `all` = every session auto-shares (the CI shape); `manual` = explicit `/share` with per-share consent. Unset → presence detection: an openshare TUI entry in any `tui.json` layer (global, `OPENCODE_TUI_CONFIG`, project chain) = manual, none = all. Detection is read-only; the plugin never writes `tui.json`. Fixed at process start |
 
-Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_DEBOUNCE_MS`, `OPENSHARE_COMPLETED_DELAY_MS`, `OPENSHARE_MODEL_LABEL`, `OPENSHARE_TTL_DAYS`, `OPENSHARE_AUTH_LOGIN`, `OPENSHARE_AUTH_PASSWORD`, `OPENSHARE_URL_FILE`, `OPENSHARE_SPOOL_DIR`, `OPENSHARE_ANNOUNCE_STDERR`, `OPENSHARE_SHARE_MODE`.
+Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_DEBOUNCE_MS`, `OPENSHARE_COMPLETED_DELAY_MS`, `OPENSHARE_MODEL_LABEL`, `OPENSHARE_TTL_DAYS`, `OPENSHARE_AUTH_LOGIN`, `OPENSHARE_AUTH_PASSWORD`, `OPENSHARE_URL_FILE`, `OPENSHARE_URL_FILE_FORMAT`, `OPENSHARE_SPOOL_DIR`, `OPENSHARE_ANNOUNCE_STDERR`, `OPENSHARE_SHARE_MODE`.
+
+**`OPENSHARE_CONFIG_JSON`** - a complete config object in one env var (same keys as a config file, including `servers` and `meta`), for pipelines that cannot mount files. It sits between the file/options layers and the per-key env vars: a specific `OPENSHARE_*` var still wins over it, and it wins over every file. Malformed JSON logs an error line and is ignored - it never clears lower layers.
 
 ### Where the plugin WRITES
 

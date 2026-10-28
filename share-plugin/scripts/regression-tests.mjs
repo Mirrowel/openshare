@@ -226,6 +226,78 @@ try {
 }
 
 
+// config unit gate (pure): OPENSHARE_CONFIG_JSON sits between files and
+// per-key env; urlFileFormat is a known enum; meta caps apply. These run
+// in-process against dist/config.js with env vars set and restored.
+try {
+  const cfgmod = await import(pathToFileURL(join(here(".."), "dist", "config.js")).href)
+  const { loadConfig } = cfgmod
+  const saved = { ...process.env }
+  const sandboxDir = mkdtempSync(join(tmpdir(), "osh-cfg-"))
+  const pluginDir = join(sandboxDir, "plugin")
+  mkdirSync(pluginDir, { recursive: true })
+  // hermetic: dist config reads the real settings home otherwise
+  // (suite rule - importing dist with env effects requires XDG redirect)
+  process.env.XDG_CONFIG_HOME = join(sandboxDir, "xdg")
+  mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true })
+  try {
+    // no config anywhere: CONFIG_JSON supplies everything
+    process.env.OPENSHARE_WORKER_URL = ""
+    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({
+      workerUrl: "https://cfgjson.example",
+      urlFileFormat: "json",
+      meta: { run: "r-${OSH_TEST_RUN}", keep: "x" },
+    })
+    process.env.OSH_TEST_RUN = "42"
+    let cfg = loadConfig(pluginDir)
+    let ok =
+      cfg.workerUrl === "https://cfgjson.example" &&
+      cfg.urlFileFormat === "json" &&
+      cfg.meta?.run === "r-${OSH_TEST_RUN}" && // interpolation is engine-side (metaFor); the loader keeps the literal
+      cfg.meta?.keep === "x"
+    console.log(`${ok ? "PASS" : "FAIL"} config: CONFIG_JSON supplies full config object`)
+    if (!ok) failures.push("config: CONFIG_JSON load")
+    // per-key env BEATS CONFIG_JSON
+    process.env.OPENSHARE_WORKER_URL = "https://env-wins.example"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.workerUrl === "https://env-wins.example"
+    console.log(`${ok ? "PASS" : "FAIL"} config: specific env var beats CONFIG_JSON`)
+    if (!ok) failures.push("config: CONFIG_JSON precedence")
+    // malformed CONFIG_JSON must not throw and must not clear prior layers
+    process.env.OPENSHARE_WORKER_URL = ""
+    process.env.OPENSHARE_CONFIG_JSON = "{broken"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.workerUrl === "" // nothing else configured
+    console.log(`${ok ? "PASS" : "FAIL"} config: malformed CONFIG_JSON tolerated`)
+    if (!ok) failures.push("config: CONFIG_JSON malformed")
+    // urlFileFormat env enum
+    process.env.OPENSHARE_CONFIG_JSON = ""
+    process.env.OPENSHARE_URL_FILE_FORMAT = "json"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.urlFileFormat === "json"
+    delete process.env.OPENSHARE_URL_FILE_FORMAT
+    process.env.OPENSHARE_URL_FILE_FORMAT = "bogus"
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.urlFileFormat === "url" // bogus value ignored, default stays
+    console.log(`${ok ? "PASS" : "FAIL"} config: urlFileFormat enum honored`)
+    if (!ok) failures.push("config: urlFileFormat")
+    // meta caps: non-string values dropped, over-long dropped
+    process.env.OPENSHARE_URL_FILE_FORMAT = ""
+    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({ meta: { good: "v", bad: 5, long: "y".repeat(501) } })
+    cfg = loadConfig(pluginDir)
+    ok = cfg.meta && cfg.meta.good === "v" && cfg.meta.bad === undefined && cfg.meta.long === undefined
+    console.log(`${ok ? "PASS" : "FAIL"} config: meta normalization caps`)
+    if (!ok) failures.push("config: meta caps")
+  } finally {
+    for (const k of Object.keys(saved)) process.env[k] = saved[k]
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    rmSync(sandboxDir, { recursive: true, force: true })
+  }
+} catch (e) {
+  console.log("FAIL config unit block:", String(e.message || e))
+  failures.push("config: unit block crashed")
+}
+
 if (failures.length) {
   console.error(`\n${failures.length} failure(s) — suite FAILED`)
   console.error(`suite dir kept for inspection: ${suiteDir}`)

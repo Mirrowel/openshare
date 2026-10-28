@@ -388,6 +388,25 @@ function clampTtl(days, env, tokenMax = 0) {
   return Math.max(1, Math.min(Math.floor(Number(days)), max))
 }
 
+// KV key METADATA is capped at 1024 bytes total: an over-budget `custom`
+// object would make the index put throw forever (the share stays visible
+// but the retry loop never ends). Trim to a safe byte budget: values
+// first (60 chars), then drop overflow keys oldest-first.
+function kvCustom(custom, budget = 700) {
+  if (!custom || typeof custom !== "object") return {}
+  const out = {}
+  let used = 0
+  for (const [k, v] of Object.entries(custom)) {
+    if (typeof v !== "string") continue
+    const val = v.length > 60 ? v.slice(0, 57) + "..." : v
+    const cost = k.length + val.length + 8
+    if (used + cost > budget) break
+    out[k] = val
+    used += cost
+  }
+  return out
+}
+
 function authMode(env) {
   return String(env.AUTH_MODE ?? "private").toLowerCase() === "public" ? "public" : "private"
 }
@@ -678,6 +697,19 @@ export class ControlDO {
           // explicit ttlDays wins; otherwise the owner's stored default
           // (PUT /api/me/settings), re-clamped against token+server caps
           const ttlDays = clampTtl(frame.create.ttlDays ?? (ownerDefault || undefined), this.env, ttlMax)
+          // free-form labels from the plugin config (B5): string-to-string,
+          // capped, stored under meta.custom and shown in admin listings
+          const custom = {}
+          if (frame.create.meta && typeof frame.create.meta === "object") {
+            let n = 0
+            for (const [mk, mv] of Object.entries(frame.create.meta)) {
+              if (n >= 20) break
+              if (typeof mk === "string" && typeof mv === "string" && mk.length <= 64 && mv.length <= 500) {
+                custom[mk] = mv
+                n++
+              }
+            }
+          }
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/init", {
             method: "POST",
             body: JSON.stringify({
@@ -687,6 +719,7 @@ export class ControlDO {
               authLogin: frame.create.authLogin ?? "",
               authPassword: frame.create.authPassword ?? "",
               ownerId,
+              ...(Object.keys(custom).length ? { custom } : {}),
             }),
           })
           const body = await r.json()
@@ -694,7 +727,9 @@ export class ControlDO {
           if (ownerId) await this.authCall("/register", { userId: ownerId, shareId: id, sessionID: frame.create.sessionID })
           await this.saveAttach(id, body.secret, ownerId)
           await this.flushEarlySyncs(send)
-          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(this.env) })
+          // auth mirrors what we just sent (the DO builds a gate only
+          // from a full non-empty pair)
+          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(this.env), auth: !!(frame.create.authLogin && frame.create.authPassword) })
         }
         if (frame.attach) {
           const ident = await this.socketIdentity()
@@ -737,6 +772,9 @@ export class ControlDO {
             // no `data` payload: the only ControlDO client is the plugin,
             // which backfills from the host and ignores attach data
             policy: resolvePolicy(this.env),
+            // resolved gate state AFTER the attach applied any update -
+            // the plugin warns when it asked for a gate and none exists
+            auth: body.auth === true,
           })
         }
         return send({ op: "init", ok: false, error: "init needs create|attach" })
@@ -1018,6 +1056,8 @@ export class ShareDO {
         ownerId: body.ownerId ?? null,
         frozen: false,
         auth,
+        // free-form labels from the plugin (B5), shown in admin listings
+        custom: body.custom && typeof body.custom === "object" ? body.custom : {},
         tokens: [],
         attempts: { ips: {}, total: 0, lockUntil: 0 },
       })
@@ -1025,7 +1065,7 @@ export class ShareDO {
         // record rides in KV key METADATA — list() returns it inline, so
         // the admin shares view needs no per-key get (KV N+1)
         await this.env.SHARE_INDEX.put(`share:${body.id}`, "", {
-          metadata: { createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null },
+          metadata: { createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null, custom: kvCustom(body.custom) },
         })
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
       } catch (e) {
@@ -1033,7 +1073,7 @@ export class ShareDO {
         // purge AND the TTL sweeper (permanent orphan). Arm our own alarm
         // to retry the put until it lands (alarm() checks indexRetry).
         console.log("[init] index error (will retry)", e?.message || e)
-        await this.state.storage.put("indexRetry", { id: body.id, sessionID: body.sessionID, ownerId: body.ownerId ?? null, createdAt: now })
+        await this.state.storage.put("indexRetry", { id: body.id, sessionID: body.sessionID, ownerId: body.ownerId ?? null, createdAt: now, custom: kvCustom(body.custom) })
         try {
           await this.state.storage.setAlarm(Date.now() + 5 * 60000)
         } catch {}
@@ -1108,12 +1148,15 @@ export class ShareDO {
 
       // no `data` payload: the plugin backfills from the host and never
       // reads attach data (full-set transfer per reconnect was pure
-      // waste — Bun already strips it)
+      // waste - Bun already strips it). `auth` reports the RESOLVED gate
+      // state so the plugin can tell a half-pair no-op from a live gate
+      // (B2: ack-level gate assurance).
       return json(200, {
         ok: true,
         rev: meta.rev ?? 0,
         status: meta.status,
         sessionID: meta.sessionID,
+        auth: !!meta.auth,
       })
     }
 
@@ -1301,7 +1344,7 @@ export class ShareDO {
       meta.frozen = false
       await this.state.storage.put("meta", meta)
       try {
-        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", { metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId } })
+        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", { metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId, custom: kvCustom(meta.custom) } })
       } catch {}
       return json(200, { ok: true })
     }
@@ -1437,7 +1480,7 @@ export class ShareDO {
     const retry = await this.state.storage.get("indexRetry")
     if (retry) {
       try {
-        await this.env.SHARE_INDEX.put(`share:${retry.id}`, "", { metadata: { createdAt: retry.createdAt, sessionID: retry.sessionID, ownerId: retry.ownerId } })
+        await this.env.SHARE_INDEX.put(`share:${retry.id}`, "", { metadata: { createdAt: retry.createdAt, sessionID: retry.sessionID, ownerId: retry.ownerId, custom: kvCustom(retry.custom) } })
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
         await this.state.storage.delete("indexRetry")
       } catch {

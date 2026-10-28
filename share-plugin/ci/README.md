@@ -31,9 +31,21 @@ README's [Configuration](../../README.md#configuration)):
 
 ```
 OPENSHARE_WORKER_URL=https://your-host
-OPENSHARE_CREATE_TOKEN=…            # legacy: root token
+OPENSHARE_CREATE_TOKEN=:            # legacy: root token
 OPENSHARE_URL_FILE=share-urls.txt   # each share URL appended + stderr line
 ```
+
+CI conveniences:
+
+- `OPENSHARE_CONFIG_JSON` - the whole config as one env var (same keys as
+  the config file), when mounting a file is awkward. A specific
+  `OPENSHARE_*` var still wins over it.
+- `OPENSHARE_URL_FILE_FORMAT=json` - urlFile lines become
+  `{"id":"…","url":"…","status":"…","gated":false}` objects, one per
+  line, so workflow steps read fields instead of parsing URLs.
+- `meta` in the config stamps free-form labels (env-interpolated, e.g.
+  `"branch": "${GITHUB_REF_NAME}"`) onto every share - visible in the
+  server's admin shares listing.
 
 ```jsonc
 // openshare.config.json — enrollment shape (no root token needed)

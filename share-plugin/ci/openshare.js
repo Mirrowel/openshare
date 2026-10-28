@@ -40,6 +40,7 @@ var DEFAULTS = {
   authPassword: "",
   spoolDir: "",
   urlFile: "",
+  urlFileFormat: "url",
   announceStderr: true
 };
 var CONFIG_NAME = "openshare.config.json";
@@ -155,26 +156,40 @@ function loadConfig(pluginDir, options) {
   const cfg = { ...DEFAULTS };
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"]);
   const known = new Set([...Object.keys(DEFAULTS), "shareMode"]);
+  const applyObject = (raw) => {
+    if (!raw || typeof raw !== "object")
+      return;
+    for (const [key, value] of Object.entries(raw)) {
+      if (key === "servers") {
+        const servers = normalizeServers(value);
+        if (servers)
+          cfg.servers = mergeServerGroups(cfg.servers, servers);
+        continue;
+      }
+      if (key === "meta") {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const clean = {};
+          for (const [mk, mv] of Object.entries(value)) {
+            if (typeof mv === "string" && mv.length <= 500 && mk.length <= 64)
+              clean[mk] = mv;
+          }
+          if (Object.keys(clean).length)
+            cfg.meta = { ...cfg.meta, ...clean };
+        }
+        continue;
+      }
+      if (!known.has(key))
+        continue;
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+        continue;
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key))
+        continue;
+      cfg[key] = value;
+    }
+  };
   for (const path of [...configPaths(pluginDir)].reverse()) {
     try {
-      const raw = JSON.parse(readFileSync(path, "utf8"));
-      if (!raw || typeof raw !== "object")
-        continue;
-      for (const [key, value] of Object.entries(raw)) {
-        if (key === "servers") {
-          const servers = normalizeServers(value);
-          if (servers)
-            cfg.servers = mergeServerGroups(cfg.servers, servers);
-          continue;
-        }
-        if (!known.has(key))
-          continue;
-        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
-          continue;
-        if (typeof value === "string" && value === "" && emptyMeansUnset.has(key))
-          continue;
-        cfg[key] = value;
-      }
+      applyObject(JSON.parse(readFileSync(path, "utf8")));
     } catch (e) {
       if (existsSync(path))
         console.error(`[openshare] config file ${path} could not be parsed - ignored:`, e?.message ?? e);
@@ -197,6 +212,13 @@ function loadConfig(pluginDir, options) {
       cfg.shareMode = mode;
   }
   const env = process.env;
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      applyObject(JSON.parse(env.OPENSHARE_CONFIG_JSON));
+    } catch (e) {
+      console.error("[openshare] OPENSHARE_CONFIG_JSON could not be parsed - ignored:", e?.message ?? e);
+    }
+  }
   if (env.OPENSHARE_WORKER_URL)
     cfg.workerUrl = env.OPENSHARE_WORKER_URL;
   if (env.OPENSHARE_CREATE_TOKEN)
@@ -215,6 +237,8 @@ function loadConfig(pluginDir, options) {
     cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD;
   if (env.OPENSHARE_URL_FILE !== undefined)
     cfg.urlFile = env.OPENSHARE_URL_FILE;
+  if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url")
+    cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT;
   if (env.OPENSHARE_SPOOL_DIR)
     cfg.spoolDir = env.OPENSHARE_SPOOL_DIR;
   if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined)
@@ -1250,8 +1274,15 @@ function createEngine(deps) {
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       const file = cfg.urlFile ? isAbsolute(cfg.urlFile) ? cfg.urlFile : join2(deps.directory ?? process.cwd(), cfg.urlFile) : join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
       try {
-        appendFileSync(file, url + `
-`);
+        const line = cfg.urlFileFormat === "json" ? JSON.stringify({
+          id: r.shareId,
+          url,
+          status: st.lastSentStatus ?? "waiting",
+          gated: (st.opts?.authLogin ?? cfg.authLogin ?? "") !== ""
+        }) + `
+` : url + `
+`;
+        appendFileSync(file, line);
         if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true;
           lastUrlFile = file;
@@ -1276,6 +1307,19 @@ function createEngine(deps) {
     return { authLogin: login, authPassword: password };
   };
   const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
+  const metaFor = () => {
+    if (!cfg.meta || typeof cfg.meta !== "object")
+      return;
+    const out = {};
+    let n = 0;
+    for (const [k, v] of Object.entries(cfg.meta)) {
+      if (n >= 20)
+        break;
+      out[k] = v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => process.env[name] ?? m);
+      n++;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
   const applyOpts = (st, opts) => {
     if (!opts)
       return;
@@ -1487,7 +1531,7 @@ function createEngine(deps) {
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...metaFor() ? { meta: metaFor() } : {} } });
       }
       r.initTimer = setTimeout(() => {
         if (seq !== r.socketSeq)
@@ -1658,7 +1702,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...metaFor() ? { meta: metaFor() } : {} } });
         return;
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1667,7 +1711,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...metaFor() ? { meta: metaFor() } : {} } });
         return;
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected;
@@ -1710,6 +1754,13 @@ function createEngine(deps) {
       if (st.lastError) {
         st.lastError = null;
         scheduleBindingWrite(st);
+      }
+      const wantedGate = (st.opts?.authLogin ?? cfg.authLogin ?? "") !== "" && (st.opts?.authPassword ?? cfg.authPassword ?? "") !== "";
+      if (wantedGate && frame.auth === false && !r.warnedNoGate) {
+        r.warnedNoGate = true;
+        logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`);
+      } else if (frame.auth === true) {
+        r.warnedNoGate = false;
       }
       announceUrl(st, r);
       if (!st.wroteBinding) {

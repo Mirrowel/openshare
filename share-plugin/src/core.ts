@@ -121,6 +121,7 @@ type RemoteState = {
   authBlocked: boolean
   pending: Array<{ items: unknown[]; status: string; seq?: number; wire?: string }> // chunk-frames awaiting ack (spool; wire = prebuilt frame string)
   frozenRemote?: boolean // server froze the owner mid-session: stop writing
+  warnedNoGate?: boolean // B2: one-shot "requested gate missing" warning sent
   spoolAppendFailed?: boolean // last append errored: memory-only frame exists
   spoolSaveTimer: ReturnType<typeof setTimeout> | null // debounced ack-path spool rewrite
   authWaiter?: (() => void) | undefined // frame-auth handshake resolver
@@ -1058,7 +1059,20 @@ export function createEngine(deps: EngineDeps): Engine {
           : join(deps.directory ?? process.cwd(), cfg.urlFile)
         : join(deps.directory ?? process.cwd(), "openshare.urls.txt")
       try {
-        appendFileSync(file, url + "\n")
+        // "json" format: one machine-readable object per line (CI parses
+        // fields instead of URLs). Status is the engine's current signal
+        // at announce time; the completed flip updates the SHARE, not
+        // this file line.
+        const line =
+          cfg.urlFileFormat === "json"
+            ? JSON.stringify({
+                id: r.shareId,
+                url,
+                status: st.lastSentStatus ?? "waiting",
+                gated: (st.opts?.authLogin ?? cfg.authLogin ?? "") !== "",
+              }) + "\n"
+            : url + "\n"
+        appendFileSync(file, line)
         if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true
           lastUrlFile = file
@@ -1092,6 +1106,22 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   const ttlFor = (st: SessionState) => st.opts?.ttlDays ?? cfg.ttlDays
+
+  // free-form labels for team directories/admin listings: ${NAME} refs
+  // resolve from the process env at send time; unresolved refs stay
+  // literal (visible beats silently-empty). Cached env lookup, max 20
+  // keys/500 chars per value (config loader caps the same).
+  const metaFor = (): Record<string, string> | undefined => {
+    if (!cfg.meta || typeof cfg.meta !== "object") return undefined
+    const out: Record<string, string> = {}
+    let n = 0
+    for (const [k, v] of Object.entries(cfg.meta)) {
+      if (n >= 20) break
+      out[k] = v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => process.env[name] ?? m)
+      n++
+    }
+    return Object.keys(out).length ? out : undefined
+  }
 
   /** Apply a metadata opts update. On a CHANGED opts set for a session with
    * live sockets, re-send the attach frame over each open socket: the
@@ -1346,7 +1376,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(metaFor() ? { meta: metaFor() } : {}) } })
       }
 
       // handshake deadline: init sent but no ack (silent worker death)
@@ -1546,7 +1576,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(metaFor() ? { meta: metaFor() } : {}) } })
         return
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1558,7 +1588,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(metaFor() ? { meta: metaFor() } : {}) } })
         return
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected
@@ -1606,6 +1636,16 @@ export function createEngine(deps: EngineDeps): Engine {
       if (st.lastError) {
         st.lastError = null
         scheduleBindingWrite(st)
+      }
+      // ack-level gate assurance (B2): we asked for a gate (both fields
+      // set) but the server reports none - the page is actually public.
+      // Once per remote; the next init-ok re-checks after a fix.
+      const wantedGate = (st.opts?.authLogin ?? cfg.authLogin ?? "") !== "" && (st.opts?.authPassword ?? cfg.authPassword ?? "") !== ""
+      if (wantedGate && frame.auth === false && !r.warnedNoGate) {
+        r.warnedNoGate = true
+        logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`)
+      } else if (frame.auth === true) {
+        r.warnedNoGate = false
       }
       announceUrl(st, r)
       // first binding write is immediate (the TUI waits on the URL in

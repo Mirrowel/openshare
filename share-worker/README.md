@@ -255,7 +255,8 @@ Admin API (Bearer `CREATE_TOKEN`):
   /api/admin/tokens` · `DELETE /api/admin/tokens/:id`
 - `POST /api/admin/codes {label, activations, ttlHours?}` · `GET
   /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
-- `GET /api/admin/shares` (global, with ownerId)
+- `GET /api/admin/shares` (global, with ownerId; entries carry any
+  `custom` labels the plugin stamped at create)
 - `POST /api/admin/shares/:id/reassign {userId}`
 - `DELETE /api/share/:id` — root may delete any share directly (the
   TUI admin console uses this)
@@ -298,6 +299,12 @@ title/version/model.
   applied, so only that chunk retires from the client's spool. The token
   may also arrive as a first `auth` frame instead of the query string
   (keeps it out of proxy logs; `/health` advertises `frameAuth`).
+  The init create frame may carry `meta` (free-form string labels, max
+  20 keys / 64-char names / 500-char values) - stored on the share and
+  shown in the admin shares listing. The init **ack carries
+  `auth: true|false`** - the share's resolved read-gate state after the
+  exchange - so a client that asked for a gate can detect a half-pair
+  no-op instead of assuming protection.
 - Tombstones: a sync item may carry `del: true` (`{type:"message",
   del:true, data:{id}}` / part variant) — the worker deletes the keyed
   item and broadcasts the tombstone so live viewers drop it. Message

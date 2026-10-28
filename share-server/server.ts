@@ -126,12 +126,13 @@ db.exec(`CREATE TABLE IF NOT EXISTS shares (
   ttlDays INTEGER NOT NULL, createdAt INTEGER NOT NULL, lastActive INTEGER NOT NULL,
   pluginSeen INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'live',
   ownerId TEXT, frozen INTEGER NOT NULL DEFAULT 0, auth TEXT, tokens TEXT NOT NULL DEFAULT '[]',
-  attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER)`)
+  attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER, custom TEXT NOT NULL DEFAULT '{}')`)
 db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 0, del INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (shareId, key))`)
 // pre-existing databases: add the delta-tracking columns (rev stamps +
 // delete markers for the /data `since` handshake)
 try { db.exec("ALTER TABLE items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0") } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN del INTEGER NOT NULL DEFAULT 0") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN custom TEXT NOT NULL DEFAULT '{}'") } catch {}
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}')`)
 db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
@@ -141,7 +142,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT 
 type ShareRow = {
   id: string; secret: string; sessionID: string; ttlDays: number; createdAt: number; lastActive: number
   pluginSeen: number; rev: number; status: string; ownerId: string | null; frozen: number
-  auth: string | null; tokens: string; attempts: string; finalizeAt: number | null
+  auth: string | null; tokens: string; attempts: string; finalizeAt: number | null; custom: string
 }
 
 const q = {
@@ -232,18 +233,35 @@ function makeAuth(login: string, password: string) {
   })
 }
 
-function createShare(sessionID: string, ttlDays: number, ownerId: string | null, authLogin: string, authPassword: string): { id: string; secret: string } {
+function createShare(sessionID: string, ttlDays: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}): { id: string; secret: string } {
   const id = randomId()
   const secret = randomId() + randomId()
   const auth = authLogin && authPassword ? JSON.stringify({ salt: "", loginHash: "", passHash: "" }) : null
-  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]')")
-    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }))
+  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?)")
+    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom))
   if (authLogin && authPassword) {
     // hash asynchronously then persist (the synchronous insert keeps the
     // response fast; the gate materializes a moment later)
     void makeAuth(authLogin, authPassword).then((a) => db.query("UPDATE shares SET auth = ? WHERE id = ?").run(a, id))
   }
   return { id, secret }
+}
+
+
+// free-form labels from the plugin create frame (B5): same caps as the
+// worker (20 keys, 64-char names, 500-char values)
+function normCustom(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!raw || typeof raw !== "object") return out
+  let c = 0
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (c >= 20) break
+    if (typeof k === "string" && typeof v === "string" && k.length <= 64 && v.length <= 500) {
+      out[k] = v
+      c++
+    }
+  }
+  return out
 }
 
 /** Write gate parity: owner token (ownerId resolved server-side), root, or
@@ -552,7 +570,7 @@ async function httpCreate(body: Record<string, unknown>, ownerId: string | null,
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
   // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
   const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), ttlMax)
-  const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""))
+  const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta))
   return json(200, { ok: true, id, secret, ttlDays })
 }
 
@@ -784,7 +802,8 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
     return res.changes ? json(200, { ok: true }) : json(404, { ok: false, error: "no such code" })
   }
   if (path === "/api/admin/shares" && req.method === "GET") {
-    const rows = db.query("SELECT id, sessionID, createdAt, ownerId FROM shares").all() as Array<{ id: string; sessionID: string; createdAt: number; ownerId: string | null }>
+    const rows = (db.query("SELECT id, sessionID, createdAt, ownerId, custom FROM shares").all() as Array<{ id: string; sessionID: string; createdAt: number; ownerId: string | null; custom: string }>)
+      .map((r) => ({ ...r, custom: JSON.parse(r.custom || "{}") }))
     return json(200, { ok: true, shares: rows })
   }
   m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/reassign$/)
@@ -942,7 +961,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
         // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
         const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays ?? (chk.defaultTtlDays || undefined), chk.ttlMaxDays ?? 0)
-        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""))
+        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta))
         data.attachId = id
         data.attachSecret = secret
         data.attachOwner = chk.userId ?? null
@@ -952,7 +971,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
           send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: (early as Frame).seq })
         }
         data.earlySyncs = []
-        return send({ op: "init", ok: true, id, secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy() })
+        return send({ op: "init", ok: true, id, secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(), auth: !!(frame.create as Record<string, unknown>).authLogin && !!(frame.create as Record<string, unknown>).authPassword })
       }
       if (frame.attach) {
         const share = q.share(String((frame.attach as Record<string, unknown>).id ?? ""))
@@ -1015,7 +1034,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         data.earlySyncs = []
         // no `data` payload (worker parity): the plugin backfills from the
         // host and ignores attach data
-        return send({ op: "init", ok: true, id: share.id, secret: data.attachSecret, rev: updated.rev, status: updated.status, policy: resolvePolicy() })
+        return send({ op: "init", ok: true, id: share.id, secret: data.attachSecret, rev: updated.rev, status: updated.status, policy: resolvePolicy(), auth: !!updated.auth })
       }
       return send({ op: "init", ok: false, error: "init needs create|attach" })
     }

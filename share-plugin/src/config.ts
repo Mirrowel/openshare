@@ -53,9 +53,18 @@ export type ShareConfig = {
   authPassword: string
   spoolDir: string
   urlFile: string
+  /** urlFile line format: "url" (default, one bare URL per line) or
+   * "json" (one JSON object per line: id, url, status, gated) for CI
+   * consumers that want machine-readable lines without parsing URLs. */
+  urlFileFormat: "url" | "json"
   /** false silences the `[openshare] live:` (and `url file:`) stderr
    * lines. The share itself is unaffected. */
   announceStderr: boolean
+  /** Free-form string metadata stamped onto every share at create
+   * (labels for team directories/admin listings). Values may reference
+   * env vars as ${NAME} - interpolated at send time; unresolved refs
+   * stay literal so misconfiguration is visible. */
+  meta?: Record<string, string>
   shareMode?: ShareMode
 }
 
@@ -81,6 +90,7 @@ export const DEFAULTS: ShareConfig = {
   authPassword: "",
   spoolDir: "",
   urlFile: "",
+  urlFileFormat: "url",
   announceStderr: true,
 }
 
@@ -182,12 +192,27 @@ export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = proc
     authLogin: env.OPENSHARE_AUTH_LOGIN,
     authPassword: env.OPENSHARE_AUTH_PASSWORD,
     urlFile: env.OPENSHARE_URL_FILE,
+    urlFileFormat: env.OPENSHARE_URL_FILE_FORMAT,
     spoolDir: env.OPENSHARE_SPOOL_DIR,
     announceStderr: env.OPENSHARE_ANNOUNCE_STDERR,
     shareMode: env.OPENSHARE_SHARE_MODE,
   }
   for (const [key, value] of Object.entries(envKeys)) {
     if (value !== undefined && value !== "") sources[key] = "environment"
+  }
+  // OPENSHARE_CONFIG_JSON sits between env and the files: it loses only
+  // to a specific env var, so it overrides any file's key
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      const raw = JSON.parse(env.OPENSHARE_CONFIG_JSON)
+      if (raw && typeof raw === "object") {
+        for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
+          if (sources[key] === "environment") continue
+          if (key === "servers" || known.has(key)) sources[key] = "OPENSHARE_CONFIG_JSON"
+        }
+      }
+    } catch {}
   }
   // configPaths() is ordered lowest-priority-first? No: index 0 is the
   // ADJACENT file (highest). Merge order reverses it; attribution walks
@@ -328,24 +353,38 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
 
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"])
   const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode"])
+  const applyObject = (raw: unknown) => {
+    if (!raw || typeof raw !== "object") return
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (key === "servers") {
+        const servers = normalizeServers(value)
+        if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
+        continue
+      }
+      if (key === "meta") {
+        // string-to-string only: meta rides the create frame verbatim
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const clean: Record<string, string> = {}
+          for (const [mk, mv] of Object.entries(value as Record<string, unknown>)) {
+            if (typeof mv === "string" && mv.length <= 500 && mk.length <= 64) clean[mk] = mv
+          }
+          if (Object.keys(clean).length) cfg.meta = { ...cfg.meta, ...clean }
+        }
+        continue
+      }
+      if (!known.has(key)) continue
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
+      ;(cfg as Record<string, unknown>)[key] = value
+    }
+  }
+
   for (const path of [...configPaths(pluginDir)].reverse()) {
     try {
       // strict JSON: the $comment key (what our templates use) is valid
       // JSON; comment-stripping is deliberately avoided because a naive
       // stripper eats "//" inside workerUrl values
-      const raw = JSON.parse(readFileSync(path, "utf8"))
-      if (!raw || typeof raw !== "object") continue
-      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-        if (key === "servers") {
-          const servers = normalizeServers(value)
-          if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
-          continue
-        }
-        if (!known.has(key)) continue
-        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
-        if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
-        ;(cfg as Record<string, unknown>)[key] = value
-      }
+      applyObject(JSON.parse(readFileSync(path, "utf8")))
     } catch (e) {
       // a malformed config file is a real setup error the user must hear
       // about - silence here looks like "no share server configured".
@@ -370,6 +409,18 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   }
 
   const env = process.env
+  // OPENSHARE_CONFIG_JSON: a complete config object in one env var. Sits
+  // between the file/options layers and the per-key OPENSHARE_* env (a
+  // specific env var still wins) - CI sets one variable instead of nine,
+  // and secrets never touch a file. Malformed JSON is a loud error, not
+  // silence (same rule as files).
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      applyObject(JSON.parse(env.OPENSHARE_CONFIG_JSON))
+    } catch (e) {
+      console.error("[openshare] OPENSHARE_CONFIG_JSON could not be parsed - ignored:", (e as Error)?.message ?? e)
+    }
+  }
   if (env.OPENSHARE_WORKER_URL) cfg.workerUrl = env.OPENSHARE_WORKER_URL
   if (env.OPENSHARE_CREATE_TOKEN) cfg.createToken = env.OPENSHARE_CREATE_TOKEN
   if (env.OPENSHARE_DEBOUNCE_MS) cfg.debounceMs = num(env.OPENSHARE_DEBOUNCE_MS, cfg.debounceMs)
@@ -379,6 +430,7 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   if (env.OPENSHARE_AUTH_LOGIN !== undefined) cfg.authLogin = env.OPENSHARE_AUTH_LOGIN
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined) cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD
   if (env.OPENSHARE_URL_FILE !== undefined) cfg.urlFile = env.OPENSHARE_URL_FILE
+  if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url") cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT
   if (env.OPENSHARE_SPOOL_DIR) cfg.spoolDir = env.OPENSHARE_SPOOL_DIR
   if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim())
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual") cfg.shareMode = env.OPENSHARE_SHARE_MODE

@@ -90,7 +90,9 @@ function wsSession(url, token) {
       setTimeout(() => reject(new Error(`ws wait timeout: ${op}`)), ms)
     })
   const close = () => { try { ws.close() } catch {} }
-  return { open, send, wait, close }
+  const lastInit = async () => log.filter((f) => f.op === "init").at(-1)
+  const logOf = (op) => log.filter((f) => f.op === op)
+  return { open, send, wait, close, lastInit, logOf }
 }
 
 // The HTTP create route requires a hex URL suffix (POST /api/share/<hex>);
@@ -371,16 +373,52 @@ try {
     await w.open()
     w.send({ op: "init", attach: { id: SID, secret: SECRET, authLogin: "live", authPassword: "gate" } })
     ok("T27a re-attach ok", (await w.wait("init")).ok === true)
+    ok("T27a2 ack reports the live gate (auth:true)", (await w.lastInit()).auth === true, JSON.stringify(await w.lastInit()))
     ok("T27b gate applied live (no reconnect)", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 401)
     const login = await req(W1, "POST", `/api/share/${SID}/auth`, { body: { login: "live", password: "gate" } })
     const setCookie27 = login.res?.headers?.get?.("set-cookie") ?? ""
     const cookie27 = /osh_[0-9a-f]+=([^;]+)/.exec(setCookie27)?.[1] ?? ""
     ok("T27c viewer can log in", login.status === 200 && cookie27.length > 20, `${login.status} ${setCookie27.slice(0, 40)}`)
     w.send({ op: "init", attach: { id: SID, secret: SECRET, authLogin: "", authPassword: "" } })
-    ok("T27d empty pair re-attach ok", (await w.wait("init")).ok === true)
+    // wait("init") resolves from the log's FIRST ack; poll for the second
+    let ack27d = null
+    for (let i = 0; i < 50 && !ack27d; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      const inits = w.logOf("init")
+      if (inits.length >= 2) ack27d = inits.at(-1)
+    }
+    ok("T27d empty pair re-attach ok", ack27d?.ok === true, JSON.stringify(ack27d))
+    ok("T27d2 ack reports no gate after removal (auth:false)", ack27d?.auth === false, JSON.stringify(ack27d))
     ok("T27e gate removed live", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 200)
     w.close()
     await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
+  }
+
+  // T29 - free-form meta on WS create (B5): the plugin's labels ride the
+  // create frame, the ack carries the resolved auth flag, and the admin
+  // shares listing exposes the custom object on both backends
+  {
+    const w = wsSession(W1, CREATE_TOKEN)
+    await w.open()
+    w.send({ op: "init", create: { sessionID: "ses_meta", ttlDays: 5, authLogin: "", authPassword: "", meta: { run: "ci-42", branch: "main" } } })
+    const init29 = await w.wait("init")
+    const SID29 = init29.id ?? ""
+    ok("T29 meta create ok", init29.ok === true && !!SID29, JSON.stringify(init29))
+    ok("T29a create ack reports no gate (auth:false)", init29.auth === false, JSON.stringify(init29))
+    w.send({ op: "init", create: { sessionID: "ses_meta2", authLogin: "m", authPassword: "g", meta: { k: "v" } } })
+    let init29b = init29
+    for (let i = 0; i < 50 && init29b === init29; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      init29b = await w.lastInit()
+    }
+    ok("T29b gated create ack reports auth:true", init29b.ok === true && init29b.auth === true, JSON.stringify(init29b))
+    w.close()
+    const admin = await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })
+    const all = admin.json?.shares ?? []
+    const mine = all.find((s) => s.id === SID29)
+    ok("T29c admin listing carries custom meta", mine?.custom?.run === "ci-42" && mine?.custom?.branch === "main", JSON.stringify(mine?.custom))
+    await req(W1, "DELETE", `/api/share/${SID29}`, { body: { secret: init29.secret } })
+    await req(W1, "DELETE", `/api/share/${init29b.id}`, { body: { secret: init29b.secret } })
   }
 
   // T28 - revocation freezes control (owner rule): a user whose LAST valid
