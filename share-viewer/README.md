@@ -90,3 +90,6 @@ for a re-entrant disposal crash — see
 (MIT), modified only where surgical forks require it. Regenerate with
 `npm run vendor`; provenance in `vendor/V2-SOURCE.txt`. The theme
 builder and data source are OpenShare's own.
+
+- **Deep links** - hover any transcript row to get a link chip at its right edge; the copied URL carries `#row=<projection key>` (`user-message:<id>`, `assistant-part:...`, ...). Opening it scrolls that exact row into view, expands it if it is a collapsed tool/thought row, and flashes it for a few seconds. Row keys come from session data, so links survive reloads and deployments; a share never stores the anchor, it lives entirely in the URL. Available in the continuous transcript (classic, every skin, conversation and the focus overlay); the paged-mode section view keeps its own layout and has no chip.
+- **Export** - every header has an export button next to copy-as-markdown that downloads the current session as an `opencode import`-ready JSON (see `tools/README.md` for the CLI converters and the reverse direction).

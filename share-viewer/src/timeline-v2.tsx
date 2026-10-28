@@ -12,6 +12,7 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, creat
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
+import { copyRowLink, rowKeyFromHash } from "./deep-link"
 import { claimDisclosure, disclosureOwned, dismissSearchKey, engineClicking, releaseDisclosure, searchKeyDismissed, searchOwnsDisclosure } from "./search-state"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
 import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
@@ -186,7 +187,11 @@ export function VirtualTimeline(props: {
   const rows = projection.rows
   const rowKeys = createMemo(() => (rows() ?? []).map(TimelineRow.key))
 
-  const restored = readSnapshot(props.sessionKey)
+  // a deep link owns the initial position: replaying the last session offset
+  // would snap the reader back before/after the jump (live-caught: the jump
+  // landed, then the restored offset overwrote scrollTop)
+  const deepAtMount = !!rowKeyFromHash(location.hash)
+  const restored = deepAtMount ? undefined : readSnapshot(props.sessionKey)
   const initialMeasurementsCache = restored?.items.map((item) => ({
     index: item.index,
     key: item.key,
@@ -298,6 +303,82 @@ export function VirtualTimeline(props: {
   onMount(() => {
     props.onReady?.({ scrollToMessage: (id) => scrollToMessage(id) })
   })
+
+  // ---- deep links (see src/deep-link.ts) --------------------------------
+  // A row's projection key is the anchor. Jumping scrolls the row into view,
+  // opens a collapsed row, and flashes it so the target is unmistakable.
+  const jumpToRowKey = (key: string): boolean => {
+    const rows = projection.rows()
+    const idx = rows.findIndex((row) => TimelineRow.key(row as never) === key)
+    if (idx < 0 || !scrollElement) return false
+    const offset = virtualizer.getOffsetForIndex?.(idx, "start")
+    if (offset) scrollElement.scrollTop = offset[0]
+    // Measurement settles after the first paint (rows below/above were
+    // estimates), which can shift the target. Re-assert the position from
+    // the MEASURED offset a few times until it holds.
+    const settle = (n: number) => {
+      setTimeout(() => {
+        if (!scrollElement) return
+        const next = virtualizer.getOffsetForIndex?.(idx, "start")
+        if (next && Math.abs(next[0] - scrollElement.scrollTop) > 4) scrollElement.scrollTop = next[0]
+        if (n > 0) settle(n - 1)
+      }, 220)
+    }
+    settle(4)
+    // the row mounts a few frames after the scroll (tanstack re-windows),
+    // so retry the reveal until it exists
+    let tries = 0
+    const reveal = () => {
+      const el = host?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`)
+      if (!el && tries++ < 20) {
+        requestAnimationFrame(reveal)
+        return
+      }
+      if (!el) return
+      // a collapsed row would hide the very content the link promises -
+      // open it when the row owns a disclosure trigger
+      const trigger = el.querySelector<HTMLElement>('button[data-slot="collapsible-trigger"]')
+      if (trigger && trigger.getAttribute("aria-expanded") === "false") trigger.click()
+      el.classList.add("osh-deep-flash")
+      setTimeout(() => el.classList.remove("osh-deep-flash"), 3600)
+    }
+    requestAnimationFrame(reveal)
+    return true
+  }
+
+  let deepHash = ""
+  createEffect(() => {
+    // re-run when rows materialize (data arrival) and on hash changes
+    const rows = projection.rows()
+    const key = rowKeyFromHash(location.hash)
+    if (!key || rows.length === 0) return
+    if (deepHash === location.hash) return
+    if (jumpToRowKey(key)) deepHash = location.hash
+  })
+  onMount(() => {
+    const onHash = () => {
+      deepHash = ""
+      const key = rowKeyFromHash(location.hash)
+      if (key) jumpToRowKey(key)
+    }
+    window.addEventListener("hashchange", onHash)
+    onCleanup(() => window.removeEventListener("hashchange", onHash))
+  })
+
+  // hover affordance: one link chip that follows the hovered row
+  const [hoverRow, setHoverRow] = createSignal<{ key: string; top: number }>()
+  const trackHover = (event: Event) => {
+    const pe = event as PointerEvent
+    const target = pe.target instanceof Element ? pe.target.closest<HTMLElement>("[data-row-key]") : null
+    if (!target?.dataset.rowKey) return
+    if (pe.type === "pointerout") {
+      const next = pe.relatedTarget
+      if (next instanceof Node && target.contains(next)) return
+      setHoverRow(undefined)
+      return
+    }
+    setHoverRow({ key: target.dataset.rowKey, top: target.offsetTop })
+  }
 
   // pin state: at end → pinned (follows new content); nudge up → unpinned
   const onScroll = () => {
@@ -522,6 +603,8 @@ export function VirtualTimeline(props: {
         if (!el) return
         el.addEventListener("click", (event) => remeasureRow(event.target), true)
         el.addEventListener("toggle", (event) => remeasureRow(event.target), true)
+        el.addEventListener("pointerover", trackHover)
+        el.addEventListener("pointerout", trackHover)
         if (!restored?.offset) return
         // replay the saved position once the snapshot's heights are in place
         queueMicrotask(() => {
@@ -532,7 +615,7 @@ export function VirtualTimeline(props: {
       onScroll={onScroll}
       data-transcript-scroll
       data-osh-gutter
-      style={{ "overflow-y": "auto", "min-height": "0" }}
+      style={{ "overflow-y": "auto", "min-height": "0", position: "relative" }}
     >
       {/* header/footer live in the scroll flow (normal flow, not absolute):
           the title scrolls away with the transcript and the footer is the
@@ -544,6 +627,34 @@ export function VirtualTimeline(props: {
         style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
       />
       <Show when={props.footer}>{props.footer}</Show>
+      {/* deep-link chip: appears at the hovered row's right edge */}
+      <Show when={hoverRow()}>
+        {(row) => (
+          <button
+            class="osh-rowlink"
+            title="copy link to this row"
+            style={{
+              // scrollTick() subscribes the chip to scrolling so it rides
+              // the row instead of detaching on the first wheel event
+              top: `${row().top - (scrollTick(), scrollElement?.scrollTop ?? 0) + 4}px`,
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              void copyRowLink(row().key)
+            }}
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path
+                d="M6.5 9.5 9.5 6.5M6.75 4.5l.9-.9a2.55 2.55 0 0 1 3.6 3.6l-.9.9M5.65 7.9l-.9.9a2.55 2.55 0 0 0 3.6 3.6l.9-.9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+        )}
+      </Show>
     </div>
   )
 }

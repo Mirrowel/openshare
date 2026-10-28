@@ -64,7 +64,11 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share (per-token caps enforced server-side).
 - **Branding** — your deployment's logo, wordmark, accent, background, description, link previews — config only, no code ([worked example](share-worker/branding-example/)).
 - **Twelve reading views, two cores** — classic and conversation are the core reading surfaces (conversation: the ported TurnNav-sidebar design with hover previews and a focus overlay); reader and nine full-page skins (terminal, casefile, blueprint, cinema, timeline, letterpress, atlas, teletype, grove) ride the same SDK: the data, sync, search, settings and virtualization are the SDK's, the look is the skin's ([the view contract](share-viewer/src/views/README.md)).
-- **Viewer settings** — per-visitor: theme, view, paged vs continuous scroll (per capable view; classic is continuous + focus mode), prompt nav (sidebar by default or the pill, toggled in the control; hover-preview sizes from the nav gear in both states; ghost mode rests the pill invisible until approached; double-pings once per page load while on)), smooth scrolling (instant/near/always lever), prompt style (bubble or flat lever), auto-expanded tools, tool grouping (off/custom/all lever: custom collapses only the checked tools), follow-live, text sizes (live sliders) — plus the header search palette (/ - prompts, responses, thinking and tool text with scope chips), prompt-and-response search, `j`/`k` and `[`/`]` turn navigation, focus mode (shift+click, the row reticle, or right-click), and copy-as-markdown and export-as-opencode-JSON in every view.
+- **Viewer settings** — per-visitor: theme, view, paged vs continuous scroll (per capable view; classic is continuous + focus mode), prompt nav (sidebar by default or the pill, toggled in the control; hover-preview sizes from the nav gear in both states; ghost mode rests the pill invisible until approached; double-pings once per page load while on)), smooth scrolling (instant/near/always lever), prompt style (bubble or flat lever), auto-expanded tools, tool grouping (off/custom/all lever: custom collapses only the checked tools), follow-live, text sizes (live sliders) — plus the header search palette (/ - prompts, responses, thinking and tool text with scope chips), prompt-and-response search, `j`/`k` and `[`/`]` turn navigation, focus mode (shift+click, the row reticle, or right-click), and copy-as-markdown plus session export in every view.
+
+- **Deep links** - hover any transcript row for a link chip at its right edge; the URL carries the row data key (`#row=user-message:msg_...`), so opening it scrolls to that exact row, expands it if collapsed, and flashes it. Links live only in the URL (nothing is stored on the share) and keep working across reloads and deployments. Continuous modes only (classic, every skin, conversation, focus overlay).
+
+- **Export a session** - the header export button downloads the current session as JSON that `opencode import` accepts; the `tools/` converters do the same from the command line and in reverse. See [`tools/README.md`](tools/README.md).
 
 ## Quick start
 
@@ -417,6 +421,3 @@ npm run test:quick     # everyday gate — ~90s
 
 The suites run the real production path — real `opencode serve` instances, a mock LLM provider, local `wrangler dev` workers, and the Bun backend parity runs. Architecture, suite layout, the release workflow, and host-integration notes live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
-## License
-
-MIT
