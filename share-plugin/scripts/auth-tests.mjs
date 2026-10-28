@@ -587,6 +587,92 @@ try {
     await req(W1, "DELETE", `/api/share/${e1share.json?.id}`, { token: CREATE_TOKEN, body: {} })
   }
 
+  // T34 — PATCH /api/share/:id (#13): edit login/pass, ttl and meta after
+  // creation over REST; auth change rotates viewer tokens; scoped tokens
+  // can patch only their own shares
+  {
+    const c34 = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_t34" } })
+    const SID34 = c34.json?.id ?? ""
+    const SECRET34 = c34.json?.secret ?? ""
+    ok("T34 share staged", !!SID34, JSON.stringify(c34.json))
+    // gate on via PATCH
+    const p1 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "u", authPassword: "p" } })
+    ok("T34a PATCH sets the gate", p1.json?.ok === true && p1.json?.auth === true, JSON.stringify(p1.json))
+    ok("T34b viewer needs login now", (await req(W1, "GET", `/api/share/${SID34}/data`)).status === 401)
+    // viewer logs in, then a credential CHANGE rotates their token
+    const l1 = await req(W1, "POST", `/api/share/${SID34}/auth`, { body: { login: "u", password: "p" } })
+    const ck1 = /osh_[0-9a-f]+=([^;]+)/.exec(l1.res?.headers?.get?.("set-cookie") ?? "")?.[1] ?? ""
+    const p2 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "u2", authPassword: "p2" } })
+    ok("T34c PATCH rotates creds", p2.json?.ok === true && p2.json?.auth === true, JSON.stringify(p2.json))
+    ok("T34d old viewer token dead after rotation", ck1.length > 20 && (await req(W1, "GET", `/api/share/${SID34}/data`, { headers: { cookie: `osh_${SID34}=${ck1}` } })).status === 401)
+    // gate off
+    const p3 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "", authPassword: "" } })
+    ok("T34e PATCH removes the gate", p3.json?.ok === true && p3.json?.auth === false, JSON.stringify(p3.json))
+    ok("T34f viewer reads freely again", (await req(W1, "GET", `/api/share/${SID34}/data`)).status === 200)
+    // ttl + meta
+    const p4 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, ttlDays: 7, meta: { via: "patch" } } })
+    ok("T34g PATCH ttl+meta", p4.json?.ok === true && p4.json?.ttlDays === 7 && p4.json?.custom?.via === "patch", JSON.stringify(p4.json))
+    const admin34 = await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })
+    const row34 = (admin34.json?.shares ?? []).find((sh) => sh.id === SID34)
+    ok("T34h admin listing carries the patched meta", row34?.custom?.via === "patch", JSON.stringify(row34?.custom))
+    // half pair refused
+    const p5 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "x" } })
+    ok("T34i half auth pair refused", p5.status === 400, JSON.stringify(p5.json))
+    // wrong secret refused
+    const p6 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: "nope", ttlDays: 3 } })
+    ok("T34j wrong secret refused", p6.json?.ok === false, JSON.stringify(p6.json))
+    // scoped token cannot PATCH another token's share
+    const u34 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t34scoped" } })
+    const t34full = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u34.json?.userId } })
+    const t34scoped = await req(W1, "POST", "/api/token", { token: t34full.json?.token, body: { kind: "scoped" } })
+    const p7 = await req(W1, "PATCH", `/api/share/${SID34}`, { token: t34scoped.json?.token, body: { ttlDays: 5 } })
+    ok("T34k scoped cannot patch others' shares", p7.json?.ok === false, JSON.stringify(p7.json))
+    await req(W1, "DELETE", `/api/share/${SID34}`, { body: { secret: SECRET34 } })
+  }
+
+  // T35 — B4 token config sets: named sets on one token; Class A applies
+  // at create server-side (never transported); Class B fetch is safe
+  {
+    const u35 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "sets" } })
+    const t35 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u35.json?.userId } })
+    const T35 = t35.json?.token
+    // provision two sets: default (first) + "ci"
+    const putSets = await req(W1, "PUT", "/api/token/sets", {
+      token: T35,
+      body: { sets: {
+        default: { authLogin: "d", authPassword: "k", ttlDays: 11, modelLabel: "server-model" },
+        ci: { ttlDays: 2, modelLabel: "ci-model", shareMode: "manual" },
+      } },
+    })
+    ok("T35 sets provisioned", putSets.json?.ok === true && Object.keys(putSets.json?.sets ?? {}).length === 2, JSON.stringify(putSets.json))
+    const raw = JSON.stringify(putSets.json ?? {})
+    ok("T35a Class A never in any client response", !raw.includes("authLogin") && !raw.includes("authPassword") && !raw.includes("ttlDays"), raw.slice(0, 160))
+    // GET view is Class-B-only too
+    const getS = await req(W1, "GET", "/api/token/sets", { token: T35 })
+    const graw = JSON.stringify(getS.json ?? {})
+    ok("T35b GET view carries Class B only", getS.json?.sets?.ci?.modelLabel === "ci-model" && !graw.includes("authLogin"), graw.slice(0, 160))
+    // create WITHOUT a set name: the default (first) set applies - gated,
+    // ttl 11, without the client sending either
+    const c35 = await req(W1, "POST", CREATE, { token: T35, body: { sessionID: "ses_t35a" } })
+    ok("T35c default set applied at create (ttl 11)", c35.json?.ok === true && c35.json?.ttlDays === 11, JSON.stringify(c35.json))
+    ok("T35d default set gated the share", (await req(W1, "GET", `/api/share/${c35.json?.id}/data`)).status === 401)
+    // create with set:"ci": ttl 2, NO gate
+    const c35b = await req(W1, "POST", CREATE, { token: T35, body: { sessionID: "ses_t35b", set: "ci" } })
+    ok("T35e named set applied (ttl 2, ungated)", c35b.json?.ok === true && c35b.json?.ttlDays === 2, JSON.stringify(c35b.json))
+    ok("T35f ci set has no gate", (await req(W1, "GET", `/api/share/${c35b.json?.id}/data`)).status === 200)
+    // scoped token: reads its own sets, cannot PUT
+    const sc35 = await req(W1, "POST", "/api/token", { token: T35, body: { kind: "scoped" } })
+    const scGet = await req(W1, "GET", "/api/token/sets", { token: sc35.json?.token })
+    ok("T35g scoped reads its sets", scGet.json?.ok === true && scGet.json?.sets?.default?.modelLabel === "server-model", JSON.stringify(scGet.json))
+    const scPut = await req(W1, "PUT", "/api/token/sets", { token: sc35.json?.token, body: { sets: { x: { modelLabel: "evil" } } } })
+    ok("T35h scoped cannot edit sets", scPut.status === 403, JSON.stringify(scPut.json))
+    // admin PUT by id
+    const admPut = await req(W1, "PUT", `/api/admin/tokens/${t35.json?.id}/sets`, { token: CREATE_TOKEN, body: { sets: { only: { ttlDays: 3 } } } })
+    ok("T35i admin edits sets by id", admPut.json?.ok === true && Object.keys(admPut.json?.sets ?? {}).length === 0, JSON.stringify(admPut.json))
+    await req(W1, "DELETE", `/api/share/${c35.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/share/${c35b.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
   // T20 — public mode worker: codeless onboarding is OFF by default, so
   // enrollment needs a code even on public; anonymous creates stay open
   console.log(`[${SUITE}] starting public-mode worker…`)

@@ -333,6 +333,36 @@ export async function workerDeleteShare(workerUrl: string, id: string, secret: s
   }
 }
 
+/** PATCH a live share's settings over REST (#13): immediate effect with
+ * no socket required (the engine's attach-sync remains the structural
+ * path - this is the same edit pushed now, per server). Auth sends as
+ * the both-or-none pair or not at all; ttlDays only when explicit. */
+export async function patchShareOpts(
+  workerUrl: string,
+  id: string,
+  opts: { authLogin?: string; authPassword?: string; ttlDays?: number },
+  secret: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const body: Record<string, unknown> = { secret }
+  if (opts.authLogin !== undefined && opts.authPassword !== undefined) {
+    body.authLogin = opts.authLogin
+    body.authPassword = opts.authPassword
+  }
+  if (opts.ttlDays !== undefined) body.ttlDays = opts.ttlDays
+  try {
+    const res = await fetch(`${workerUrl.replace(/\/$/, "")}/api/share/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    })
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    return res.ok && json.ok ? { ok: true } : { ok: false, error: json.error ?? `HTTP ${res.status}` }
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || String(e) }
+  }
+}
+
 /** Health probe for the settings dialog's connection test. */
 export async function probeWorker(workerUrl: string): Promise<{ ok: boolean; detail: string }> {
   if (!workerUrl) return { ok: false, detail: "workerUrl is empty" }

@@ -41,6 +41,7 @@ var DEFAULTS = {
   spoolDir: "",
   urlFile: "",
   urlFileFormat: "url",
+  configSet: "",
   announceStderr: true
 };
 var CONFIG_NAME = "openshare.config.json";
@@ -78,6 +79,72 @@ function configPaths(pluginDir, env = process.env) {
 }
 function configHomePath(env = process.env) {
   return join(globalConfigDir(env), CONFIG_NAME);
+}
+function configSourceMap(pluginDir, env = process.env) {
+  const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"]);
+  const known = new Set([...Object.keys(DEFAULTS), "shareMode", "servers"]);
+  const sources = {};
+  const envKeys = {
+    workerUrl: env.OPENSHARE_WORKER_URL,
+    createToken: env.OPENSHARE_CREATE_TOKEN,
+    debounceMs: env.OPENSHARE_DEBOUNCE_MS,
+    completedDelayMs: env.OPENSHARE_COMPLETED_DELAY_MS,
+    modelLabel: env.OPENSHARE_MODEL_LABEL,
+    ttlDays: env.OPENSHARE_TTL_DAYS,
+    authLogin: env.OPENSHARE_AUTH_LOGIN,
+    authPassword: env.OPENSHARE_AUTH_PASSWORD,
+    urlFile: env.OPENSHARE_URL_FILE,
+    urlFileFormat: env.OPENSHARE_URL_FILE_FORMAT,
+    configSet: env.OPENSHARE_CONFIG_SET,
+    spoolDir: env.OPENSHARE_SPOOL_DIR,
+    announceStderr: env.OPENSHARE_ANNOUNCE_STDERR,
+    shareMode: env.OPENSHARE_SHARE_MODE
+  };
+  for (const [key, value] of Object.entries(envKeys)) {
+    if (value !== undefined && value !== "")
+      sources[key] = "environment";
+  }
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      const raw = JSON.parse(env.OPENSHARE_CONFIG_JSON);
+      if (raw && typeof raw === "object") {
+        for (const [key, value] of Object.entries(raw)) {
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+            continue;
+          if (sources[key] === "environment")
+            continue;
+          if (key === "servers" || known.has(key))
+            sources[key] = "OPENSHARE_CONFIG_JSON";
+        }
+      }
+    } catch {}
+  }
+  for (const path of configPaths(pluginDir, env)) {
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"));
+      if (!raw || typeof raw !== "object")
+        continue;
+    } catch {
+      continue;
+    }
+    const label = basename(path) === LOCAL_NAME ? `openshare.local.json (${dirname(path).split(/[\\/]/).pop()})` : `${basename(path)} (${dirname(path).split(/[\\/]/).pop()})`;
+    for (const [key, value] of Object.entries(raw)) {
+      if (key === "servers") {
+        if (sources.servers === undefined && normalizeServers(value))
+          sources.servers = label;
+        continue;
+      }
+      if (sources[key] !== undefined || !known.has(key))
+        continue;
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+        continue;
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key))
+        continue;
+      sources[key] = label;
+    }
+  }
+  return sources;
 }
 function num(value, fallback) {
   const parsed = Number(value);
@@ -241,6 +308,8 @@ function loadConfig(pluginDir, options) {
     cfg.urlFile = env.OPENSHARE_URL_FILE;
   if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url")
     cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT;
+  if (env.OPENSHARE_CONFIG_SET)
+    cfg.configSet = env.OPENSHARE_CONFIG_SET;
   if (env.OPENSHARE_SPOOL_DIR)
     cfg.spoolDir = env.OPENSHARE_SPOOL_DIR;
   if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined)
@@ -747,11 +816,62 @@ function createEngine(deps) {
   };
   seedCredentials();
   const ENROLL_RETRY_MS = 60000;
+  const setsFetched = new Set;
+  const adoptServerSuggestions = async (url, token) => {
+    if (setsFetched.has(url))
+      return;
+    setsFetched.add(url);
+    try {
+      const r = await fetch(`${url}/api/token/sets`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000)
+      });
+      const body = r.ok ? await r.json().catch(() => null) : null;
+      const sets = body?.sets ?? {};
+      const pick = sets[cfg.configSet ?? ""] ?? Object.values(sets)[0];
+      if (!pick)
+        return;
+      const wantModel = typeof pick.modelLabel === "string" && !pick.modelLabel ? undefined : pick.modelLabel;
+      const wantMode = pick.shareMode === "all" || pick.shareMode === "manual" ? pick.shareMode : undefined;
+      const src = configSourceMap(deps.pluginDir ?? "");
+      const modelUnset = cfg.modelLabel === DEFAULTS.modelLabel && !src.modelLabel;
+      const modeUnset = cfg.shareMode === undefined && !src.shareMode;
+      const adoptModel = wantModel && modelUnset;
+      const adoptMode = wantMode && modeUnset;
+      if (!adoptModel && !adoptMode)
+        return;
+      const home = configHomePath();
+      if (!home)
+        return;
+      let doc = {};
+      try {
+        doc = JSON.parse(readFileSync2(home, "utf8"));
+        if (!doc || typeof doc !== "object")
+          doc = {};
+      } catch {}
+      let dirty = false;
+      if (adoptModel && doc.modelLabel === undefined) {
+        doc.modelLabel = wantModel;
+        dirty = true;
+        log(`${url}: adopted modelLabel from the server config set`);
+      }
+      if (adoptMode && doc.shareMode === undefined) {
+        doc.shareMode = wantMode;
+        dirty = true;
+        log(`${url}: adopted shareMode from the server config set`);
+      }
+      if (dirty)
+        writeFileSync2(home, JSON.stringify(doc, null, 2) + `
+`);
+    } catch {}
+  };
   const ensureCredential = async (url) => {
     const c = credOf(url);
     const target = targets.find((t) => t.url === url);
-    if (c.credential)
+    if (c.credential) {
+      adoptServerSuggestions(url, c.credential);
       return c.credential;
+    }
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS)
       return "";
     c.lastEnrollAt = Date.now();
@@ -784,6 +904,7 @@ function createEngine(deps) {
         c.error = "";
         const savedTo = saveServerToken(url, c.credential);
         log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
+        adoptServerSuggestions(url, c.credential);
         return c.credential;
       }
       c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
@@ -1539,7 +1660,7 @@ function createEngine(deps) {
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
       }
       r.initTimer = setTimeout(() => {
         if (seq !== r.socketSeq)
@@ -1710,7 +1831,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
         return;
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1719,7 +1840,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
         return;
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected;

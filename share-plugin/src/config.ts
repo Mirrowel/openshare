@@ -63,6 +63,9 @@ export type ShareConfig = {
   /** false silences the `[openshare] live:` (and `url file:`) stderr
    * lines. The share itself is unaffected. */
   announceStderr: boolean
+  /** B4: which named config set on the server token this agent uses
+   * (unset = the token's first/default set). Rides the create frame. */
+  configSet?: string
   /** Free-form string metadata stamped onto every share at create
    * (labels for team directories/admin listings). Values may reference
    * env vars as ${NAME} - interpolated at send time; unresolved refs
@@ -94,6 +97,7 @@ export const DEFAULTS: ShareConfig = {
   spoolDir: "",
   urlFile: "",
   urlFileFormat: "url",
+  configSet: "",
   announceStderr: true,
 }
 
@@ -196,6 +200,7 @@ export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = proc
     authPassword: env.OPENSHARE_AUTH_PASSWORD,
     urlFile: env.OPENSHARE_URL_FILE,
     urlFileFormat: env.OPENSHARE_URL_FILE_FORMAT,
+    configSet: env.OPENSHARE_CONFIG_SET,
     spoolDir: env.OPENSHARE_SPOOL_DIR,
     announceStderr: env.OPENSHARE_ANNOUNCE_STDERR,
     shareMode: env.OPENSHARE_SHARE_MODE,
@@ -435,6 +440,7 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined) cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD
   if (env.OPENSHARE_URL_FILE !== undefined) cfg.urlFile = env.OPENSHARE_URL_FILE
   if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url") cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT
+  if (env.OPENSHARE_CONFIG_SET) cfg.configSet = env.OPENSHARE_CONFIG_SET
   if (env.OPENSHARE_SPOOL_DIR) cfg.spoolDir = env.OPENSHARE_SPOOL_DIR
   if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim())
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual") cfg.shareMode = env.OPENSHARE_SHARE_MODE

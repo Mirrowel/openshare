@@ -73,6 +73,11 @@ Long-lived user tokens, SHA-256 hashed server-side, minted at enrollment or by t
 - **full** (default) - the account credential. Creates, syncs any of the owner's shares, mints/revokes tokens (`POST /api/token` self-service), edits settings, rotates anything. Only full tokens keep the account alive.
 - **scoped** - a service credential (CI, agents). Carries its own limits; creates within them; syncs/deletes/lists ONLY the shares it created (`creatorTokenId` is stamped on every share); self-rotates (the successor inherits the scope); cannot mint tokens, touch settings, or reach the owner's other shares. Minted by a full token: `POST /api/token {"kind":"scoped", "label", "limits"}`.
 
+**Named config sets (B4)** - one token (key) carries up to 10 named sets; agents pick by name (`configSet` / `OPENSHARE_CONFIG_SET`), unspecified = the first set:
+- Class A (`authLogin`, `authPassword`, `ttlDays`): applied by the SERVER at create - they never travel to any client response. A set with a credential pair gates every share that token creates, with zero config committed to the repo.
+- Class B (`modelLabel`, `shareMode`): suggestions the plugin fetches ONCE per server per boot (`GET /api/token/sets`) and adopts only when the local config leaves them unspecified - then persists them to the settings home (no repeated fetches).
+- Provisioning: `PUT /api/token/sets` (a full token edits its own; scoped read-only), `PUT /api/admin/tokens/:id/sets` (admin), or inline `sets` on any mint. A self/admin mint without explicit sets inherits the minter's.
+
 Shared parameters:
 - `label` (:64 chars)
 - `limits` - `{ maxLiveShares, maxTtlDays, dailyCreates }`, each `0` = unlimited; enforced atomically at share create (scoped tokens count only their own shares). New enrollments inherit the `DEFAULT_*` vars as their limits
@@ -92,7 +97,7 @@ Created per shared session (`POST /api/share/<hex-suffix>` or the WS `init creat
 
 Removing a share: delete (page gone) or disconnect (snapshot stays until TTL).
 
-Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `POST /api/token/rotate`, `DELETE /api/token`; admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
+Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlDays, meta after creation); admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
 
 ---
 
@@ -124,6 +129,7 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
 | `urlFile` | `""` → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
+| `configSet` | `""` | Which named config set on the server token this client uses (B4; unset = the token's first/default set). Rides every create frame |
 | `urlFileFormat` | `"url"` | Line format: `url` = one bare URL per line; `json` = one JSON object per line (`{"id","url","status","gated"}`) for CI consumers that parse fields instead of URLs |
 | `meta` | - | Free-form string labels (max 20 keys, 64-char names, 500-char values) stamped onto every share at create; shown in the server's admin shares listing. Values may reference env vars as `${NAME}` - resolved when the share is created; unresolved refs stay literal so misconfiguration is visible |
 | `announceStderr` | `true` | `false` silences the `[openshare] live:` and `url file:` stderr lines (errors still print; the TUI carries the URL) |

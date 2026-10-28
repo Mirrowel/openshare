@@ -134,7 +134,7 @@ try { db.exec("ALTER TABLE items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0") } c
 try { db.exec("ALTER TABLE items ADD COLUMN del INTEGER NOT NULL DEFAULT 0") } catch {}
 try { db.exec("ALTER TABLE shares ADD COLUMN custom TEXT NOT NULL DEFAULT '{}'") } catch {}
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}', createdByCode TEXT)`)
-db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'full')`)
+db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'full', sets TEXT NOT NULL DEFAULT '{}')`)
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS rate (ip TEXT PRIMARY KEY, n INTEGER NOT NULL, resetAt INTEGER NOT NULL)`)
 db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT NULL)`)
@@ -144,6 +144,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT 
 try { db.exec("ALTER TABLE shares ADD COLUMN creatorTokenId TEXT") } catch {}
 try { db.exec("ALTER TABLE tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'") } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN createdByCode TEXT") } catch {}
+try { db.exec("ALTER TABLE tokens ADD COLUMN sets TEXT NOT NULL DEFAULT '{}'") } catch {}
 
 type ShareRow = {
   id: string; secret: string; sessionID: string; ttlDays: number; createdAt: number; lastActive: number
@@ -192,10 +193,10 @@ async function checkToken(token: string): Promise<{ kind: "none" | "root" } | { 
   if (Date.now() - row.lastUsedAt > 60000) db.query("UPDATE tokens SET lastUsedAt = ? WHERE id = ?").run(Date.now(), row.id)
   // tokenKind (full|scoped) rides every identity: the write gate lets a
   // SCOPED token touch only the shares it created (worker parity)
-  return { kind: "user", token: row, userId: row.userId, tokenId: row.id, tokenKind: row.kind === "scoped" ? "scoped" : "full" }
+  return { kind: "user", token: row, userId: row.userId, tokenId: row.id, tokenKind: row.kind === "scoped" ? "scoped" : "full", sets: JSON.parse(row.sets || "{}") as Record<string, TokenSet> }
 }
 
-async function createCheck(token: string): Promise<{ ok: true; userId?: string; ttlMaxDays?: number; defaultTtlDays?: number } | { ok: false; error: string; httpStatus: number }> {
+async function createCheck(token: string, set: unknown = undefined): Promise<{ ok: true; userId?: string; ttlMaxDays?: number; defaultTtlDays?: number } | { ok: false; error: string; httpStatus: number }> {
   const chk = await checkToken(token)
   if (chk.kind === "root") return { ok: true }
   if (chk.kind === "none") {
@@ -228,7 +229,10 @@ async function createCheck(token: string): Promise<{ ok: true; userId?: string; 
   }
   const u = db.query("SELECT settings FROM users WHERE id = ?").get(chk.userId) as { settings: string } | undefined
   const defaultTtlDays = Number(JSON.parse(u?.settings ?? "{}").defaultTtlDays) || 0
-  return { ok: true, userId: chk.userId, tokenId: chk.token.id, tokenKind: chk.token.kind === "scoped" ? "scoped" : "full", ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays }
+  // B4: Class A of the requested (or default) set - applied at create,
+  // never transported (worker parity)
+  const setA = resolveSet(chk.sets, set).classA
+  return { ok: true, userId: chk.userId, tokenId: chk.token.id, tokenKind: chk.token.kind === "scoped" ? "scoped" : "full", ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays, ...(Object.keys(setA).length ? { setA } : {}) }
 }
 
 async function mint(userId: string, label: string, limits: unknown, kind: "full" | "scoped" = "full"): Promise<{ value: string; id: string; kind: string }> {
@@ -276,6 +280,59 @@ function normCustom(raw: unknown): Record<string, string> {
       out[k] = v
       c++
     }
+  }
+  return out
+}
+
+/** Named config sets on a token (B4, worker parity): Class A fields
+ * (authLogin/authPassword/ttlDays) apply at create and never travel to a
+ * client; Class B (modelLabel/shareMode) are fetchable suggestions. */
+type TokenSet = { authLogin?: string; authPassword?: string; ttlDays?: number; modelLabel?: string; shareMode?: string }
+
+function normSets(input: unknown): Record<string, TokenSet> {
+  const out: Record<string, TokenSet> = {}
+  if (!input || typeof input !== "object" || Array.isArray(input)) return out
+  let n = 0
+  for (const [name, raw] of Object.entries(input as Record<string, unknown>)) {
+    if (n >= 10) break
+    if (typeof name !== "string" || name.length > 32 || !/^[a-zA-Z0-9_-]+$/.test(name)) continue
+    if (!raw || typeof raw !== "object") continue
+    const r = raw as Record<string, unknown>
+    const set: TokenSet = {}
+    for (const k of ["authLogin", "authPassword"] as const) {
+      if (typeof r[k] === "string" && (r[k] as string).length <= 128) set[k] = r[k] as string
+    }
+    const ttl = Math.floor(Number(r.ttlDays))
+    if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlDays = ttl
+    if (typeof r.modelLabel === "string" && r.modelLabel.length <= 64) set.modelLabel = r.modelLabel
+    if (r.shareMode === "all" || r.shareMode === "manual") set.shareMode = r.shareMode
+    if (Object.keys(set).length) { out[name] = set; n++ }
+  }
+  return out
+}
+
+function resolveSet(sets: Record<string, TokenSet> | undefined, wanted: unknown): { classA: Partial<TokenSet>; classB: Partial<TokenSet> } {
+  const names = Object.keys(sets ?? {})
+  if (!names.length) return { classA: {}, classB: {} }
+  const name = typeof wanted === "string" && sets?.[wanted] ? wanted : names[0]
+  const set = sets?.[name] ?? {}
+  const classA: Partial<TokenSet> = {}
+  if (set.authLogin !== undefined) classA.authLogin = set.authLogin
+  if (set.authPassword !== undefined) classA.authPassword = set.authPassword
+  if (set.ttlDays !== undefined) classA.ttlDays = set.ttlDays
+  const classB: Partial<TokenSet> = {}
+  if (set.modelLabel !== undefined) classB.modelLabel = set.modelLabel
+  if (set.shareMode !== undefined) classB.shareMode = set.shareMode
+  return { classA, classB }
+}
+
+function setsPublicView(sets: Record<string, TokenSet> | undefined): Record<string, Partial<TokenSet>> {
+  const out: Record<string, Partial<TokenSet>> = {}
+  for (const [name, set] of Object.entries(sets ?? {})) {
+    const view: Partial<TokenSet> = {}
+    if (set.modelLabel !== undefined) view.modelLabel = set.modelLabel
+    if (set.shareMode !== undefined) view.shareMode = set.shareMode
+    if (Object.keys(view).length) out[name] = view
   }
   return out
 }
@@ -487,6 +544,8 @@ async function httpHandler(req: Request): Promise<Response> {
   if (path === "/api/me/shares" && req.method === "GET") return meSharesRoute(bearer(req))
   if (path === "/api/token/rotate" && req.method === "POST") return rotateRoute(bearer(req))
   if (path === "/api/token" && req.method === "POST") return tokenSelfMintRoute(await bodyJson(req), bearer(req))
+  if (path === "/api/token/sets" && req.method === "GET") return tokenSetsGetRoute(bearer(req))
+  if (path === "/api/token/sets" && req.method === "PUT") return tokenSetsPutRoute(await bodyJson(req), bearer(req))
   if (path === "/api/token" && req.method === "DELETE") return tokenDeleteRoute(bearer(req))
 
   // admin (root only)
@@ -528,9 +587,10 @@ async function httpHandler(req: Request): Promise<Response> {
   if (req.method === "POST" && op === "") {
     const auth = bearer(req)
     if (auth && CREATE_TOKEN && auth === CREATE_TOKEN) return httpCreate(await bodyJson(req), null, 0)
-    const chk = await createCheck(auth)
+    const rawBody = await bodyJson(req)
+    const chk = await createCheck(auth, rawBody.set)
     if (!chk.ok) return json(chk.httpStatus, { error: chk.error })
-    return httpCreate(await bodyJson(req), chk.userId ?? null, chk.ttlMaxDays ?? 0, chk.defaultTtlDays ?? 0)
+    return httpCreate(rawBody, chk.userId ?? null, chk.ttlMaxDays ?? 0, chk.defaultTtlDays ?? 0, chk.tokenId ?? null, chk.setA ?? null)
   }
   if (req.method === "POST" && op === "/sync") {
     const body = await bodyJson(req, 8_000_000)
@@ -563,6 +623,59 @@ async function httpHandler(req: Request): Promise<Response> {
     }
     return new Response(renderData(share), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
   }
+  // #13: edit ANY share setting after creation (worker parity)
+  if (req.method === "PATCH" && op === "") {
+    if (id.length !== 32) return staticOr404(req, url)
+    const body = await bodyJson(req)
+    const share = q.share(id)
+    if (!share) return json(404, { ok: false, error: "share not found" })
+    const ident = await resolveIdentity(req, body)
+    const gate = writeGate(share, { secret: body.secret, ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind })
+    if (gate) return json(403, { ok: false, error: gate })
+    const patch: Record<string, unknown> = {}
+    if (body.authLogin !== undefined && body.authPassword !== undefined) {
+      if ((body.authLogin === "") !== (body.authPassword === "")) return json(400, { error: "authLogin and authPassword must be set together" })
+      patch.authLogin = String(body.authLogin)
+      patch.authPassword = String(body.authPassword)
+    }
+    if (body.ttlDays !== undefined) {
+      const tn = Math.floor(Number(body.ttlDays))
+      if (!Number.isFinite(tn) || tn <= 0) return json(400, { error: "ttlDays must be a positive number" })
+      patch.ttlDays = clampTtl(tn, ident.ttlMaxDays ?? 0)
+    }
+    if (body.meta !== undefined) {
+      if (!body.meta || typeof body.meta !== "object" || Array.isArray(body.meta)) return json(400, { error: "meta must be an object" })
+      patch.custom = normCustom(body.meta)
+    }
+    if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlDays, meta)" })
+    if (patch.authLogin !== undefined) {
+      const wantAuth = patch.authLogin && patch.authPassword
+      let sameAuth = false
+      if (wantAuth && share.auth) {
+        const auth = JSON.parse(share.auth) as { salt: string; loginHash: string; passHash: string }
+        sameAuth = auth.loginHash === await pbkdf2(String(patch.authLogin), auth.salt)
+          && auth.passHash === await pbkdf2(String(patch.authPassword), auth.salt)
+      }
+      if (wantAuth && !sameAuth) {
+        db.query("UPDATE shares SET auth = ?, tokens = '[]', attempts = ? WHERE id = ?")
+          .run(await makeAuth(String(patch.authLogin), String(patch.authPassword)), JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), id)
+        console.log("[patch] auth updated, tokens rotated")
+      } else if (!wantAuth && share.auth) {
+        db.query("UPDATE shares SET auth = NULL WHERE id = ?").run(id)
+        console.log("[patch] auth removed (owner action)")
+      }
+    }
+    if (patch.ttlDays !== undefined) {
+      db.query("UPDATE shares SET ttlDays = ? WHERE id = ?").run(patch.ttlDays, id)
+      console.log("[patch] ttl updated to", patch.ttlDays, "days")
+    }
+    if (patch.custom !== undefined) {
+      db.query("UPDATE shares SET custom = ? WHERE id = ?").run(JSON.stringify(patch.custom), id)
+    }
+    const updated = q.share(id)!
+    return json(200, { ok: true, id, ttlDays: updated.ttlDays, auth: !!updated.auth, custom: JSON.parse(updated.custom || "{}") })
+  }
+
   if (req.method === "DELETE" && op === "") {
     const body = await bodyJson(req)
     const share = q.share(id)
@@ -586,12 +699,17 @@ async function resolveIdentity(req: Request, body: { secret?: string }): Promise
   if (CREATE_TOKEN && token === CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await checkToken(token)
   return chk.kind === "user"
-    ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind }
+    ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxDays: chk.kind === "user" ? (JSON.parse(chk.token.limits).maxTtlDays || 0) : 0 }
     : { ownerId: null, root: false }
 }
 
-async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number, ownerDefault = 0, tokenId: string | null = null): Promise<Response> {
+async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number, ownerDefault = 0, tokenId: string | null = null, setA: Partial<TokenSet> | null = null): Promise<Response> {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
+  // B4 Class A: the token's provisioned set overrides client values
+  if (setA) {
+    if (setA.authLogin !== undefined) { body.authLogin = setA.authLogin; body.authPassword = setA.authPassword ?? "" }
+    if (setA.ttlDays !== undefined) body.ttlDays = setA.ttlDays
+  }
   // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
   const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), ttlMax)
   const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
@@ -737,7 +855,25 @@ async function tokenSelfMintRoute(body: Record<string, unknown>, token: string):
   if (chk.tokenKind === "scoped") return json(403, { ok: false, error: "scoped tokens cannot mint tokens" })
   const kind = body.kind === "scoped" ? "scoped" : "full"
   const t = await mint(chk.userId, String(body.label ?? ""), body.limits, kind)
+  // sets ride the new token: explicit, else inherit the minter's
+  const sets = body.sets !== undefined ? normSets(body.sets) : chk.sets ?? {}
+  if (Object.keys(sets).length) db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(sets), t.id)
   return json(200, { ok: true, token: t.value, id: t.id, userId: chk.userId, kind })
+}
+
+async function tokenSetsGetRoute(token: string): Promise<Response> {
+  const chk = await checkToken(token)
+  if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+  return json(200, { ok: true, sets: setsPublicView(chk.sets) })
+}
+
+async function tokenSetsPutRoute(body: Record<string, unknown>, token: string): Promise<Response> {
+  const chk = await checkToken(token)
+  if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+  if (chk.tokenKind === "scoped") return json(403, { ok: false, error: "scoped tokens cannot edit sets" })
+  const sets = normSets(body.sets)
+  db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(sets), chk.tokenId)
+  return json(200, { ok: true, sets: setsPublicView(sets) })
 }
 
 async function tokenDeleteRoute(token: string): Promise<Response> {
@@ -815,6 +951,8 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
     const user = db.query("SELECT id FROM users WHERE id = ?").get(String(body.userId ?? ""))
     if (!user) return json(404, { ok: false, error: "no such user" })
     const t = await mint(String(body.userId), String(body.label ?? ""), body.limits, body.kind === "scoped" ? "scoped" : "full")
+    const sets = normSets(body.sets)
+    if (Object.keys(sets).length) db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(sets), t.id)
     return json(200, { ok: true, token: t.value, id: t.id, userId: body.userId, kind: t.kind })
   }
   if (path === "/api/admin/tokens" && req.method === "GET") {
@@ -839,6 +977,14 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
     return json(200, { ok: true, users: users.length, revoked, frozen, codeDisabled: true })
   }
   // bulk op: freeze every share a specific token created
+  m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/sets$/)
+  if (m && req.method === "PUT") {
+    const row = db.query("SELECT hash FROM tokens WHERE id = ?").get(m[1]) as { hash: string } | undefined
+    if (!row) return json(404, { ok: false, error: "no such token" })
+    const sets = normSets(body.sets)
+    db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(sets), m[1])
+    return json(200, { ok: true, id: m[1], sets: setsPublicView(sets) })
+  }
   m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/freeze-shares$/)
   if (m && req.method === "POST") {
     const tokenId = m[1]
@@ -1035,8 +1181,14 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
     }
     if (frame.op === "init") {
       if (frame.create) {
-        const chk = await createCheck(data.token)
+        const createBody = frame.create as Record<string, unknown>
+        const chk = await createCheck(data.token, createBody.set)
         if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
+        // B4 Class A: provisioned set overrides client values
+        if (chk.setA) {
+          if (chk.setA.authLogin !== undefined) { createBody.authLogin = chk.setA.authLogin; createBody.authPassword = chk.setA.authPassword ?? "" }
+          if (chk.setA.ttlDays !== undefined) createBody.ttlDays = chk.setA.ttlDays
+        }
         // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
         const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays ?? (chk.defaultTtlDays || undefined), chk.ttlMaxDays ?? 0)
         const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)

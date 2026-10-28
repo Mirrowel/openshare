@@ -173,6 +173,15 @@ export default {
         const r = await authCall(env, "/token-self-mint", { token: bearer(req), ...body })
         return json(r.status, r.body)
       }
+      if (path === "/api/token/sets" && req.method === "GET") {
+        const r = await authCall(env, "/token-sets-get", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token/sets" && req.method === "PUT") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/token-sets-put", { token: bearer(req), sets: body.sets })
+        return json(r.status, r.body)
+      }
 
       // ---- admin (root CREATE_TOKEN only in this model) --------------------
       if (path.startsWith("/api/admin/") && path !== "/api/admin/purge") {
@@ -196,6 +205,8 @@ export default {
         if (path === "/api/admin/tokens" && req.method === "GET") return json(...(await call("/tokens-get")))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/token-revoke:" + m[1])))
+        m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/sets$/)
+        if (m && req.method === "PUT") return json(...(await call("/token-sets-admin:" + m[1])))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/freeze-shares$/)
         if (m && req.method === "POST") return json(...(await call("/freeze-by-token:" + m[1])))
         if (path === "/api/admin/codes" && req.method === "POST") return json(...(await call("/code-create")))
@@ -317,9 +328,10 @@ export default {
           // root bootstrap: ownerless create (legacy path keeps working)
           return await httpCreate(env, json, await req.json().catch(() => ({})), null, 0)
         }
-        const chk = await authCall(env, "/create-check", { token: auth ?? "" })
+        const rawBody = await req.json().catch(() => ({}))
+        const chk = await authCall(env, "/create-check", { token: auth ?? "", ...(rawBody.set ? { set: rawBody.set } : {}) })
         if (!chk.body?.ok) return json(chk.body?.httpStatus ?? 401, { error: chk.body?.error ?? "bad create token" })
-        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0, chk.body.tokenId, chk.body.tokenKind)
+        return await httpCreate(env, json, rawBody, chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0, chk.body.tokenId, chk.body.tokenKind, chk.body.setA ?? null)
       }
 
       if (req.method === "POST" && op === "/sync") {
@@ -361,6 +373,46 @@ export default {
           body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind }),
         })
         return json(r.status, await r.json())
+      }
+
+      // #13: edit ANY share setting after creation (login/pass, ttl,
+      // meta labels) over REST - the attach-sync path covers live
+      // sockets; this is the general surface. Identity-gated exactly
+      // like sync; scoped tokens reach only their own shares.
+      if (req.method === "PATCH" && op === "") {
+        if (id.length !== 32) return json(404, { error: "not found" })
+        const body = await req.json().catch(() => ({}))
+        const ident = await resolveIdentity(env, req, body)
+        const patch = {}
+        if (body.authLogin !== undefined && body.authPassword !== undefined) {
+          // both-or-none, same as the plugin contract: a half pair is
+          // silently ungated server-side, refuse it at the door
+          if ((body.authLogin === "") !== (body.authPassword === "")) return json(400, { error: "authLogin and authPassword must be set together" })
+          patch.authLogin = String(body.authLogin)
+          patch.authPassword = String(body.authPassword)
+        }
+        if (body.ttlDays !== undefined) {
+          const n = Math.floor(Number(body.ttlDays))
+          if (!Number.isFinite(n) || n <= 0) return json(400, { error: "ttlDays must be a positive number" })
+          patch.ttlDays = clampTtl(n, env, ident.ttlMaxDays ?? 0)
+        }
+        if (body.meta !== undefined) {
+          if (!body.meta || typeof body.meta !== "object" || Array.isArray(body.meta)) return json(400, { error: "meta must be an object" })
+          const clean = {}
+          let c = 0
+          for (const [k, v] of Object.entries(body.meta)) {
+            if (c >= 20) break
+            if (typeof k === "string" && typeof v === "string" && k.length <= 64 && v.length <= 500) { clean[k] = v; c++ }
+          }
+          patch.custom = clean
+        }
+        if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlDays, meta)" })
+        const r = await shareStub(env, id).fetch("https://do/set-opts", {
+          method: "POST",
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, ...patch }),
+        })
+        const out = await r.json().catch(() => ({ ok: false, error: "bad response" }))
+        return json(r.status, out.ok ? { ...out, id } : out)
       }
 
       return json(404, { error: "not found" })
@@ -448,8 +500,13 @@ async function authCall(env, route, body) {
   }
 }
 
-async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, tokenId = null, tokenKind = null) {
+async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, tokenId = null, tokenKind = null, setA = null) {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
+  // B4 Class A: the token's provisioned set overrides client values
+  if (setA) {
+    if (setA.authLogin !== undefined) { body.authLogin = setA.authLogin; body.authPassword = setA.authPassword ?? "" }
+    if (setA.ttlDays !== undefined) body.ttlDays = setA.ttlDays
+  }
   const newId = randomId()
   const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), env, ttlMax)
   const r = await shareStub(env, newId).fetch("https://do/init", {
@@ -518,7 +575,7 @@ async function resolveIdentity(env, req, body) {
   if (!token) return { ownerId: null, root: false }
   if (env.CREATE_TOKEN && token === env.CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await authCall(env, "/check", { token })
-  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false, tokenId: chk.body.tokenId, tokenKind: chk.body.tokenKind === "scoped" ? "scoped" : "full" }
+  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false, tokenId: chk.body.tokenId, tokenKind: chk.body.tokenKind === "scoped" ? "scoped" : "full", ttlMaxDays: chk.body.ttlMaxDays ?? 0 }
   return { ownerId: null, root: false }
 }
 
@@ -718,13 +775,20 @@ export class ControlDO {
           let creatorTokenId = null
           let creatorTokenKind = null
           if (!(this.token && this.env.CREATE_TOKEN && this.token === this.env.CREATE_TOKEN)) {
-            const chk = await this.authCall("/create-check", { token: this.token ?? "" })
+            const chk = await this.authCall("/create-check", { token: this.token ?? "", ...(frame.create.set ? { set: frame.create.set } : {}) })
             if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
             ownerId = chk.userId ?? null
             ttlMax = chk.ttlMaxDays ?? 0
             ownerDefault = chk.defaultTtlDays ?? 0
             creatorTokenId = chk.tokenId ?? null
             creatorTokenKind = chk.tokenKind ?? null
+            // B4 Class A: the token's provisioned set overrides the
+            // client's values (hoster policy - the client can still
+            // change them later through the normal owner paths)
+            if (chk.setA) {
+              if (chk.setA.authLogin !== undefined) { frame.create.authLogin = chk.setA.authLogin; frame.create.authPassword = chk.setA.authPassword ?? "" }
+              if (chk.setA.ttlDays !== undefined) frame.create.ttlDays = chk.setA.ttlDays
+            }
           }
           const id = randomId()
           // explicit ttlDays wins; otherwise the owner's stored default
@@ -1192,6 +1256,48 @@ export class ShareDO {
         sessionID: meta.sessionID,
         auth: !!meta.auth,
       })
+    }
+
+    // REST opts editor (#13): PATCH /api/share/:id forwards here after
+    // identity resolution. Mirrors the attach-sync mutations (auth
+    // rotate/removal, TTL rebase) plus custom-label updates (the KV
+    // index record carries them for admin listings).
+    if (path === "/set-opts" && req.method === "POST") {
+      const body = await req.json()
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: false, error: "share not found" })
+      const gate = this.writeGate(meta, body)
+      if (gate) return json(403, { ok: false, error: gate })
+      if (body.authLogin !== undefined && body.authPassword !== undefined) {
+        const wantAuth = body.authLogin && body.authPassword
+        const sameAuth = wantAuth && meta.auth
+          && meta.auth.loginHash === await pbkdf2(body.authLogin, meta.auth.salt)
+          && meta.auth.passHash === await pbkdf2(body.authPassword, meta.auth.salt)
+        if (wantAuth && !sameAuth) {
+          meta.auth = await this.makeAuth(body.authLogin, body.authPassword)
+          meta.tokens = []
+          meta.attempts = { ips: {}, total: 0, lockUntil: 0 }
+          console.log("[set-opts] auth updated, tokens rotated")
+        } else if (!wantAuth && meta.auth) {
+          meta.auth = null
+          console.log("[set-opts] auth removed (owner action)")
+        }
+      }
+      if (Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) {
+        meta.ttlDays = Math.floor(Number(body.ttlDays))
+        console.log("[set-opts] ttl updated to", meta.ttlDays, "days")
+      }
+      if (body.custom !== undefined) meta.custom = body.custom ?? {}
+      await this.state.storage.put("meta", meta)
+      // keep the KV index record honest when labels changed
+      if (body.custom !== undefined) {
+        try {
+          await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", {
+            metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId, creatorTokenId: meta.creatorTokenId ?? null, custom: kvCustom(meta.custom) },
+          })
+        } catch {}
+      }
+      return json(200, { ok: true, ttlDays: meta.ttlDays, auth: !!meta.auth, custom: meta.custom ?? {} })
     }
 
     if (path === "/auth" && req.method === "POST") {
@@ -1739,6 +1845,9 @@ export class AuthDO {
         case "/user-delete": return json(...(await this.userDelete(param, body)))
         case "/token-mint": return json(...(await this.tokenMint(body)))
         case "/token-self-mint": return json(...(await this.tokenSelfMint(body)))
+        case "/token-sets-get": return json(...(await this.tokenSetsGet(body)))
+        case "/token-sets-put": return json(...(await this.tokenSetsPut(body)))
+        case "/token-sets-admin": return json(...(await this.tokenSetsAdmin(param, body)))
         case "/tokens-get": return json(...(await this.tokensGet()))
         case "/token-revoke": return json(...(await this.tokenRevoke(param)))
         case "/code-create": return json(...(await this.codeCreate(body)))
@@ -1818,7 +1927,10 @@ export class AuthDO {
       if (n >= t.limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
       await this.state.storage.put(key, n + 1)
     }
-    return { ok: true, userId: t.userId, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full", ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0 }
+    // B4: resolve the requested (or default) config set's Class A fields -
+    // applied server-side at create, never transported to the client
+    const set = this.resolveSet(t.sets, body.set)
+    return { ok: true, userId: t.userId, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full", ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0, ...(Object.keys(set.classA).length ? { setA: set.classA } : {}) }
   }
 
   // ---- enrollment + lifecycle ----------------------------------------------
@@ -1846,9 +1958,65 @@ export class AuthDO {
   async mint(userId, label, limits, kind = "full") {
     const value = "osk_" + randomId() + randomId()
     const hash = await sha256hex(value)
-    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, kind: kind === "scoped" ? "scoped" : "full", createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
+    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, kind: kind === "scoped" ? "scoped" : "full", sets: {}, createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
     await this.state.storage.put("t:" + hash, rec)
     return { value, rec }
+  }
+
+  /** Named config sets on a token (B4 keying): one key (token) carries
+   * several named configs; agents pick by name, unspecified = the first
+   * (default) set. Class A fields (authLogin/authPassword/ttlDays) apply
+   * server-side at create and NEVER travel to a client; Class B fields
+   * (modelLabel/shareMode) are fetchable suggestions. Caps mirror the
+   * create-frame validation. */
+  normSets(input) {
+    const out = {}
+    if (!input || typeof input !== "object" || Array.isArray(input)) return out
+    let n = 0
+    for (const [name, raw] of Object.entries(input)) {
+      if (n >= 10) break
+      if (typeof name !== "string" || name.length > 32 || !/^[a-zA-Z0-9_-]+$/.test(name)) continue
+      if (!raw || typeof raw !== "object") continue
+      const set = {}
+      for (const k of ["authLogin", "authPassword"]) {
+        if (typeof raw[k] === "string" && raw[k].length <= 128) set[k] = raw[k]
+      }
+      const ttl = Math.floor(Number(raw.ttlDays))
+      if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlDays = ttl
+      if (typeof raw.modelLabel === "string" && raw.modelLabel.length <= 64) set.modelLabel = raw.modelLabel
+      if (raw.shareMode === "all" || raw.shareMode === "manual") set.shareMode = raw.shareMode
+      if (Object.keys(set).length) { out[name] = set; n++ }
+    }
+    return out
+  }
+
+  /** Resolve the set a create should use and split it by class. Returns
+   * { classA: {...}, classB: {...} } - classA never crosses to a client. */
+  resolveSet(sets, wanted) {
+    const names = Object.keys(sets ?? {})
+    if (!names.length) return { classA: {}, classB: {} }
+    const name = wanted && typeof wanted === "string" && sets[wanted] ? wanted : names[0]
+    const set = sets[name] ?? {}
+    const classA = {}
+    if (set.authLogin !== undefined) classA.authLogin = set.authLogin
+    if (set.authPassword !== undefined) classA.authPassword = set.authPassword
+    if (set.ttlDays !== undefined) classA.ttlDays = set.ttlDays
+    const classB = {}
+    if (set.modelLabel !== undefined) classB.modelLabel = set.modelLabel
+    if (set.shareMode !== undefined) classB.shareMode = set.shareMode
+    return { classA, classB }
+  }
+
+  /** Client-safe view: Class B fields ONLY (never authLogin/authPassword). */
+  setsPublicView(sets) {
+    const out = {}
+    for (const [name, set] of Object.entries(sets ?? {})) {
+      const view = {}
+      if (set.modelLabel !== undefined) view.modelLabel = set.modelLabel
+      if (set.shareMode !== undefined) view.shareMode = set.shareMode
+      if (Object.keys(view).length) out[name] = view
+    }
+    return out
   }
 
   async enroll(body) {
@@ -1985,8 +2153,41 @@ export class AuthDO {
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
     if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot mint tokens" }]
     const kind = body.kind === "scoped" ? "scoped" : "full"
+    // sets ride the new token: explicit, else inherit the minter's (a
+    // repo's scoped key is provisioned from its full token)
+    const sets = body.sets !== undefined ? this.normSets(body.sets) : (chk.token.sets ?? {})
     const t = await this.mint(chk.userId, body.label, this.normLimits(body.limits), kind)
+    if (Object.keys(sets).length) { t.rec.sets = sets; await this.state.storage.put("t:" + t.rec.hash, t.rec) }
     return [200, { ok: true, token: t.value, id: t.rec.id, userId: chk.userId, kind: t.rec.kind }]
+  }
+
+  /** B4 set fetch: Class B fields only (scoped included - a service
+   * credential reads its own config). Never authLogin/authPassword. */
+  async tokenSetsGet(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    return [200, { ok: true, sets: this.setsPublicView(chk.token.sets) }]
+  }
+
+  /** B4 set provisioning: a FULL token replaces its own sets (Class A
+   * secrets ride here - this is the provisioning surface). */
+  async tokenSetsPut(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot edit sets" }]
+    chk.token.sets = this.normSets(body.sets)
+    await this.state.storage.put("t:" + chk.token.hash, chk.token)
+    return [200, { ok: true, sets: this.setsPublicView(chk.token.sets) }]
+  }
+
+  /** Admin variant: root edits any token's sets by id. */
+  async tokenSetsAdmin(tokenId, body) {
+    const tokens = await this.listPrefix("t:")
+    const t = tokens.find((x) => x.id === tokenId)
+    if (!t) return [404, { ok: false, error: "no such token" }]
+    t.sets = this.normSets(body?.sets)
+    await this.state.storage.put("t:" + t.hash, t)
+    return [200, { ok: true, id: t.id, sets: this.setsPublicView(t.sets) }]
   }
 
   /** Revocation kills control (owner directive): a user whose LAST valid
@@ -2209,8 +2410,10 @@ export class AuthDO {
   async tokenMint(body) {
     const u = await this.state.storage.get("u:" + body?.userId)
     if (!u) return [404, { ok: false, error: "no such user" }]
-    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits))
-    return [200, { ok: true, token: t.value, id: t.rec.id, userId: u.id }]
+    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits), body?.kind === "scoped" ? "scoped" : "full")
+    const sets = this.normSets(body?.sets)
+    if (Object.keys(sets).length) { t.rec.sets = sets; await this.state.storage.put("t:" + t.rec.hash, t.rec) }
+    return [200, { ok: true, token: t.value, id: t.rec.id, userId: u.id, kind: t.rec.kind }]
   }
 
   async tokensGet() {

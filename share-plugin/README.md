@@ -61,6 +61,12 @@ spec `"file:///…/openshare/share-plugin"` in both config files (run
 no build at all: [`ci/openshare.js`](ci/README.md), committed ready to
 use.
 
+**Server-held config sets (B4)**: set `configSet` (or
+`OPENSHARE_CONFIG_SET`) to pick a named set provisioned on your server
+token - the server applies its auth/TTL at create (nothing sensitive in
+the repo), and suggests modelLabel/shareMode which the plugin adopts once
+per boot when you haven't set them locally.
+
 **Identity is never assumed**: with no token configured the plugin does
 NOT silently enroll (owner directive). A configured `code` IS expressed
 intent — the engine enrolls with it headlessly (the CI shape). Without

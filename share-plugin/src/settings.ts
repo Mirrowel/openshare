@@ -21,6 +21,7 @@ import {
   probeAuthMode,
   probeWorker,
   patchSessionBinding,
+  patchShareOpts,
   readBinding,
   readBindings,
   resolveRoot,
@@ -1335,6 +1336,12 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         }
         await setShareOpts(host.client, root, opts)
         const liveNow = live.length > 0
+        if (liveNow) {
+          // REST push (#13): immediate on every server, socket or not
+          const results = await Promise.all(live.map((b) => b.id && b.secret && b.server ? patchShareOpts(b.server, b.id, opts.ttlDays !== undefined ? { ttlDays: opts.ttlDays } : {}, b.secret) : Promise.resolve({ ok: false })))
+          const failed = results.filter((r) => !r.ok).length
+          if (failed) host.ui.toast({ variant: "error", title: "OpenShare", message: `TTL applied on ${results.length - failed}/${results.length} server(s) - the rest sync on next connect.` })
+        }
         host.ui.toast({
           variant: "success",
           title: "OpenShare",
@@ -1365,6 +1372,12 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         }
         await setShareOpts(host.client, root, opts)
         const liveNow2 = live.length > 0
+        if (liveNow2) {
+          const pair = login === "" ? { authLogin: "", authPassword: "" } : { authLogin: login, authPassword: password }
+          const results2 = await Promise.all(live.map((b) => b.id && b.secret && b.server ? patchShareOpts(b.server, b.id, pair, b.secret) : Promise.resolve({ ok: false })))
+          const failed2 = results2.filter((r) => !r.ok).length
+          if (failed2) host.ui.toast({ variant: "error", title: "OpenShare", message: `Read auth applied on ${results2.length - failed2}/${results2.length} server(s) - the rest sync on next connect.` })
+        }
         host.ui.toast({ variant: "success", title: "OpenShare", message: liveNow2 ? `Read auth ${login === "" ? "removed" : "saved"} - applied now.` : `Read auth ${login === "" ? "cleared" : "saved"} - applies when you share.` })
         return
       }

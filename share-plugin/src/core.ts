@@ -45,7 +45,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { isAbsolute, join } from "node:path"
-import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
+import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
 
@@ -405,11 +405,59 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   seedCredentials()
   const ENROLL_RETRY_MS = 60000
+  // B4 Class B (server-SUGGESTED modelLabel/shareMode): fetch once per
+  // server per boot, adopt ONLY keys with no explicit local source, and
+  // persist the adoption to the settings home (owner: no repeated CF
+  // fetches). One flag per URL for the whole process lifetime.
+  const setsFetched = new Set<string>()
+  const adoptServerSuggestions = async (url: string, token: string) => {
+    if (setsFetched.has(url)) return
+    setsFetched.add(url)
+    try {
+      const r = await fetch(`${url}/api/token/sets`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+      })
+      const body = r.ok ? ((await r.json().catch(() => null)) as { sets?: Record<string, { modelLabel?: string; shareMode?: string }> } | null) : null
+      const sets = body?.sets ?? {}
+      const pick = sets[cfg.configSet ?? ""] ?? Object.values(sets)[0]
+      if (!pick) return
+      const wantModel = typeof pick.modelLabel === "string" && !pick.modelLabel ? undefined : pick.modelLabel
+      const wantMode = pick.shareMode === "all" || pick.shareMode === "manual" ? pick.shareMode : undefined
+      // adopt only what is UNSPECIFIED locally: modelLabel sits at the
+      // default template, shareMode is unset and env carry no override
+      const src = configSourceMap(deps.pluginDir ?? "")
+      const modelUnset = cfg.modelLabel === DEFAULTS.modelLabel && !src.modelLabel
+      const modeUnset = cfg.shareMode === undefined && !src.shareMode
+      const adoptModel = wantModel && modelUnset
+      const adoptMode = wantMode && modeUnset
+      if (!adoptModel && !adoptMode) return
+      // surgical write into the settings home: read, patch just these
+      // keys when they are absent, write back (never clobber explicit
+      // values that appeared since load)
+      const home = configHomePath()
+      if (!home) return
+      let doc: Record<string, unknown> = {}
+      try {
+        doc = JSON.parse(readFileSync(home, "utf8"))
+        if (!doc || typeof doc !== "object") doc = {}
+      } catch {}
+      let dirty = false
+      if (adoptModel && doc.modelLabel === undefined) { doc.modelLabel = wantModel; dirty = true; log(`${url}: adopted modelLabel from the server config set`) }
+      if (adoptMode && doc.shareMode === undefined) { doc.shareMode = wantMode; dirty = true; log(`${url}: adopted shareMode from the server config set`) }
+      if (dirty) writeFileSync(home, JSON.stringify(doc, null, 2) + "\n")
+    } catch {
+      // suggestions are best-effort; a failed fetch never blocks sharing
+    }
+  }
 
   const ensureCredential = async (url: string): Promise<string> => {
     const c = credOf(url)
     const target = targets.find((t) => t.url === url)
-    if (c.credential) return c.credential
+    if (c.credential) {
+      void adoptServerSuggestions(url, c.credential)
+      return c.credential
+    }
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS) return ""
     c.lastEnrollAt = Date.now()
     // A configured code IS expressed onboarding intent (headless-safe:
@@ -446,6 +494,7 @@ export function createEngine(deps: EngineDeps): Engine {
         c.error = ""
         const savedTo = saveServerToken(url, c.credential)
         log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
+        void adoptServerSuggestions(url, c.credential)
         return c.credential
       }
       c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
@@ -1387,7 +1436,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
       }
 
       // handshake deadline: init sent but no ack (silent worker death)
@@ -1587,7 +1636,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
         return
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1599,7 +1648,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
         return
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected

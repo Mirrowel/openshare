@@ -344,6 +344,16 @@ title/version/model.
   same three-case semantics as the WS handshake minus the delta
   announcement, since the response is always a fresh set to merge),
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
+- `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
+  body `{secret|Bearer owner, authLogin+authPassword (both-or-none),
+  ttlDays, meta}`; a credential change rotates viewer tokens; identity-
+  gated exactly like sync (scoped tokens reach only their own shares)
+- `GET|PUT /api/token/sets` and `PUT /api/admin/tokens/:id/sets` — named
+  config sets on a token (B4): Class A (authLogin/authPassword/ttlDays)
+  applies server-side at create and never appears in a client response;
+  Class B (modelLabel/shareMode) is the fetchable suggestion view. Creates
+  carry an optional `set` name; unset = the token's first set. Mints
+  accept inline `sets` and inherit the minter's when omitted.
 - `GET /branding` — the deployment's resolved skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl, backgroundUrl, description,
   ogTitle, ogImage; all optional — absent = neutral default; see
