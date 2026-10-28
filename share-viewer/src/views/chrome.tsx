@@ -134,6 +134,13 @@ export function SkinHeader(props: {
           >
             <Icon name="copy" size="small" />
           </button>
+          <button
+            class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
+            title="export session (opencode import file)"
+            onClick={() => view.exportSession()}
+          >
+            <Icon name="download" size="small" />
+          </button>
         </Show>
         <Show when={!props.noGithub}>
           <a href={OPENSHARE_REPO} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">

@@ -36,6 +36,7 @@ import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { useShareSource, type Branding } from "./data-source"
 import { copySessionMarkdown } from "./copy-markdown"
+import { downloadSessionExport } from "./export-session"
 import { SearchControl } from "./search-palette"
 import { useSessionSections } from "./views/session-data"
 import { BrandMark } from "./views/chrome"
@@ -631,6 +632,13 @@ function SessionView(props: {
                         onClick={() => copySessionMarkdown(props.data, sessionID())}
                       >
                         <Icon name="copy" size="small" />
+                      </button>
+                      <button
+                        class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
+                        title="export session (opencode import file)"
+                        onClick={() => downloadSessionExport(props.data as never, sessionID(), info()?.title)}
+                      >
+                        <Icon name="download" size="small" />
                       </button>
                       <a href={OPENSHARE_REPO_URL} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
                         <Icon name="github" size="small" />

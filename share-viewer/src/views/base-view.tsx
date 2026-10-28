@@ -14,6 +14,7 @@ import { findParentTurn } from "../parent-link"
 import { viewSupportsPaged } from "./registry"
 import { ViewProvider, type ViewContextValue } from "./view-context"
 import { copySessionMarkdown } from "../copy-markdown"
+import { downloadSessionExport } from "../export-session"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -299,6 +300,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: n
     status: () => props.source.status(),
     back: () => back(),
     copyMarkdown: () => copySessionMarkdown(props.data, props.sessionID),
+    exportSession: () => downloadSessionExport(props.data as never, props.sessionID, info()?.title),
     isSub: () => isSub(),
     cachePrefix,
   }
