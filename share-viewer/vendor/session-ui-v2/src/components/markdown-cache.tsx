@@ -173,7 +173,13 @@ export async function renderCachedMarkdown(block: { raw: string; src: string }, 
 function startMarkdown(block: { raw: string; src: string }, key?: string) {
   const controller = new AbortController()
 
-  const promise = parseMarkdown(block.src, controller.signal)
+  // openshare fork: parseMarkdown THROWS synchronously when the worker is
+  // unavailable (offline snapshot files run from file://, where Worker
+  // construction throws) — deferring the call turns that throw into a
+  // normal rejection so consumers take the escaped-text fallback instead
+  // of the render boundary
+  const promise = Promise.resolve()
+    .then(() => parseMarkdown(block.src, controller.signal))
     .then((html) => {
       if (controller.signal.aborted) throw new MarkdownWorkerDisposedError()
       const hash = checksum(block.raw)

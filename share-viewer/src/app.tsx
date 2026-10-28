@@ -1060,11 +1060,13 @@ export function App() {
     })
   })
 
-  // in-page navigation (popstate) re-parses the sub segment
+  // in-page navigation (popstate) re-parses the sub segment (a snapshot
+  // file navigates subagent pages via `#n<N>` — its path never changes)
   window.addEventListener("popstate", () => {
     const parts = location.pathname.split("/").filter(Boolean)
     const i = parts.indexOf("s")
-    const n = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : undefined
+    const hashSub = /^n(\d+)$/.exec(location.hash.slice(1))
+    const n = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : hashSub ? Number(hashSub[1]) : undefined
     setSub(n)
     requestAnimationFrame(() => {
       const saved = scrollMemory.get(location.pathname)

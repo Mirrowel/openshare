@@ -8,30 +8,37 @@ export function workerFactory(): Worker {
   return new Worker(ShikiWorkerUrl, { type: "module" })
 }
 
-function createPool(lineDiffType: "none" | "word-line") {
-  const pool = new WorkerPoolManager(
-    {
-      workerFactory,
-      // poolSize defaults to 8. More workers = more parallelism but
-      // also more memory. Too many can actually slow things down.
-      // NOTE: 2 is probably better for OpenCode, as I think 8 might be
-      // a bit overkill, especially because Safari has a significantly slower
-      // boot up time for workers
-      poolSize: 2,
-    },
-    {
-      theme: "OpenCode",
-      lineDiffType,
-      // Pierre renders with the pool's options, not the viewer's, whenever the pool works. The "none" pool only
-      // serves diffs above the large-file threshold, so it carries the plain-text fallback the viewer requests.
-      ...(lineDiffType === "none" && { maxLineDiffLength: 0, tokenizeMaxLineLength: 1 }),
-      preferredHighlighter: "shiki-wasm",
-    },
-  )
+function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | undefined {
+  // openshare fork: offline snapshot files run from file://, where Worker
+  // construction throws SecurityError synchronously — a failed pool must
+  // degrade rendering to plain text, not kill the whole page
+  try {
+    const pool = new WorkerPoolManager(
+      {
+        workerFactory,
+        // poolSize defaults to 8. More workers = more parallelism but
+        // also more memory. Too many can actually slow things down.
+        // NOTE: 2 is probably better for OpenCode, as I think 8 might be a
+        // bit overkill, especially because Safari has a significantly slower
+        // boot up time for workers
+        poolSize: 2,
+      },
+      {
+        theme: "OpenCode",
+        lineDiffType,
+        // Pierre renders with the pool's options, not the viewer's, whenever the pool works. The "none" pool only
+        // serves diffs above the large-file threshold, so it carries the plain-text fallback the viewer requests.
+        ...(lineDiffType === "none" && { maxLineDiffLength: 0, tokenizeMaxLineLength: 1 }),
+        preferredHighlighter: "shiki-wasm",
+      },
+    )
 
-  void pool.initialize()
+    void pool.initialize().catch(() => {})
 
-  return pool
+    return pool
+  } catch {
+    return undefined
+  }
 }
 
 let plain: WorkerPoolManager | undefined

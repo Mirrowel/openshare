@@ -51,6 +51,14 @@ function parsePath(): { shareID: string; sub: number | undefined } {
   const i = parts.indexOf("s")
   const id = i >= 0 && parts[i + 1] ? parts[i + 1] : (parts.at(-1) ?? "")
   const sub = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : undefined
+  // a snapshot file lives at file://<path> — the URL carries NO share id
+  // (the filename would leak in as one) and subagent pages move to a
+  // `#n<N>` hash because file:// paths cannot be rewritten by pushState
+  const emb = (window as any).__MIRROBOT_SNAPSHOT__ as { sessionID?: string } | undefined
+  if (emb) {
+    const n = /^n(\d+)$/.exec(location.hash.slice(1))
+    return { shareID: emb.sessionID ?? id, sub: n ? Number(n[1]) : undefined }
+  }
   return { shareID: id, sub }
 }
 
@@ -74,7 +82,7 @@ export function useShareSource(): Source {
   const embedded = (import.meta.env.DEV && new URLSearchParams(location.search).has("demo")
     ? demoSnapshot
     : (window as any).__MIRROBOT_SNAPSHOT__) as
-    | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string }
+    | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string; status?: string; branding?: Branding; private?: Record<string, Record<string, string>> }
     | undefined
 
   const [items, setItems] = createSignal<Map<string, any>>(new Map())
@@ -88,7 +96,8 @@ export function useShareSource(): Source {
   // that ride the envelope tail for authenticated readers of gated shares
   const [priv, setPriv] = createSignal<Record<string, Record<string, string>> | undefined>(undefined)
 
-  fetchBranding().then(setBrand).catch(() => {})
+  if (embedded?.branding) setBrand(embedded.branding) // snapshot island carries its deployment's branding; the fetch is dead offline
+  else fetchBranding().then(setBrand).catch(() => {})
 
   const merge = (incoming: any[]) => {
     setItems((prev) => {
@@ -156,7 +165,10 @@ export function useShareSource(): Source {
 
   if (embedded) {
     merge(embedded.items ?? [])
-    setStatus("cached")
+    // snapshot freezes the share's real terminal status; the demo fixture
+    // keeps its historic "cached"
+    setStatus(embedded.status ?? "cached")
+    if (embedded.private) setPriv(embedded.private)
     const all = () => Array.from(items().values())
     const sessionID = () => embedded.sessionID
     // memoized fold: data() was a plain function called many times per

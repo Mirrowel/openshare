@@ -6,6 +6,20 @@ The share page your viewers open — built on the vendored **opencode v2 compone
 
 ## How it runs
 
+Any share can be frozen into ONE self-contained HTML file by appending
+`/snapshot` to its API path (`GET /api/share/:id/snapshot`, `?download=1`
+for a file download). The file inlines the viewer bundle, carries the
+share as a JSON island (`window.__MIRROBOT_SNAPSHOT__` — the same
+embedded path the `?demo` fixture and offline exports use), and boots it
+with a small shim that translates in-page navigation onto `#` hashes
+(`file://` pages cannot rewrite their path). The share's real terminal
+status, deployment branding and (for authenticated readers of gated
+shares) the private-facts block all ride the island. On `file://`
+browsers block worker/wasm loading, so syntax highlighting degrades to
+plain text — every other surface (views, virtualization, search, turn
+navigation within a page) is identical. Subagent pages navigate via
+`#n<N>` hashes instead of paths.
+
 - **Live** — the share worker serves this build as static assets (`share-worker/wrangler.toml` → `[assets] directory = "../share-viewer/dist"`). Pages live at `/s/<id>` and subagent sub-pages at `/s/<id>/<N>` (numbered by first task appearance; SPA routing; `/api/*`, `/health`, and `/branding` are passed to the worker first). One `GET /api/share/:id/data` loads the share, then a hibernating WebSocket streams plugin syncs (`{op:"frame", status, rev, items}`); if the socket can't connect, it falls back to 5-second polling and re-attaches when the socket returns — viewers never need to refresh. Traffic stays minimal while it does: an unchanged rev answers an empty frame (~200 bytes, poll and socket alike), a reconnect fetches only what it missed (delta first frames), and a silently-dead socket heals on tab refocus instead of freezing the page. A prompt queued behind a running turn appears the moment the host persists it (mirroring the host); on v2 hosts it appears when the model actually starts on it.
 - **Local** — `tools/view-export.py` serves this same build on localhost with the session injected inline (`window.__MIRROBOT_SNAPSHOT__`): an exported session renders exactly like a live share, no server, no network beyond localhost.
 

@@ -601,7 +601,11 @@ export function Markdown(
 
       return { key: owner, text: local.text, live }
     },
-    (src) => projectMarkdown(src.key, src.text, src.live),
+    (src) =>
+      // openshare fork: a worker-less environment (offline snapshot file
+      // on file://) rejects — render the escaped-text projection instead
+      // of letting the resource error reach the boundary
+      projectMarkdown(src.key, src.text, src.live).catch(() => completedProjection(src.text)),
     { initialValue: pendingProjection("") },
   )
 

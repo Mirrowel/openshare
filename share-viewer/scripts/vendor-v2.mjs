@@ -274,6 +274,128 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: the markdown projection resource must not reject when the
+// worker is unavailable (offline snapshot files on file://) — the fetcher
+// falls back to the escaped-text projection instead of erroring the
+// resource into the render boundary.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: a worker-less environment")) {
+      const before = s
+      s = s.replace(
+        /    \(src\) => projectMarkdown\(src\.key, src\.text, src\.live\),/,
+        `    (src) =>\n      // openshare fork: a worker-less environment (offline snapshot file\n      // on file://) rejects — render the escaped-text projection instead\n      // of letting the resource error reach the boundary\n      projectMarkdown(src.key, src.text, src.live).catch(() => completedProjection(src.text)),`,
+      )
+      if (s === before) throw new Error("vendor-v2: markdown.tsx projection fetcher anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: the markdown worker's unavailable-throw is synchronous —
+// parseMarkdown/projectMarkdown/highlightStreamingCode must REJECT so
+// consumers take their fallback paths instead of the render boundary
+// dying mid-effect (offline snapshot files run from file://, where
+// Worker construction throws SecurityError).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown-worker.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: getWorker() THROWS synchronously")) {
+      const before = s
+      const guard = `// openshare fork: getWorker() THROWS synchronously once the worker is\n// known-unavailable (offline snapshot files run from file://, where\n// Worker construction throws SecurityError). The exports below turn\n// that throw into a normal promise rejection so consumers take their\n// fallback paths instead of the render boundary dying mid-effect.\nfunction workerOrNull(): Worker | null {\n  try {\n    return getWorker()\n  } catch {\n    return null\n  }\n}\n\n`
+      s = s.replace("export function parseMarkdown(text: string, signal: AbortSignal) {\n", guard + "export function parseMarkdown(text: string, signal: AbortSignal) {\n")
+      s = s.replace(
+        /  if \(signal\.aborted\) return Promise\.reject\(new MarkdownWorkerDisposedError\(\)\)\r?\n  const instance = getWorker\(\)/,
+        `  if (signal.aborted) return Promise.reject(new MarkdownWorkerDisposedError())\n  const instance = workerOrNull()\n  if (!instance) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))`,
+      )
+      s = s.replace(
+        /export function projectMarkdown\(key: string, text: string, live: boolean\) \{\r?\n  getWorker\(\)/,
+        `export function projectMarkdown(key: string, text: string, live: boolean) {\n  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))\n  getWorker()`,
+      )
+      s = s.replace(
+        /export function highlightStreamingCode\(key: string, text: string, language: string, complete = false\) \{\r?\n  getWorker\(\)/,
+        `export function highlightStreamingCode(key: string, text: string, language: string, complete = false) {\n  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))\n  getWorker()`,
+      )
+      if (s === before) throw new Error("vendor-v2: markdown-worker anchors missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: the markdown worker's unavailable-throw is synchronous —
+// startMarkdown must defer the call into its promise chain so the
+// rejection lands on consumers' escaped-text fallback instead of killing
+// the render boundary (offline snapshot files run from file://, where
+// Worker construction throws SecurityError).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown-cache.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: parseMarkdown THROWS synchronously")) {
+      const before = s
+      s = s.replace(
+        /  const promise = parseMarkdown\(block\.src, controller\.signal\)\r?\n    \.then\(\(html\) => \{/,
+        `  // openshare fork: parseMarkdown THROWS synchronously when the worker is\n  // unavailable (offline snapshot files run from file://, where Worker\n  // construction throws) — deferring the call turns that throw into a\n  // normal rejection so consumers take the escaped-text fallback instead\n  // of the render boundary\n  const promise = Promise.resolve()\n    .then(() => parseMarkdown(block.src, controller.signal))\n    .then((html) => {`,
+      )
+      if (s === before) throw new Error("vendor-v2: markdown-cache startMarkdown anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: pierre's worker pool must not kill the page when Workers
+// are unavailable (offline snapshot files run from file://, where Worker
+// construction throws SecurityError synchronously). A failed pool
+// degrades highlighting/diffs to plain text instead. Whole-function
+// replacement: every line of the original body moves inside the try.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/worker.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8")
+    if (!s.includes("openshare fork: offline snapshot files run from file://")) {
+      const before = s
+      const fork = `function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | undefined {
+  // openshare fork: offline snapshot files run from file://, where Worker
+  // construction throws SecurityError synchronously — a failed pool must
+  // degrade rendering to plain text, not kill the whole page
+  try {
+    const pool = new WorkerPoolManager(
+      {
+        workerFactory,
+        // poolSize defaults to 8. More workers = more parallelism but
+        // also more memory. Too many can actually slow things down.
+        // NOTE: 2 is probably better for OpenCode, as I think 8 might be a
+        // bit overkill, especially because Safari has a significantly slower
+        // boot up time for workers
+        poolSize: 2,
+      },
+      {
+        theme: "OpenCode",
+        lineDiffType,
+        // Pierre renders with the pool's options, not the viewer's, whenever the pool works. The "none" pool only
+        // serves diffs above the large-file threshold, so it carries the plain-text fallback the viewer requests.
+        ...(lineDiffType === "none" && { maxLineDiffLength: 0, tokenizeMaxLineLength: 1 }),
+        preferredHighlighter: "shiki-wasm",
+      },
+    )
+
+    void pool.initialize().catch(() => {})
+
+    return pool
+  } catch {
+    return undefined
+  }
+}`
+      s = s.replace(/function createPool\(lineDiffType: "none" \| "word-line"\) \{[\s\S]*?\n  return pool\n\}/, fork)
+      if (s === before) throw new Error("vendor-v2: pierre worker.ts createPool anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: file-change tools never merge with each other inside a
 // context group (owner directive 2026-10-24: grouping groups individual
 // tools; edit/write/patch each render as their own expandable card - the

@@ -66,9 +66,23 @@ const projectTransport = createWorkerTransport<Extract<MarkdownWorkerRequest, { 
   },
 })
 
+// openshare fork: getWorker() THROWS synchronously once the worker is
+// known-unavailable (offline snapshot files run from file://, where
+// Worker construction throws SecurityError). The exports below turn
+// that throw into a normal promise rejection so consumers take their
+// fallback paths instead of the render boundary dying mid-effect.
+function workerOrNull(): Worker | null {
+  try {
+    return getWorker()
+  } catch {
+    return null
+  }
+}
+
 export function parseMarkdown(text: string, signal: AbortSignal) {
   if (signal.aborted) return Promise.reject(new MarkdownWorkerDisposedError())
-  const instance = getWorker()
+  const instance = workerOrNull()
+  if (!instance) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))
   const id = ++nextID
 
   const abort = () => {
@@ -87,6 +101,7 @@ export function parseMarkdown(text: string, signal: AbortSignal) {
 }
 
 export function projectMarkdown(key: string, text: string, live: boolean) {
+  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))
   getWorker()
   const id = ++nextID
 
@@ -107,6 +122,7 @@ export function disposeMarkdownProjection(key: string) {
 }
 
 export function highlightStreamingCode(key: string, text: string, language: string, complete = false) {
+  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))
   getWorker()
   const id = ++nextID
   latest.set(key, id)
