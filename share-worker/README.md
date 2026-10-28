@@ -44,7 +44,7 @@ The worker owns the connection rules; the plugin clamps itself into these on con
 | `TURN_GRACE_MS` | `120000` | Turn mode: after a turn settles the socket stays warm this long (typing time for the next prompt), then drops cleanly. Any activity cancels; the next event reconnects on demand and the spool replays the gap. |
 | `IDLE_DROP_MS` | `600000` | Turn mode: no-signal fallback (hosts that never emit idle). |
 | `FINALIZE_AFTER_MS` | `300000` | Plugin socket died WITHOUT a goodbye (kill -9, crash, power cut): after this long the share settles to `interrupted` (never `completed` - the run's truth is unknown). DO alarm on socket close; the daily sweeper backstops silent deaths where even the close never surfaced. Reconnects cancel it. |
-| `MAX_TTL_DAYS` | `90` | Per-share TTL cap (per-token `maxTtlDays` caps below this; the user's `defaultTtlDays` setting is clamped to it). |
+| `MAX_TTL_HOURS` | `2160` (90d) | Per-share TTL cap, **hours-native** (per-token `maxTtlHours` caps below this; the user's `defaultTtlHours` setting is clamped to it). Legacy `MAX_TTL_DAYS` / `maxTtlDays` / `defaultTtlDays` / `ttlDays` inputs are all accepted and converted x24; the floor is 1 hour. |
 | `ANON_CREATE_HOURLY` | `100` | Public mode: global cap on anonymous (ownerless) share creations per rolling hour, ALL anonymous visitors combined. Each create costs a Durable Object + one KV write. |
 | `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` | `1000` / `60000` | Allowed client sync interval (the clamp window). |
 | `COMPLETED_DELAY_MAX_MS` | `60000` | Allowed client completed-delay. |
@@ -244,7 +244,7 @@ Per-token limits (enforced server-side at create): `maxLiveShares`,
 `maxTtlDays`, `dailyCreates` (0 = unlimited; defaults via
 `DEFAULT_*` vars; scoped tokens count only their own shares). Default-limit knobs users may change themselves:
 `GET`/`PUT /api/me/settings` — `defaultTtlDays` (clamped by the
-server; applied at create when the request omits `ttlDays`, the
+server; applied at create when the request omits `ttlHours`, the
 explicit value always wins).
 
 Self-service: `GET /api/me`, `GET /api/me/shares`,
@@ -257,7 +257,7 @@ every share that user created turns read-only for EVERYONE holding its
 secret too (both write paths reject with `frozen`); viewing continues to
 TTL, and only the admin can unfreeze or reassign. Rotation never
 triggers this (the replacement is minted first). An `init` attach may
-also carry `ttlDays` (explicit per-session override only): clamped like
+also carry `ttlHours` (explicit per-session override only; legacy `ttlDays` converts): clamped like
 create and applied to the live share — the plugin sends it when the
 session's TTL override changes mid-life.
 
@@ -346,10 +346,10 @@ title/version/model.
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
 - `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
   body `{secret|Bearer owner, authLogin+authPassword (both-or-none),
-  ttlDays, meta}`; a credential change rotates viewer tokens; identity-
+  ttlHours (legacy ttlDays), meta}`; a credential change rotates viewer tokens; identity-
   gated exactly like sync (scoped tokens reach only their own shares)
 - `GET|PUT /api/token/sets` and `PUT /api/admin/tokens/:id/sets` — named
-  config sets on a token (B4): Class A (authLogin/authPassword/ttlDays)
+  config sets on a token (B4): Class A (authLogin/authPassword/ttlHours)
   applies server-side at create and never appears in a client response;
   Class B (modelLabel/shareMode) is the fetchable suggestion view. Creates
   carry an optional `set` name; unset = the token's first set. Mints
@@ -365,8 +365,8 @@ title/version/model.
   to DO storage — survives hibernation eviction); AuthDO singleton
   (users/tokens/codes/registry; freeze denormalized onto each ShareDO so
   the write gate rejects locally); SweeperDO daily alarm
-  deletes shares idle beyond their own ttlDays (create-time override,
-  capped at MAX_TTL_DAYS).
+  deletes shares idle beyond their own ttlHours (create-time override,
+  capped at MAX_TTL_HOURS).
 
 ## Plugin config
 
@@ -384,7 +384,7 @@ beats files; the `servers` group is the canonical multi-server form;
 
 Manual mode stores the opt-in in session metadata
 (`metadata.openshare = { v: 2, enabled: true, opts? }`; per-session
-opts: ttlDays, authLogin, authPassword, modelLabel) next to the
+opts: ttlHours, scope, authLogin, authPassword, modelLabel) next to the
 per-server binding map `servers: {url: {id, secret, rev, url}}`
 (legacy flat `{id, secret, rev, url}` bindings migrate at read); flag
 removal deletes the share on every server. The key is stripped from all

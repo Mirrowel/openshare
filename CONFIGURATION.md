@@ -25,12 +25,12 @@ To change anything: edit `share-worker/wrangler.toml`, then from `share-worker/`
 
 | Var | Default | Meaning |
 |---|---|---|
-| `MAX_TTL_DAYS` | `90` | Hard cap for per-share `ttlDays`; clients may request less |
+| `MAX_TTL_HOURS` | `2160` (90d) | Hard cap for per-share `ttlHours`; clients may request less. The legacy `MAX_TTL_DAYS` var is still accepted (converted x24) |
 | `AUTH_MODE` | `private` | `private` = enrollment requires an `osc_` access code; `public` = anyone knowing the hostname (per-IP rate-limited) |
 | `CODELESS_ONBOARDING` | `false` | Public servers only: allow enrolling an ACCOUNT without an access code (anonymous creating stays open either way — this gate is about minting users). Default OFF; the hoster opts in |
 | `ANON_CREATE_HOURLY` | `100` | Global rolling-hourly cap on anonymous (ownerless) share creations, all visitors combined. Public mode only. Each create costs a Durable Object + one KV write |
 | `DEFAULT_MAX_LIVE_SHARES` | `0` (= unlimited) | Per-token default limit for **newly enrolled** users: max non-swept shares owned at once |
-| `DEFAULT_MAX_TTL_DAYS` | `0` (= unlimited) | Per-token extra cap on share `ttlDays` |
+| `DEFAULT_MAX_TTL_HOURS` | `0` (= unlimited) | Per-token extra cap on share `ttlHours` (legacy `DEFAULT_MAX_TTL_DAYS` accepted) |
 | `DEFAULT_DAILY_CREATES` | `0` (= unlimited) | Per-token max share creations per UTC day |
 | `SOCKET_POLICY` | `auto` | `persistent` \| `turn` \| `auto` (Cloudflare → persistent since hibernation makes idle sockets free; anything else → turn) |
 | `TURN_GRACE_MS` | `120000` | Turn mode: socket stays warm after a turn settles |
@@ -63,7 +63,7 @@ Created/changed after deploy; stored in the AuthDO/ShareDO. These are data, not 
 
 ### Users
 - `label` - display name in the admin console
-- `settings.defaultTtlDays` - `GET`/`PUT /api/me/settings`; used when a share is created without an explicit `ttlDays` (still clamped by `MAX_TTL_DAYS`)
+- `settings.defaultTtlHours` - `GET`/`PUT /api/me/settings`; used when a share is created without an explicit `ttlHours` (still clamped by `MAX_TTL_HOURS`). The legacy `defaultTtlDays` field is accepted and converted x24
 - `frozen` - severs token **and** secret control on all the user's shares at once (viewing unaffected); the kill switch for leaked identities. Unfreeze/reassign are the rescue paths
 - `createdByCode` - which access code onboarded the user; `POST /api/admin/codes/:id/revoke-lineage` revokes EVERY token of EVERY user that code created (and disables the code)
 
@@ -74,13 +74,13 @@ Long-lived user tokens, SHA-256 hashed server-side, minted at enrollment or by t
 - **scoped** - a service credential (CI, agents). Carries its own limits; creates within them; syncs/deletes/lists ONLY the shares it created (`creatorTokenId` is stamped on every share); self-rotates (the successor inherits the scope); cannot mint tokens, touch settings, or reach the owner's other shares. Minted by a full token: `POST /api/token {"kind":"scoped", "label", "limits"}`.
 
 **Named config sets (B4)** - one token (key) carries up to 10 named sets; agents pick by name (`configSet` / `OPENSHARE_CONFIG_SET`), unspecified = the first set:
-- Class A (`authLogin`, `authPassword`, `ttlDays`): applied by the SERVER at create - they never travel to any client response. A set with a credential pair gates every share that token creates, with zero config committed to the repo.
+- Class A (`authLogin`, `authPassword`, `ttlHours`): applied by the SERVER at create - they never travel to any client response. A set with a credential pair gates every share that token creates, with zero config committed to the repo.
 - Class B (`modelLabel`, `shareMode`): suggestions the plugin fetches ONCE per server per boot (`GET /api/token/sets`) and adopts only when the local config leaves them unspecified - then persists them to the settings home (no repeated fetches).
 - Provisioning: `PUT /api/token/sets` (a full token edits its own; scoped read-only), `PUT /api/admin/tokens/:id/sets` (admin), or inline `sets` on any mint. A self/admin mint without explicit sets inherits the minter's.
 
 Shared parameters:
 - `label` (:64 chars)
-- `limits` - `{ maxLiveShares, maxTtlDays, dailyCreates }`, each `0` = unlimited; enforced atomically at share create (scoped tokens count only their own shares). New enrollments inherit the `DEFAULT_*` vars as their limits
+- `limits` - `{ maxLiveShares, maxTtlHours, dailyCreates }`, each `0` = unlimited (legacy `maxTtlDays` accepted and converted); enforced atomically at share create (scoped tokens count only their own shares). New enrollments inherit the `DEFAULT_*` vars as their limits
 - `expiresAt` - optional expiry
 - lifecycle - rotation (`POST /api/token/rotate`, valid token in hand; the successor keeps the class and a scoped rotation TRANSFERS its shares to the successor), self-revoke (`DELETE /api/token`), admin revoke (`DELETE /api/admin/tokens/:id`). **Revocation freezes control**: when a user's last valid FULL token is revoked (or they all expire), every share that user created becomes read-only for anyone holding its secret too - only the admin can unfreeze or reassign. Scoped tokens never keep the account alive. Rotation never triggers this (the replacement is minted first). Bulk: `POST /api/admin/tokens/:id/freeze-shares` freezes just the shares one token created.
 
@@ -90,14 +90,14 @@ Invite-gated enrollment. Codes mint a user PLUS their first full token (one acti
 ### Shares
 Created per shared session (`POST /api/share/<hex-suffix>` or the WS `init create`). Parameters at create:
 - `sessionID` (required)
-- `ttlDays` — resolution: request → the owner's `defaultTtlDays` → 90; clamped by the token's `maxTtlDays` and `MAX_TTL_DAYS`
+- `ttlHours` — resolution: request → the owner's `defaultTtlHours` → 2160; clamped (floor 1h) by the token's `maxTtlHours` and `MAX_TTL_HOURS`. Every legacy days-shaped input (config key, env var, token limit, request field, PATCH body) is accepted and converted x24
 - `authLogin` / `authPassword` — optional read-auth gate on the viewer; changeable later via `POST /api/share/:id/auth`
 - a per-share `secret` is returned (control alongside the owner token)
 - `status` settles through `live` → `completed` | `error` | `interrupted`
 
 Removing a share: delete (page gone) or disconnect (snapshot stays until TTL).
 
-Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlDays, meta after creation); admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
+Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlHours, meta after creation); admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
 
 ---
 
@@ -125,7 +125,9 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `debounceMs` | `10000` | Sync flush rate limit (server-clamped 1s–60s). CI ~5000, relaxed ~30000 |
 | `completedDelayMs` | `5000` | Grace before the status flips to `completed` (server-capped). Dispose flushes a pending flip |
 | `modelLabel` | `"$Provider/$Model"` | Template for the model label in share data |
-| `ttlDays` | `90` | Default TTL for this plugin's shares (still server-clamped) |
+| `ttlHours` | `2160` | Default TTL in hours for this plugin's shares (still server-clamped; legacy `ttlDays` accepted x24) |
+| `scope` | whole session | Partial share: `{ fromTurn?, reasoning?, tools?, subagents?, fileContents? }` - `false` strips the category before anything is sent; `fromTurn: N` publishes from the Nth prompt. Fixed at create |
+| `redact.patterns` | built-ins | Extra regexes (strings) applied beside the built-in secret detectors on ungated shares |
 | `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
 | `urlFile` | `""` → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
@@ -153,7 +155,7 @@ Deliberately **not** in config files:
 
 ## 4. The Bun server — env-var configuration
 
-The portable backend (`share-server/`) takes the same policy knobs as environment variables at launch; behavior is otherwise protocol-identical. `PORT` (8787), `CREATE_TOKEN` (required for admin/root), `AUTH_MODE`, `OPENSHARE_DB` (default `./openshare.db` **next to `server.ts`**, not your cwd), `VIEWER_DIR`, `MAX_TTL_DAYS`, `SOCKET_POLICY` (auto → `turn` here — no hibernation, sockets are real fds), the timer vars, the `DEFAULT_*` token limits, and `BRAND_*` (same fields as the worker's branding file). Full table in `share-server/README.md`.
+The portable backend (`share-server/`) takes the same policy knobs as environment variables at launch; behavior is otherwise protocol-identical. `PORT` (8787), `CREATE_TOKEN` (required for admin/root), `AUTH_MODE`, `CODELESS_ONBOARDING`, `OPENSHARE_DB` (default `./openshare.db` **next to `server.ts`**, not your cwd), `VIEWER_DIR`, `MAX_TTL_HOURS` (legacy `MAX_TTL_DAYS`), `SOCKET_POLICY` (auto → `turn` here — no hibernation, sockets are real fds), the timer vars, the `DEFAULT_*` token limits, and `BRAND_*` (same fields as the worker's branding file). Full table in `share-server/README.md`.
 
 ---
 

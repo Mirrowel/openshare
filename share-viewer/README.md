@@ -13,6 +13,8 @@ The share page your viewers open — built on the vendored **opencode v2 compone
 
 Everything renders one shape: the share `Data[]` items — the same items the plugin streams, the worker stores, and the export tool injects. Items merge client-side **by key** (identity-preserving smart sync: a no-op frame returns the same containers, unchanged items keep their folded objects and rendered components, so expansion state and scroll position survive every update); `del` tombstones remove undone work; the fold re-runs on every frame so the revert pointer (carried on the session item, `info.revert`) keeps undone turns folded exactly like opencode's own session view.
 
+**Private block.** Machine-local facts (the session's directory/worktree) never ride the public `session` item. They arrive in the envelope's top-level `private` block, which the backends only send to readers who passed the share's read gate (`auth` set + valid viewer token); ungated shares never carry it, and the fold simply has no `directory` to relativize against (paths render as shared, often `~/...`). A `pmeta` item is the plugin-side carrier - it never appears as a data item. The Session info panel shows the share id, not session/parent ids.
+
 ## Status badges
 
 `live` → `completed` / `error` (set by the plugin on turn settle; the next busy flips live again), `interrupted` (the plugin vanished without goodbye — the worker finalizes after the grace window), `gone` (deleted or TTL-expired — the page says so, final).

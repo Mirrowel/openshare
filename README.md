@@ -233,7 +233,7 @@ States (last signal wins, always resumable): `live` (busy) / `completed` (idle) 
 - **all** — every **new** session shares automatically (CI posture; also what the single file always does). Sessions that predate the plugin's start are **never auto-shared**: attach the plugin to a long-lived server and your session history stays private. Opt one in explicitly with the `enabled` flag (full history backfilled), or share it interactively. A session already carrying a share binding keeps its page across restarts (resume continuity).
 - **manual** — sessions stay dormant until you opt in; sharing backfills the full history and attaches to the same page across restarts (binding in session metadata).
 - **Which one you get**: explicit `shareMode` config wins (`"all"` / `"manual"`; the TUI's `auto` = presence-based default); otherwise **TUI presence decides** — the plugin's server half (not your backend) scans the tui.json layers (global, `OPENCODE_TUI_CONFIG`, project chain) for the openshare TUI entry (bare name, `@version`, or subpath — all recognized). Which halves you install IS the switch — no config needed to flip it. On v2, the package declaring its `tui` entrypoint is the presence signal; the single file has none, so it stays all-mode. The mode resolves **once at plugin load** — changing `shareMode` in a config file takes effect on the next opencode start (or `serve` restart), not mid-session.
-- The **enabled flag** lives in `metadata.openshare = { enabled: true, opts? }` (opts: `ttlDays`, `authLogin`, `authPassword`, `modelLabel` — per-session overrides). In manual mode, removing the flag deletes the share; in all mode the flag is only the opt-in for pre-existing sessions (an active share stops through `/share`, not flag removal). Bindings are `enabled: true` in **both** modes; all-mode opt-ins use the same flag.
+- The **enabled flag** lives in `metadata.openshare = { enabled: true, opts? }` (opts: `ttlHours`, `scope`, `authLogin`, `authPassword`, `modelLabel` — per-session overrides). In manual mode, removing the flag deletes the share; in all mode the flag is only the opt-in for pre-existing sessions (an active share stops through `/share`, not flag removal). Bindings are `enabled: true` in **both** modes; all-mode opt-ins use the same flag.
 
 ## Identity & servers
 
@@ -292,7 +292,9 @@ Priority (highest wins, per key): `OPENSHARE_*` env > plugin options (the config
 | `debounceMs` | `10000` | **Sync interval** — the max time between syncs while streaming, anchored at the previous flush. Turn-end batches flush instantly on idle; the first batch flushes as soon as it exists. Clamped into the server's window. |
 | `completedDelayMs` | `5000` | How long a session must stay idle before the share says **completed** (busy cancels; a graceful opencode exit flushes the pending flip). `0` = immediate. |
 | `modelLabel` | `"$Provider/$Model"` | Label template; `""` hides the model. |
-| `ttlDays` | `90` | Share lifetime (capped at the worker's `MAX_TTL_DAYS` and the token's `maxTtlDays`). |
+| `ttlHours` | `2160` (90d) | Share lifetime in **hours** (capped at the worker's `MAX_TTL_HOURS` and the token's `maxTtlHours`; the legacy `ttlDays` key/env is accepted and converted x24). |
+| `scope` | whole session | **Partial share**: `{ fromTurn?, reasoning?, tools?, subagents?, fileContents? }` - set a category to `false` to strip it, `fromTurn: N` to publish only from the Nth prompt. Fixed at create; changing it means sharing again. Stripped content never leaves your machine. |
+| `redact` | built-ins | `{ patterns: string[] }` - extra regexes redacted beside the built-in secret detectors (`ghp_`, `AKIA`, `sk-`, `xoxb-`, Bearer, PEM blocks, `.env` secrets, connection strings) on **ungated** shares. |
 | `authLogin` / `authPassword` | `""` | Default read gate for share pages. |
 | `spoolDir` | XDG data | Unacked-frame buffer (one spool per session per server). |
 | `urlFile` | `openshare.urls.txt` in the session's working directory | Share-URL log (all-mode; appends; manual mode never writes it). **`"none"` disables the file entirely.** |
@@ -310,9 +312,9 @@ Values apply per share creation — the file is read on every activation. `share
 { "shareMode": "manual", "debounceMs": 10000 }
 
 // Relaxed: casual "here's a link" sessions — batchier sync, longer TTL
-// (TTL is capped by the server's MAX_TTL_DAYS — 90 by default; raise it
-// on your own deployment for this recipe to take full effect)
-{ "shareMode": "manual", "debounceMs": 30000, "ttlDays": 180 }
+// (TTL is capped by the server's MAX_TTL_HOURS — 2160 (90d) by default;
+// raise it on your own deployment for this recipe to take full effect)
+{ "shareMode": "manual", "debounceMs": 30000, "ttlHours": 4320 }
 ```
 
 **Environment variables** (all optional; every one overrides the config chain):
@@ -323,7 +325,7 @@ Values apply per share creation — the file is read on every activation. `share
 | `OPENSHARE_CREATE_TOKEN` | its create token (legacy) |
 | `OPENSHARE_SHARE_MODE` | `all` / `manual` — beats every file |
 | `OPENSHARE_DEBOUNCE_MS` / `OPENSHARE_COMPLETED_DELAY_MS` | cadence overrides (clamped into the server window) |
-| `OPENSHARE_TTL_DAYS` | default share TTL |
+| `OPENSHARE_TTL_HOURS` | default share TTL in hours (legacy `OPENSHARE_TTL_DAYS` converts x24) |
 | `OPENSHARE_MODEL_LABEL` | model label template |
 | `OPENSHARE_URL_FILE` | url file path, or `none` |
 | `OPENSHARE_SPOOL_DIR` | spool directory |
@@ -338,10 +340,12 @@ Values apply per share creation — the file is read on every activation. `share
 
 ## How your data is handled
 
-- **What leaves your machine**: the session transcript you chose to share — session info, messages (text, reasoning, tool calls and outputs embedded per message, opencode v2 session shapes), model/prefs items. The plugin strips its own binding (including the share secret) from everything it syncs; the server strips session metadata on all read paths. The share format is the OpenShare envelope (`v: 2`): item types the viewer renders are `session`, `message` (content-embedded), `model`, `prefs`, and `session_diff`; unknown *message* content degrades to notices in the viewer, unknown top-level item types are ignored.
+- **What leaves your machine**: the session transcript you chose to share — session info, messages (text, reasoning, tool calls and outputs embedded per message, opencode v2 session shapes), model/prefs items. **You control what is sent**: the `scope` config (or This session → Partial share scope in the TUI) strips whole turns, reasoning, tool calls, subagent sessions or file bodies before anything is serialized; built-in secret detectors (GitHub/AWS/Slack/Google keys, `sk-` keys, Bearer tokens, private-key blocks, `.env`-shaped assignments, connection-string passwords) plus your own `redact.patterns` replace matches with stable `[redacted:<kind>]` markers. The consent dialog previews message/tool counts and the first redaction hits BEFORE publishing. The plugin strips its own binding (including the share secret) from everything it syncs; the server strips session metadata on all read paths. The share format is the OpenShare envelope (`v: 2`): item types the viewer renders are `session`, `message` (content-embedded), `model`, `prefs`, and `session_diff`; unknown *message* content degrades to notices in the viewer, unknown top-level item types are ignored.
 - **Oversize safety valve**: any single item whose serialized JSON exceeds ~1.5 MB (a giant tool output embedded in a message) has its largest string fields clipped with a visible `…[openshare: field truncated for share]` marker rather than killing the share; an item that still can't fit becomes an `oversize` stub. In practice this almost never fires.
 - **The share URL is a credential.** Anyone holding it can read the whole conversation unless you enable the read gate (read auth is **off by default** — turn it on for anything sensitive). Write access is separate: it needs the server-side token or per-share secret.
 - **Retention**: shares live for their TTL (default **90 days**, capped by the server), then the sweeper deletes them. Deleting a share (unshare, purge) removes the data; "leave as-is" keeps a frozen snapshot until its TTL.
+- **Machine-local facts stay private**: the session's directory/worktree never ride the public session item. They travel as a `pmeta` item that the server keeps in a separate private block, served ONLY to readers who passed the share's read gate — anonymous (ungated) shares never expose them at all. The info panel shows no session ids.
+- **Redaction caveat**: redaction targets ungated shares; on a gated share the content is already login-private, and neither mode hides data from the server owner until end-to-end encryption lands (roadmap).
 - **Where it lives**: your backend — Cloudflare (DO storage + KV) or your own server (one SQLite file). No third party, no analytics, no telemetry from this repo's code.
 
 ## Read auth & security

@@ -53,10 +53,10 @@ then the code — you're both hoster and first user).
 | `CODELESS_ONBOARDING` | `false` | Public servers: allow minting ACCOUNTS without a code (anonymous creating stays open either way). Worker parity |
 | `OPENSHARE_DB` | `./openshare.db` next to `server.ts` | SQLite file (resolved relative to `server.ts`, not your cwd) |
 | `VIEWER_DIR` | `../share-viewer/dist` | static viewer build |
-| `MAX_TTL_DAYS` | `90` | per-share TTL cap |
+| `MAX_TTL_HOURS` | `2160` (90d) | per-share TTL cap in hours; legacy `MAX_TTL_DAYS` accepted (x24) |
 | `SOCKET_POLICY` | `auto` → `turn` | unlike Cloudflare there is no hibernation — sockets are real fds, so turn-scoped is the sane default here; `persistent` keeps them open |
 | `TURN_GRACE_MS` / `IDLE_DROP_MS` / `FINALIZE_AFTER_MS` / `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` / `COMPLETED_DELAY_MAX_MS` | same as the worker | server policy (delivered in the WS init ack + `/health`) |
-| `DEFAULT_MAX_LIVE_SHARES` / `DEFAULT_MAX_TTL_DAYS` / `DEFAULT_DAILY_CREATES` | `0` (unlimited) | per-token default limits for newly enrolled users |
+| `DEFAULT_MAX_LIVE_SHARES` / `DEFAULT_MAX_TTL_HOURS` / `DEFAULT_DAILY_CREATES` | `0` (unlimited) | per-token default limits for newly enrolled users (legacy `DEFAULT_MAX_TTL_DAYS` accepted) |
 | `BRAND_*` | *(unset)* | viewer skin overrides incl. `BRAND_DESCRIPTION` / `BRAND_OG_TITLE` / `BRAND_OG_IMAGE` (same fields as the worker's `openshare.config.json`, same og/link-preview crawler rewrite — see the worker README) |
 
 ## Identity model
