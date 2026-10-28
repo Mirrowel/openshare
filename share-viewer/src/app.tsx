@@ -300,7 +300,7 @@ function SessionView(props: {
               }
               // exact date by default, relative on click (title block toggle)
               const [relativeDate, setRelativeDate] = createSignal(false)
-              // focus mode (owner round 2026-10-25): shift+click a prompt ->
+              // focus mode (owner round 2026-10-25): alt+click a prompt ->
               // one turn as an overlay over the still-mounted transcript.
               // Replaces paged-vs-continuous as the "read one turn" surface.
               const [focused, setFocused] = createSignal(false)
@@ -700,7 +700,7 @@ function SessionView(props: {
                                 sidebar column or the floating pill (one of
                                 the two, never neither). Paged pages the turn,
                                 continuous jumps to the user message row;
-                                shift+click focuses the turn. */}
+                                alt+click focuses the turn. */}
                             <Show when={userTurns().length >= NAV_MIN_TURNS}>
                               <PromptNav
                                 only="desktop"

@@ -1158,7 +1158,8 @@ function registerTool(input: { name: string; render?: ToolComponent }) {
 }
 
 function getTool(name: string) {
-  return state[name]?.render
+  // openshare fork: unregistered tools fall back to the catch-all renderer
+  return state[name]?.render ?? state["*"]?.render
 }
 
 export const ToolRegistry = {
@@ -1858,7 +1859,8 @@ function ConsoleOutput(props: { command?: string; output: string }) {
   const i18n = useI18n()
 
   return (
-    <div data-component="bash-output" data-variant="shell" dir="ltr">
+    <div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-shell>
+      <div class="osh-shell-grip" data-osh-shell-grip title="drag to resize - double-click resets" />
       <div
         data-slot="bash-scroll"
         data-scrollable

@@ -679,6 +679,52 @@ const TextResultTool =
     )
   }
 
+/** Unknown tools (ctx_* helpers, MCP servers, anything the kit never
+ *  registered): the kit's GenericTool prints the raw input and output with
+ *  no card, no copy, no wrap control. Give them the same output surface as
+ *  grep/glob/list so every result reads the same way (owner directive). */
+const GenericOutputTool = (props: ToolProps) => {
+  const input = createMemo<Record<string, unknown>>(() => (props.input as any) ?? {})
+  const argsSummary = createMemo(() =>
+    Object.entries(input())
+      .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+      .slice(0, 3)
+      .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
+      .join("  "),
+  )
+  const body = createMemo(() => {
+    const out = str(props.output)
+    if (out) return out.replace(/\r\n/g, "\n")
+    const rest = Object.entries(input()).filter(([, v]) => typeof v === "string" && (v as string).length > 60)
+    return rest.length ? rest.map(([k, v]) => `${k}: ${v}`).join("\n") : ""
+  })
+  const label = createMemo(() => String(props.tool ?? "tool").replace(/^osh_/, ""))
+  return (
+    <BasicTool
+      {...props}
+      icon="code-lines"
+      hasContent={!!body()}
+      defer
+      trigger={() => (
+        <div data-slot="basic-tool-tool-info-structured">
+          <div data-slot="basic-tool-tool-info-main">
+            <span data-slot="basic-tool-tool-title">{label()}</span>
+            <Show when={argsSummary()}>
+              {(a) => <span data-slot="basic-tool-tool-arg">{a()}</span>}
+            </Show>
+          </div>
+        </div>
+      )}
+    >
+      <div class="osh-pre-wrap">
+        <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+        <CopyButton text={body()} />
+        <OverflowToggle />
+      </div>
+    </BasicTool>
+  )
+}
+
 /** `todowrite`: the kit drops it entirely; v1 rendered a checklist. */
 const TodoTool = (props: ToolProps) => {
   const todos = createMemo(() => {
@@ -724,6 +770,7 @@ ToolRegistry.register({ name: "grep", render: TextResultTool("Grep", "magnifying
 ToolRegistry.register({ name: "glob", render: TextResultTool("Glob", "magnifying-glass-menu") })
 ToolRegistry.register({ name: "list", render: TextResultTool("List", "bullet-list") })
 ToolRegistry.register({ name: "todowrite", render: TodoTool })
+ToolRegistry.register({ name: "*", render: GenericOutputTool })
 // subagent/task stay on the KIT renderer (card, expand, click-through to the
 // child session) - only its LABEL is forked to the real agent name; the map
 // it reads lives in subagent-map.ts (globalThis.__oshAgents)

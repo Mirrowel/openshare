@@ -10,6 +10,7 @@ import { I18nProvider, pluralCategory, pluralKey, type UiI18nParams } from "@ope
 import { dict as uiEn } from "@opencode/ui/i18n/en"
 import { Suspense } from "solid-js"
 import { App } from "./app"
+import { Preview } from "./preview"
 // register our tool renderers before anything renders - an entry-level
 // import guarantees registration order regardless of which component
 // tree mounts first (classic or a skin)
@@ -19,7 +20,9 @@ import "./views/skins.css"
 // boot the pierre worker pools now: the kit creates them lazily on first
 // card open, which made the first expanded file card paint plain for a beat
 import { getWorkerPool } from "@opencode/session-ui/pierre/worker"
+import { installShellResize } from "./shell-resize"
 getWorkerPool()
+installShellResize()
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge
@@ -55,7 +58,7 @@ render(
       <DialogProvider>
         <I18nProvider value={{ locale, t, plural }}>
           <Suspense>
-            <App />
+            {new URLSearchParams(location.search).has("preview") ? <Preview /> : <App />}
           </Suspense>
         </I18nProvider>
       </DialogProvider>

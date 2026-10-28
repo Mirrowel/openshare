@@ -365,37 +365,39 @@ export function VirtualTimeline(props: {
     onCleanup(() => window.removeEventListener("hashchange", onHash))
   })
 
-  // hover affordance: one link chip that follows the hovered row.
-  // Position comes from live geometry (rows are absolutely positioned inside
-  // the virtualizer with transforms, so `offsetTop` read 0 and pinned the chip
-  // to the top-right corner).
-  const [hoverEl, setHoverEl] = createSignal<HTMLElement>()
-  const trackHover = (event: Event) => {
-    const pe = event as PointerEvent
-    const target = pe.target instanceof Element ? pe.target.closest<HTMLElement>("[data-row-key]") : null
-    if (!target?.dataset.rowKey) return
-    if (pe.type === "pointerout") {
-      const next = pe.relatedTarget
-      if (next instanceof Node && target.contains(next)) return
-      setHoverEl(undefined)
-      return
+  // deep-link affordance: alt+click a row copies its link. No floating
+  // button - a fixed chip pinned to the scroller edge flickered between
+  // clickable and not while the pointer crossed it (owner-caught), and it
+  // covered content. Holding Alt outlines rows so the gesture is findable.
+  const onAltClick = (event: MouseEvent) => {
+    if (!event.altKey) return
+    const row = (event.target as Element | null)?.closest<HTMLElement>("[data-row-key]")
+    const key = row?.dataset.rowKey
+    if (!key) return
+    event.preventDefault()
+    event.stopPropagation()
+    void copyRowLink(key)
+  }
+  // reveal the gesture: while Alt is held, rows outline as link targets
+  onMount(() => {
+    const root = document.documentElement
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "Alt") root.setAttribute("data-osh-linkmode", "")
     }
-    setHoverEl(target)
-  }
-  const chipBox = () => {
-    const el = hoverEl()
-    const sc = scrollElement
-    if (!el || !sc || !el.isConnected) return undefined
-    // scrollTick: follow the row while the reader scrolls
-    void scrollTick()
-    const row = el.getBoundingClientRect()
-    const box = sc.getBoundingClientRect()
-    // the chip is fixed-positioned (viewport coords), so virtualizer
-    // transforms and scroll offsets never enter the math
-    if (row.bottom < box.top + 4 || row.top > box.bottom - 4) return undefined
-    return { top: row.top + 4, left: box.right - 40 }
-  }
-
+    const up = (e: KeyboardEvent) => {
+      if (e.key === "Alt") root.removeAttribute("data-osh-linkmode")
+    }
+    const blur = () => root.removeAttribute("data-osh-linkmode")
+    window.addEventListener("keydown", down)
+    window.addEventListener("keyup", up)
+    window.addEventListener("blur", blur)
+    onCleanup(() => {
+      window.removeEventListener("keydown", down)
+      window.removeEventListener("keyup", up)
+      window.removeEventListener("blur", blur)
+      blur()
+    })
+  })
   // pin state: at end → pinned (follows new content); nudge up → unpinned
   const onScroll = () => {
     const el = scrollElement
@@ -619,8 +621,6 @@ export function VirtualTimeline(props: {
         if (!el) return
         el.addEventListener("click", (event) => remeasureRow(event.target), true)
         el.addEventListener("toggle", (event) => remeasureRow(event.target), true)
-        el.addEventListener("pointerover", trackHover)
-        el.addEventListener("pointerout", trackHover)
         if (!restored?.offset) return
         // replay the saved position once the snapshot's heights are in place
         queueMicrotask(() => {
@@ -629,6 +629,7 @@ export function VirtualTimeline(props: {
         })
       }}
       onScroll={onScroll}
+      onClick={onAltClick}
       data-transcript-scroll
       data-osh-gutter
       style={{ "overflow-y": "auto", "min-height": "0", position: "relative" }}
@@ -643,31 +644,6 @@ export function VirtualTimeline(props: {
         style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
       />
       <Show when={props.footer}>{props.footer}</Show>
-      {/* deep-link chip: appears at the hovered row's right edge */}
-      <Show when={chipBox()}>
-        {(box) => (
-          <button
-            class="osh-rowlink"
-            title="copy link to this row"
-            style={{ top: `${box().top}px`, left: `${box().left}px` }}
-            onClick={(e) => {
-              e.stopPropagation()
-              const key = hoverEl()?.dataset.rowKey
-              if (key) void copyRowLink(key)
-            }}
-          >
-            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-              <path
-                d="M6.5 9.5 9.5 6.5M6.75 4.5l.9-.9a2.55 2.55 0 0 1 3.6 3.6l-.9.9M5.65 7.9l-.9.9a2.55 2.55 0 0 0 3.6 3.6l.9-.9"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-              />
-            </svg>
-          </button>
-        )}
-      </Show>
     </div>
   )
 }
