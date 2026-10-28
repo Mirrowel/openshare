@@ -15,6 +15,8 @@ import {
   deleteServerEntry,
   disconnectAtServer,
   enrollAtServer,
+  fmtHours,
+  parseTtlHours,
   hostOf,
   isConfigured,
   normServerUrl,
@@ -147,13 +149,13 @@ const LABELS: Record<string, LabelMeta> = {
     info: 'How the model name appears on the share page. "$Provider/$Model" renders e.g. "closedrouter/zai/glm-5.3". Any literal text is used as-is; empty string hides the model line entirely.',
     def: '"$Provider/$Model"',
   },
-  ttlDays: {
-    label: "TTL (days)",
-    help: "Share lifetime; the worker caps it at its MAX_TTL_DAYS.",
+  ttlHours: {
+    label: "TTL (hours)",
+    help: "Share lifetime in hours (2d writes 48); capped server-side.",
     kind: "number",
     section: "Sharing",
-    info: "How long pages live before the server's sweeper deletes them. Capped server-side: the deployment's MAX_TTL_DAYS and the token's maxTtlDays limit both apply.\n\nA per-session override lives in the This-session section; it is sent at create/attach time.",
-    def: "worker cap (90 on the reference deployment)",
+    info: "How long pages live before the server's sweeper deletes them, in HOURS. Capped server-side: the deployment's MAX_TTL_HOURS (legacy MAX_TTL_DAYS converted) and the token's limit both apply; the floor is one hour.\n\nA per-session override lives in the This-session section; it is sent at create/attach time. The session prompt takes 6h / 2d style input.",
+    def: "worker cap (2160h = 90d on the reference deployment)",
   },
   authLogin: {
     label: "Read auth: login",
@@ -1085,9 +1087,24 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     rows.push({
       title: "Session TTL override (days)",
       value: "session:ttl",
-      description: binding?.opts?.ttlDays !== undefined ? String(binding.opts.ttlDays) : "(worker default)",
-      help: `Per-session share lifetime. Overrides the config ttlDays for THIS session's pages; still capped by the server's MAX_TTL_DAYS and the token's maxTtlDays. On a live share it applies immediately (shortening may end an older page at once); otherwise it is used when you share.\n\nCurrent: ${binding?.opts?.ttlDays !== undefined ? `${binding.opts.ttlDays} days` : "(none — config default)"}`,
+      description: binding?.opts?.ttlHours !== undefined ? fmtHours(binding.opts.ttlHours) : "(worker default)",
+      help: `Per-session share lifetime in HOURS (prompt accepts 6h / 2d / 48). Overrides the config TTL for THIS session's pages; still capped server-side. On a live share it applies immediately (shortening may end an older page at once); otherwise it is used when you share.\n\nCurrent: ${binding?.opts?.ttlHours !== undefined ? fmtHours(binding.opts.ttlHours) : "(none — config default)"}`,
     })
+    {
+      const sc = binding?.opts?.scope
+      const bits: string[] = []
+      if (sc?.fromTurn && sc.fromTurn > 1) bits.push("from turn " + sc.fromTurn)
+      if (sc?.reasoning === false) bits.push("no reasoning")
+      if (sc?.tools === false) bits.push("no tool calls")
+      if (sc?.subagents === false) bits.push("no subagents")
+      if (sc?.fileContents === false) bits.push("no file contents")
+      rows.push({
+        title: "Partial share scope",
+        value: "session:scope",
+        description: bits.length ? bits.join(", ").slice(0, 56) : "whole session",
+        help: "What of THIS session gets published. Scope is FIXED AT CREATE: an already-shared page keeps its original scope - change it here and share again (unshare first or just re-share after stopping) to apply.\n\nCategories off are stripped before anything leaves the machine. From-turn N skips every turn before the Nth prompt. File contents strips file bodies and diffs from read/write/edit calls but keeps the call itself visible.",
+      })
+    }
     rows.push({
       title: "Session read auth",
       value: "session:auth",
@@ -1321,24 +1338,69 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         host.ui.toast({ variant: result.ok ? "success" : "error", title: "OpenShare", message: result.message })
         return
       }
+      if (choice === "session:scope") {
+        let scope = { ...(current?.opts?.scope ?? {}) }
+        while (true) {
+          const onoff = (v: boolean | undefined) => (v === false ? "OFF" : "on")
+          const picked = await showSelect(host.ui, {
+            title: "Partial share scope",
+            options: [
+              { title: "From turn", value: "from", description: scope.fromTurn && scope.fromTurn > 1 ? "turn " + scope.fromTurn + "+" : "turn 1+ (all)", help: "Publish only from the Nth prompt on. Turn 1 is the first user message. Earlier turns are never sent." },
+              { title: "Reasoning", value: "reasoning", description: onoff(scope.reasoning), help: "Thinking/reasoning blocks. OFF strips them from every message." },
+              { title: "Tool calls", value: "tools", description: onoff(scope.tools), help: "Tool call entries (names, inputs, outputs). OFF strips the whole entry; an assistant message left empty is dropped." },
+              { title: "Subagent sessions", value: "subagents", description: onoff(scope.subagents), help: "Child (task/subagent) sessions. OFF publishes the root session only - children are not even fetched." },
+              { title: "File contents", value: "fileContents", description: onoff(scope.fileContents), help: "File bodies and diffs inside read/write/edit calls (and the file-change summary). OFF keeps the call visible but strips the content." },
+              { title: "Save", value: "__save", description: "persist for the next share" },
+              { title: "Back", value: "__back" },
+            ],
+          })
+          if (picked === undefined || picked === "__back") return
+          if (picked === "__save") break
+          if (picked === "from") {
+            const raw = await showPrompt(host.ui, { title: "Share from turn", placeholder: "1 = whole session", value: scope.fromTurn && scope.fromTurn > 1 ? String(scope.fromTurn) : "" })
+            if (raw === undefined) continue
+            const t = Math.floor(Number(raw || "1"))
+            if (!Number.isFinite(t) || t < 1) {
+              host.ui.toast({ variant: "error", title: "OpenShare", message: "Turn must be a positive number (1 = all)." })
+              continue
+            }
+            if (t <= 1) delete scope.fromTurn
+            else scope.fromTurn = t
+            continue
+          }
+          if (picked === "reasoning" || picked === "tools" || picked === "subagents" || picked === "fileContents") {
+            const cur = scope[picked]
+            if (cur === false) delete scope[picked]
+            else scope[picked] = false
+            continue
+          }
+        }
+        const opts: SessionOpts = { ...(current?.opts ?? {}) }
+        if (Object.keys(scope).length) opts.scope = scope
+        else delete opts.scope
+        await setShareOpts(host.client, root, opts)
+        // scope is fixed at create: live pages keep theirs
+        host.ui.toast({ variant: "success", title: "OpenShare", message: live.length ? "Scope saved - the live page keeps its original scope; stop sharing and share again to apply." : "Scope saved - applies when you share." })
+        return
+      }
       if (choice === "session:ttl") {
-        const raw = await showPrompt(host.ui, { title: "Session TTL (days)", placeholder: "days", value: current?.opts?.ttlDays !== undefined ? String(current.opts.ttlDays) : "" })
+        const raw = await showPrompt(host.ui, { title: "Session TTL", placeholder: "hours: 6h, 2d or 48", value: current?.opts?.ttlHours !== undefined ? fmtHours(current.opts.ttlHours) : "" })
         if (raw === undefined) return
         const opts: SessionOpts = { ...(current?.opts ?? {}) }
-        if (raw === "") delete opts.ttlDays
+        if (raw === "") delete opts.ttlHours
         else {
-          const days = Number(raw)
-          if (!Number.isFinite(days) || days <= 0) {
-            host.ui.toast({ variant: "error", title: "OpenShare", message: "TTL must be a positive number of days." })
+          const hours = parseTtlHours(raw)
+          if (hours === undefined) {
+            host.ui.toast({ variant: "error", title: "OpenShare", message: "TTL must be 6h / 2d style or a positive number of hours." })
             return
           }
-          opts.ttlDays = Math.floor(days)
+          opts.ttlHours = hours
         }
         await setShareOpts(host.client, root, opts)
         const liveNow = live.length > 0
         if (liveNow) {
           // REST push (#13): immediate on every server, socket or not
-          const results = await Promise.all(live.map((b) => b.id && b.secret && b.server ? patchShareOpts(b.server, b.id, opts.ttlDays !== undefined ? { ttlDays: opts.ttlDays } : {}, b.secret) : Promise.resolve({ ok: false })))
+          const results = await Promise.all(live.map((b) => b.id && b.secret && b.server ? patchShareOpts(b.server, b.id, opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}, b.secret) : Promise.resolve({ ok: false })))
           const failed = results.filter((r) => !r.ok).length
           if (failed) host.ui.toast({ variant: "error", title: "OpenShare", message: `TTL applied on ${results.length - failed}/${results.length} server(s) - the rest sync on next connect.` })
         }
@@ -1346,8 +1408,8 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           variant: "success",
           title: "OpenShare",
           message: liveNow
-            ? `Session TTL: ${opts.ttlDays !== undefined ? `${opts.ttlDays}d - applied now (shortening may end an older page immediately)` : "(default) - applied now"}.`
-            : `Session TTL: ${opts.ttlDays !== undefined ? `${opts.ttlDays}d` : "(default)"} - saved, applies when you share.`,
+            ? `Session TTL: ${opts.ttlHours !== undefined ? `${fmtHours(opts.ttlHours)} - applied now (shortening may end an older page immediately)` : "(default) - applied now"}.`
+            : `Session TTL: ${opts.ttlHours !== undefined ? fmtHours(opts.ttlHours) : "(default)"} - saved, applies when you share.`,
         })
         return
       }
@@ -1430,7 +1492,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     })
     groups.push({
       id: "sharing",
-      summary: `sync ${seconds(cfg.debounceMs, 10000)} · completed ${seconds(cfg.completedDelayMs, 5000)} · TTL ${cfg.ttlDays ?? "server cap"}`,
+      summary: `sync ${seconds(cfg.debounceMs, 10000)} · completed ${seconds(cfg.completedDelayMs, 5000)} · TTL ${fmtHours(cfg.ttlHours ?? 2160)}`,
       help: `What and how sessions stream: share mode (all/manual), sync cadence, the completed-delay, the model label on pages, share TTL, and the viewer's task-tab behavior.\n\nCadence values are clamped by the server's policy window.`,
     })
     groups.push({

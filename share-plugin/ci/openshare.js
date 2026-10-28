@@ -35,7 +35,7 @@ var DEFAULTS = {
   debounceMs: 1e4,
   completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
-  ttlDays: 90,
+  ttlHours: 90 * 24,
   authLogin: "",
   authPassword: "",
   spoolDir: "",
@@ -90,6 +90,7 @@ function configSourceMap(pluginDir, env = process.env) {
     debounceMs: env.OPENSHARE_DEBOUNCE_MS,
     completedDelayMs: env.OPENSHARE_COMPLETED_DELAY_MS,
     modelLabel: env.OPENSHARE_MODEL_LABEL,
+    ttlHours: env.OPENSHARE_TTL_HOURS,
     ttlDays: env.OPENSHARE_TTL_DAYS,
     authLogin: env.OPENSHARE_AUTH_LOGIN,
     authPassword: env.OPENSHARE_AUTH_PASSWORD,
@@ -104,6 +105,9 @@ function configSourceMap(pluginDir, env = process.env) {
     if (value !== undefined && value !== "")
       sources[key] = "environment";
   }
+  if (sources.ttlDays && !sources.ttlHours)
+    sources.ttlHours = sources.ttlDays;
+  delete sources.ttlDays;
   if (env.OPENSHARE_CONFIG_JSON) {
     try {
       const raw = JSON.parse(env.OPENSHARE_CONFIG_JSON);
@@ -235,6 +239,29 @@ function loadConfig(pluginDir, options) {
           cfg.servers = mergeServerGroups(cfg.servers, servers);
         continue;
       }
+      if (key === "scope") {
+        if (value && typeof value === "object") {
+          const sc = value;
+          const scope = {};
+          const ft = Math.floor(Number(sc.fromTurn));
+          if (Number.isFinite(ft) && ft > 1)
+            scope.fromTurn = ft;
+          for (const k of ["reasoning", "tools", "subagents", "fileContents"]) {
+            if (typeof sc[k] === "boolean")
+              scope[k] = sc[k];
+          }
+          if (Object.keys(scope).length)
+            cfg.scope = scope;
+        }
+        continue;
+      }
+      if (key === "redact") {
+        if (value && typeof value === "object" && Array.isArray(value.patterns)) {
+          const pats = value.patterns.filter((x) => typeof x === "string" && x.length > 0 && x.length < 500).slice(0, 50);
+          cfg.redact = { patterns: pats };
+        }
+        continue;
+      }
       if (key === "meta") {
         if (value && typeof value === "object" && !Array.isArray(value)) {
           const clean = {};
@@ -245,6 +272,12 @@ function loadConfig(pluginDir, options) {
           if (Object.keys(clean).length)
             cfg.meta = { ...cfg.meta, ...clean };
         }
+        continue;
+      }
+      if (key === "ttlDays") {
+        const d = Math.floor(Number(value));
+        if (Number.isFinite(d) && d > 0)
+          cfg.ttlHours = d * 24;
         continue;
       }
       if (!known.has(key))
@@ -298,8 +331,10 @@ function loadConfig(pluginDir, options) {
     cfg.completedDelayMs = num(env.OPENSHARE_COMPLETED_DELAY_MS, cfg.completedDelayMs);
   if (env.OPENSHARE_MODEL_LABEL !== undefined)
     cfg.modelLabel = env.OPENSHARE_MODEL_LABEL;
+  if (env.OPENSHARE_TTL_HOURS)
+    cfg.ttlHours = num(env.OPENSHARE_TTL_HOURS, cfg.ttlHours);
   if (env.OPENSHARE_TTL_DAYS)
-    cfg.ttlDays = num(env.OPENSHARE_TTL_DAYS, cfg.ttlDays);
+    cfg.ttlHours = Math.max(1, Math.floor(num(env.OPENSHARE_TTL_DAYS, 90) * 24));
   if (env.OPENSHARE_AUTH_LOGIN !== undefined)
     cfg.authLogin = env.OPENSHARE_AUTH_LOGIN;
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined)
@@ -450,6 +485,7 @@ function resolveShareMode(cfg, input) {
 
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { isAbsolute, join as join2 } from "node:path";
 
@@ -669,6 +705,196 @@ function queueBindingWrite(sid, fn) {
   return run;
 }
 
+// src/redact.ts
+var BUILTINS = [
+  { kind: "aws-key", re: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: "gh-token", re: /\bgh[pousr]_[A-Za-z0-9]{36,255}\b/g },
+  { kind: "gh-token", re: /\bgithub_pat_[A-Za-z0-9_]{22,255}\b/g },
+  { kind: "api-key", re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
+  { kind: "slack-token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { kind: "google-key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { kind: "bearer", re: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/gi },
+  { kind: "private-key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
+  { kind: "env-secret", re: /(?<![A-Za-z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*\S+/g },
+  { kind: "conn-string", re: /\b[a-z][a-z0-9+.-]*:\/\/[^:@/\s"']+:[^@/\s"']{4,}@/gi }
+];
+function compile(patterns) {
+  if (!Array.isArray(patterns))
+    return [];
+  const out = [];
+  for (const p of patterns) {
+    if (typeof p !== "string" || !p)
+      continue;
+    try {
+      out.push({ kind: "user", re: new RegExp(p, "g") });
+    } catch {}
+  }
+  return out;
+}
+function tildePath(p, home) {
+  if (!p || !home || p.length <= home.length)
+    return p;
+  const norm = (s) => s.replace(/[\\/]+/g, "/").replace(/\/$/, "");
+  const np = norm(p);
+  const nh = norm(home);
+  if (np === nh)
+    return "~";
+  if (np.startsWith(nh + "/"))
+    return "~" + np.slice(nh.length);
+  return p;
+}
+var PATH_KEYS = new Set(["file", "path", "filePath", "cwd", "directory", "root"]);
+function redactItem(item, opts) {
+  const flat = JSON.stringify(item) ?? "null";
+  const needRedact = opts.enabled && opts.rules.some((r) => {
+    r.re.lastIndex = 0;
+    return r.re.test(flat);
+  });
+  const needPaths = !!opts.home && flat.includes(opts.home);
+  if (!needRedact && !needPaths)
+    return { item, hits: [] };
+  const clone = JSON.parse(flat);
+  const stats = { hits: [], changed: false };
+  walk(clone, opts, stats);
+  return { item: clone, hits: stats.hits };
+}
+function walk(node, opts, stats, key) {
+  if (Array.isArray(node)) {
+    for (let i = 0;i < node.length; i++) {
+      const v = node[i];
+      if (typeof v === "string")
+        node[i] = applyString(v, opts, stats, key);
+      else
+        walk(v, opts, stats, key);
+    }
+    return;
+  }
+  if (node && typeof node === "object") {
+    for (const [k, v] of Object.entries(node)) {
+      if (typeof v === "string")
+        node[k] = applyString(v, opts, stats, k);
+      else
+        walk(v, opts, stats, k);
+    }
+  }
+}
+function applyString(v, opts, stats, key) {
+  let out = v;
+  if (opts.enabled) {
+    for (const r of opts.rules) {
+      r.re.lastIndex = 0;
+      out = out.replace(r.re, (full) => {
+        if (stats.hits.length < 8 && !stats.hits.some((h) => h.kind === r.kind)) {
+          stats.hits.push({ kind: r.kind, sample: full.slice(0, 60) });
+        }
+        stats.changed = true;
+        if (r.kind === "conn-string") {
+          const at = full.lastIndexOf("@");
+          const colon = full.indexOf(":", full.indexOf("://") + 3) + 1;
+          if (at > colon && colon > 0)
+            return full.slice(0, colon) + "[redacted:conn-string]" + full.slice(at);
+        }
+        return `[redacted:${r.kind}]`;
+      });
+    }
+  }
+  if (key && PATH_KEYS.has(key) && opts.home && out.includes(opts.home)) {
+    out = tildePath(out, opts.home);
+    stats.changed = true;
+  }
+  return out;
+}
+function activeRules(userPatterns) {
+  return [...BUILTINS, ...compile(userPatterns)];
+}
+
+// src/scope.ts
+function newScopeState() {
+  return { turn: 0, rank: new Map };
+}
+var FILE_TOOLS = new Set(["read", "write", "edit", "patch", "multiedit"]);
+function scopeSkipsChildren(scope) {
+  return scope?.subagents === false;
+}
+function scopeItem(item, scope, state, mainSid) {
+  if (!item)
+    return item;
+  if (!scope)
+    return item;
+  if (scope.subagents === false && item.sessionID && item.sessionID !== mainSid)
+    return null;
+  if (item.type === "session_diff")
+    return scope.fileContents === false ? null : item;
+  if (item.type !== "message")
+    return item;
+  const data = item.data;
+  if (!data || typeof data !== "object")
+    return item;
+  const id = typeof data.id === "string" ? data.id : "";
+  const role = data.role ?? data.type;
+  if (role === "user" && id && !state.rank.has(id)) {
+    state.turn += 1;
+    state.rank.set(id, state.turn);
+  }
+  const turn = id && state.rank.has(id) ? state.rank.get(id) : Math.max(1, state.turn);
+  if (scope.fromTurn && scope.fromTurn > 1 && turn < scope.fromTurn)
+    return null;
+  if (scope.reasoning === false || scope.tools === false || scope.fileContents === false) {
+    const content = data.content;
+    if (Array.isArray(content)) {
+      let touched = false;
+      const out = [];
+      for (const entry of content) {
+        const c = entry;
+        const ctype = c?.type;
+        if (ctype === "reasoning" && scope.reasoning === false) {
+          touched = true;
+          continue;
+        }
+        if (ctype === "tool" && scope.tools === false) {
+          touched = true;
+          continue;
+        }
+        if (ctype === "tool" && scope.fileContents === false) {
+          const name = String(c?.name ?? "");
+          if (FILE_TOOLS.has(name)) {
+            const clone = { ...c };
+            const st = clone.state && typeof clone.state === "object" ? { ...clone.state } : null;
+            if (st && "output" in st) {
+              delete st.output;
+              clone.state = st;
+              touched = true;
+            }
+            const meta = clone.metadata && typeof clone.metadata === "object" ? { ...clone.metadata } : null;
+            if (meta) {
+              let metaTouched = false;
+              for (const k of ["diff", "files", "filediff", "patch"]) {
+                if (k in meta) {
+                  delete meta[k];
+                  metaTouched = true;
+                }
+              }
+              if (metaTouched) {
+                clone.metadata = meta;
+                touched = true;
+              }
+            }
+            out.push(clone);
+            continue;
+          }
+        }
+        out.push(entry);
+      }
+      if (touched) {
+        if (out.length === 0 && role !== "user")
+          return null;
+        return { ...item, data: { ...data, content: out } };
+      }
+    }
+  }
+  return item;
+}
+
 // src/core.ts
 var DEFAULT_POLICY = {
   mode: "persistent",
@@ -721,6 +947,19 @@ function redact(info) {
   delete metadata[METADATA_KEY];
   return { ...info, metadata };
 }
+function stripLocalFacts(info) {
+  if (!info || typeof info !== "object")
+    return info;
+  const out = { ...info };
+  let changed = false;
+  for (const k of ["directory", "worktree"]) {
+    if (out[k] !== undefined) {
+      delete out[k];
+      changed = true;
+    }
+  }
+  return changed ? out : info;
+}
 function shareFlag(info) {
   const raw = info?.metadata?.[METADATA_KEY];
   if (!raw || typeof raw !== "object")
@@ -732,8 +971,22 @@ function shareFlag(info) {
   const opts = {};
   if (optsRaw && typeof optsRaw === "object") {
     const o = optsRaw;
-    if (typeof o.ttlDays === "number" && o.ttlDays > 0)
-      opts.ttlDays = o.ttlDays;
+    if (typeof o.ttlHours === "number" && o.ttlHours > 0)
+      opts.ttlHours = Math.floor(o.ttlHours);
+    if (o.scope && typeof o.scope === "object") {
+      const sc = o.scope;
+      const scope = {};
+      const ft = Math.floor(Number(sc.fromTurn));
+      if (Number.isFinite(ft) && ft > 1)
+        scope.fromTurn = ft;
+      for (const k of ["reasoning", "tools", "subagents", "fileContents"]) {
+        if (typeof sc[k] === "boolean")
+          scope[k] = sc[k];
+      }
+      if (Object.keys(scope).length)
+        opts.scope = scope;
+    } else if (typeof o.ttlDays === "number" && o.ttlDays > 0)
+      opts.ttlHours = Math.floor(o.ttlDays * 24);
     if (typeof o.authLogin === "string")
       opts.authLogin = o.authLogin;
     if (typeof o.authPassword === "string")
@@ -744,6 +997,8 @@ function shareFlag(info) {
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined };
 }
 var liveTargets = [];
+var statsProvider = null;
+var redactionLedger = new Map;
 function createEngine(deps) {
   let cfg = loadConfig(deps.pluginDir, deps.options);
   const mode = resolveShareMode(cfg, deps);
@@ -1435,7 +1690,7 @@ function createEngine(deps) {
     }
     return { authLogin: login, authPassword: password };
   };
-  const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
+  const ttlFor = (st) => st.opts?.ttlHours ?? cfg.ttlHours;
   const metaFor = () => {
     if (!cfg.meta || typeof cfg.meta !== "object")
       return;
@@ -1460,11 +1715,11 @@ function createEngine(deps) {
       if (!r.shareId || !r.secret || !r.wsReady)
         continue;
       const attach = { id: r.shareId, secret: r.secret, ...authFrame(st) };
-      if (st.opts?.ttlDays)
-        attach.ttlDays = st.opts.ttlDays;
+      if (st.opts?.ttlHours)
+        attach.ttlHours = st.opts.ttlHours;
       const sent = wsSend(r, { op: "init", attach });
       if (sent)
-        log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlDays ? ` (ttl ${st.opts.ttlDays}d)` : ""}`);
+        log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`);
     }
   };
   const deleteAbandoned = (r) => {
@@ -1660,7 +1915,7 @@ function createEngine(deps) {
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
       }
       r.initTimer = setTimeout(() => {
         if (seq !== r.socketSeq)
@@ -1831,7 +2086,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
         return;
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1840,7 +2095,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
         return;
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected;
@@ -1872,9 +2127,10 @@ function createEngine(deps) {
         applyPolicy(frame.policy, r.url);
       r.intentionalClose = false;
       touch(st);
-      if (typeof frame.ttlDays === "number") {
+      const ackTtl = typeof frame.ttlHours === "number" ? frame.ttlHours : typeof frame.ttlDays === "number" ? frame.ttlDays * 24 : undefined;
+      if (typeof ackTtl === "number") {
         const wanted = ttlFor(st);
-        const clamp = wanted != null && frame.ttlDays !== wanted ? { requested: wanted, effective: frame.ttlDays } : null;
+        const clamp = wanted != null && ackTtl !== wanted ? { requested: wanted, effective: ackTtl } : null;
         if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
           st.ttlClamped = clamp;
           scheduleBindingWrite(st);
@@ -1890,6 +2146,18 @@ function createEngine(deps) {
         logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`);
       } else if (frame.auth === true) {
         r.warnedNoGate = false;
+      }
+      if (credOf(r.url).credential) {
+        const priv = {};
+        const dir = deps.directory ?? "";
+        if (dir)
+          priv.directory = dir;
+        if (deps.worktree)
+          priv.worktree = String(deps.worktree);
+        if (Object.keys(priv).length) {
+          const seq = ++nextSeq;
+          wsSend(r, { op: "sync", items: [{ type: "pmeta", sessionID: st.sid, data: priv }], status: undefined, seq });
+        }
       }
       announceUrl(st, r);
       if (!st.wroteBinding) {
@@ -2101,6 +2369,16 @@ function createEngine(deps) {
       }).catch((e) => logError("flush error", e?.message || e));
     }, wait);
   };
+  const homeDir = (() => {
+    try {
+      return homedir();
+    } catch {
+      return "";
+    }
+  })();
+  const userPatterns = cfg.redact?.patterns;
+  const redactionRules = activeRules(userPatterns);
+  const scopeStates = new Map;
   const enqueue = (st, entry) => {
     if (!st || !entry)
       return;
@@ -2117,6 +2395,36 @@ function createEngine(deps) {
     }
     if (h)
       st.sentHash.set(entry.key, h);
+    {
+      const gate = authFrame(st);
+      const gated = gate.authLogin !== "" && gate.authPassword !== "";
+      const pass = redactItem(entry.item, { rules: redactionRules, home: homeDir, enabled: !gated });
+      if (pass.item !== entry.item)
+        entry = { ...entry, item: pass.item };
+      if (pass.hits.length) {
+        const led = redactionLedger.get(st.sid) ?? { count: 0, samples: [] };
+        led.count += pass.hits.length;
+        for (const hit of pass.hits) {
+          if (led.samples.length < 5 && !led.samples.some((x) => x.kind === hit.kind))
+            led.samples.push(hit);
+        }
+        redactionLedger.set(st.sid, led);
+      }
+    }
+    {
+      const scope = st.opts?.scope;
+      if (scope) {
+        const prevScope = scopeStates.get(st.sid) ?? newScopeState();
+        scopeStates.set(st.sid, prevScope);
+        const kept = scopeItem(entry.item, scope, prevScope, st.sid);
+        if (!kept) {
+          if (debugEvents)
+            log("scope drop", entry.item.type, entry.key.slice(0, 40));
+          return;
+        }
+        entry = { ...entry, item: kept };
+      }
+    }
     st.queue.set(entry.key, entry.item);
     indexMessage(entry);
     if (debugEvents)
@@ -2124,6 +2432,24 @@ function createEngine(deps) {
     touch(st);
     ensureConnected(st);
     scheduleFlush(st);
+  };
+  statsProvider = (sid) => {
+    const st = sessions.get(sid);
+    let messages = 0;
+    let toolCalls = 0;
+    if (st) {
+      for (const [, merged] of st.merged) {
+        messages++;
+        const content = merged.content;
+        if (Array.isArray(content))
+          toolCalls += content.filter((c) => !!c && c.type === "tool").length;
+      }
+      for (const it of st.queue.values()) {
+        if (it?.type === "message")
+          messages++;
+      }
+    }
+    return { messages, toolCalls };
   };
   const msgIndex = new Map;
   const tombstoned = new Set;
@@ -2282,7 +2608,7 @@ function createEngine(deps) {
     vue: "vue",
     svelte: "svelte"
   };
-  const FILE_TOOLS = new Set(["read", "write", "edit", "patch"]);
+  const FILE_TOOLS2 = new Set(["read", "write", "edit", "patch"]);
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant")
@@ -2294,7 +2620,7 @@ function createEngine(deps) {
       for (const part of content) {
         if (!part || part.type !== "tool")
           continue;
-        if (!FILE_TOOLS.has(part.name))
+        if (!FILE_TOOLS2.has(part.name))
           continue;
         const state = part.state;
         const meta = state?.metadata;
@@ -2547,7 +2873,7 @@ function createEngine(deps) {
   const backfillSession = async (st, client, sid, info) => {
     const sessionInfoValue = info ?? await sessionInfo(client, sid);
     if (sessionInfoValue)
-      enqueue(st, itemFor("session", redact(sessionInfoValue), sid));
+      enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid));
     let modelSeen = false;
     const consume = (messages2) => {
       for (const message of messages2) {
@@ -2587,9 +2913,9 @@ function createEngine(deps) {
     if (messages.length === 0 && !info) {
       const fetched = await sessionInfo(client, st.sid);
       if (fetched)
-        enqueue(st, itemFor("session", redact(fetched), st.sid));
+        enqueue(st, itemFor("session", stripLocalFacts(redact(fetched)), st.sid));
     }
-    if (typeof client.session.list === "function") {
+    if (!scopeSkipsChildren(st.opts?.scope) && typeof client.session.list === "function") {
       try {
         const result = unwrap(await client.session.list({ query: query() }));
         if (Array.isArray(result)) {
@@ -2665,7 +2991,7 @@ function createEngine(deps) {
         const st3 = sessions.get(parent);
         if (st3?.activated && !st3.closed) {
           if (info)
-            enqueue(st3, itemFor("session", redact(info), sid));
+            enqueue(st3, itemFor("session", stripLocalFacts(redact(info)), sid));
         }
         return;
       }
@@ -2676,7 +3002,7 @@ function createEngine(deps) {
           if (flag.opts)
             applyOpts(st2, flag.opts);
           if (info)
-            enqueue(st2, itemFor("session", redact(info), sid));
+            enqueue(st2, itemFor("session", stripLocalFacts(redact(info)), sid));
           if (t === "session.updated")
             chain = chain.then(() => refreshOptOuts(st2)).catch(() => {});
           return;
@@ -2728,7 +3054,7 @@ function createEngine(deps) {
     if (!st)
       return;
     if (info)
-      enqueue(st, itemFor("session", redact(info), sid));
+      enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
     if (t === "session.updated" && st.activated && !st.closed) {
       chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
     }

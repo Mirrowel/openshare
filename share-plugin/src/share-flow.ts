@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { loadConfig, moduleDir, configPaths, configHomePath, resolveServer, saveServerEntry, deleteServerEntry, METADATA_KEY, type ShareConfig, type ServerEntry } from "./config.js"
 import { dbg, dbgLog } from "./sidebar.js"
-import { engineTargetUrls, type ClientApi, type SessionInfo, type SessionOpts } from "./core.js"
+import { engineTargetUrls, sessionStatsFor, type ClientApi, type SessionInfo, type SessionOpts } from "./core.js"
 import { queueBindingWrite } from "./binding-queue.js"
 import type { ShareHostApi } from "./tui-host.js"
 
@@ -71,7 +71,8 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
       "debounceMs",
       "completedDelayMs",
       "modelLabel",
-      "ttlDays",
+      "ttlHours",
+      "scope",
       "authLogin",
       "authPassword",
       "spoolDir",
@@ -169,6 +170,24 @@ export function bindingsOf(info: SessionInfo | undefined): Array<SessionBinding 
 /** Read every live binding for a session (fan-out aware). */
 export async function readBindings(client: ClientApi | undefined, sid: string): Promise<Array<SessionBinding & { server: string; collided?: string }>> {
   return bindingsOf(await getSession(client, sid))
+}
+
+/** Human TTL from hours: "6h", "2d", "90d" (the TUI prompt accepts
+ * these same shapes back). */
+export function fmtHours(hours: number): string {
+  if (!Number.isFinite(hours) || hours <= 0) return "?"
+  if (hours % 24 === 0) return `${Math.floor(hours / 24)}d`
+  return `${Math.floor(hours)}h`
+}
+
+/** Parse "6h" / "2d" / "48" into hours (bare number = hours). */
+export function parseTtlHours(raw: string): number | undefined {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(h|d|hr|hours?|days?)?\s*$/i.exec(raw ?? "")
+  if (!m) return undefined
+  const v = Number(m[1])
+  if (!Number.isFinite(v) || v <= 0) return undefined
+  const unit = (m[2] ?? "h").toLowerCase()
+  return Math.max(1, Math.floor(unit.startsWith("d") ? v * 24 : v))
 }
 
 export function hostOf(url: string): string {
@@ -336,11 +355,11 @@ export async function workerDeleteShare(workerUrl: string, id: string, secret: s
 /** PATCH a live share's settings over REST (#13): immediate effect with
  * no socket required (the engine's attach-sync remains the structural
  * path - this is the same edit pushed now, per server). Auth sends as
- * the both-or-none pair or not at all; ttlDays only when explicit. */
+ * the both-or-none pair or not at all; ttlHours only when explicit. */
 export async function patchShareOpts(
   workerUrl: string,
   id: string,
-  opts: { authLogin?: string; authPassword?: string; ttlDays?: number },
+  opts: { authLogin?: string; authPassword?: string; ttlHours?: number },
   secret: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const body: Record<string, unknown> = { secret }
@@ -348,7 +367,7 @@ export async function patchShareOpts(
     body.authLogin = opts.authLogin
     body.authPassword = opts.authPassword
   }
-  if (opts.ttlDays !== undefined) body.ttlDays = opts.ttlDays
+  if (opts.ttlHours !== undefined) body.ttlHours = opts.ttlHours
   try {
     const res = await fetch(`${workerUrl.replace(/\/$/, "")}/api/share/${id}`, {
       method: "PATCH",
@@ -584,12 +603,22 @@ export type FlowResult = { ok: boolean; message: string; url?: string; unconfigu
  * directive — no remembered consent, no silent creates). The dialog
  * carries the live context (server, TTL, gate state) so the decision is
  * informed, not ceremonial. */
-export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlDays?: number; auth: boolean }): Promise<boolean> {
+export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlHours?: number; auth: boolean; counts?: { messages: number; toolCalls: number }; redaction?: { hits: number; samples: string[] }; scope?: { fromTurn?: number; reasoning?: boolean; tools?: boolean; subagents?: boolean; fileContents?: boolean } }): Promise<boolean> {
   const lines: string[] = ["Publish this session (and its subagent sessions) to your openshare worker?"]
   if (context) {
     const bits: string[] = []
     if (context.server) bits.push(`server: ${context.server}`)
-    if (context.ttlDays !== undefined) bits.push(`TTL: ${context.ttlDays}d`)
+    if (context.ttlHours !== undefined) bits.push(`TTL: ${fmtHours(context.ttlHours)}`)
+    if (context.redaction && context.redaction.hits > 0) bits.push(`redaction: ${context.redaction.hits} hit(s)`)
+    if (context.scope) {
+      const off: string[] = []
+      if (context.scope.reasoning === false) off.push("no reasoning")
+      if (context.scope.tools === false) off.push("no tool calls")
+      if (context.scope.subagents === false) off.push("no subagents")
+      if (context.scope.fileContents === false) off.push("no file contents")
+      const from = context.scope.fromTurn && context.scope.fromTurn > 1 ? `from turn ${context.scope.fromTurn}` : ""
+      bits.push(`partial: ${[from, ...off].filter(Boolean).join(", ") || "scoped"}`)
+    }
     bits.push(`read auth: ${context.auth ? "on" : "off"}`)
     lines.push(bits.join(" - "))
   }
@@ -624,14 +653,23 @@ export async function shareWithConsent(host: ShareHostApi, sessionID: string | u
   }
   const opts = all[0]?.opts
   const server = serverEntries(cfg).find((s) => s.active) ?? serverEntries(cfg)[0] ?? (engineTargetUrls()[0] ? { url: engineTargetUrls()[0] } : undefined)
-  if (
-    !(await requestShareConsent(host, {
-      server: server ? hostOf(server.url) : undefined,
-      ttlDays: opts?.ttlDays ?? cfg.ttlDays,
-      auth: !!(opts?.authLogin ?? cfg.authLogin) && !!(opts?.authPassword ?? cfg.authPassword),
-    }))
-  )
-    return { ok: false, message: "Share cancelled." }
+  {
+    const stats = sessionStatsFor(root)
+    const gated = !!(opts?.authLogin ?? cfg.authLogin) && !!(opts?.authPassword ?? cfg.authPassword)
+    if (
+      !(await requestShareConsent(host, {
+        server: server ? hostOf(server.url) : undefined,
+        ttlHours: opts?.ttlHours ?? cfg.ttlHours,
+        auth: gated,
+        counts: { messages: stats.messages, toolCalls: stats.toolCalls },
+        scope: opts?.scope ?? cfg.scope,
+        // redaction only runs on ungated shares (a gated share is
+        // private from casual observers; the ledger reflects that)
+        redaction: gated ? undefined : { hits: stats.redaction.count, samples: stats.redaction.samples.map((h) => `${h.sample} [${h.kind}]`) },
+      }))
+    )
+      return { ok: false, message: "Share cancelled." }
+  }
   return confirmShare(host, root)
 }
 

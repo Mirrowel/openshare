@@ -19,6 +19,7 @@
 // selfwiring — the two parts are installed deliberately).
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import type { ShareScope } from "./scope.js"
 import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -51,7 +52,9 @@ export type ShareConfig = {
   debounceMs: number
   completedDelayMs: number
   modelLabel: string
-  ttlDays: number
+  /** Default share lifetime in HOURS (Wave 3; default 2160 = 90d).
+   * Legacy ttlDays config/env is accepted and converted x24. */
+  ttlHours: number
   authLogin: string
   authPassword: string
   spoolDir: string
@@ -63,6 +66,11 @@ export type ShareConfig = {
   /** false silences the `[openshare] live:` (and `url file:`) stderr
    * lines. The share itself is unaffected. */
   announceStderr: boolean
+  /** Wave 3 redaction: user-supplied regex rules (client-side only)
+   * applied beside the built-in detectors on UNGATED shares. */
+  redact?: { patterns?: string[] }
+  /** Wave 3 partial share: what leaves the machine (opt-in scoping). */
+  scope?: ShareScope
   /** B4: which named config set on the server token this agent uses
    * (unset = the token's first/default set). Rides the create frame. */
   configSet?: string
@@ -91,7 +99,7 @@ export const DEFAULTS: ShareConfig = {
   // pending flip, so CI runs still land their final status.
   completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
-  ttlDays: 90,
+  ttlHours: 90 * 24,
   authLogin: "",
   authPassword: "",
   spoolDir: "",
@@ -195,6 +203,7 @@ export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = proc
     debounceMs: env.OPENSHARE_DEBOUNCE_MS,
     completedDelayMs: env.OPENSHARE_COMPLETED_DELAY_MS,
     modelLabel: env.OPENSHARE_MODEL_LABEL,
+    ttlHours: env.OPENSHARE_TTL_HOURS,
     ttlDays: env.OPENSHARE_TTL_DAYS,
     authLogin: env.OPENSHARE_AUTH_LOGIN,
     authPassword: env.OPENSHARE_AUTH_PASSWORD,
@@ -208,6 +217,9 @@ export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = proc
   for (const [key, value] of Object.entries(envKeys)) {
     if (value !== undefined && value !== "") sources[key] = "environment"
   }
+  // legacy days-shaped env feeds the same knob as ttlHours
+  if (sources.ttlDays && !sources.ttlHours) sources.ttlHours = sources.ttlDays
+  delete sources.ttlDays
   // OPENSHARE_CONFIG_JSON sits between env and the files: it loses only
   // to a specific env var, so it overrides any file's key
   if (env.OPENSHARE_CONFIG_JSON) {
@@ -370,6 +382,26 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
         if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
         continue
       }
+      if (key === "scope") {
+        if (value && typeof value === "object") {
+          const sc = value as Record<string, unknown>
+          const scope: ShareScope = {}
+          const ft = Math.floor(Number(sc.fromTurn))
+          if (Number.isFinite(ft) && ft > 1) scope.fromTurn = ft
+          for (const k of ["reasoning", "tools", "subagents", "fileContents"] as const) {
+            if (typeof sc[k] === "boolean") scope[k] = sc[k] as boolean
+          }
+          if (Object.keys(scope).length) cfg.scope = scope
+        }
+        continue
+      }
+      if (key === "redact") {
+        if (value && typeof value === "object" && Array.isArray((value as { patterns?: unknown }).patterns)) {
+          const pats = (value as { patterns: unknown[] }).patterns.filter((x): x is string => typeof x === "string" && x.length > 0 && x.length < 500).slice(0, 50)
+          cfg.redact = { patterns: pats }
+        }
+        continue
+      }
       if (key === "meta") {
         // string-to-string only: meta rides the create frame verbatim
         if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -379,6 +411,12 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
           }
           if (Object.keys(clean).length) cfg.meta = { ...cfg.meta, ...clean }
         }
+        continue
+      }
+      if (key === "ttlDays") {
+        // legacy days-shaped file/options value converts to hours once
+        const d = Math.floor(Number(value))
+        if (Number.isFinite(d) && d > 0) cfg.ttlHours = d * 24
         continue
       }
       if (!known.has(key)) continue
@@ -435,7 +473,8 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   if (env.OPENSHARE_DEBOUNCE_MS) cfg.debounceMs = num(env.OPENSHARE_DEBOUNCE_MS, cfg.debounceMs)
   if (env.OPENSHARE_COMPLETED_DELAY_MS !== undefined) cfg.completedDelayMs = num(env.OPENSHARE_COMPLETED_DELAY_MS, cfg.completedDelayMs)
   if (env.OPENSHARE_MODEL_LABEL !== undefined) cfg.modelLabel = env.OPENSHARE_MODEL_LABEL
-  if (env.OPENSHARE_TTL_DAYS) cfg.ttlDays = num(env.OPENSHARE_TTL_DAYS, cfg.ttlDays)
+  if (env.OPENSHARE_TTL_HOURS) cfg.ttlHours = num(env.OPENSHARE_TTL_HOURS, cfg.ttlHours)
+  if (env.OPENSHARE_TTL_DAYS) cfg.ttlHours = Math.max(1, Math.floor(num(env.OPENSHARE_TTL_DAYS, 90) * 24))
   if (env.OPENSHARE_AUTH_LOGIN !== undefined) cfg.authLogin = env.OPENSHARE_AUTH_LOGIN
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined) cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD
   if (env.OPENSHARE_URL_FILE !== undefined) cfg.urlFile = env.OPENSHARE_URL_FILE

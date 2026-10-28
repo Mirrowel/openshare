@@ -343,12 +343,13 @@ try {
     }
 
     // F4: config round-trip in a sandbox base dir ($comment preserved).
-    // env is set for the flows, so assert on a non-env key (ttlDays).
+    // env is set for the flows, so assert on a non-env key (ttlHours).
+    // The legacy days-shaped key converts x24 at load (Wave 3).
     const cfgDir = join(sandbox, "cfg")
     mkdirSync(cfgDir, { recursive: true })
     writeFileSync(join(cfgDir, "openshare.config.json"), JSON.stringify({ $comment: "keep me", ttlDays: 42 }, null, 2))
     const cfg = flows.currentConfig(cfgDir)
-    check("F4: currentConfig reads sandbox file", cfg.ttlDays === 42, `ttlDays=${cfg.ttlDays}`)
+    check("F4: currentConfig reads sandbox file (legacy days -> hours)", cfg.ttlHours === 42 * 24 && cfg.ttlDays === undefined, `ttlHours=${cfg.ttlHours} ttlDays=${cfg.ttlDays}`)
     const saved = flows.saveConfig({ ...cfg, workerUrl: "https://new.example", createToken: "tok" }, join(cfgDir, "openshare.config.json"), cfgDir)
     check("F4: saveConfig writes", !!saved?.path && existsSync(saved.path))
     const raw = JSON.parse(readFileSync(saved.path, "utf8"))
@@ -361,13 +362,13 @@ try {
     // explicit target is honored. XDG_CONFIG_HOME is suite-redirected
     // (see setup), so configHomePath() is the sandbox home.
     const expectedHome = join(homeDir, "opencode", "openshare.config.json")
-    const byDefault = flows.saveConfig({ ...cfg, ttlDays: 7 }, undefined, cfgDir)
+    const byDefault = flows.saveConfig({ ...cfg, ttlHours: 168 }, undefined, cfgDir)
     check("F5: default target is the global home", byDefault?.path === expectedHome, `got ${byDefault?.path}`)
-    check("F5: adjacent template NOT written", !readFileSync(join(cfgDir, "openshare.config.json"), "utf8").includes('"ttlDays": 7'))
+    check("F5: adjacent template NOT written", !readFileSync(join(cfgDir, "openshare.config.json"), "utf8").includes('"ttlHours": 168'))
     const explicitPath = join(cfgDir, "chosen.config.json")
     writeFileSync(explicitPath, "{}")
-    const byExplicit = flows.saveConfig({ ...cfg, ttlDays: 9 }, explicitPath, cfgDir)
-    check("F5: explicit target honored", byExplicit?.path === explicitPath && JSON.parse(readFileSync(explicitPath, "utf8")).ttlDays === 9)
+    const byExplicit = flows.saveConfig({ ...cfg, ttlHours: 216 }, explicitPath, cfgDir)
+    check("F5: explicit target honored", byExplicit?.path === explicitPath && JSON.parse(readFileSync(explicitPath, "utf8")).ttlHours === 216)
     const candidates = (await import(distUrl("config.js"))).writeCandidates(cfgDir)
     check("F5: writeCandidates lists global + existing adjacent only", candidates[0].path === expectedHome && candidates.some((c) => c.path === join(cfgDir, "openshare.config.json")) && !candidates.some((c) => c.path === explicitPath), candidates.map((c) => c.path).join(" | "))
 

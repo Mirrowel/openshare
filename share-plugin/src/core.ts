@@ -36,18 +36,21 @@
 // Session metadata shape (metadata.openshare):
 //  - all-mode binding: { id, secret, rev, url }
 //  - manual-mode:      { id, secret, rev, url, enabled: true, opts? }
-//    opts: { ttlDays?, authLogin?, authPassword?, modelLabel? } optional
+//    opts: { ttlHours?, authLogin?, authPassword?, modelLabel? } optional
 //    per-session overrides (capture at activation; modelLabel applies
 //    immediately, the rest at create/attach).
 //  - The plugin strips this key from everything it syncs — the write
 //    secret must never reach viewers.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { createHash } from "node:crypto"
 import { isAbsolute, join } from "node:path"
 import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
+import { activeRules, redactItem, type RedactionHit } from "./redact.js"
+import { newScopeState, scopeItem, scopeSkipsChildren, type ScopeState, type ShareScope } from "./scope.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -86,7 +89,9 @@ export type ShareEvent =
   | { type: "session.deleted"; sessionID: string }
 
 export type SessionOpts = {
-  ttlDays?: number
+  ttlHours?: number
+  /** Partial-share scope (Wave 3), fixed at create */
+  scope?: ShareScope
   authLogin?: string
   authPassword?: string
   modelLabel?: string
@@ -285,6 +290,22 @@ function redact<T extends { metadata?: Record<string, unknown> }>(info: T): T {
   return { ...info, metadata }
 }
 
+/** Wave 3 data-inventory split: machine-local facts leave the PUBLIC
+ * session item. Viewers recover them from the envelope's private block
+ * (gated+authenticated shares only); anonymous shares never store them. */
+function stripLocalFacts<T>(info: T): T {
+  if (!info || typeof info !== "object") return info
+  const out = { ...(info as Record<string, unknown>) }
+  let changed = false
+  for (const k of ["directory", "worktree"]) {
+    if (out[k] !== undefined) {
+      delete out[k]
+      changed = true
+    }
+  }
+  return changed ? (out as T) : info
+}
+
 function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: SessionOpts | undefined } {
   const raw = info?.metadata?.[METADATA_KEY]
   if (!raw || typeof raw !== "object") return { enabled: false, opts: undefined }
@@ -294,7 +315,19 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
   const opts: SessionOpts = {}
   if (optsRaw && typeof optsRaw === "object") {
     const o = optsRaw as Record<string, unknown>
-    if (typeof o.ttlDays === "number" && o.ttlDays > 0) opts.ttlDays = o.ttlDays
+    // legacy days-shaped opts migrate x24 (old bindings)
+    if (typeof o.ttlHours === "number" && o.ttlHours > 0) opts.ttlHours = Math.floor(o.ttlHours)
+    if (o.scope && typeof o.scope === "object") {
+      const sc = o.scope as Record<string, unknown>
+      const scope: ShareScope = {}
+      const ft = Math.floor(Number(sc.fromTurn))
+      if (Number.isFinite(ft) && ft > 1) scope.fromTurn = ft
+      for (const k of ["reasoning", "tools", "subagents", "fileContents"] as const) {
+        if (typeof sc[k] === "boolean") scope[k] = sc[k] as boolean
+      }
+      if (Object.keys(scope).length) opts.scope = scope
+    }
+    else if (typeof o.ttlDays === "number" && o.ttlDays > 0) opts.ttlHours = Math.floor(o.ttlDays * 24)
     if (typeof o.authLogin === "string") opts.authLogin = o.authLogin
     if (typeof o.authPassword === "string") opts.authPassword = o.authPassword
     if (typeof o.modelLabel === "string") opts.modelLabel = o.modelLabel
@@ -307,6 +340,23 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
  * with what the engine actually targets - file config alone can miss
  * plugin-options-layer config the TUI cannot see). */
 let liveTargets: string[] = []
+// the live engine registers its counter here (the TUI imports the
+// accessor without holding the engine instance)
+let statsProvider: ((sid: string) => { messages: number; toolCalls: number }) | null = null
+
+// Wave 3 preflight ledger: per-session redaction hits (count + first
+// samples, verbatim, so false positives are visible in the consent
+// preview before anything is published)
+const redactionLedger = new Map<string, { count: number; samples: RedactionHit[] }>()
+
+/** Preflight stats for the consent dialog: message/tool counts plus the
+ * redaction ledger (what would be stripped before publishing). */
+export function sessionStatsFor(sid: string): { messages: number; toolCalls: number; redaction: { count: number; samples: RedactionHit[] } } {
+  const led = redactionLedger.get(sid) ?? { count: 0, samples: [] as RedactionHit[] }
+  const counts = statsProvider ? statsProvider(sid) : { messages: 0, toolCalls: 0 }
+  return { ...counts, redaction: led }
+}
+
 export function engineTargetUrls(): string[] {
   return liveTargets
 }
@@ -1165,7 +1215,7 @@ export function createEngine(deps: EngineDeps): Engine {
     return { authLogin: login, authPassword: password }
   }
 
-  const ttlFor = (st: SessionState) => st.opts?.ttlDays ?? cfg.ttlDays
+  const ttlFor = (st: SessionState) => st.opts?.ttlHours ?? cfg.ttlHours
 
   // free-form labels for team directories/admin listings: ${NAME} refs
   // resolve from the process env at send time; unresolved refs stay
@@ -1186,7 +1236,7 @@ export function createEngine(deps: EngineDeps): Engine {
   /** Apply a metadata opts update. On a CHANGED opts set for a session with
    * live sockets, re-send the attach frame over each open socket: the
    * worker's attach path applies read-auth retroactively (rotating viewer
-   * tokens on change) and now also honors an explicit ttlDays override -
+   * tokens on change) and now also honors an explicit ttlHours override -
    * so settings heal immediately instead of waiting for a reconnect.
    * Re-attach is idempotent (no once-guard on init; earlySyncs empty at
    * steady state) and revalidates the token. */
@@ -1198,9 +1248,9 @@ export function createEngine(deps: EngineDeps): Engine {
     for (const [url, r] of st.remotes) {
       if (!r.shareId || !r.secret || !r.wsReady) continue
       const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st) }
-      if (st.opts?.ttlDays) attach.ttlDays = st.opts.ttlDays
+      if (st.opts?.ttlHours) attach.ttlHours = st.opts.ttlHours
       const sent = wsSend(r, { op: "init", attach })
-      if (sent) log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlDays ? ` (ttl ${st.opts.ttlDays}d)` : ""}`)
+      if (sent) log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`)
     }
   }
 
@@ -1436,7 +1486,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (r.initWasAttach) {
         wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
       }
 
       // handshake deadline: init sent but no ack (silent worker death)
@@ -1636,7 +1686,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
         return
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1648,7 +1698,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
         return
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected
@@ -1685,9 +1735,10 @@ export function createEngine(deps: EngineDeps): Engine {
       // the ack carries the RESOLVED ttl: surface a server/token clamp to
       // the binding once, and a successful handshake clears any stale
       // refusal reason the TUI may be showing
-      if (typeof frame.ttlDays === "number") {
+      const ackTtl = typeof frame.ttlHours === "number" ? frame.ttlHours : (typeof frame.ttlDays === "number" ? frame.ttlDays * 24 : undefined)
+      if (typeof ackTtl === "number") {
         const wanted = ttlFor(st)
-        const clamp = wanted != null && frame.ttlDays !== wanted ? { requested: wanted, effective: frame.ttlDays } : null
+        const clamp = wanted != null && ackTtl !== wanted ? { requested: wanted, effective: ackTtl } : null
         if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
           st.ttlClamped = clamp
           scheduleBindingWrite(st)
@@ -1706,6 +1757,22 @@ export function createEngine(deps: EngineDeps): Engine {
         logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`)
       } else if (frame.auth === true) {
         r.warnedNoGate = false
+      }
+      // Wave 3 pmeta: machine-local facts (directory/worktree) ride their
+      // OWN tiny sync once per init-ok, only to remotes we hold a
+      // credential for - anonymous (ownerless) shares never store them.
+      // Server-side they land in the private block, readable with share
+      // auth. Idempotent upsert; rides no shared frame so fan-out
+      // remotes with mixed identity each get exactly their due.
+      if (credOf(r.url).credential) {
+        const priv: Record<string, string> = {}
+        const dir = (deps.directory ?? "") as string
+        if (dir) priv.directory = dir
+        if (deps.worktree) priv.worktree = String(deps.worktree)
+        if (Object.keys(priv).length) {
+          const seq = ++nextSeq
+          wsSend(r, { op: "sync", items: [{ type: "pmeta", sessionID: st.sid, data: priv }], status: undefined, seq })
+        }
       }
       announceUrl(st, r)
       // first binding write is immediate (the TUI waits on the URL in
@@ -1976,6 +2043,12 @@ export function createEngine(deps: EngineDeps): Engine {
     }, wait)
   }
 
+  const homeDir = (() => { try { return homedir() } catch { return "" } })()
+  const userPatterns = (cfg as { redact?: { patterns?: unknown } }).redact?.patterns
+  const redactionRules = activeRules(userPatterns)
+
+  // Wave 3 partial share: per-session turn ranking for scope.fromTurn
+  const scopeStates = new Map<string, ScopeState>()
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
     // content dedupe at the machinery boundary: an identical re-feed has
@@ -1996,12 +2069,64 @@ export function createEngine(deps: EngineDeps): Engine {
       return
     }
     if (h) st.sentHash.set(entry.key, h)
+    // Wave 3 trust pass: redaction on UNGATED shares only (a gated share
+    // is private from casual observers already; the server owner sees
+    // content either way until encryption lands). The light path
+    // transform applies regardless. Zero-copy when nothing matches.
+    {
+      const gate = authFrame(st)
+      const gated = gate.authLogin !== "" && gate.authPassword !== ""
+      const pass = redactItem(entry.item, { rules: redactionRules, home: homeDir, enabled: !gated })
+      if (pass.item !== entry.item) entry = { ...entry, item: pass.item as typeof entry.item }
+      if (pass.hits.length) {
+        const led = redactionLedger.get(st.sid) ?? { count: 0, samples: [] as RedactionHit[] }
+        led.count += pass.hits.length
+        for (const hit of pass.hits) {
+          if (led.samples.length < 5 && !led.samples.some((x) => x.kind === hit.kind)) led.samples.push(hit)
+        }
+        redactionLedger.set(st.sid, led)
+      }
+    }
+    // Wave 3 partial share: the scope filter runs at the same choke
+    // point as redaction - backfill and live events both pass here, so
+    // excluded content never reaches a queue, a spool or a wire
+    {
+      const scope = st.opts?.scope
+      if (scope) {
+        const prevScope = scopeStates.get(st.sid) ?? newScopeState()
+        scopeStates.set(st.sid, prevScope)
+        const kept = scopeItem(entry.item as unknown as { type?: string; sessionID?: string; data?: unknown }, scope, prevScope, st.sid)
+        if (!kept) {
+          if (debugEvents) log("scope drop", (entry.item as { type?: string }).type, entry.key.slice(0, 40))
+          return
+        }
+        entry = { ...entry, item: kept as unknown as typeof entry.item }
+      }
+    }
     st.queue.set(entry.key, entry.item)
     indexMessage(entry)
     if (debugEvents) log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`)
     touch(st)
     ensureConnected(st)
     scheduleFlush(st)
+  }
+
+  // Wave 3 preflight counts: the module-level accessor delegates here
+  statsProvider = (sid: string) => {
+    const st = sessions.get(sid)
+    let messages = 0
+    let toolCalls = 0
+    if (st) {
+      for (const [, merged] of st.merged) {
+        messages++
+        const content = (merged as { content?: unknown }).content
+        if (Array.isArray(content)) toolCalls += content.filter((c: unknown) => !!c && (c as { type?: string }).type === "tool").length
+      }
+      for (const it of st.queue.values()) {
+        if ((it as { type?: string })?.type === "message") messages++
+      }
+    }
+    return { messages, toolCalls }
   }
 
   // ---- authoritative stamps ----------------------------------------------
@@ -2468,7 +2593,7 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const backfillSession = async (st: SessionState, client: ClientApi, sid: string, info?: SessionInfo) => {
     const sessionInfoValue = info ?? (await sessionInfo(client, sid))
-    if (sessionInfoValue) enqueue(st, itemFor("session", redact(sessionInfoValue), sid))
+    if (sessionInfoValue) enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid))
 
     let modelSeen = false
     const consume = (messages: Message[]) => {
@@ -2516,11 +2641,12 @@ export function createEngine(deps: EngineDeps): Engine {
       // nothing synced yet and no info in hand: the session item is the
       // one thing a viewer always needs — fetch it explicitly
       const fetched = await sessionInfo(client, st.sid)
-      if (fetched) enqueue(st, itemFor("session", redact(fetched), st.sid))
+      if (fetched) enqueue(st, itemFor("session", stripLocalFacts(redact(fetched)), st.sid))
     }
 
-    // children (subagent sessions) share the parent's page
-    if (typeof client.session.list === "function") {
+    // children (subagent sessions) share the parent's page, unless the
+    // partial-share scope excludes them (then don't even fetch them)
+    if (!scopeSkipsChildren(st.opts?.scope) && typeof client.session.list === "function") {
       try {
         const result = unwrap(await client.session.list({ query: query() }))
         if (Array.isArray(result)) {
@@ -2608,7 +2734,7 @@ export function createEngine(deps: EngineDeps): Engine {
         // activates anything on its own
         const st = sessions.get(parent)
         if (st?.activated && !st.closed) {
-          if (info) enqueue(st, itemFor("session", redact(info), sid))
+          if (info) enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid))
         }
         return
       }
@@ -2618,7 +2744,7 @@ export function createEngine(deps: EngineDeps): Engine {
         if (st?.activated && !st.closed) {
           // already sharing: opts updates apply, flag removal handled below
           if (flag.opts) applyOpts(st, flag.opts)
-          if (info) enqueue(st, itemFor("session", redact(info), sid))
+          if (info) enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid))
           if (t === "session.updated") chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
           return
         }
@@ -2678,13 +2804,14 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }
     if (!st) return
-    if (info) enqueue(st, itemFor("session", redact(info), sid))
+    if (info) enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid))
     if (t === "session.updated" && st.activated && !st.closed) {
       chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
     }
   }
 
   return {
+
     mode,
     config: () => cfg,
     hooks: {

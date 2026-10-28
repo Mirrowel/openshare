@@ -3,7 +3,7 @@
 //
 // Protocol:
 //   HTTP (fallback + curl/testing):
-//     POST   /api/share            {sessionID, ttlDays?, authLogin?, authPassword?}
+//     POST   /api/share            {sessionID, ttlHours? (legacy ttlDays), authLogin?, authPassword?}
 //                                  Bearer CREATE_TOKEN -> {id, secret}
 //     POST   /api/share/:id/sync   {secret, data, status?} -> {ok, rev, status}
 //     GET    /api/share/:id/data   -> {data, status, rev}   (401 authRequired if gated)
@@ -14,7 +14,7 @@
 //     viewer:  GET /api/share/:id/ws — hibernating; auth cookie checked;
 //              pushes {op:"frame", status, rev, items} after every sync
 //     plugin:  GET /api/ws?token=<CREATE_TOKEN> — one socket per process:
-//              init create {sessionID, ttlDays?, authLogin?, authPassword?}
+//              init create {sessionID, ttlHours? (legacy ttlDays), authLogin?, authPassword?}
 //              init attach {id, secret, authLogin?, authPassword?}
 //                 (attach with empty auth values REMOVES the read gate)
 //              sync {items, status?} -> ack {rev}; delete
@@ -153,7 +153,7 @@ export default {
       }
       if (path === "/api/me/settings" && (req.method === "GET" || req.method === "PUT")) {
         const body = req.method === "PUT" ? await req.json().catch(() => ({})) : {}
-        const r = await authCall(env, "/settings", { token: bearer(req), patch: body, maxTtl: clampTtl(undefined, env) })
+        const r = await authCall(env, "/settings", { token: bearer(req), patch: body, maxTtlHours: clampTtlHours(undefined, env) })
         return json(r.status, r.body)
       }
       if (path === "/api/me/shares" && req.method === "GET") {
@@ -331,7 +331,7 @@ export default {
         const rawBody = await req.json().catch(() => ({}))
         const chk = await authCall(env, "/create-check", { token: auth ?? "", ...(rawBody.set ? { set: rawBody.set } : {}) })
         if (!chk.body?.ok) return json(chk.body?.httpStatus ?? 401, { error: chk.body?.error ?? "bad create token" })
-        return await httpCreate(env, json, rawBody, chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0, chk.body.tokenId, chk.body.tokenKind, chk.body.setA ?? null)
+        return await httpCreate(env, json, rawBody, chk.body.userId ?? null, chk.body.ttlMaxHours ?? 0, chk.body.defaultTtlHours ?? 0, chk.body.tokenId, chk.body.tokenKind, chk.body.setA ?? null)
       }
 
       if (req.method === "POST" && op === "/sync") {
@@ -391,10 +391,10 @@ export default {
           patch.authLogin = String(body.authLogin)
           patch.authPassword = String(body.authPassword)
         }
-        if (body.ttlDays !== undefined) {
-          const n = Math.floor(Number(body.ttlDays))
-          if (!Number.isFinite(n) || n <= 0) return json(400, { error: "ttlDays must be a positive number" })
-          patch.ttlDays = clampTtl(n, env, ident.ttlMaxDays ?? 0)
+        if (body.ttlHours !== undefined || body.ttlDays !== undefined) {
+          const h = ttlHoursFrom(body)
+          if (h === undefined) return json(400, { error: "ttlHours must be a positive number of hours" })
+          patch.ttlHours = clampTtlHours(h, env, ident.ttlMaxHours ?? 0)
         }
         if (body.meta !== undefined) {
           if (!body.meta || typeof body.meta !== "object" || Array.isArray(body.meta)) return json(400, { error: "meta must be an object" })
@@ -406,7 +406,7 @@ export default {
           }
           patch.custom = clean
         }
-        if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlDays, meta)" })
+        if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta)" })
         const r = await shareStub(env, id).fetch("https://do/set-opts", {
           method: "POST",
           body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, ...patch }),
@@ -442,11 +442,26 @@ function randomId() {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")
 }
 
-function clampTtl(days, env, tokenMax = 0) {
-  let max = Number(env.MAX_TTL_DAYS || 90)
-  if (tokenMax > 0) max = Math.min(max, tokenMax)
-  if (days == null || !Number.isFinite(Number(days))) return max
-  return Math.max(1, Math.min(Math.floor(Number(days)), max))
+/** TTL is HOURS-native (Wave 3). Every surface accepts the legacy
+ * days-shaped input converted x24: old plugins, old tokens (limits
+ * stored maxTtlDays), old env vars (MAX_TTL_DAYS / DEFAULT_MAX_TTL_DAYS).
+ * New shapes: ttlHours fields, maxTtlHours limits, MAX_TTL_HOURS /
+ * DEFAULT_MAX_TTL_HOURS vars. Floor is one hour (was one day).
+ * tokenMax is HOURS when tokenMaxUnit!=="days". */
+function clampTtlHours(hours, env, tokenMax = 0, tokenMaxUnit = "hours") {
+  let max = Number(env.MAX_TTL_HOURS || 0) || Math.floor(Number(env.MAX_TTL_DAYS || 90) * 24)
+  if (!Number.isFinite(max) || max < 1) max = 90 * 24
+  if (tokenMax > 0) max = Math.min(max, tokenMaxUnit === "days" ? Math.floor(tokenMax * 24) : tokenMax)
+  if (hours == null || !Number.isFinite(Number(hours))) return max
+  return Math.max(1, Math.min(Math.floor(Number(hours)), max))
+}
+
+/** Accept a create/attach/PATCH body field pair: ttlHours wins, legacy
+ * ttlDays converts. Returns hours | undefined. */
+function ttlHoursFrom(body) {
+  if (body && Number.isFinite(Number(body.ttlHours)) && Number(body.ttlHours) > 0) return Math.floor(Number(body.ttlHours))
+  if (body && Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) return Math.floor(Number(body.ttlDays) * 24)
+  return undefined
 }
 
 // KV key METADATA is capped at 1024 bytes total: an over-budget `custom`
@@ -505,16 +520,17 @@ async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, to
   // B4 Class A: the token's provisioned set overrides client values
   if (setA) {
     if (setA.authLogin !== undefined) { body.authLogin = setA.authLogin; body.authPassword = setA.authPassword ?? "" }
-    if (setA.ttlDays !== undefined) body.ttlDays = setA.ttlDays
+    if (setA.ttlHours !== undefined) body.ttlHours = setA.ttlHours
+    else if (setA.ttlDays !== undefined) body.ttlDays = setA.ttlDays
   }
   const newId = randomId()
-  const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), env, ttlMax)
+  const ttlHours = clampTtlHours(ttlHoursFrom(body) ?? (ownerDefault || undefined), env, ttlMax)
   const r = await shareStub(env, newId).fetch("https://do/init", {
     method: "POST",
     body: JSON.stringify({
       id: newId,
       sessionID: body.sessionID,
-      ttlDays,
+      ttlHours,
       authLogin: body.authLogin ?? "",
       authPassword: body.authPassword ?? "",
       ownerId,
@@ -523,7 +539,7 @@ async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, to
   })
   const out = await r.json()
   if (out.ok && ownerId) await authCall(env, "/register", { userId: ownerId, shareId: newId, sessionID: body.sessionID, ...(tokenId ? { tokenId } : {}) })
-  if (out.ok) return json(r.status, { ...out, ttlDays })
+  if (out.ok) return json(r.status, { ...out, ttlHours })
   return json(r.status, out)
 }
 
@@ -575,7 +591,7 @@ async function resolveIdentity(env, req, body) {
   if (!token) return { ownerId: null, root: false }
   if (env.CREATE_TOKEN && token === env.CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await authCall(env, "/check", { token })
-  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false, tokenId: chk.body.tokenId, tokenKind: chk.body.tokenKind === "scoped" ? "scoped" : "full", ttlMaxDays: chk.body.ttlMaxDays ?? 0 }
+  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false, tokenId: chk.body.tokenId, tokenKind: chk.body.tokenKind === "scoped" ? "scoped" : "full", ttlMaxHours: chk.body.ttlMaxHours ?? 0 }
   return { ownerId: null, root: false }
 }
 
@@ -663,7 +679,7 @@ export class ControlDO {
     if (!t) return { ownerId: null, root: false }
     const chk = await this.authCall("/check", { token: t })
     return chk.kind === "user"
-      ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind === "scoped" ? "scoped" : "full", ttlMaxDays: chk.ttlMaxDays ?? 0 }
+      ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind === "scoped" ? "scoped" : "full", ttlMaxHours: chk.ttlMaxHours ?? 0 }
       : { ownerId: null, root: false }
   }
 
@@ -778,8 +794,8 @@ export class ControlDO {
             const chk = await this.authCall("/create-check", { token: this.token ?? "", ...(frame.create.set ? { set: frame.create.set } : {}) })
             if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
             ownerId = chk.userId ?? null
-            ttlMax = chk.ttlMaxDays ?? 0
-            ownerDefault = chk.defaultTtlDays ?? 0
+            ttlMax = chk.ttlMaxHours ?? 0
+            ownerDefault = chk.defaultTtlHours ?? 0
             creatorTokenId = chk.tokenId ?? null
             creatorTokenKind = chk.tokenKind ?? null
             // B4 Class A: the token's provisioned set overrides the
@@ -787,13 +803,14 @@ export class ControlDO {
             // change them later through the normal owner paths)
             if (chk.setA) {
               if (chk.setA.authLogin !== undefined) { frame.create.authLogin = chk.setA.authLogin; frame.create.authPassword = chk.setA.authPassword ?? "" }
-              if (chk.setA.ttlDays !== undefined) frame.create.ttlDays = chk.setA.ttlDays
+              if (chk.setA.ttlHours !== undefined) frame.create.ttlHours = chk.setA.ttlHours
+              else if (chk.setA.ttlDays !== undefined) frame.create.ttlDays = chk.setA.ttlDays
             }
           }
           const id = randomId()
-          // explicit ttlDays wins; otherwise the owner's stored default
-          // (PUT /api/me/settings), re-clamped against token+server caps
-          const ttlDays = clampTtl(frame.create.ttlDays ?? (ownerDefault || undefined), this.env, ttlMax)
+          // explicit ttlHours wins (legacy ttlDays converts); otherwise
+          // the owner's stored default, re-clamped against token+server
+          const ttlHours = clampTtlHours(ttlHoursFrom(frame.create) ?? (ownerDefault || undefined), this.env, ttlMax)
           // free-form labels from the plugin config (B5): string-to-string,
           // capped, stored under meta.custom and shown in admin listings
           const custom = {}
@@ -812,7 +829,7 @@ export class ControlDO {
             body: JSON.stringify({
               id,
               sessionID: frame.create.sessionID,
-              ttlDays,
+              ttlHours,
               authLogin: frame.create.authLogin ?? "",
               authPassword: frame.create.authPassword ?? "",
               ownerId,
@@ -827,7 +844,7 @@ export class ControlDO {
           await this.flushEarlySyncs(send)
           // auth mirrors what we just sent (the DO builds a gate only
           // from a full non-empty pair)
-          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(this.env), auth: !!(frame.create.authLogin && frame.create.authPassword) })
+          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlHours, policy: resolvePolicy(this.env), auth: !!(frame.create.authLogin && frame.create.authPassword) })
         }
         if (frame.attach) {
           const ident = await this.socketIdentity()
@@ -836,9 +853,9 @@ export class ControlDO {
           // ident already resolved the token's limits - no create-check
           // here (it burns a daily-create slot)
           let attachTtl
-          const rawTtl = Number(frame.attach.ttlDays)
-          if (Number.isFinite(rawTtl) && rawTtl > 0) {
-            attachTtl = clampTtl(rawTtl, this.env, ident.ttlMaxDays ?? 0)
+          const rawHours = ttlHoursFrom(frame.attach)
+          if (rawHours !== undefined) {
+            attachTtl = clampTtlHours(rawHours, this.env, ident.ttlMaxHours ?? 0)
           }
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(frame.attach.id)).fetch("https://do/attach", {
             method: "POST",
@@ -850,7 +867,7 @@ export class ControlDO {
               tokenKind: ident.tokenKind,
               authLogin: frame.attach.authLogin,
               authPassword: frame.attach.authPassword,
-              ...(attachTtl ? { ttlDays: attachTtl } : {}),
+              ...(attachTtl ? { ttlHours: attachTtl } : {}),
             }),
           })
         const body = await r.json()
@@ -1077,11 +1094,16 @@ export class ShareDO {
     const body = JSON.stringify(items)
     const frameStr = `{"v":2,"op":"frame","status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
     const dataStr = `{"v":2,"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
+    // authenticated variant: the private block (per-session machine facts)
+    // rides the envelope tail; built by SPLICING before the final brace so
+    // the shared body serialization is paid once
+    const privJson = meta.private && Object.keys(meta.private).length ? JSON.stringify(meta.private).slice(1, -1) : ""
+    const privData = privJson ? dataStr.slice(0, -1) + `,"private":{${privJson}}}` : dataStr
     if (frameStr.length <= MAX_CACHE_JSON) {
-      this._cache = { rev, status: meta.status, frameStr, dataStr }
+      this._cache = { rev, status: meta.status, frameStr, dataStr, privData }
       return this._cache
     }
-    return { rev, status: meta.status, frameStr, dataStr }
+    return { rev, status: meta.status, frameStr, dataStr, privData }
   }
 
   async fetch(req) {
@@ -1127,7 +1149,14 @@ export class ShareDO {
           const delta = redactItems(await this.itemsSince(since))
           pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: delta, kind: "delta" }))
         } else {
-          pair[1].send((await this.renderCache(meta)).frameStr)
+          // the upgrade 401s unauthenticated viewers on gated shares, so a
+          // gate here means share auth is satisfied: first frame carries
+          // the private block
+          if (meta.auth) {
+            pair[1].send((await this.renderCache(meta)).frameStr.slice(0, -1) + `,"private":${JSON.stringify(meta.private ?? {})}}`)
+          } else {
+            pair[1].send((await this.renderCache(meta)).frameStr)
+          }
         }
       } catch {}
       return new Response(null, { status: 101, webSocket: pair[0] })
@@ -1142,7 +1171,7 @@ export class ShareDO {
       await this.state.storage.put("meta", {
         secret,
         sessionID: body.sessionID,
-        ttlDays: body.ttlDays ?? 90,
+        ttlHours: Number(body.ttlHours) > 0 ? Math.floor(Number(body.ttlHours)) : 90 * 24,
         createdAt: now,
         lastActive: now,
         pluginSeen: now,
@@ -1238,10 +1267,10 @@ export class ShareDO {
       // explicit per-session TTL override (clamped by the ControlDO against
       // server + token caps): rebase the sweeper deadline. Shortening can
       // legitimately end an old page at once - that is the owner's ask.
-      if (Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) {
-        meta.ttlDays = Math.floor(Number(body.ttlDays))
+      if (Number.isFinite(Number(body.ttlHours)) && Number(body.ttlHours) > 0) {
+        meta.ttlHours = Math.floor(Number(body.ttlHours))
         await this.state.storage.put("meta", meta)
-        console.log("[attach] ttl updated to", meta.ttlDays, "days")
+        console.log("[attach] ttl updated to", meta.ttlHours, "hours")
       }
 
       // no `data` payload: the plugin backfills from the host and never
@@ -1283,9 +1312,9 @@ export class ShareDO {
           console.log("[set-opts] auth removed (owner action)")
         }
       }
-      if (Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) {
-        meta.ttlDays = Math.floor(Number(body.ttlDays))
-        console.log("[set-opts] ttl updated to", meta.ttlDays, "days")
+      if (Number.isFinite(Number(body.ttlHours)) && Number(body.ttlHours) > 0) {
+        meta.ttlHours = Math.floor(Number(body.ttlHours))
+        console.log("[set-opts] ttl updated to", meta.ttlHours, "hours")
       }
       if (body.custom !== undefined) meta.custom = body.custom ?? {}
       await this.state.storage.put("meta", meta)
@@ -1297,7 +1326,7 @@ export class ShareDO {
           })
         } catch {}
       }
-      return json(200, { ok: true, ttlDays: meta.ttlDays, auth: !!meta.auth, custom: meta.custom ?? {} })
+      return json(200, { ok: true, ttlHours: meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24), auth: !!meta.auth, custom: meta.custom ?? {} })
     }
 
     if (path === "/auth" && req.method === "POST") {
@@ -1392,7 +1421,10 @@ export class ShareDO {
           return json(200, { v: 2, data: redactItems(await this.itemsSince(since)), status: meta.status, rev: meta.rev ?? 0 })
         }
       }
-      return new Response((await this.renderCache(meta)).dataStr, { status: 200, headers: { "content-type": "application/json" } })
+      // a gated share 401s unauthenticated readers above, so reaching here
+      // on a gated share means share auth IS satisfied: serve the private
+      // block (machine-local facts) to exactly these readers
+      return new Response((await this.renderCache(meta))[meta.auth ? "privData" : "dataStr"], { status: 200, headers: { "content-type": "application/json" } })
     }
 
     if (path === "/meta" && req.method === "GET") {
@@ -1568,8 +1600,36 @@ export class ShareDO {
     // deletes) keep deletions visible to delta readers so an undone
     // message cannot resurrect for a polling viewer.
     const ops = new Map() // shard key -> { shard, it, del }
+    // Wave 3 data-inventory split: pmeta items (machine-local facts:
+    // directory/worktree) never become public item shards - they merge
+    // into meta.private and reach only AUTHENTICATED viewers via the
+    // envelope's private block. A pmeta tombstone drops that session's
+    // entry. Storage stays capped (few hundred bytes per session).
+    let privateDirty = false
+    const priv = meta.private && typeof meta.private === "object" ? { ...meta.private } : {}
+    const rest = []
     for (const raw of body.data ?? []) {
       const it = fitItem(raw)
+      if (it?.type === "pmeta") {
+        const sid = it.sessionID ?? it.data?.id ?? ""
+        if (it.del) delete priv[sid]
+        else if (sid && it.data && typeof it.data === "object") {
+          const clean = {}
+          for (const [k, v] of Object.entries(it.data)) {
+            if (typeof v === "string" && v.length <= 512 && k.length <= 32) clean[k] = v
+          }
+          priv[sid] = clean
+        }
+        privateDirty = true
+        continue
+      }
+      rest.push(it)
+    }
+    if (privateDirty) {
+      meta.private = priv
+      await this.state.storage.put("meta", meta)
+    }
+    for (const it of rest) {
       const key = itemKey(it)
       if (!key) continue
       const shard = "i:" + key
@@ -1885,7 +1945,7 @@ export class AuthDO {
 
   async check(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
-    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxDays: chk.token.limits.maxTtlDays || 0 }
+    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxHours: (chk.token.limits.maxTtlHours || 0) || Math.floor((chk.token.limits.maxTtlDays || 0) * 24) }
     return { kind: chk.kind }
   }
 
@@ -1930,7 +1990,7 @@ export class AuthDO {
     // B4: resolve the requested (or default) config set's Class A fields -
     // applied server-side at create, never transported to the client
     const set = this.resolveSet(t.sets, body.set)
-    return { ok: true, userId: t.userId, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full", ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0, ...(Object.keys(set.classA).length ? { setA: set.classA } : {}) }
+    return { ok: true, userId: t.userId, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full", ttlMaxHours: (t.limits.maxTtlHours || 0) || Math.floor((t.limits.maxTtlDays || 0) * 24), defaultTtlHours: (Number(chk.user?.settings?.defaultTtlHours) || 0) || Math.floor((Number(chk.user?.settings?.defaultTtlDays) || 0) * 24), ...(Object.keys(set.classA).length ? { setA: set.classA } : {}) }
   }
 
   // ---- enrollment + lifecycle ----------------------------------------------
@@ -1939,7 +1999,7 @@ export class AuthDO {
     const num = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0 }
     return {
       maxLiveShares: num(this.env.DEFAULT_MAX_LIVE_SHARES),
-      maxTtlDays: num(this.env.DEFAULT_MAX_TTL_DAYS),
+      maxTtlHours: num(this.env.DEFAULT_MAX_TTL_HOURS) || Math.floor(num(this.env.DEFAULT_MAX_TTL_DAYS) * 24),
       dailyCreates: num(this.env.DEFAULT_DAILY_CREATES),
     }
   }
@@ -1950,7 +2010,7 @@ export class AuthDO {
     const one = (v, def) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 0 ? n : def }
     return {
       maxLiveShares: one(input.maxLiveShares, d.maxLiveShares),
-      maxTtlDays: one(input.maxTtlDays, d.maxTtlDays),
+      maxTtlHours: one(input.maxTtlHours, one(input.maxTtlDays, 0) ? Math.floor(one(input.maxTtlDays, 0) * 24) : d.maxTtlHours),
       dailyCreates: one(input.dailyCreates, d.dailyCreates),
     }
   }
@@ -1965,7 +2025,7 @@ export class AuthDO {
 
   /** Named config sets on a token (B4 keying): one key (token) carries
    * several named configs; agents pick by name, unspecified = the first
-   * (default) set. Class A fields (authLogin/authPassword/ttlDays) apply
+   * (default) set. Class A fields (authLogin/authPassword/ttlHours) apply
    * server-side at create and NEVER travel to a client; Class B fields
    * (modelLabel/shareMode) are fetchable suggestions. Caps mirror the
    * create-frame validation. */
@@ -1981,8 +2041,12 @@ export class AuthDO {
       for (const k of ["authLogin", "authPassword"]) {
         if (typeof raw[k] === "string" && raw[k].length <= 128) set[k] = raw[k]
       }
-      const ttl = Math.floor(Number(raw.ttlDays))
-      if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlDays = ttl
+      const ttlH = Math.floor(Number(raw.ttlHours))
+      if (Number.isFinite(ttlH) && ttlH > 0 && ttlH <= 87600) set.ttlHours = ttlH
+      else {
+        const ttl = Math.floor(Number(raw.ttlDays))
+        if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlHours = ttl * 24
+      }
       if (typeof raw.modelLabel === "string" && raw.modelLabel.length <= 64) set.modelLabel = raw.modelLabel
       if (raw.shareMode === "all" || raw.shareMode === "manual") set.shareMode = raw.shareMode
       if (Object.keys(set).length) { out[name] = set; n++ }
@@ -2000,7 +2064,7 @@ export class AuthDO {
     const classA = {}
     if (set.authLogin !== undefined) classA.authLogin = set.authLogin
     if (set.authPassword !== undefined) classA.authPassword = set.authPassword
-    if (set.ttlDays !== undefined) classA.ttlDays = set.ttlDays
+    if (set.ttlHours !== undefined) classA.ttlHours = set.ttlHours
     const classB = {}
     if (set.modelLabel !== undefined) classB.modelLabel = set.modelLabel
     if (set.shareMode !== undefined) classB.shareMode = set.shareMode
@@ -2240,10 +2304,13 @@ export class AuthDO {
     const u = chk.user
     const patch = body.patch ?? {}
     const next = { ...(u.settings ?? {}) }
-    if (patch.defaultTtlDays !== undefined) {
-      const n = Math.floor(Number(patch.defaultTtlDays))
-      const max = Math.max(1, Math.floor(Number(body.maxTtl) || 90))
-      next.defaultTtlDays = Number.isFinite(n) && n > 0 ? Math.min(n, max) : max
+    if (patch.defaultTtlDays !== undefined || patch.defaultTtlHours !== undefined) {
+      const rawH = Number.isFinite(Number(patch.defaultTtlHours)) && Number(patch.defaultTtlHours) > 0
+        ? Math.floor(Number(patch.defaultTtlHours))
+        : Math.floor(Number(patch.defaultTtlDays) * 24)
+      const max = Math.max(1, Math.floor(Number(body.maxTtlHours) || 90 * 24))
+      next.defaultTtlHours = Number.isFinite(rawH) && rawH > 0 ? Math.min(rawH, max) : max
+      delete next.defaultTtlDays
     }
     u.settings = next
     await this.state.storage.put("u:" + u.id, u)
@@ -2677,7 +2744,7 @@ export class SweeperDO {
             continue
           }
           const meta = await r.json()
-          const ttlMs = (meta.ttlDays ?? 90) * 24 * 3600 * 1000
+          const ttlMs = ((meta.ttlHours ?? 90 * 24) || Math.floor((meta.ttlDays ?? 90) * 24)) * 3600 * 1000
           if ((meta.lastActive ?? 0) + ttlMs < Date.now()) {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
             budget--

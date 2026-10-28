@@ -9,21 +9,25 @@ preview_urls = false
 #                  enroll via /api/enroll instead (public) or an access
 #                  code minted with POST /api/admin/codes (private).
 [vars]
-# Hard cap for per-share ttlDays overrides (client may request less).
-MAX_TTL_DAYS = "90"
+# Hard cap for per-share ttlHours overrides (client may request less).
+# Hours-native; the legacy MAX_TTL_DAYS var still works (converted x24).
+MAX_TTL_HOURS = "2160"
 # AUTH_MODE: private (default — enrollment needs an access code) | public
-#            (anyone knowing the hostname can enroll; rate-limited per IP)
+#            (anyone knowing the hostname may create shares anonymously)
 # AUTH_MODE = "private"
+# Public servers only: allow minting ACCOUNTS without an access code.
+# Anonymous creating stays open either way; default off.
+# CODELESS_ONBOARDING = "1"
 # Global cap on anonymous (ownerless) share creations per rolling hour,
 # ALL anonymous visitors combined — public mode only. Each create costs
 # a Durable Object + one KV write.
 # ANON_CREATE_HOURLY = "100"
 # Per-token default limits for newly enrolled users (0 = unlimited):
 #   DEFAULT_MAX_LIVE_SHARES — max non-swept shares owned at once
-#   DEFAULT_MAX_TTL_DAYS    — extra cap on per-share ttlDays
+#   DEFAULT_MAX_TTL_HOURS   — extra cap on per-share ttlHours
 #   DEFAULT_DAILY_CREATES   — max share creations per UTC day
 # DEFAULT_MAX_LIVE_SHARES = "0"
-# DEFAULT_MAX_TTL_DAYS = "0"
+# DEFAULT_MAX_TTL_HOURS = "0"
 # DEFAULT_DAILY_CREATES = "0"
 # Server policy — the worker owns socket rules + the allowed client sync
 # cadence window; plugins clamp themselves in (init ack + /health). All

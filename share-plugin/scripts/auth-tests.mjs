@@ -208,7 +208,7 @@ try {
   const c3 = await req(W1, "POST", CREATE, { token: B, body: { sessionID: "ses_c3" } })
   ok("T16b first two creates pass", c1.json?.ok === true && c2.json?.ok === true)
   ok("T16c third create blocked (max shares)", c3.status === 403 && /max shares/.test(c3.json?.error ?? ""), `${c3.status} ${c3.json?.error}`)
-  ok("T16d ttl clamped to token max", c1.json?.ttlDays === 2, String(c1.json?.ttlDays))
+  ok("T16d ttl clamped to token max (hours)", c1.json?.ttlHours === 48, JSON.stringify(c1.json))
   // delete one via secret to free a slot and prove registry bookkeeping
   ok("T16e secret delete frees slot", (await req(W1, "DELETE", `/api/share/${c1.json.id}`, { body: { secret: c1.json.secret } })).json?.ok === true)
   ok("T16f create passes after free", (await req(W1, "POST", CREATE, { token: B, body: { sessionID: "ses_c4" } })).json?.ok === true)
@@ -218,16 +218,16 @@ try {
   const U5 = u5.json?.userId ?? ""
   const u5tok = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U5, limits: { maxTtlDays: 30 } } })
   const E = u5tok.json?.token ?? ""
-  ok("T16g user settings persist", (await req(W1, "PUT", "/api/me/settings", { token: E, body: { defaultTtlDays: 7 } })).json?.settings?.defaultTtlDays === 7)
+  ok("T16g user settings persist (hours)", (await req(W1, "PUT", "/api/me/settings", { token: E, body: { defaultTtlDays: 7 } })).json?.settings?.defaultTtlHours === 168)
   const d1 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl" } })
-  ok("T16h default TTL applied on create", d1.json?.ttlDays === 7, String(d1.json?.ttlDays))
+  ok("T16h default TTL applied on create (hours)", d1.json?.ttlHours === 168, JSON.stringify(d1.json))
   const d2 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl2", ttlDays: 3 } })
-  ok("T16i explicit ttlDays beats default", d2.json?.ttlDays === 3, String(d2.json?.ttlDays))
+  ok("T16i explicit legacy ttlDays beats default", d2.json?.ttlHours === 72, JSON.stringify(d2.json))
   const ws6 = wsSession(W1, E)
   await ws6.open()
   ws6.send({ op: "init", create: { sessionID: "ses_defttlws" } })
   const ws6init = await ws6.wait("init")
-  ok("T16j ws create applies default TTL", ws6init.ok === true && ws6init.ttlDays === 7, JSON.stringify(ws6init).slice(0, 120))
+  ok("T16j ws create applies default TTL (hours)", ws6init.ok === true && ws6init.ttlHours === 168, JSON.stringify(ws6init).slice(0, 140))
   ws6.close()
 
   // T21 — DELETE auth enforcement (Bun once trusted raw-body root/ownerId:
@@ -259,7 +259,46 @@ try {
   ok("T22e wrong cookie rejected", wrongCookie.status === 401)
   ok("T22f cleanup", (await req(W1, "DELETE", `/api/share/${gated.json.id}`, { body: { secret: gated.json.secret } })).json?.ok === true)
 
-  // T23 — route shape: share-referencing paths need a real 32-hex id
+  // T37 - Wave 3 data-inventory split: pmeta items (machine-local facts)
+  // never become public item shards. They land in the share's private
+  // block, which only AUTHENTICATED (gated) reads carry. An ungated share
+  // stores them dormant - /data never exposes them.
+  {
+    const g37 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t37", authLogin: "v", authPassword: "p" } })
+    await req(W1, "POST", `/api/share/${g37.json.id}/sync`, {
+      body: {
+        secret: g37.json.secret,
+        data: [
+          { type: "session", sessionID: "ses_t37", data: { id: "ses_t37", title: "split test", version: "1.18" } },
+          { type: "pmeta", sessionID: "ses_t37", data: { directory: "/home/u/proj", worktree: "/home/u/proj" } },
+        ],
+      },
+    })
+    const l37 = await req(W1, "POST", `/api/share/${g37.json.id}/auth`, { body: { login: "v", password: "p" } })
+    const ck37 = /osh_[0-9a-f]+=([^;]+)/.exec(l37.res?.headers?.get?.("set-cookie") ?? "")?.[1] ?? ""
+    const read37 = async () => JSON.parse(await (await fetch(`${W1}/api/share/${g37.json.id}/data`, { headers: { cookie: `osh_${g37.json.id}=${ck37}` } })).text())
+    const d37 = { json: await read37() }
+    ok("T37 gated authed read carries the private block", d37.json?.private?.["ses_t37"]?.directory === "/home/u/proj", JSON.stringify(d37.json?.private))
+    ok("T37a pmeta never appears as an item", !(d37.json?.data ?? []).some((i) => i?.type === "pmeta"), JSON.stringify((d37.json?.data ?? []).map((i) => i?.type)))
+    // pmeta tombstone drops the entry
+    await req(W1, "POST", `/api/share/${g37.json.id}/sync`, { body: { secret: g37.json.secret, data: [{ type: "pmeta", sessionID: "ses_t37", del: true, data: { id: "ses_t37" } }] } })
+    const d37b = { json: await read37() }
+    ok("T37b pmeta tombstone drops the entry", !d37b.json?.private?.["ses_t37"], JSON.stringify(d37b.json?.private))
+    ok("T37c cleanup gated", (await req(W1, "DELETE", `/api/share/${g37.json.id}`, { body: { secret: g37.json.secret } })).json?.ok === true)
+
+    // ungated share: pmeta stored dormant, NEVER in the public envelope
+    const u37 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t37u" } })
+    await req(W1, "POST", `/api/share/${u37.json.id}/sync`, {
+      body: { secret: u37.json.secret, data: [{ type: "session", sessionID: "ses_t37u", data: { id: "ses_t37u", title: "anon" } }, { type: "pmeta", sessionID: "ses_t37u", data: { directory: "/secret/dir" } }] },
+    })
+    const d37u = await req(W1, "GET", `/api/share/${u37.json.id}/data`)
+    const flat37 = JSON.stringify(d37u.json ?? {})
+    ok("T37d ungated read exposes no private block", d37u.json?.private === undefined, flat37.slice(0, 140))
+    ok("T37e ungated read leaks no pmeta path", !flat37.includes("secret/dir") && !flat37.includes('"pmeta"'), flat37.slice(0, 200))
+    ok("T37f cleanup ungated", (await req(W1, "DELETE", `/api/share/${u37.json.id}`, { body: { secret: u37.json.secret } })).json?.ok === true)
+  }
+
+  // T23 - route shape: share-referencing paths need a real 32-hex id
   ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)
   ok("T23b junk id 404s", (await req(W1, "POST", `/api/share/zzzz/sync`, { body: {} })).status === 404)
 
@@ -595,6 +634,19 @@ try {
     const SID34 = c34.json?.id ?? ""
     const SECRET34 = c34.json?.secret ?? ""
     ok("T34 share staged", !!SID34, JSON.stringify(c34.json))
+
+  // T36 - ttlHours native: hours accepted directly, floor is one hour,
+  // legacy days inputs still convert, per-token caps clamp in hours
+  {
+    const c36 = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_t36", ttlHours: 6 } })
+    ok("T36 hours-native create", c36.json?.ok === true && c36.json?.ttlHours === 6, JSON.stringify(c36.json))
+    const c36b = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_t36b", ttlDays: 2 } })
+    ok("T36a legacy days converts x24", c36b.json?.ttlHours === 48, JSON.stringify(c36b.json))
+    const p36 = await req(W1, "PATCH", `/api/share/${c36.json?.id}`, { body: { secret: c36.json?.secret, ttlHours: 1 } })
+    ok("T36b PATCH one-hour floor accepted", p36.json?.ok === true && p36.json?.ttlHours === 1, JSON.stringify(p36.json))
+    await req(W1, "DELETE", `/api/share/${c36.json?.id}`, { body: { secret: c36.json?.secret } })
+    await req(W1, "DELETE", `/api/share/${c36b.json?.id}`, { body: { secret: c36b.json?.secret } })
+  }
     // gate on via PATCH
     const p1 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "u", authPassword: "p" } })
     ok("T34a PATCH sets the gate", p1.json?.ok === true && p1.json?.auth === true, JSON.stringify(p1.json))
@@ -610,8 +662,8 @@ try {
     ok("T34e PATCH removes the gate", p3.json?.ok === true && p3.json?.auth === false, JSON.stringify(p3.json))
     ok("T34f viewer reads freely again", (await req(W1, "GET", `/api/share/${SID34}/data`)).status === 200)
     // ttl + meta
-    const p4 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, ttlDays: 7, meta: { via: "patch" } } })
-    ok("T34g PATCH ttl+meta", p4.json?.ok === true && p4.json?.ttlDays === 7 && p4.json?.custom?.via === "patch", JSON.stringify(p4.json))
+    const p4 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, ttlHours: 7, meta: { via: "patch" } } })
+    ok("T34g PATCH ttl(hours)+meta", p4.json?.ok === true && p4.json?.ttlHours === 7 && p4.json?.custom?.via === "patch", JSON.stringify(p4.json))
     const admin34 = await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })
     const row34 = (admin34.json?.shares ?? []).find((sh) => sh.id === SID34)
     ok("T34h admin listing carries the patched meta", row34?.custom?.via === "patch", JSON.stringify(row34?.custom))
@@ -654,11 +706,11 @@ try {
     // create WITHOUT a set name: the default (first) set applies - gated,
     // ttl 11, without the client sending either
     const c35 = await req(W1, "POST", CREATE, { token: T35, body: { sessionID: "ses_t35a" } })
-    ok("T35c default set applied at create (ttl 11)", c35.json?.ok === true && c35.json?.ttlDays === 11, JSON.stringify(c35.json))
+    ok("T35c default set applied at create (ttl 264h)", c35.json?.ok === true && c35.json?.ttlHours === 264, JSON.stringify(c35.json))
     ok("T35d default set gated the share", (await req(W1, "GET", `/api/share/${c35.json?.id}/data`)).status === 401)
     // create with set:"ci": ttl 2, NO gate
     const c35b = await req(W1, "POST", CREATE, { token: T35, body: { sessionID: "ses_t35b", set: "ci" } })
-    ok("T35e named set applied (ttl 2, ungated)", c35b.json?.ok === true && c35b.json?.ttlDays === 2, JSON.stringify(c35b.json))
+    ok("T35e named set applied (ttl 48h, ungated)", c35b.json?.ok === true && c35b.json?.ttlHours === 48, JSON.stringify(c35b.json))
     ok("T35f ci set has no gate", (await req(W1, "GET", `/api/share/${c35b.json?.id}/data`)).status === 200)
     // scoped token: reads its own sets, cannot PUT
     const sc35 = await req(W1, "POST", "/api/token", { token: T35, body: { kind: "scoped" } })

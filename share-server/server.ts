@@ -66,11 +66,24 @@ function resolvePolicy() {
   }
 }
 
-function clampTtl(days: unknown, tokenMax = 0): number {
-  let max = MAX_TTL_DAYS
-  if (tokenMax > 0) max = Math.min(max, tokenMax)
-  if (days == null || !Number.isFinite(Number(days))) return max
-  return Math.max(1, Math.min(Math.floor(Number(days)), max))
+/** TTL is HOURS-native (worker parity): legacy days-shaped inputs
+ * convert x24; floor one hour; caps via MAX_TTL_HOURS or legacy
+ * MAX_TTL_DAYS. tokenMax arrives in HOURS when unit!=="days". */
+function clampTtlHours(hours: unknown, tokenMax = 0, unit: "hours" | "days" = "hours"): number {
+  let max = Number(process.env.MAX_TTL_HOURS || 0) || Math.floor(Number(process.env.MAX_TTL_DAYS || 90) * 24)
+  if (!Number.isFinite(max) || max < 1) max = 90 * 24
+  if (tokenMax > 0) max = Math.min(max, unit === "days" ? Math.floor(tokenMax * 24) : tokenMax)
+  const h = Math.floor(Number(hours))
+  if (!Number.isFinite(h) || h <= 0) return max
+  return Math.max(1, Math.min(h, max))
+}
+
+function ttlHoursFrom(body: Record<string, unknown>): number | undefined {
+  const h = Number(body?.ttlHours)
+  if (Number.isFinite(h) && h > 0) return Math.floor(h)
+  const d = Number(body?.ttlDays)
+  if (Number.isFinite(d) && d > 0) return Math.floor(d * 24)
+  return undefined
 }
 
 // --- pure helpers (mirror worker.js) ---------------------------------------
@@ -123,7 +136,7 @@ const db = new Database(DB_PATH)
 db.exec("PRAGMA journal_mode = WAL")
 db.exec(`CREATE TABLE IF NOT EXISTS shares (
   id TEXT PRIMARY KEY, secret TEXT NOT NULL, sessionID TEXT NOT NULL,
-  ttlDays INTEGER NOT NULL, createdAt INTEGER NOT NULL, lastActive INTEGER NOT NULL,
+  ttlDays INTEGER NOT NULL, ttlHours INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, lastActive INTEGER NOT NULL,
   pluginSeen INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'live',
   ownerId TEXT, frozen INTEGER NOT NULL DEFAULT 0, auth TEXT, tokens TEXT NOT NULL DEFAULT '[]',
   attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER, custom TEXT NOT NULL DEFAULT '{}')`)
@@ -144,16 +157,27 @@ db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT 
 try { db.exec("ALTER TABLE shares ADD COLUMN creatorTokenId TEXT") } catch {}
 try { db.exec("ALTER TABLE tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'") } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN createdByCode TEXT") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN ttlHours INTEGER NOT NULL DEFAULT 0") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN private TEXT NOT NULL DEFAULT '{}'") } catch {}
+// legacy rows: backfill hours from days once (idempotent: only where 0)
+try { db.exec("UPDATE shares SET ttlHours = ttlDays * 24 WHERE ttlHours = 0") } catch {}
 try { db.exec("ALTER TABLE tokens ADD COLUMN sets TEXT NOT NULL DEFAULT '{}'") } catch {}
 
 type ShareRow = {
-  id: string; secret: string; sessionID: string; ttlDays: number; createdAt: number; lastActive: number
+  id: string; secret: string; sessionID: string; ttlDays: number; ttlHours?: number; private?: string; createdAt: number; lastActive: number
   pluginSeen: number; rev: number; status: string; ownerId: string | null; frozen: number
   auth: string | null; tokens: string; attempts: string; finalizeAt: number | null; custom: string
 }
 
 const q = {
   share: (id: string) => db.query<ShareRow, string>("SELECT * FROM shares WHERE id = ?").get(id),
+}
+
+/** Effective TTL in HOURS: new rows carry ttlHours; legacy rows were
+ * backfilled, but resolve defensively anyway. */
+function ttlHoursOf(row: ShareRow): number {
+  if (row.ttlHours && row.ttlHours > 0) return row.ttlHours
+  return Math.floor((row.ttlDays || 90) * 24)
 }
 
 // --- identity ----------------------------------------------------------------
@@ -164,7 +188,7 @@ function defaultLimits() {
   const num = (v: unknown) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0 }
   return {
     maxLiveShares: num(process.env.DEFAULT_MAX_LIVE_SHARES),
-    maxTtlDays: num(process.env.DEFAULT_MAX_TTL_DAYS),
+    maxTtlHours: num(process.env.DEFAULT_MAX_TTL_HOURS) || Math.floor(num(process.env.DEFAULT_MAX_TTL_DAYS) * 24),
     dailyCreates: num(process.env.DEFAULT_DAILY_CREATES),
   }
 }
@@ -174,7 +198,7 @@ function normLimits(input: unknown) {
   if (!input || typeof input !== "object") return d
   const one = (v: unknown, def: number) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 0 ? n : def }
   const i = input as Record<string, unknown>
-  return { maxLiveShares: one(i.maxLiveShares, d.maxLiveShares), maxTtlDays: one(i.maxTtlDays, d.maxTtlDays), dailyCreates: one(i.dailyCreates, d.dailyCreates) }
+  return { maxLiveShares: one(i.maxLiveShares, d.maxLiveShares), maxTtlHours: one(i.maxTtlHours, one(i.maxTtlDays, 0) ? Math.floor(one(i.maxTtlDays, 0) * 24) : d.maxTtlHours), dailyCreates: one(i.dailyCreates, d.dailyCreates) }
 }
 
 /** Public servers may accept onboarding without a code only when
@@ -196,7 +220,7 @@ async function checkToken(token: string): Promise<{ kind: "none" | "root" } | { 
   return { kind: "user", token: row, userId: row.userId, tokenId: row.id, tokenKind: row.kind === "scoped" ? "scoped" : "full", sets: JSON.parse(row.sets || "{}") as Record<string, TokenSet> }
 }
 
-async function createCheck(token: string, set: unknown = undefined): Promise<{ ok: true; userId?: string; ttlMaxDays?: number; defaultTtlDays?: number } | { ok: false; error: string; httpStatus: number }> {
+async function createCheck(token: string, set: unknown = undefined): Promise<{ ok: true; userId?: string; ttlMaxHours?: number; defaultTtlHours?: number } | { ok: false; error: string; httpStatus: number }> {
   const chk = await checkToken(token)
   if (chk.kind === "root") return { ok: true }
   if (chk.kind === "none") {
@@ -214,7 +238,7 @@ async function createCheck(token: string, set: unknown = undefined): Promise<{ o
     }
     return { ok: false, error: "token required", httpStatus: 401 }
   }
-  const limits = JSON.parse(chk.token.limits) as { maxLiveShares: number; maxTtlDays: number; dailyCreates: number }
+  const limits = JSON.parse(chk.token.limits) as { maxLiveShares: number; maxTtlDays: number; maxTtlHours?: number; dailyCreates: number }
   if (limits.maxLiveShares > 0) {
     // SCOPED tokens count only their own shares (worker parity)
     const scoped = chk.token.kind === "scoped"
@@ -228,11 +252,12 @@ async function createCheck(token: string, set: unknown = undefined): Promise<{ o
     db.query("INSERT INTO dcreates (k, n) VALUES (?, 1) ON CONFLICT(k) DO UPDATE SET n = n + 1").run(k)
   }
   const u = db.query("SELECT settings FROM users WHERE id = ?").get(chk.userId) as { settings: string } | undefined
-  const defaultTtlDays = Number(JSON.parse(u?.settings ?? "{}").defaultTtlDays) || 0
+  const settingsDoc = JSON.parse(u?.settings ?? "{}") as { defaultTtlHours?: number; defaultTtlDays?: number }
+  const defaultTtlHours = (Number(settingsDoc.defaultTtlHours) || 0) || Math.floor((Number(settingsDoc.defaultTtlDays) || 0) * 24)
   // B4: Class A of the requested (or default) set - applied at create,
   // never transported (worker parity)
   const setA = resolveSet(chk.sets, set).classA
-  return { ok: true, userId: chk.userId, tokenId: chk.token.id, tokenKind: chk.token.kind === "scoped" ? "scoped" : "full", ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays, ...(Object.keys(setA).length ? { setA } : {}) }
+  return { ok: true, userId: chk.userId, tokenId: chk.token.id, tokenKind: chk.token.kind === "scoped" ? "scoped" : "full", ttlMaxHours: (limits.maxTtlHours || 0) || Math.floor((limits.maxTtlDays || 0) * 24), defaultTtlHours, ...(Object.keys(setA).length ? { setA } : {}) }
 }
 
 async function mint(userId: string, label: string, limits: unknown, kind: "full" | "scoped" = "full"): Promise<{ value: string; id: string; kind: string }> {
@@ -253,12 +278,12 @@ function makeAuth(login: string, password: string) {
   })
 }
 
-function createShare(sessionID: string, ttlDays: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null): { id: string; secret: string } {
+function createShare(sessionID: string, ttlHours: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null): { id: string; secret: string } {
   const id = randomId()
   const secret = randomId() + randomId()
   const auth = authLogin && authPassword ? JSON.stringify({ salt: "", loginHash: "", passHash: "" }) : null
-  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom, creatorTokenId) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?, ?)")
-    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom), creatorTokenId)
+  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, ttlHours, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom, creatorTokenId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?, ?)")
+    .run(id, secret, sessionID, Math.ceil(ttlHours / 24), ttlHours, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom), creatorTokenId)
   if (authLogin && authPassword) {
     // hash asynchronously then persist (the synchronous insert keeps the
     // response fast; the gate materializes a moment later)
@@ -285,9 +310,9 @@ function normCustom(raw: unknown): Record<string, string> {
 }
 
 /** Named config sets on a token (B4, worker parity): Class A fields
- * (authLogin/authPassword/ttlDays) apply at create and never travel to a
+ * (authLogin/authPassword/ttlHours) apply at create and never travel to a
  * client; Class B (modelLabel/shareMode) are fetchable suggestions. */
-type TokenSet = { authLogin?: string; authPassword?: string; ttlDays?: number; modelLabel?: string; shareMode?: string }
+type TokenSet = { authLogin?: string; authPassword?: string; ttlHours?: number; modelLabel?: string; shareMode?: string }
 
 function normSets(input: unknown): Record<string, TokenSet> {
   const out: Record<string, TokenSet> = {}
@@ -302,8 +327,12 @@ function normSets(input: unknown): Record<string, TokenSet> {
     for (const k of ["authLogin", "authPassword"] as const) {
       if (typeof r[k] === "string" && (r[k] as string).length <= 128) set[k] = r[k] as string
     }
-    const ttl = Math.floor(Number(r.ttlDays))
-    if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlDays = ttl
+    const ttlH = Math.floor(Number(r.ttlHours))
+    if (Number.isFinite(ttlH) && ttlH > 0 && ttlH <= 87600) set.ttlHours = ttlH
+    else {
+      const ttl = Math.floor(Number(r.ttlDays))
+      if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlHours = ttl * 24
+    }
     if (typeof r.modelLabel === "string" && r.modelLabel.length <= 64) set.modelLabel = r.modelLabel
     if (r.shareMode === "all" || r.shareMode === "manual") set.shareMode = r.shareMode
     if (Object.keys(set).length) { out[name] = set; n++ }
@@ -319,7 +348,7 @@ function resolveSet(sets: Record<string, TokenSet> | undefined, wanted: unknown)
   const classA: Partial<TokenSet> = {}
   if (set.authLogin !== undefined) classA.authLogin = set.authLogin
   if (set.authPassword !== undefined) classA.authPassword = set.authPassword
-  if (set.ttlDays !== undefined) classA.ttlDays = set.ttlDays
+  if (set.ttlHours !== undefined) classA.ttlHours = set.ttlHours
   const classB: Partial<TokenSet> = {}
   if (set.modelLabel !== undefined) classB.modelLabel = set.modelLabel
   if (set.shareMode !== undefined) classB.shareMode = set.shareMode
@@ -394,7 +423,30 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
   const rev = share.rev + 1
   const batch: unknown[] = []
   const tx = db.transaction(() => {
+    // Wave 3 data-inventory split: pmeta items (machine-local facts)
+    // never become public item shards - they merge into shares.private
+    // and reach only AUTHENTICATED viewers (worker parity)
+    let priv: Record<string, Record<string, string>> | null = null
+    const rest: unknown[] = []
     for (const raw of body.data ?? []) {
+      const it = raw as { type?: string; del?: boolean; sessionID?: string; data?: unknown }
+      if (it?.type === "pmeta") {
+        priv = priv ?? (JSON.parse(share.private || "{}") as Record<string, Record<string, string>>)
+        const sid = it.sessionID ?? (it.data as { id?: string } | undefined)?.id ?? ""
+        if (it.del) delete priv[sid]
+        else if (sid && it.data && typeof it.data === "object") {
+          const clean: Record<string, string> = {}
+          for (const [k, v] of Object.entries(it.data as Record<string, unknown>)) {
+            if (typeof v === "string" && v.length <= 512 && k.length <= 32) clean[k] = v
+          }
+          priv[sid] = clean
+        }
+        continue
+      }
+      rest.push(raw)
+    }
+    if (priv) db.query("UPDATE shares SET private = ? WHERE id = ?").run(JSON.stringify(priv), shareId)
+    for (const raw of rest) {
       const it = (raw as { del?: boolean }).del ? raw : fitItem(raw)
       const key = itemKey(it)
       if (!key) continue
@@ -467,7 +519,7 @@ function broadcast(shareId: string, frame: unknown) {
 // a hundred large polled shares (audit N9). Map insertion order doubles
 // as the LRU (re-set on hit).
 const DATA_CACHE_MAX_BYTES = 128 * 1024 * 1024
-const dataCache = new Map<string, { rev: number; status: string; dataJson: string; frameJson: string; bytes: number }>()
+const dataCache = new Map<string, { rev: number; status: string; dataJson: string; frameJson: string; privData?: string; bytes: number }>()
 let dataCacheBytes = 0
 function dataCacheTrim() {
   for (const [k, v] of dataCache) {
@@ -480,7 +532,9 @@ function dataCacheSet(share: ShareRow, dataJson: string, frameJson: string) {
   const hit = dataCache.get(share.id)
   if (hit) dataCacheBytes -= hit.bytes
   dataCache.delete(share.id)
-  dataCache.set(share.id, { rev: share.rev, status: share.status, dataJson, frameJson, bytes: dataJson.length + frameJson.length })
+  const priv = JSON.parse(share.private || "{}") as Record<string, unknown>
+  const privData = Object.keys(priv).length ? dataJson.slice(0, -1) + ',"private":' + JSON.stringify(priv) + "}" : undefined
+  dataCache.set(share.id, { rev: share.rev, status: share.status, dataJson, frameJson, privData, bytes: dataJson.length + frameJson.length + (privData?.length ?? 0) })
   dataCacheBytes += dataJson.length + frameJson.length
   dataCacheTrim()
 }
@@ -590,7 +644,7 @@ async function httpHandler(req: Request): Promise<Response> {
     const rawBody = await bodyJson(req)
     const chk = await createCheck(auth, rawBody.set)
     if (!chk.ok) return json(chk.httpStatus, { error: chk.error })
-    return httpCreate(rawBody, chk.userId ?? null, chk.ttlMaxDays ?? 0, chk.defaultTtlDays ?? 0, chk.tokenId ?? null, chk.setA ?? null)
+    return httpCreate(rawBody, chk.userId ?? null, chk.ttlMaxHours ?? 0, chk.defaultTtlHours ?? 0, chk.tokenId ?? null, chk.setA ?? null)
   }
   if (req.method === "POST" && op === "/sync") {
     const body = await bodyJson(req, 8_000_000)
@@ -621,6 +675,11 @@ async function httpHandler(req: Request): Promise<Response> {
         return json(200, { v: 2, data: delta.map((r) => JSON.parse(r.item)), status: share.status, rev: share.rev })
       }
     }
+    if (share.auth) {
+      renderData(share)
+      const hit = dataCache.get(share.id)
+      if (hit && hit.privData) return new Response(hit.privData, { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
+    }
     return new Response(renderData(share), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
   }
   // #13: edit ANY share setting after creation (worker parity)
@@ -638,16 +697,16 @@ async function httpHandler(req: Request): Promise<Response> {
       patch.authLogin = String(body.authLogin)
       patch.authPassword = String(body.authPassword)
     }
-    if (body.ttlDays !== undefined) {
-      const tn = Math.floor(Number(body.ttlDays))
-      if (!Number.isFinite(tn) || tn <= 0) return json(400, { error: "ttlDays must be a positive number" })
-      patch.ttlDays = clampTtl(tn, ident.ttlMaxDays ?? 0)
+    if (body.ttlHours !== undefined || body.ttlDays !== undefined) {
+      const th = ttlHoursFrom(body as Record<string, unknown>)
+      if (th === undefined) return json(400, { error: "ttlHours must be a positive number of hours" })
+      patch.ttlHours = clampTtlHours(th, ident.ttlMaxHours ?? 0)
     }
     if (body.meta !== undefined) {
       if (!body.meta || typeof body.meta !== "object" || Array.isArray(body.meta)) return json(400, { error: "meta must be an object" })
       patch.custom = normCustom(body.meta)
     }
-    if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlDays, meta)" })
+    if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta)" })
     if (patch.authLogin !== undefined) {
       const wantAuth = patch.authLogin && patch.authPassword
       let sameAuth = false
@@ -665,15 +724,15 @@ async function httpHandler(req: Request): Promise<Response> {
         console.log("[patch] auth removed (owner action)")
       }
     }
-    if (patch.ttlDays !== undefined) {
-      db.query("UPDATE shares SET ttlDays = ? WHERE id = ?").run(patch.ttlDays, id)
-      console.log("[patch] ttl updated to", patch.ttlDays, "days")
+    if (patch.ttlHours !== undefined) {
+      db.query("UPDATE shares SET ttlHours = ?, ttlDays = ? WHERE id = ?").run(patch.ttlHours, Math.ceil((patch.ttlHours as number) / 24), id)
+      console.log("[patch] ttl updated to", patch.ttlHours, "hours")
     }
     if (patch.custom !== undefined) {
       db.query("UPDATE shares SET custom = ? WHERE id = ?").run(JSON.stringify(patch.custom), id)
     }
     const updated = q.share(id)!
-    return json(200, { ok: true, id, ttlDays: updated.ttlDays, auth: !!updated.auth, custom: JSON.parse(updated.custom || "{}") })
+    return json(200, { ok: true, id, ttlHours: ttlHoursOf(updated), auth: !!updated.auth, custom: JSON.parse(updated.custom || "{}") })
   }
 
   if (req.method === "DELETE" && op === "") {
@@ -699,7 +758,7 @@ async function resolveIdentity(req: Request, body: { secret?: string }): Promise
   if (CREATE_TOKEN && token === CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await checkToken(token)
   return chk.kind === "user"
-    ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxDays: chk.kind === "user" ? (JSON.parse(chk.token.limits).maxTtlDays || 0) : 0 }
+    ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxHours: chk.kind === "user" ? ((JSON.parse(chk.token.limits).maxTtlHours || 0) || Math.floor((JSON.parse(chk.token.limits).maxTtlDays || 0) * 24)) : 0 }
     : { ownerId: null, root: false }
 }
 
@@ -708,12 +767,13 @@ async function httpCreate(body: Record<string, unknown>, ownerId: string | null,
   // B4 Class A: the token's provisioned set overrides client values
   if (setA) {
     if (setA.authLogin !== undefined) { body.authLogin = setA.authLogin; body.authPassword = setA.authPassword ?? "" }
-    if (setA.ttlDays !== undefined) body.ttlDays = setA.ttlDays
+    if (setA.ttlHours !== undefined) body.ttlHours = setA.ttlHours
   }
-  // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
-  const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), ttlMax)
-  const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
-  return json(200, { ok: true, id, secret, ttlDays })
+  // explicit ttlHours wins (legacy ttlDays converts); else the owner's
+  // stored default, re-clamped
+  const ttlHours = clampTtlHours(ttlHoursFrom(body) ?? (ownerDefault || undefined), ttlMax)
+  const { id, secret } = createShare(body.sessionID, ttlHours, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
+  return json(200, { ok: true, id, secret, ttlHours })
 }
 
 function removeShare(id: string) {
@@ -817,9 +877,12 @@ async function settingsRoute(token: string, patch: Record<string, unknown>): Pro
   if (chk.tokenKind === "scoped") return json(403, { ok: false, error: "scoped tokens cannot edit settings" })
   const user = db.query("SELECT * FROM users WHERE id = ?").get(chk.userId) as { settings: string }
   const next = JSON.parse(user.settings) as Record<string, unknown>
-  if (patch.defaultTtlDays !== undefined) {
-    const n = Math.floor(Number(patch.defaultTtlDays))
-    next.defaultTtlDays = Number.isFinite(n) && n > 0 ? Math.min(n, Math.max(1, MAX_TTL_DAYS)) : Math.max(1, MAX_TTL_DAYS)
+  if (patch.defaultTtlDays !== undefined || patch.defaultTtlHours !== undefined) {
+    const rawH = Number.isFinite(Number(patch.defaultTtlHours)) && Number(patch.defaultTtlHours) > 0
+      ? Math.floor(Number(patch.defaultTtlHours))
+      : Math.floor(Number(patch.defaultTtlDays) * 24)
+    next.defaultTtlHours = Number.isFinite(rawH) && rawH > 0 ? Math.min(rawH, Math.max(1, MAX_TTL_DAYS * 24)) : Math.max(1, MAX_TTL_DAYS * 24)
+    delete next.defaultTtlDays
   }
   db.query("UPDATE users SET settings = ? WHERE id = ?").run(JSON.stringify(next), chk.userId)
   return json(200, { ok: true, settings: next })
@@ -1187,11 +1250,11 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         // B4 Class A: provisioned set overrides client values
         if (chk.setA) {
           if (chk.setA.authLogin !== undefined) { createBody.authLogin = chk.setA.authLogin; createBody.authPassword = chk.setA.authPassword ?? "" }
-          if (chk.setA.ttlDays !== undefined) createBody.ttlDays = chk.setA.ttlDays
+          if (chk.setA.ttlHours !== undefined) createBody.ttlHours = chk.setA.ttlHours
         }
-        // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
-        const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays ?? (chk.defaultTtlDays || undefined), chk.ttlMaxDays ?? 0)
-        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)
+        // explicit ttlHours wins (legacy ttlDays converts); else default
+        const ttlHours = clampTtlHours(ttlHoursFrom(createBody) ?? (chk.defaultTtlHours || undefined), chk.ttlMaxHours ?? 0)
+        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlHours, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)
         data.attachId = id
         data.attachSecret = secret
         data.attachOwner = chk.userId ?? null
@@ -1203,7 +1266,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
           send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: (early as Frame).seq })
         }
         data.earlySyncs = []
-        return send({ op: "init", ok: true, id, secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(), auth: !!(frame.create as Record<string, unknown>).authLogin && !!(frame.create as Record<string, unknown>).authPassword })
+        return send({ op: "init", ok: true, id, secret, rev: 0, status: "live", ttlHours, policy: resolvePolicy(), auth: !!(frame.create as Record<string, unknown>).authLogin && !!(frame.create as Record<string, unknown>).authPassword })
       }
       if (frame.attach) {
         const share = q.share(String((frame.attach as Record<string, unknown>).id ?? ""))
@@ -1251,13 +1314,13 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         // explicit per-session TTL override changing mid-life: clamp like
         // create (server cap + the token's maxTtlDays), then rebase the
         // sweeper deadline (worker parity)
-        const attachTtlRaw = Number(attach.ttlDays)
-        if (attach.ttlDays !== undefined && Number.isFinite(attachTtlRaw) && attachTtlRaw > 0) {
+        const attachTtlH = ttlHoursFrom(attach)
+        if (attachTtlH !== undefined) {
           // chk (from /check) already carries the token's maxTtlDays - a
           // create-check here would burn a daily-create slot
-          const ttlDays = clampTtl(attachTtlRaw, chk.kind === "user" ? (JSON.parse(chk.token.limits).maxTtlDays || 0) : 0)
-          db.query("UPDATE shares SET ttlDays = ? WHERE id = ?").run(ttlDays, share.id)
-          console.log("[attach] ttl updated to", ttlDays, "days")
+          const ttlH = clampTtlHours(attachTtlH, chk.kind === "user" ? ((JSON.parse(chk.token.limits).maxTtlHours || 0) || Math.floor((JSON.parse(chk.token.limits).maxTtlDays || 0) * 24)) : 0)
+          db.query("UPDATE shares SET ttlHours = ?, ttlDays = ? WHERE id = ?").run(ttlH, Math.ceil(ttlH / 24), share.id)
+          console.log("[attach] ttl updated to", ttlH, "hours")
         }
         const updated = q.share(share.id)!
         for (const early of data.earlySyncs) {
@@ -1329,9 +1392,10 @@ setInterval(() => {
       console.log("[finalize] share interrupted:", r.id)
     }
     // TTL sweep
-    const rows = db.query("SELECT id, ttlDays, lastActive FROM shares").all() as Array<{ id: string; ttlDays: number; lastActive: number }>
+    const rows = db.query("SELECT id, ttlDays, ttlHours, lastActive FROM shares").all() as Array<{ id: string; ttlDays: number; ttlHours: number; lastActive: number }>
     for (const r of rows) {
-      if (r.lastActive + r.ttlDays * 86400000 < now) removeShare(r.id)
+      const hours = (r.ttlHours && r.ttlHours > 0) ? r.ttlHours : Math.floor((r.ttlDays || 90) * 24)
+      if (r.lastActive + hours * 3600000 < now) removeShare(r.id)
     }
     // hygiene: daily-create counters and rate rows expire themselves out
     // (k = "<tokenId>:<YYYY-MM-DD>" / ip rows carry resetAt) - without
@@ -1400,7 +1464,12 @@ const server = Bun.serve<WsData>({
             const delta = db.query("SELECT item FROM items WHERE shareId = ? AND rev > ?").all(share.id, since) as Array<{ item: string }>
             try { ws.send(JSON.stringify({ v: 2, op: "frame", status: share.status, rev: share.rev, items: delta.map((r) => JSON.parse(r.item)), kind: "delta" })) } catch {}
           } else {
-            try { ws.send(renderFrame(share)) } catch {}
+            try {
+              if (share.auth) {
+                const priv = JSON.parse(share.private || "{}") as Record<string, unknown>
+                ws.send(renderFrame(share).slice(0, -1) + ',"private":' + JSON.stringify(priv) + "}")
+              } else ws.send(renderFrame(share))
+            } catch {}
           }
         }
       }

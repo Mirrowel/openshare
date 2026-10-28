@@ -270,6 +270,16 @@ try {
   }, "V1: compaction message passed through")
   check("V1: compaction message passed through", !!compactionArrived, "no compaction message on the share")
   check("V1: model item present (session model fallback)", items.some((i) => i.type === "model"))
+  // Wave 3 data-inventory split: the session item never carries the
+  // machine-local directory (the mock session HAS one), and the public
+  // /data envelope exposes no machine path at all - pmeta stays in the
+  // private block, which an ungated share never serves
+  {
+    const sess = items.find((i) => i.type === "session" && i.data?.id === mock.SID)
+    check("V4: session item carries no directory", sess && !("directory" in (sess.data ?? {})), JSON.stringify(sess?.data ?? null).slice(0, 160))
+    const flatAll = JSON.stringify(body)
+    check("V4a public envelope leaks no machine path", !flatAll.includes("/mock/project") && !flatAll.includes('"pmeta"'), flatAll.slice(0, 200))
+  }
 
   // live content: grown text lands via the debounced re-sync
   await waitFor(async () => {
@@ -312,6 +322,19 @@ try {
   }, "V2: real change still lands through the dedupe")
   const revAfterChange = (await (await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)).json()).rev
   check("V2: real change bumps rev", revAfterChange > revAfterGrow, `${revAfterGrow} -> ${revAfterChange}`)
+
+  // Wave 3 engine-level: secret-bearing content on an UNGATED share - the
+  // redaction pass at enqueue must strip the token before any transport
+  mock.store.messages.get(mock.SID).push(mock.assistantMessage("rotated to ghp_" + "z".repeat(36) + " ok"))
+  mock.emit(mock.event("session.text.ended"))
+  const redactedOk = await waitFor(async () => {
+    const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+    if (!r.ok) return false
+    const parsed = await r.json()
+    const flat = JSON.stringify(parsed.data ?? [])
+    return flat.includes("[redacted:gh-token]") && !flat.includes("ghp_zzz") ? parsed : false
+  }, "V3: redaction marker lands, token never does")
+  check("V3: ungated share redacts tokens at enqueue", !!redactedOk, "token leaked or marker missing")
 
   // inbox queue semantics: the host persists the queued prompt's message
   // row mid-turn; the share must NOT surface it until delivered.
