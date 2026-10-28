@@ -240,10 +240,14 @@ async function createCheck(token: string, set: unknown = undefined): Promise<{ o
   }
   const limits = JSON.parse(chk.token.limits) as { maxLiveShares: number; maxTtlDays: number; maxTtlHours?: number; dailyCreates: number }
   if (limits.maxLiveShares > 0) {
-    // SCOPED tokens count only their own shares (worker parity)
+    // SCOPED tokens count only their own shares (worker parity).
+    // params bind on .get() — db.query(sql, params) silently ignores
+    // them in bun:sqlite and the count reads as undefined (cap never fired)
     const scoped = chk.token.kind === "scoped"
-    const n = db.query(scoped ? "SELECT COUNT(*) c FROM shares WHERE ownerId = ? AND creatorTokenId = ?" : "SELECT COUNT(*) c FROM shares WHERE ownerId = ?", ...(scoped ? [chk.userId, chk.token.id] : [chk.userId])) as { c: number }
-    if (n.c >= limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+    const n = (scoped
+      ? db.query("SELECT COUNT(*) c FROM shares WHERE ownerId = ? AND creatorTokenId = ?").get(chk.userId, chk.token.id)
+      : db.query("SELECT COUNT(*) c FROM shares WHERE ownerId = ?").get(chk.userId)) as { c: number } | undefined
+    if ((n?.c ?? 0) >= limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
   }
   if (limits.dailyCreates > 0) {
     const k = `${chk.token.id}:${new Date().toISOString().slice(0, 10)}`
@@ -632,7 +636,7 @@ async function httpHandler(req: Request): Promise<Response> {
 
   // share-referencing ops need a REAL share id (32 hex); the bare POST
   // create keeps its flexible hex suffix (routing convention)
-  const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|)$/)
+  const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|)$/)
   if (!sm) return staticOr404(req, url)
   const id = sm[1]
   const op = sm[2]
@@ -681,6 +685,31 @@ async function httpHandler(req: Request): Promise<Response> {
       if (hit && hit.privData) return new Response(hit.privData, { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
     }
     return new Response(renderData(share), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
+  }
+  // frozen self-contained HTML of the share (worker parity): viewer bundle
+  // inlined + share data as a JSON island. Read gate applies exactly as
+  // /data — no bypass through the snapshot.
+  if (req.method === "GET" && op === "/snapshot") {
+    const share = q.share(id)
+    if (!share) return json(404, { error: "gone" })
+    if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, id)))) {
+      return json(401, { authRequired: true })
+    }
+    const items = redactItems(shareData(share))
+    const body = JSON.stringify(items).replace(/</g, "\\u003c")
+    let sessionID = ""
+    for (const it of items as Array<{ type: string; data?: { id?: string; parentID?: string } }>) {
+      if (it.type === "session" && it.data && !it.data.parentID) { sessionID = it.data.id ?? ""; break }
+    }
+    if (!sessionID) {
+      const s = (items as Array<{ type: string; data?: { id?: string } }>).find((i) => i.type === "session")
+      sessionID = s?.data?.id ?? ""
+    }
+    const priv = JSON.parse(share.private || "{}") as Record<string, unknown>
+    const island = `{"items":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev},"sessionID":${JSON.stringify(sessionID)}${Object.keys(priv).length ? `,"private":${JSON.stringify(priv)}` : ""},"branding":${JSON.stringify({
+      name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "",
+    })}}`
+    return serveSnapshot(url, id, island)
   }
   // #13: edit ANY share setting after creation (worker parity)
   if (req.method === "PATCH" && op === "") {
@@ -1020,7 +1049,7 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
   }
   if (path === "/api/admin/tokens" && req.method === "GET") {
     const tokens = db.query("SELECT * FROM tokens").all() as TokenRow[]
-    return json(200, { ok: true, tokens: tokens.map((t) => ({ id: t.id, userId: t.userId, label: t.label, limits: JSON.parse(t.limits), createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt, revoked: !!t.revokedAt })) })
+    return json(200, { ok: true, tokens: tokens.map((t) => ({ id: t.id, userId: t.userId, label: t.label, limits: JSON.parse(t.limits), createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt, revoked: !!t.revokedAt, kind: t.kind === "scoped" ? "scoped" : "full" })) })
   }
   // code-lineage kill-switch: revoke every token of every user this
   // code onboarded (freezing each per the no-full-token rule)
@@ -1169,8 +1198,61 @@ function htmlEscape(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!)
 }
 
-async function ogIndex(url: URL): Promise<Response> {
+/** Frozen self-contained HTML snapshot (worker serveSnapshot parity):
+ * viewer bundle inlined from disk, share data as a JSON island. */
+async function serveSnapshot(url: URL, id: string, island: string): Promise<Response> {
   const index = Bun.file(join(VIEWER_DIR, "index.html"))
+  if (!(await index.exists())) return json(502, { error: "viewer assets unavailable" })
+  let html = await index.text()
+  const grab = async (src: string) => {
+    const f = Bun.file(join(VIEWER_DIR, src.replace(/^\//, "")))
+    return (await f.exists()) ? await f.text() : null
+  }
+  html = html.replace(/[ \t]*<link[^>]*rel="modulepreload"[^>]*>\r?\n?/g, "")
+  // collect asset texts first, then replace synchronously (async replace
+  // callbacks are not supported)
+  const scriptRe = /<script[^>]*src="(\/assets\/[^"]+\.js)"[^>]*>\s*<\/script>/g
+  const scriptAssets = new Map<string, string | null>()
+  for (const m of [...html.matchAll(scriptRe)]) scriptAssets.set(m[1], await grab(m[1]))
+  html = html.replace(scriptRe, (whole: string, src: string) => {
+    const code = scriptAssets.get(src)
+    return code == null ? whole : `<script type="module">\n${code}\n</script>`
+  })
+  const cssRe = /<link[^>]*href="(\/assets\/[^"]+\.css)"[^>]*>/g
+  const cssAssets = new Map<string, string | null>()
+  for (const m of [...html.matchAll(cssRe)]) cssAssets.set(m[1], await grab(m[1]))
+  html = html.replace(cssRe, (whole: string, src: string) => {
+    const css = cssAssets.get(src)
+    return css == null ? whole : `<style>\n${css}\n</style>`
+  })
+  const islandTag = `<script>window.__MIRROBOT_SNAPSHOT__=${island};</script>` + `
+<script>(function(){
+  // a snapshot file runs from file:// — its PATH cannot be rewritten
+  // (pushState across file paths throws SecurityError), so /s/<id>[/<n>][#h]
+  // URLs translate to same-path hashes: subagent page n becomes #n<n>,
+  // message anchors keep their hash (worker serveSnapshot parity)
+  if (!window.__MIRROBOT_SNAPSHOT__) return
+  var orig = history.pushState.bind(history)
+  history.pushState = function(st, title, url) {
+    if (typeof url === "string" && url.charAt(0) === "/") {
+      var m = /^\\/s\\/[^/]+(?:\\/(\\d+))?/.exec(url)
+      var hi = url.indexOf("#")
+      var hash = hi >= 0 ? url.slice(hi) : ""
+      var sub = m && m[1] ? "#n" + m[1] : ""
+      var next = sub || hash
+      if (next) return orig(st, title, location.pathname + location.search + next)
+      return
+    }
+    return orig(st, title, url)
+  }
+})()</script>`
+  html = html.replace(/<head>/i, "<head>\n    " + islandTag)
+  const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+  if (url.searchParams.has("download")) headers["content-disposition"] = `attachment; filename="openshare-${id}.html"`
+  return new Response(html, { headers })
+}
+
+async function ogIndex(url: URL): Promise<Response> {  const index = Bun.file(join(VIEWER_DIR, "index.html"))
   const name = process.env.BRAND_NAME ?? "openshare"
   const desc = process.env.BRAND_DESCRIPTION ?? "shared agent sessions, self-hosted"
   const image = process.env.BRAND_OG_IMAGE ?? process.env.BRAND_LOGO_URL ?? ""

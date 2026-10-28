@@ -343,6 +343,14 @@ title/version/model.
   when the rev is unchanged, only the items touched since otherwise —
   same three-case semantics as the WS handshake minus the delta
   announcement, since the response is always a fresh set to merge),
+  `GET /api/share/:id/snapshot` (ONE self-contained HTML file: the
+  viewer bundle inlined + the share frozen as a JSON island + a boot
+  shim; opens offline in any browser as a point-in-time record. The
+  read gate applies exactly as `/data` — a gated share demands a
+  satisfied viewer session (login cookie or bearer viewer token), no
+  bypass. `?download=1` adds an attachment disposition. On `file://`
+  browsers block worker/wasm loading, so code blocks render unhighlighted
+  — every other surface is identical),
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
 - `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
   body `{secret|Bearer owner, authLogin+authPassword (both-or-none),

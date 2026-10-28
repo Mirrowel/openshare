@@ -241,8 +241,15 @@ async function startWorker(suiteDir, opts = {}) {
   const attempt = async () => {
     await sweepPortIfOccupied(port) // leftover supervisors respawn workerd forever; sweep when occupied
     const assetsDir = join(suiteDir, "assets")
-    mkdirSync(assetsDir, { recursive: true })
-    writeFileSync(join(assetsDir, "index.html"), "<!doctype html><title>openshare suite stub</title>\n")
+    mkdirSync(join(assetsDir, "assets"), { recursive: true })
+    // a tiny viewer-shaped index: the snapshot endpoint inlines whatever
+    // script/css index.html references, so the stub must actually
+    // reference one of each for snapshot tests to be meaningful (the
+    // [assets] binding serves from the dir root, so the files live in an
+    // assets/ subfolder exactly like the real dist)
+    writeFileSync(join(assetsDir, "index.html"), '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <title>openshare suite stub</title>\n  <link rel="stylesheet" href="/assets/stub.css">\n  <script type="module" crossorigin src="/assets/stub.js"></script>\n</head>\n<body>\n  <div id="root"></div>\n</body>\n</html>\n')
+    writeFileSync(join(assetsDir, "assets", "stub.css"), "body{margin:0}\n")
+    writeFileSync(join(assetsDir, "assets", "stub.js"), "console.log('stub viewer')\n")
 
     const configPath = join(suiteDir, opts.configSuffix ? `wrangler.suite.${opts.configSuffix}.toml` : "wrangler.suite.toml")
     const original = readFileSync(join(dirname(ROOT), "share-worker", "wrangler.toml"), "utf8")

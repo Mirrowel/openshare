@@ -80,6 +80,84 @@ function htmlEscape(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
 }
 
+function resolveBrandingObj(env) {
+  const b = (field) => {
+    const envKey = "BRAND_" + field.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()
+    return env[envKey] || DEFAULT_BRANDING[field] || ""
+  }
+  return {
+    name: b("name"),
+    logoUrl: b("logoUrl"),
+    wordmarkUrl: b("wordmarkUrl"),
+    linkUrl: b("linkUrl"),
+    accent: b("accent"),
+    faviconUrl: b("faviconUrl"),
+    backgroundUrl: b("backgroundUrl"),
+    description: b("description"),
+    ogTitle: b("ogTitle"),
+    ogImage: b("ogImage"),
+  }
+}
+
+// GET /api/share/:id/snapshot — ONE self-contained HTML file: the viewer
+// bundle inlined (JS+CSS), the share frozen as a JSON island, a boot shim
+// feeding it to the embedded data path. Opens offline in any browser;
+// point-in-time record that outlives the deployment. Read gate applies
+// exactly as /data: a gated share demands a satisfied viewer session.
+async function serveSnapshot(req, env, url, snap) {
+  const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
+  if (!r.ok) return new Response("viewer assets unavailable", { status: 502 })
+  let html = await r.text()
+  const assets = new Map()
+  const grab = async (src) => {
+    if (!assets.has(src)) {
+      const a = await env.ASSETS.fetch(new Request(url.origin + src))
+      assets.set(src, a.ok ? await a.text() : null)
+    }
+    return assets.get(src)
+  }
+  // modulepreload hints are dead weight when every module is inline
+  html = html.replace(/[ \t]*<link[^>]*rel="modulepreload"[^>]*>\r?\n?/g, "")
+  const scriptRe = /<script[^>]*src="(\/assets\/[^"]+\.js)"[^>]*>\s*<\/script>/g
+  for (const m of [...html.matchAll(scriptRe)]) await grab(m[1])
+  html = html.replace(scriptRe, (whole, src) => {
+    const code = assets.get(src)
+    return code == null ? whole : `<script type="module">\n${code}\n</script>`
+  })
+  const cssRe = /<link[^>]*href="(\/assets\/[^"]+\.css)"[^>]*>/g
+  for (const m of [...html.matchAll(cssRe)]) await grab(m[1])
+  html = html.replace(cssRe, (whole, src) => {
+    const css = assets.get(src)
+    return css == null ? whole : `<style>\n${css}\n</style>`
+  })
+  const island = `<script>window.__MIRROBOT_SNAPSHOT__=${snap.island};</script>` + `
+<script>(function(){
+  // a snapshot file runs from file:// — its PATH cannot be rewritten
+  // (pushState across file paths throws SecurityError), so /s/<id>[/<n>][#h]
+  // URLs translate to same-path hashes: subagent page n becomes #n<n>,
+  // message anchors keep their hash. Without this shim every subagent
+  // click would throw and the page would die mid-handler.
+  if (!window.__MIRROBOT_SNAPSHOT__) return
+  var orig = history.pushState.bind(history)
+  history.pushState = function(st, title, url) {
+    if (typeof url === "string" && url.charAt(0) === "/") {
+      var m = /^\\/s\\/[^/]+(?:\\/(\\d+))?/.exec(url)
+      var hi = url.indexOf("#")
+      var hash = hi >= 0 ? url.slice(hi) : ""
+      var sub = m && m[1] ? "#n" + m[1] : ""
+      var next = sub || hash
+      if (next) return orig(st, title, location.pathname + location.search + next)
+      return
+    }
+    return orig(st, title, url)
+  }
+})()</script>`
+  html = html.replace(/<head>/i, "<head>\n    " + island)
+  const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+  if (url.searchParams.has("download")) headers["content-disposition"] = `attachment; filename="openshare-${snap.id}.html"`
+  return new Response(html, { status: 200, headers })
+}
+
 // index.html with og:/twitter: tags for link-preview crawlers
 async function serveOgIndex(req, env, url) {
   const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
@@ -258,22 +336,7 @@ export default {
       }
 
       if (path === "/branding") {
-        const b = (field) => {
-          const envKey = "BRAND_" + field.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()
-          return env[envKey] || DEFAULT_BRANDING[field] || ""
-        }
-        return new Response(JSON.stringify({
-          name: b("name"),
-          logoUrl: b("logoUrl"),
-          wordmarkUrl: b("wordmarkUrl"),
-          linkUrl: b("linkUrl"),
-          accent: b("accent"),
-          faviconUrl: b("faviconUrl"),
-          backgroundUrl: b("backgroundUrl"),
-          description: b("description"),
-          ogTitle: b("ogTitle"),
-          ogImage: b("ogImage"),
-        }), {
+        return new Response(JSON.stringify(resolveBrandingObj(env)), {
           headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
         })
       }
@@ -316,7 +379,7 @@ export default {
       // 404s here instead of waking a Durable Object per guess); the bare
       // POST create keeps its flexible hex suffix (routing convention —
       // the share id is minted server-side)
-      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|)$/)
+      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|)$/)
       if (!sm) return json(404, { error: "not found" })
       const id = sm[1]
       const op = sm[2]
@@ -363,6 +426,18 @@ export default {
           status: r.status,
           headers: { "content-type": "application/json", "cache-control": "no-store" },
         })
+      }
+
+      if (req.method === "GET" && op === "/snapshot") {
+        // frozen self-contained HTML of the share as it stands RIGHT NOW;
+        // the read gate applies exactly as /data (cookie or bearer viewer
+        // token for gated shares — no bypass through the snapshot)
+        const token = bearer(req) || cookieToken(req, id)
+        const doUrl = new URL("https://do/snapshot")
+        doUrl.searchParams.set("token", token)
+        const r = await shareStub(env, id).fetch(doUrl)
+        if (!r.ok) return json(r.status, await r.json().catch(() => ({})))
+        return await serveSnapshot(req, env, url, { ...(await r.json()), id })
       }
 
       if (req.method === "DELETE" && op === "") {
@@ -1099,11 +1174,15 @@ export class ShareDO {
     // the shared body serialization is paid once
     const privJson = meta.private && Object.keys(meta.private).length ? JSON.stringify(meta.private).slice(1, -1) : ""
     const privData = privJson ? dataStr.slice(0, -1) + `,"private":{${privJson}}}` : dataStr
+    // snapshot island: the boot payload a frozen HTML file feeds the viewer
+    // with (`window.__MIRROBOT_SNAPSHOT__`). `<` is escaped so no string in
+    // the share data can terminate the host <script> element early.
+    const islandStr = JSON.stringify(items).replace(/</g, "\\u003c")
     if (frameStr.length <= MAX_CACHE_JSON) {
-      this._cache = { rev, status: meta.status, frameStr, dataStr, privData }
+      this._cache = { rev, status: meta.status, frameStr, dataStr, privData, islandBody: islandStr, privJson }
       return this._cache
     }
-    return { rev, status: meta.status, frameStr, dataStr, privData }
+    return { rev, status: meta.status, frameStr, dataStr, privData, islandBody: islandStr, privJson }
   }
 
   async fetch(req) {
@@ -1425,6 +1504,31 @@ export class ShareDO {
       // on a gated share means share auth IS satisfied: serve the private
       // block (machine-local facts) to exactly these readers
       return new Response((await this.renderCache(meta))[meta.auth ? "privData" : "dataStr"], { status: 200, headers: { "content-type": "application/json" } })
+    }
+
+    if (path === "/snapshot") {
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { error: "gone" })
+      if (meta.auth && !(await this.validToken(url.searchParams.get("token") ?? ""))) {
+        return json(401, { authRequired: true })
+      }
+      const cache = await this.renderCache(meta)
+      const items = await this.loadItems()
+      // root session = the session item without a parent (children of
+      // subagent calls carry parentID); fallback to the first session
+      let sessionID = ""
+      for (const it of items) {
+        if (it.type === "session" && it.data && !it.data.parentID) { sessionID = it.data.id ?? ""; break }
+      }
+      if (!sessionID) {
+        const s = items.find((i) => i.type === "session")
+        sessionID = s?.data?.id ?? ""
+      }
+      // island assembled by concatenation; the body serialization is paid
+      // once inside renderCache. Gated shares reaching here are already
+      // authenticated, so the private block always rides the island.
+      const island = `{"items":${cache.islandBody},"status":${JSON.stringify(meta.status)},"rev":${meta.rev ?? 0},"sessionID":${JSON.stringify(sessionID)}${cache.privJson ? `,"private":{${cache.privJson}}` : ""},"branding":${JSON.stringify(resolveBrandingObj(this.env))}}`
+      return json(200, { ok: true, island, status: meta.status, rev: meta.rev ?? 0, sessionID })
     }
 
     if (path === "/meta" && req.method === "GET") {

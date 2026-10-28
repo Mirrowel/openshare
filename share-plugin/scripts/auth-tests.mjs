@@ -298,6 +298,51 @@ try {
     ok("T37f cleanup ungated", (await req(W1, "DELETE", `/api/share/${u37.json.id}`, { body: { secret: u37.json.secret } })).json?.ok === true)
   }
 
+  // T38 — snapshot freeze (Wave 4): ONE self-contained HTML file — viewer
+  // bundle inlined, share data as a JSON island. Read gate applies exactly
+  // as /data: no bypass through the snapshot.
+  {
+    const g38 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t38" } })
+    await req(W1, "POST", `/api/share/${g38.json.id}/sync`, {
+      body: {
+        secret: g38.json.secret,
+        data: [
+          { type: "session", sessionID: "ses_t38", data: { id: "ses_t38", title: "snapshot test" } },
+          { type: "message", sessionID: "ses_t38", data: { id: "msg_t38", role: "user", content: [{ type: "text", text: "frozen hello" }] } },
+        ],
+      },
+    })
+    const s38res = await fetch(`${W1}/api/share/${g38.json.id}/snapshot`)
+    const html38 = await s38res.text()
+    ok("T38 snapshot 200 html", s38res.status === 200 && (s38res.headers.get("content-type") ?? "").includes("text/html"), `${s38res.status}`)
+    ok("T38a island present with items+status", html38.includes("__MIRROBOT_SNAPSHOT__") && html38.includes('"items":') && html38.includes('"sessionID":"ses_t38"'), html38.slice(0, 120))
+    ok("T38b bundle inlined (no external assets)", !/src="\/assets\//.test(html38) && !/href="\/assets\/[^"]+\.css"/.test(html38) && html38.includes("<script type=\"module\">"))
+    ok("T38c data frozen in island", html38.includes("frozen hello") && html38.includes("snapshot test"))
+    ok("T38d download disposition", (await req(W1, "GET", `/api/share/${g38.json.id}/snapshot?download=1`)).res?.headers?.get?.("content-disposition")?.includes("attachment"))
+
+    // gated share: unauthenticated snapshot 401s; the login cookie thaws it
+    const g38b = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t38g", authLogin: "v", authPassword: "p" } })
+    await req(W1, "POST", `/api/share/${g38b.json.id}/sync`, {
+      body: {
+        secret: g38b.json.secret,
+        data: [
+          { type: "session", sessionID: "ses_t38g", data: { id: "ses_t38g", title: "gated snap" } },
+          { type: "pmeta", sessionID: "ses_t38g", data: { directory: "/home/u/gated" } },
+        ],
+      },
+    })
+    ok("T38e gated snapshot unauthenticated 401", (await req(W1, "GET", `/api/share/${g38b.json.id}/snapshot`)).status === 401)
+    const l38 = await req(W1, "POST", `/api/share/${g38b.json.id}/auth`, { body: { login: "v", password: "p" } })
+    const ck38 = /osh_[0-9a-f]+=([^;]+)/.exec(l38.res?.headers?.get?.("set-cookie") ?? "")?.[1] ?? ""
+    const s38bres = await fetch(`${W1}/api/share/${g38b.json.id}/snapshot`, { headers: { cookie: `osh_${g38b.json.id}=${ck38}` } })
+    const html38b = await s38bres.text()
+    ok("T38f authed snapshot 200 with private block", s38bres.status === 200 && html38b.includes("/home/u/gated") && html38b.includes('"private":'), `${s38bres.status}`)
+    // gone share: 404
+    await req(W1, "DELETE", `/api/share/${g38b.json.id}`, { body: { secret: g38b.json.secret } })
+    ok("T38g gone share snapshot 404", (await req(W1, "GET", `/api/share/${g38b.json.id}/snapshot`)).status === 404)
+    ok("T38h cleanup", (await req(W1, "DELETE", `/api/share/${g38.json.id}`, { body: { secret: g38.json.secret } })).json?.ok === true)
+  }
+
   // T23 - route shape: share-referencing paths need a real 32-hex id
   ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)
   ok("T23b junk id 404s", (await req(W1, "POST", `/api/share/zzzz/sync`, { body: {} })).status === 404)
