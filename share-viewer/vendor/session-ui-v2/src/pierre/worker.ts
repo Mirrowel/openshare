@@ -27,7 +27,7 @@ function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | und
       },
     )
 
-    void pool.initialize().catch(() => {})
+    void pool.initialize().catch((e) => console.warn("[openshare] pierre pool init failed; code renders plain", e))
 
 
     return pool

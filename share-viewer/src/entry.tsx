@@ -16,6 +16,10 @@ import { App } from "./app"
 import "./tool-overrides"
 import "./app.css"
 import "./views/skins.css"
+// boot the pierre worker pools now: the kit creates them lazily on first
+// card open, which made the first expanded file card paint plain for a beat
+import { getWorkerPool } from "@opencode/session-ui/pierre/worker"
+getWorkerPool()
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge

@@ -920,6 +920,10 @@ html[data-color-scheme="light"] {
   border: none;
   outline: none;
 }
+/* the subagent name is a scan target, not a label washed into the body text */
+.osh-task-wrap [data-component="task-tool-title"] {
+  color: var(--v2-text-text-accent);
+}
 .osh-task-wrap::after {
   content: "";
   position: absolute;
@@ -1229,15 +1233,9 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   border-color: var(--border-strong-base) !important;
 }
 
-/* shell output card hugs too (the kit hardcodes width:100% on
-   bash-output - a short command rendered a full-row empty surface,
-   live-caught) */
-[data-row-key] [data-component="bash-output"],
-[data-timeline-row] [data-component="bash-output"] {
-  width: fit-content;
-  min-width: min(60%, 340px);
-  max-width: min(100%, 75vw);
-}
+/* shell output: upstream chrome and width (the kit's own card, copy button
+   included) — our hug rule sat on top of it and made every shell card a
+   narrow strip */
 
 /* --- deep links -------------------------------------------------------- */
 /* the hover link chip rides the hovered row's right edge */

@@ -164,6 +164,7 @@ export function ConversationView(props: ViewProps) {
       subagents: { placement: gp("task") ? "grouped" : "separate" },
       notices: { placement: "separate" },
       tools: { placement: mode === "off" ? "separate" : "grouped", ...(mode === "custom" ? { only: [...picks] } : {}) },
+      commentary: { placement: "separate" },
     } as any
   })
 

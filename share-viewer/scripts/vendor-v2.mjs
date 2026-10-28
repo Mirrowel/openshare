@@ -390,7 +390,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
         .split("\n")
         .map((line) => (line.trim() ? "  " + line : line))
         .join("\n")
-        .replace("void pool.initialize()", "void pool.initialize().catch(() => {})")
+        .replace("void pool.initialize()", "void pool.initialize().catch((e) => console.warn(\\"[openshare] pierre pool init failed; code renders plain\\", e))")
       const fork = `function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | undefined {\n  // openshare fork: offline snapshot files run from file://, where Worker\n  // construction throws SecurityError synchronously — a failed pool must\n  // degrade rendering to plain text, not kill the whole page\n  try {\n${body}\n\n    return pool\n  } catch {\n    return undefined\n  }\n}`
       s = s.replace(m[0], fork)
       if (s === before) throw new Error("vendor-v2: pierre worker.ts createPool fork failed")
