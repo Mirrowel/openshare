@@ -399,26 +399,23 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: tone the word-diff emphasis down. Upstream paints emphasis at
-// 0.4 alpha (dark); a fully rewritten line marks every word as changed, so
-// the emphasis covered the whole line as a solid red/green band. Library
-// defaults stay upstream for the rest of the file.
+// vendor fork: keep the token colours the previous (shiki) engine produced.
+// The kit's Zed palette maps a few token classes differently from the
+// TextMate scopes the old build tokenized through, so a plain code read
+// changed hue after the engine switch: punctuation went from body text to a
+// dim grey, JSON/property keys from the primitive hue to the variable one,
+// and markdown headings from the info hue to the keyword one.
 {
-  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+  const p = join(ROOT, "vendor/ui-v2/src/context/highlight-theme.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes("openshare fork: word-diff emphasis")) {
+    if (!s.includes('punctuation: "text-base"')) {
       const before = s
-      s = s.replace(
-        "  --diffs-bg-addition-emphasis-override: light-dark(",
-        "  /* openshare fork: word-diff emphasis at 0.4 alpha painted a fully\n     rewritten line as a solid red/green band, and a rewrite marks every\n     word as changed, so the band was the norm rather than the exception */\n  --diffs-bg-addition-emphasis-override: light-dark(",
-      )
       s = s
-        .replace("rgb(from var(--v2-green-600) r g b / 0.2)", "rgb(from var(--v2-green-600) r g b / 0.14)")
-        .replace("rgb(from var(--v2-green-600) r g b / 0.4)", "rgb(from var(--v2-green-600) r g b / 0.22)")
-        .replace("rgb(from var(--v2-red-600) r g b / 0.2)", "rgb(from var(--v2-red-600) r g b / 0.14)")
-        .replace("rgb(from var(--v2-red-600) r g b / 0.4)", "rgb(from var(--v2-red-600) r g b / 0.22)")
-      if (s === before) throw new Error("vendor-v2: pierre emphasis anchor missing - upstream drifted")
+        .replace('      punctuation: "syntax-punctuation",', '      punctuation: "text-base",')
+        .replace('      property: "syntax-variable",', '      property: "syntax-primitive",')
+        .replace('      title: { color: "syntax-keyword", font_weight: 700 },', '      title: { color: "syntax-info", font_weight: 700 },')
+      if (s === before) throw new Error("vendor-v2: highlight-theme anchor missing - upstream drifted")
       writeFileSync(p, s)
     }
   }

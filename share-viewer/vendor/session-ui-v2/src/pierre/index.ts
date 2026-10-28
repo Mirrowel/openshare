@@ -38,12 +38,12 @@ const unsafeCSS = `
     color-mix(in lab, var(--diffs-bg) 95%, var(--diffs-mixer))
   );
   --diffs-bg-addition-emphasis-override: light-dark(
-    rgb(from var(--v2-green-600) r g b / 0.14),
-    rgb(from var(--v2-green-600) r g b / 0.22)
+    rgb(from var(--v2-green-600) r g b / 0.2),
+    rgb(from var(--v2-green-600) r g b / 0.4)
   );
   --diffs-bg-deletion-emphasis-override: light-dark(
-    rgb(from var(--v2-red-600) r g b / 0.14),
-    rgb(from var(--v2-red-600) r g b / 0.22)
+    rgb(from var(--v2-red-600) r g b / 0.2),
+    rgb(from var(--v2-red-600) r g b / 0.4)
   );
   --diffs-fg-number-override: var(--v2-text-text-faint);
   --diffs-fg-number-addition-override: light-dark(var(--v2-green-900), var(--v2-green-400));

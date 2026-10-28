@@ -249,7 +249,37 @@ export default {
         if (/(discordbot|discordapp|telegrambot|slackbot|slack-imgproxy|facebookexternalhit|facebookcatalog|whatsapp|twitterbot|x-bot|linkedinbot|pinterestbot|skypeuripreview|snapchat|bluefish|mattermost|gitter|flowdock)/.test(ua)) {
           return await serveOgIndex(req, env, url)
         }
-        return env.ASSETS.fetch(req)
+        // temporary A/B build: ?legacy sticks in a cookie, ?legacy=0 clears
+        // it, and the page is served verbatim from dist/legacy.html (built
+        // from the `master` viewer). Nothing is injected; when legacy.html
+        // is absent the request falls through to the current build.
+        const param = url.searchParams.get("legacy")
+        const cookie = req.headers.get("cookie") || ""
+        let legacy = /(?:^|;\s*)osh_legacy=1/.test(cookie)
+        let setCookie = null
+        if (param === "0" || param === "false") {
+          legacy = false
+          setCookie = "osh_legacy=; Path=/; Max-Age=0; SameSite=Lax"
+        } else if (param !== null) {
+          legacy = true
+          setCookie = "osh_legacy=1; Path=/; Max-Age=604800; SameSite=Lax"
+        }
+        if (legacy) {
+          const legacyRes = await env.ASSETS.fetch(new Request(url.origin + "/legacy.html", { method: "GET" }))
+          if (legacyRes.ok) {
+            const headers = new Headers(legacyRes.headers)
+            headers.set("cache-control", "no-store")
+            if (setCookie) headers.set("set-cookie", setCookie)
+            return new Response(legacyRes.body, { status: 200, headers })
+          }
+        }
+        const res = await env.ASSETS.fetch(req)
+        if (setCookie) {
+          const headers = new Headers(res.headers)
+          headers.set("set-cookie", setCookie)
+          return new Response(res.body, { status: res.status, headers })
+        }
+        return res
       }
 
       if (path === "/health")
