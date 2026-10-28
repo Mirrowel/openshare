@@ -28,6 +28,7 @@ const LINKS = [
   ["ui", "ui-v2"],
   ["client", "client-v2"],
   ["util", "util-v2"],
+  ["patchmark", "patchmark-v2"],
 ]
 
 let failures = 0

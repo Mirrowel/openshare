@@ -9,9 +9,7 @@ import { setSubagentData } from "../subagent-map"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
-import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
-import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
-import { FileSSR } from "@opencode/session-ui/file-ssr"
+import { File } from "@opencode/session-ui/file"
 import { sessionStatus, type ShareData } from "../fold"
 import { armToggleAnchor, settleToggleAnchor } from "../toggle-anchor"
 import { claimDisclosure, disclosureOwned, dismissSearchKey, engineClicking, releaseDisclosure, searchKeyDismissed, searchOwnsDisclosure } from "../search-state"
@@ -64,8 +62,7 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
       onSessionHref={currentNav?.sessionHref}
       onNavigateToSession={currentNav?.navigateToSession}
     >
-      <WorkerPoolProvider pools={getWorkerPools()}>
-        <FileComponentProvider component={FileSSR as any}>
+        <FileComponentProvider component={File}>
           <DialogProvider>
             <ToolDisplay
               id={String(props.entry.part?.id ?? props.entry.tool)}
@@ -108,7 +105,6 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
             />
           </DialogProvider>
         </FileComponentProvider>
-      </WorkerPoolProvider>
     </DataProvider>
   )
 }

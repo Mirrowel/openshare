@@ -78,11 +78,11 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/projection.ts")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     const fail = (what) => {
       throw new Error(`vendor-v2: projection fork anchor missing (${what}) - upstream drifted`)
     }
-    const nl = s.includes("\r\n") ? "\r\n" : "\n"
+    const nl = "\n"
     const patch = (from, to, what) => {
       const next = s.replace(from, to)
       if (next === s) fail(what)
@@ -273,7 +273,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: todos render in the transcript")) {
       const before = s
       s = s.replace(
@@ -293,7 +293,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: a worker-less environment")) {
       const before = s
       s = s.replace(
@@ -348,7 +348,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown-cache.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: parseMarkdown THROWS synchronously")) {
       const before = s
       s = s.replace(
@@ -369,7 +369,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/pierre/worker.ts")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: offline snapshot files run from file://")) {
       const before = s
       // generic body match (works across upstream revisions: the options
@@ -399,9 +399,9 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: file-change tools NEVER merge")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const nl = "\n"
       const A = ["      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {", "        previous.push(tool)", "", "        return groups", "      }"].join(nl)
       const B = ["      // openshare fork: file-change tools NEVER merge with each other -", "      // each edit/write/patch renders as its own expandable card inside", "      // the group, exactly like every other tool (owner directive)", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: file-tools-merge anchor missing - upstream drifted")
@@ -421,7 +421,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: glob/grep/list expand like every other grouped tool")) {
       const A = 'when={tool().state.status !== "error" && ["glob", "grep", "list"].includes(tool().name)}'
       const B = 'when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches could never expand (live-caught). ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}'
@@ -445,7 +445,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: reads stay ordinary rows")) {
       const before = s
       s = s.replace(
@@ -468,9 +468,9 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: reads no longer merge inside a context group")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const nl = "\n"
       const A = [
         "      if (",
         "        currentToolGroupedRead(tool) &&",
@@ -508,9 +508,9 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("osh-task-wrap")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const nl = "\n"
       // upstream reformatted the card div between revs (multi-line vs
       // single-line attributes) — match either shape
       const openA = s.includes('    const trigger = () => (\n      <div data-component="task-tool-card">')
@@ -554,7 +554,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: grouped label prefers the stamped agent")) {
       const before = s
       // two upstream shapes: the ternary in the group label (older revs)
@@ -579,7 +579,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/components/basic-tool.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: generic tools show output")) {
       let before = s
       s = s.replace(/export function GenericTool\(props: \{[^}]*\}\) \{/, (m) =>
@@ -617,7 +617,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/timeline-row.ts")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: message spacing")) {
       const before = s
       s = s
@@ -641,7 +641,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
     // openshare fork: agent transition chip on user rows (renders the
     // plugin-stamped metadata.agentSwitch, never computes anything)
     {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("osh-agent-switch")) {
         const before = s
         s = s.replace(
@@ -674,7 +674,7 @@ $2`,
     // nl-aware: the anchors use the file's own EOL so regeneration works
     // on LF checkouts too (was hardcoded \r\n - a portability bug).
     {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: the viewer's per-tool auto-expand list wins first")) {
         const nl2 = s.includes("\r\n") ? "\r\n" : "\n"
         const before = s
@@ -705,9 +705,9 @@ $2`,
   {
     const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
     if (existsSync(p)) {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: paragraph-SHAPED fallback")) {
-        const nl = s.includes("\r\n") ? "\r\n" : "\n"
+        const nl = "\n"
         const A = ["function fallback(markdown: string) {", '  return escape(markdown).replace(/\\r\\n?/g, "\\n").replace(/\\n/g, "<br>")', "}"].join(nl)
         const B = [
           "function fallback(markdown: string) {",
@@ -744,7 +744,7 @@ $2`,
   {
     const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
     if (existsSync(p)) {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: `defer` defaults true")) {
         const before = s
         s = s.replace(
@@ -930,7 +930,7 @@ mkdirSync(join(ROOT, "vendor/client-v2/promise/generated"), { recursive: true })
 cpSync(clientSrc, join(ROOT, "vendor/client-v2/promise/generated/types.ts"))
 writeFileSync(
   join(ROOT, "vendor/client-v2/promise/index.ts"),
-  `// vendor shim: re-export the generated client types + the single\n// runtime helper session-ui imports (isShellNotFoundError).\nexport * from "./generated/types.js"\nexport const isShellNotFoundError = (e: unknown): e is { _tag: "ShellNotFoundError" } =>\n  typeof e === "object" && e !== null && (e as { _tag?: unknown })._tag === "ShellNotFoundError"\n`,
+  `// vendor shim: re-export the generated client types + the single\n// runtime helper session-ui imports (isShellNotFoundError).\nexport * from "./generated/types.js"\n// the beta re-exports Attachment/MediaFileAttachment from @opencode/schema/prompt\nexport type PromptMention = { start: number; end: number; text: string }\nexport type PromptFileSource = { type: \"inline\" } | { type: \"uri\"; uri: string }\nexport type PromptBase64 = string\nexport type PromptFileAttachment = { data: PromptBase64; mime: string; source: PromptFileSource; name?: string; description?: string; mention?: PromptMention }\nexport type PromptMediaFileAttachment = { mime: string; source: PromptFileSource; name?: string; description?: string; mention?: PromptMention; uri: string; bytes?: number; width?: number; height?: number }\nexport type PromptAttachment = PromptFileAttachment | PromptMediaFileAttachment\nexport type PromptAgentAttachment = { name: string; mention?: PromptMention }\nexport type PromptSkillAttachment = { id: string; name: string; text?: string; mention?: PromptMention }\nexport const isShellNotFoundError = (e: unknown): e is { _tag: "ShellNotFoundError" } =>\n  typeof e === "object" && e !== null && (e as { _tag?: unknown })._tag === "ShellNotFoundError"\n`,
 )
 writeFileSync(
   join(ROOT, "vendor/client-v2/package.json"),

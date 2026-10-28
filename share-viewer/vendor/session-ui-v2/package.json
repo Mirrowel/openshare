@@ -46,26 +46,22 @@
     "./v2/*": "./src/v2/components/*.tsx"
   },
   "dependencies": {
+    "@kitlangton/solid-motion": "0.2.2",
     "@kobalte/core": "0.13.13",
     "@opencode/client": "file:../client-v2",
+    "@opencode/patchmark": "file:../patchmark-v2",
     "@opencode/ui": "file:../ui-v2",
     "@opencode/util": "file:../util-v2",
-    "@pierre/diffs": "1.5.1",
-    "@shikijs/stream": "4.4.3",
+    "@pierre/diffs": "1.6.1",
+    "@pierre/highlights": "0.2.0",
     "@solid-primitives/event-listener": "2.4.6",
     "@solid-primitives/media": "2.3.6",
     "@solid-primitives/resize-observer": "2.2.0",
-    "@solidjs/meta": "0.29.4",
     "diff": "8.0.4",
     "effect": "4.0.1",
-    "dompurify": "3.4.14",
+    "dompurify": "3.4.17",
     "marked": "18.0.11",
-    "mermaid": "11.17.2",
-    "motion": "12.34.5",
-    "remend": "1.3.1",
-    "shiki": "4.4.3",
-    "solid-js": "1.9.15",
-    "strip-ansi": "7.1.2",
-    "@opencode/patchmark": "file:../patchmark-v2"
+    "pele": "1.7.0",
+    "solid-js": "1.9.17"
   }
 }

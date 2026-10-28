@@ -1,3 +1,5 @@
-vendored from c:/tools/opencode-beta
-git: 4617210822bdbb31e5749751afbfb4584ccedac8 (v2.0.0-1105-g4617210822)
-date: 2026-10-28T16:18:00.013Z
+vendored from opencode-beta origin/dev (worktree checkout, removed after the port)
+git: a882cf98a0f9eb94b2231229159ae6e01d7e4a72 (process-daemon-v0.3.2-12-ga882cf98a0)
+ref: origin/dev as fetched 2026-10-28 (2644 commits past the previous pin v2.0.0-1105)
+date: 2026-10-28
+regenerate: OPENSHARE_BETA_SRC=<beta checkout at that rev> npm run vendor

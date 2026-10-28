@@ -22,10 +22,8 @@ import { SessionTimeline } from "@opencode/session-ui/timeline"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
-import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
-import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
+import { File } from "@opencode/session-ui/file"
 import { PromptNav } from "./hover-rail"
-import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { Logo, Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { DateTime } from "luxon"
@@ -406,6 +404,7 @@ function SessionView(props: {
                   subagents: { placement: gp("task") ? "grouped" : "separate" },
                   notices: { placement: "separate" },
                   tools: { placement: mode === "off" ? "separate" : "grouped", ...(mode === "custom" ? { only: [...picks] } : {}) },
+                  commentary: { placement: "separate" },
                 } as any
               })
               // the v2 timeline document: full session (continuous mode)
@@ -891,8 +890,7 @@ function SessionView(props: {
       <Show when={info().title}>
         <Title>{info().title} | {props.source.branding().name || "openshare"}</Title>
       </Show>
-      <WorkerPoolProvider pools={getWorkerPools()}>
-        <FileComponentProvider component={FileSSR}>
+        <FileComponentProvider component={File}>
           <DialogProvider>
           <DataProvider
             data={{
@@ -924,7 +922,6 @@ function SessionView(props: {
           </DataProvider>
           </DialogProvider>
         </FileComponentProvider>
-      </WorkerPoolProvider>
     </>
   )
 }
@@ -947,8 +944,7 @@ function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
   const sid = d.sessionID
   const info = d.session.find((s) => s.id === sid)
   return (
-    <WorkerPoolProvider pools={getWorkerPools()}>
-      <FileComponentProvider component={FileSSR}>
+      <FileComponentProvider component={File}>
         <DialogProvider>
           <DataProvider
             data={{
@@ -980,7 +976,6 @@ function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
           </DataProvider>
         </DialogProvider>
       </FileComponentProvider>
-    </WorkerPoolProvider>
   )
 }
 
@@ -1128,8 +1123,7 @@ export function App() {
         }}
       >
         <Show when={source.ready()} fallback={<NotFound status={source.status()} branding={source.branding()} />}>
-          <WorkerPoolProvider pools={getWorkerPools()}>
-            <FileComponentProvider component={FileSSR}>
+                <FileComponentProvider component={File}>
               <DialogProvider>
                 <DataProvider
                   data={{
@@ -1153,8 +1147,7 @@ export function App() {
                 </DataProvider>
               </DialogProvider>
             </FileComponentProvider>
-          </WorkerPoolProvider>
-          <Show when={settings().view === "classic" || settings().view === "reader"}>
+              <Show when={settings().view === "classic" || settings().view === "reader"}>
           <SessionView
             data={source.data()!}
             source={source}
