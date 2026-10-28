@@ -637,6 +637,37 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   overflow-x: hidden;
 }
 
+/* --- prompt bubble + meta row (parity with the pre-update viewer) --------
+   The kit update moved the bubble one surface up (layer-02) and shrank the
+   metadata line to 12px faint with the whole footer fading in on hover.
+   Keep both as the older viewer rendered them: the darker bubble surface,
+   a 13px body-coloured meta line, always visible (owner verified A/B). */
+:root body [data-timeline-row] [data-component="user-message"] [data-slot="user-message-text"],
+:root body [data-timeline-row] .osh-content [data-component="user-message"] [data-slot="user-message-text"] {
+  background: var(--v2-background-bg-layer-01);
+}
+:root body [data-timeline-row] [data-slot="user-message-copy-wrapper"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+:root body [data-timeline-row] [data-slot="user-message-meta-wrap"],
+:root body [data-timeline-row] [data-slot="user-message-meta-tail"],
+:root body [data-timeline-row] [data-slot="user-message-meta"],
+:root body [data-timeline-row] [data-slot="user-message-meta-label"],
+:root body [data-timeline-row] [data-slot="user-message-meta-item"] {
+  font-size: 13px;
+  color: var(--text-weak);
+  opacity: 1;
+}
+
+/* The shell command was monospace after the kit update, which widened every
+   row by roughly a quarter and read heavier than the rest of the trigger
+   line. Keep it on the sans face like the other tool titles (owner A/B). */
+:root body [data-timeline-row] [data-slot="shell-submessage-value"],
+:root body [data-row-key] [data-slot="shell-submessage-value"] {
+  font-family: var(--font-family-sans);
+}
+
 /* --- prompt style: bubble (default) or flat ------------------------------
    Flat unhooks the kit's right-aligned chat bubble at the ROW level:
    every user message renders full-width at the left with an accent
@@ -1268,29 +1299,81 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   max-width: min(100%, 75vw);
 }
 
-/* --- deep links -------------------------------------------------------- */
-/* the hover link chip rides the hovered row's right edge */
-.osh-rowlink {
-  /* fixed: viewport coords keep virtualizer transforms out of the math */
-  position: fixed;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--border-weak-base, rgba(128, 128, 128, 0.25));
-  border-radius: 6px;
-  background: var(--surface-raised-base, var(--background-base));
-  color: var(--text-weak);
-  cursor: pointer;
-  opacity: 0.85;
-  transition: opacity 120ms ease, color 120ms ease;
+/* --- resizable shell output -------------------------------------------
+   The kit hides the scrollbar and caps output at 240px, so a long result
+   looked static. The card gets a drag handle on its bottom edge (per card,
+   not persisted), a visible thin scrollbar, and a fade while clipped. */
+[data-osh-shell] {
+  position: relative;
 }
-.osh-rowlink:hover {
-  opacity: 1;
-  color: var(--text-strong);
+[data-osh-shell] [data-slot="bash-scroll"] {
+  max-height: var(--osh-shell-h, 240px);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.45)) transparent;
+}
+[data-osh-shell] [data-slot="bash-scroll"]::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+[data-osh-shell] [data-slot="bash-scroll"]::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-osh-shell] [data-slot="bash-scroll"]::-webkit-scrollbar-thumb {
+  background: var(--border-strong-base, rgba(128, 128, 128, 0.45));
+  border-radius: 999px;
+}
+.osh-shell-grip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+  z-index: 3;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.osh-shell-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 3px;
+  width: 30px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border-weak-base, rgba(128, 128, 128, 0.3));
+}
+[data-osh-shell]:hover .osh-shell-grip::after,
+[data-osh-shell][data-osh-resizing] .osh-shell-grip::after {
+  background: var(--openshare-accent, var(--icon-strong-base));
+}
+[data-osh-shell][data-osh-resizing] {
+  user-select: none;
+}
+[data-osh-shell][data-osh-clipped]::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 9px;
+  bottom: 1px;
+  height: 30px;
+  border-radius: 0 0 6px 6px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--v2-background-bg-base));
+}
+
+/* --- deep links -------------------------------------------------------- */
+/* alt held: every transcript row advertises "click copies this row's link" */
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key] {
+  cursor: copy;
+  outline: 1px dashed color-mix(in oklab, var(--openshare-accent, #e0af68) 55%, transparent);
+  outline-offset: -1px;
+  border-radius: 6px;
+}
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key]:hover {
+  outline-style: solid;
+  outline-color: var(--openshare-accent, #e0af68);
 }
 
 /* a deep-link target flashes long enough to be noticed while scrolling */

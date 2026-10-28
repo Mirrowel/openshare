@@ -399,6 +399,88 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: prompt timestamps are absolute, 24-hour, locale-free. The
+// kit renders "now" / "3 minutes ago" / "1 day ago", which reads wrong on a
+// shared session; today shows the clock alone, other days add the date.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: absolute stamps")) {
+      const anchor = [
+        "  const stamp = createMemo(() => {",
+        "    const created = props.message.time.created",
+        "    const relative = relativeTime(created, now())",
+        "",
+        '    if (relative.unit === "now") return i18n.t("ui.message.time.justNow")',
+        "",
+        '    if (relative.unit === "date") return datefmt().format(created)',
+        "",
+        "    return i18n.t(RELATIVE_TIME_KEYS[relative.unit], { count: numfmt().format(relative.count) })",
+        "  })",
+      ].join("\n")
+      const body = [
+        "  const stamp = createMemo(() => {",
+        "    const created = props.message.time.created",
+        "    // openshare fork: absolute stamps in 24-hour form. Today shows the clock",
+        "    // alone; any other day prefixes it with the day and month.",
+        "    const d = new Date(created)",
+        "    const n = new Date(now())",
+        '    const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`',
+        "    if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return time",
+        '    return `${time} ${d.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]}`',
+        "  })",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: message stamp anchor missing - upstream drifted")
+      writeFileSync(p, s.replace(anchor, body))
+    }
+  }
+}
+
+// vendor fork: unknown tools use the catch-all renderer our overrides
+// register (`"*"`), so ctx_*/MCP tools get the shared output card instead of
+// the kit's bare GenericTool dump.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("state[\"*\"]?.render")) {
+      const before = s
+      s = s.replace(
+        "function getTool(name: string) {\n  return state[name]?.render\n}",
+        'function getTool(name: string) {\n  // openshare fork: unregistered tools fall back to the catch-all renderer\n  return state[name]?.render ?? state["*"]?.render\n}',
+      )
+      if (s === before) throw new Error("vendor-v2: getTool anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: calmer word emphasis inside diffs. On a rewritten line every
+// word counts as changed, so the 0.4 (dark) / 0.2 (light) fill painted the
+// whole line as a saturated band; 0.3 / 0.16 keeps the changed words
+// distinct without turning the card into a colour block (owner A/B).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("rgb(from var(--v2-green-600) r g b / 0.16)")) {
+      const before = s
+      s = s
+        .replace(
+          "    rgb(from var(--v2-green-600) r g b / 0.2),\n    rgb(from var(--v2-green-600) r g b / 0.4)",
+          "    rgb(from var(--v2-green-600) r g b / 0.16),\n    rgb(from var(--v2-green-600) r g b / 0.3)",
+        )
+        .replace(
+          "    rgb(from var(--v2-red-600) r g b / 0.2),\n    rgb(from var(--v2-red-600) r g b / 0.4)",
+          "    rgb(from var(--v2-red-600) r g b / 0.16),\n    rgb(from var(--v2-red-600) r g b / 0.3)",
+        )
+      if (s === before) throw new Error("vendor-v2: diff emphasis anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: keep the token colours the previous (shiki) engine produced.
 // The kit's Zed palette maps a few token classes differently from the
 // TextMate scopes the old build tokenized through, so a plain code read

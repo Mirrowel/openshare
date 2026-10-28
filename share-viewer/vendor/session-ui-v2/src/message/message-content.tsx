@@ -351,13 +351,13 @@ export function CurrentUserMessageDisplay(props: {
 
   const stamp = createMemo(() => {
     const created = props.message.time.created
-    const relative = relativeTime(created, now())
-
-    if (relative.unit === "now") return i18n.t("ui.message.time.justNow")
-
-    if (relative.unit === "date") return datefmt().format(created)
-
-    return i18n.t(RELATIVE_TIME_KEYS[relative.unit], { count: numfmt().format(relative.count) })
+    // openshare fork: absolute stamps in 24-hour form. Today shows the clock
+    // alone; any other day prefixes it with the day and month.
+    const d = new Date(created)
+    const n = new Date(now())
+    const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+    if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return time
+    return `${time} ${d.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]}`
   })
 
   // In a run, only the last message keeps the meta line; the others offer their actions beside the bubble.
