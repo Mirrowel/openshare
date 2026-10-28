@@ -184,16 +184,31 @@ try {
   check("P4 failure surfaced in output", /no credential|enroll refused/i.test(out4), out4.slice(-400))
   check("P4 no reconnect storm", (out4.match(/sharing disabled/g) ?? []).length <= 3, `${(out4.match(/sharing disabled/g) ?? []).length} blocks`)
 
-  // ---- P5: public server — zero-config enrollment ------------------------
+  // ---- P5: public server — zero-config shares ANONYMOUSLY -----------------
+  // (no silent auto-enroll, owner directive: a public server with no
+  // configured code/token shares without an account; the ask-once TUI
+  // flow is where onboarding happens)
   console.log("starting public-mode worker…")
   worker2 = await startBackend(suiteDir, { port: W2_PORT, configSuffix: "enroll-pub", name: "enroll-b2", authMode: "public", vars: { AUTH_MODE: "public" } })
   await stopServe(serve)
   serve = await startServe(variant("enroll5", opts(W2_URL)), suiteDir, projectDir, { OPENSHARE_W1_URL: W2_URL, ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
-  await createAndPrompt(serve, "public enrollment")
+  await createAndPrompt(serve, "public anonymous")
   const users5 = (await admin("GET", "/api/admin/users", undefined, W2_URL)).json?.users ?? []
-  check("P5 public enrollment created a user", users5.length === 1, JSON.stringify(users5))
+  check("P5 public zero-config creates NO user", users5.length === 0, JSON.stringify(users5))
   const shares5 = (await admin("GET", "/api/admin/shares", undefined, W2_URL)).json?.shares ?? []
-  check("P5 public share owned", shares5.length === 1 && shares5[0].ownerId === users5[0]?.id, JSON.stringify(shares5))
+  check("P5 public anonymous share (ownerless)", shares5.length === 1 && !shares5[0].ownerId, JSON.stringify(shares5))
+  const out5 = serve.output()
+  check("P5 no enroll noise", !/enrolled at|enroll refused/i.test(out5), out5.slice(-300))
+  await stopServe(serve)
+
+  // ---- P6: public + configured code = expressed intent, engine enrolls ----
+  const code6 = (await admin("POST", "/api/admin/codes", { label: "ci" }, W2_URL)).json
+  serve = await startServe(variant("enroll6", opts(W2_URL, { code: code6?.code })), suiteDir, projectDir, { OPENSHARE_W1_URL: W2_URL, ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })
+  await createAndPrompt(serve, "public with code")
+  const users6 = (await admin("GET", "/api/admin/users", undefined, W2_URL)).json?.users ?? []
+  check("P6 configured code enrolls (headless intent)", users6.length === 1, JSON.stringify(users6))
+  const shares6 = (await admin("GET", "/api/admin/shares", undefined, W2_URL)).json?.shares ?? []
+  check("P6 code share owned", shares6.some((sh) => sh.ownerId === users6[0]?.id), JSON.stringify(shares6))
   await stopServe(serve)
 } catch (e) {
   failures.push(`suite crashed: ${e?.stack || e}`)

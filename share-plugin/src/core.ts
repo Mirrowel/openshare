@@ -412,32 +412,43 @@ export function createEngine(deps: EngineDeps): Engine {
     if (c.credential) return c.credential
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS) return ""
     c.lastEnrollAt = Date.now()
-    try {
-      const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) })
-      const hb = h.ok ? ((await h.json().catch(() => null)) as { auth?: { mode?: string } } | null) : null
-      const authMode2 = hb?.auth?.mode
-      const code = target?.entry.code ?? ""
-      if (authMode2 === "public" || code) {
-        const r = await fetch(`${url}/api/enroll`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code }),
-          signal: AbortSignal.timeout(10000),
-        })
-        const b = r.ok ? ((await r.json().catch(() => null)) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string } | null) : null
-        if (b?.ok && typeof b.token === "string") {
-          c.credential = b.token
-          c.error = ""
-          const savedTo = saveServerToken(url, c.credential)
-          log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
-          return c.credential
+    // A configured code IS expressed onboarding intent (headless-safe:
+    // CI carries it precisely to enroll). Without one, NEVER silently
+    // auto-enroll (owner directive): public servers share anonymously
+    // (the ask-once TUI flow offers an account), private ones refuse
+    // until the user connects via /openshare.
+    const code = target?.entry.code ?? ""
+    if (!code) {
+      try {
+        const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) })
+        const hb = h.ok ? ((await h.json().catch(() => null)) as { auth?: { mode?: string } } | null) : null
+        if (hb?.auth?.mode === "public") {
+          c.error = "" // anonymous standing - tokenless create works
+          return ""
         }
-        c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
-      } else if (authMode2 === "private") {
-        c.error = "private server: add servers.{url}.code (or token) to enroll"
-      } else {
-        c.error = `server health unreachable (HTTP ${h.status})`
+        c.error = "private server - onboard via /openshare (needs an access code)"
+      } catch (e) {
+        c.error = `server unreachable: ${(e as Error)?.message || e}`
       }
+      logError(`no credential for ${url}: ${c.error}`)
+      return ""
+    }
+    try {
+      const r = await fetch(`${url}/api/enroll`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code }),
+        signal: AbortSignal.timeout(10000),
+      })
+      const b = r.ok ? ((await r.json().catch(() => null)) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string } | null) : null
+      if (b?.ok && typeof b.token === "string") {
+        c.credential = b.token
+        c.error = ""
+        const savedTo = saveServerToken(url, c.credential)
+        log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
+        return c.credential
+      }
+      c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
     } catch (e) {
       c.error = `enrollment failed: ${(e as Error)?.message || e}`
     }

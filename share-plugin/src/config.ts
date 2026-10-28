@@ -37,6 +37,9 @@ export type ServerEntry = {
   label?: string
   active?: boolean
   adminToken?: string
+  /** The user DECLINED onboarding for this server (asked once, remembered):
+   * shares go out anonymously (public servers only). Cleared by enrolling. */
+  anonymous?: boolean
 }
 
 export type ShareConfig = {
@@ -263,6 +266,7 @@ export function normalizeServers(raw: unknown): Record<string, ServerEntry> | un
     if (typeof e.label === "string" && e.label) entry.label = e.label
     if (typeof e.adminToken === "string" && e.adminToken) entry.adminToken = e.adminToken
     if (e.active === true) entry.active = true
+    if (e.anonymous === true) entry.anonymous = true
     out[url] = entry
   }
   return Object.keys(out).length ? out : undefined

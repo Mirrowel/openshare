@@ -49,7 +49,8 @@ then the code — you're both hoster and first user).
 |---|---|---|
 | `PORT` | `8787` | listen port |
 | `CREATE_TOKEN` | *(unset)* | root admin token — required for the admin API and legacy root creates. Enrollment is the normal path for users. |
-| `AUTH_MODE` | `private` | `public` = anyone knowing the host may enroll (rate-limited); `private` = access code required |
+| `AUTH_MODE` | `private` | `public` = anonymous creates allowed, enrollment per CODELESS_ONBOARDING; `private` = access code required |
+| `CODELESS_ONBOARDING` | `false` | Public servers: allow minting ACCOUNTS without a code (anonymous creating stays open either way). Worker parity |
 | `OPENSHARE_DB` | `./openshare.db` next to `server.ts` | SQLite file (resolved relative to `server.ts`, not your cwd) |
 | `VIEWER_DIR` | `../share-viewer/dist` | static viewer build |
 | `MAX_TTL_DAYS` | `90` | per-share TTL cap |

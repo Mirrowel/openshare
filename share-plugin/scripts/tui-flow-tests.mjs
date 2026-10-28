@@ -25,6 +25,7 @@ import {
   killWranglerSuites,
   startMockLLM,
   startWorker,
+  startBunServer,
   startServe,
   stopServe,
   CREATE_TOKEN,
@@ -460,6 +461,37 @@ try {
     const purged = await admin.purge()
     const sharesAfterPurge = (await admin.shares()).data?.shares ?? []
     check("F7: purge leaves the server empty", purged.ok === true && sharesAfterPurge.length === 0, JSON.stringify(purged))
+
+    // F15: connect flow on a PUBLIC server asks ONCE (onboard or stay
+    // anonymous); anonymous saves the declined flag with no token
+    const PUB_PORT = 8961
+    const pubSrv = await startBunServer(suiteDir, { port: PUB_PORT, name: "tuiflow-pub", authMode: "public", vars: { AUTH_MODE: "public" } })
+    const PUB_URL = pubSrv.url
+    // menu -> "Stay anonymous"
+    const hostA = mockHost()
+    hostA.state.promptAnswers.push(PUB_URL)
+    hostA.state.menuAnswers.push("anon")
+    const connectedA = await settings.connectServerFlow(hostA.host)
+    check("F15: anonymous connect ok", connectedA.ok === true && /anonymously/.test(connectedA.message), connectedA.message)
+    const pubA = flows.serverEntries().find((sv) => sv.url === PUB_URL)
+    check("F15: anonymous entry saved (flag, active, no token)", pubA?.active === true && pubA?.entry?.anonymous === true && !pubA?.entry?.token, JSON.stringify(pubA?.entry ?? null))
+    // onboard on the same public server (codeless off): menu -> onboard ->
+    // codeless enroll refused -> code prompt -> enroll with the code
+    const codeA = await (await httpGet(`${PUB_URL}/api/admin/codes`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + CREATE_TOKEN },
+      body: JSON.stringify({ label: "pubcode", activations: 2 }),
+    })).json()
+    const hostB = mockHost()
+    hostB.state.promptAnswers.push(PUB_URL, codeA.code)
+    hostB.state.menuAnswers.push("onboard")
+    const connectedB = await settings.connectServerFlow(hostB.host)
+    check("F15b: onboard via code connects", connectedB.ok === true && /as "/.test(connectedB.message), connectedB.message)
+    const pubB = flows.serverEntries().find((sv) => sv.url === PUB_URL)
+    check("F15b: token saved, anonymous flag cleared", pubB?.entry?.token?.startsWith("osk_") && pubB?.entry?.anonymous !== true, JSON.stringify(pubB?.entry ?? null))
+    flows.saveServerEntry(PUB_URL, { active: undefined, token: undefined, anonymous: undefined, code: undefined })
+    try { pubSrv.kill() } catch {}
+    killPortOwners(PUB_PORT)
 
     // F8: gone detection — a binding whose page died server-side (purge /
     // TTL / delete) is auto-cleared when /share opens, with a

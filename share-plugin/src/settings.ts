@@ -262,33 +262,86 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
   return next as ShareConfig
 }
 
-/** Connect (add + enroll) a server — the /share first-run flow and the
+/** Connect (add + enroll) a server - the /share first-run flow and the
  * settings "Connect to a server" row share it. Prompts the URL, probes
- * the auth mode, prompts a code for private servers, enrolls, persists
- * the token and makes it the active server. */
+ * the auth mode, then ASKS ONCE (owner directive - no silent
+ * auto-enroll): onboard to an account, or stay anonymous (public
+ * servers only; anonymous shares sit under the server's global caps).
+ * Onboarding detects whether a code is needed and only then prompts for
+ * one (a code already in config is used without asking). The outcome is
+ * remembered per server: a token means onboarded, an anonymous flag
+ * means declined. */
 export async function connectServerFlow(host: ShareHostApi): Promise<{ ok: boolean; message: string; url?: string }> {
   const raw = await showPrompt(host.ui, { title: "Share server URL", placeholder: "https://your-openshare-host" })
   if (raw === undefined || raw === "") return { ok: false, message: "Cancelled." }
   const url = normServerUrl(raw)
   if (!/^https?:\/\//.test(url)) return { ok: false, message: "URL must start with http:// or https://" }
-  host.ui.toast({ variant: "info", title: "OpenShare", message: `Probing ${url}…` })
+  host.ui.toast({ variant: "info", title: "OpenShare", message: `Probing ${url}:` })
   const probe = await probeAuthMode(url)
   if (!probe.ok) return { ok: false, message: `${url}: ${probe.detail}` }
-  let code = ""
-  if (probe.mode === "private") {
-    const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_… (from the hoster)" })
-    if (typed === undefined) return { ok: false, message: "Cancelled — private servers need a code." }
+  const existing = serverEntries().find((sv) => sv.url === url)?.entry ?? {}
+  const deactivateOthers = () => {
+    for (const other of serverEntries()) {
+      if (other.url !== url) saveServerEntry(other.url, { active: undefined })
+    }
+  }
+  if (probe.mode === "public") {
+    // the ask: an account is a real thing (own shares, own limits,
+    // revocable credentials) - but anonymous sharing works too
+    const picked = await showSelect(host.ui, {
+      title: `${url} - account?`,
+      options: [
+        {
+          value: "onboard",
+          title: "Onboard (get an account)",
+          description: "your own user, tokens and share limits; survives the server's anonymous caps",
+          help: "An account gives you a revocable identity with your own share registry and limits. Depending on the server you may need a one-time access code from the hoster - you'll be asked only if it's required.",
+        },
+        {
+          value: "anon",
+          title: "Stay anonymous",
+          description: "share without an account; counts against the server-wide anonymous limits",
+          help: "No identity, no token to manage. Shares are ownerless: whoever holds the share's secret controls them, and the server may throttle anonymous creates globally. You can onboard later from Servers -> the server -> Enroll now.",
+        },
+      ],
+    })
+    if (picked === "anon") {
+      saveServerEntry(url, { ...(existing.token ? {} : { anonymous: true }), label: existing.label, active: true })
+      return { ok: true, message: `Connected to ${url} anonymously - sharing works, no account.`, url }
+    }
+    if (picked === undefined || picked === null) return { ok: false, message: "Cancelled." }
+    // onboard: try without a code (codeless servers), fall through to
+    // the code prompt exactly when the server demands one
+    let code = existing.code ?? ""
+    if (!code) {
+      const free = await enrollAtServer(url, "")
+      if (free.ok) {
+        deactivateOthers()
+        saveServerEntry(url, { token: free.token, label: free.label, anonymous: undefined, active: true })
+        return { ok: true, message: `Connected to ${url} as "${free.label}" - sharing goes there now.`, url }
+      }
+      const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_: (from the hoster)" })
+      if (typed === undefined) return { ok: false, message: "Cancelled - this server needs a code to onboard." }
+      code = typed.trim()
+    }
+    const res = await enrollAtServer(url, code)
+    if (!res.ok) return { ok: false, message: `Enrollment refused: ${res.error}` }
+    deactivateOthers()
+    saveServerEntry(url, { token: res.token, label: res.label, code: code || undefined, anonymous: undefined, active: true })
+    return { ok: true, message: `Connected to ${url} as "${res.label}" - sharing goes there now.`, url }
+  }
+  // private server: a code is required, full stop
+  let code = existing.code ?? ""
+  if (!code) {
+    const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_: (from the hoster)" })
+    if (typed === undefined) return { ok: false, message: "Cancelled - private servers need a code." }
     code = typed.trim()
   }
   const res = await enrollAtServer(url, code)
   if (!res.ok) return { ok: false, message: `Enrollment refused: ${res.error}` }
-  // single active server: deactivate the others in the settings home,
-  // then persist the new membership as active
-  for (const other of serverEntries()) {
-    if (other.url !== url) saveServerEntry(other.url, { active: undefined })
-  }
+  deactivateOthers()
   saveServerEntry(url, { token: res.token, label: res.label, code: code || undefined, active: true })
-  return { ok: true, message: `Connected to ${url} as "${res.label}" — sharing goes there now.`, url }
+  return { ok: true, message: `Connected to ${url} as "${res.label}" - sharing goes there now.`, url }
 }
 
 /** Per-server submenu: identity status + membership actions. Root-token
@@ -307,7 +360,9 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
         ? `token ${mask(mine.entry.token)}`
         : mine.entry.code
           ? "no token (code saved, enrolls on demand)"
-          : "no token (public server, enrolls on demand)"
+          : mine.entry.anonymous
+            ? "anonymous (declined onboarding)"
+            : "no token (public server, shares anonymously)"
     const options: ShareDialogSelectOption<string>[] = [
       { title: url, value: "info", description: `${mine.entry.label ?? "(no label)"} · ${cred}${mine.active ? " · ACTIVE" : ""}`, disabled: true },
     ]
@@ -381,15 +436,27 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
         continue
       }
       let code = mine.entry.code ?? ""
-      if (probe.mode === "private" && !code) {
-        const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_… (from the hoster)" })
+      if (!code) {
+        // codeless first: only prompt when the server actually demands
+        // a code (public + codeless-on boards silently, like connect)
+        const free = await enrollAtServer(url, "")
+        if (free.ok) {
+          saveServerEntry(url, { token: free.token, label: free.label, anonymous: undefined })
+          host.ui.toast({ variant: "success", title: "OpenShare", message: `Enrolled as "${free.label}".` })
+          continue
+        }
+        if (!/code required/i.test(free.error ?? "")) {
+          await showInfo(host.ui, { title: "Enrollment refused", message: free.error ?? "unknown error" })
+          continue
+        }
+        const typed = await showPrompt(host.ui, { title: `${url} needs an access code`, placeholder: "osc_: (from the hoster)" })
         if (typed === undefined) continue
         code = typed.trim()
         if (code) saveServerEntry(url, { code })
       }
       const res = await enrollAtServer(url, code)
       if (res.ok) {
-        saveServerEntry(url, { token: res.token, label: res.label })
+        saveServerEntry(url, { token: res.token, label: res.label, anonymous: undefined })
         host.ui.toast({ variant: "success", title: "OpenShare", message: `Enrolled as "${res.label}".` })
       } else {
         await showInfo(host.ui, { title: "Enrollment refused", message: res.error ?? "unknown error" })

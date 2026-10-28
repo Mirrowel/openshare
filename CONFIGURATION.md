@@ -27,6 +27,7 @@ To change anything: edit `share-worker/wrangler.toml`, then from `share-worker/`
 |---|---|---|
 | `MAX_TTL_DAYS` | `90` | Hard cap for per-share `ttlDays`; clients may request less |
 | `AUTH_MODE` | `private` | `private` = enrollment requires an `osc_` access code; `public` = anyone knowing the hostname (per-IP rate-limited) |
+| `CODELESS_ONBOARDING` | `false` | Public servers only: allow enrolling an ACCOUNT without an access code (anonymous creating stays open either way — this gate is about minting users). Default OFF; the hoster opts in |
 | `ANON_CREATE_HOURLY` | `100` | Global rolling-hourly cap on anonymous (ownerless) share creations, all visitors combined. Public mode only. Each create costs a Durable Object + one KV write |
 | `DEFAULT_MAX_LIVE_SHARES` | `0` (= unlimited) | Per-token default limit for **newly enrolled** users: max non-swept shares owned at once |
 | `DEFAULT_MAX_TTL_DAYS` | `0` (= unlimited) | Per-token extra cap on share `ttlDays` |
@@ -61,19 +62,25 @@ Bundled at deploy; the deployment's skin. All fields optional, empty string = hi
 Created/changed after deploy; stored in the AuthDO/ShareDO. These are data, not config files.
 
 ### Users
-- `label` — display name in the admin console
-- `settings.defaultTtlDays` — `GET`/`PUT /api/me/settings`; used when a share is created without an explicit `ttlDays` (still clamped by `MAX_TTL_DAYS`)
-- `frozen` — severs token **and** secret control on all the user's shares at once (viewing unaffected); the kill switch for leaked identities. Unfreeze/reassign are the rescue paths
+- `label` - display name in the admin console
+- `settings.defaultTtlDays` - `GET`/`PUT /api/me/settings`; used when a share is created without an explicit `ttlDays` (still clamped by `MAX_TTL_DAYS`)
+- `frozen` - severs token **and** secret control on all the user's shares at once (viewing unaffected); the kill switch for leaked identities. Unfreeze/reassign are the rescue paths
+- `createdByCode` - which access code onboarded the user; `POST /api/admin/codes/:id/revoke-lineage` revokes EVERY token of EVERY user that code created (and disables the code)
 
-### Tokens (`osk_…`)
-Long-lived user tokens, SHA-256 hashed server-side, minted at enrollment or by the admin. Parameters:
-- `label` (≤64 chars)
-- `limits` — `{ maxLiveShares, maxTtlDays, dailyCreates }`, each `0` = unlimited; enforced atomically at share create. New enrollments inherit the `DEFAULT_*` vars as their limits
-- `expiresAt` — optional expiry
-- lifecycle — rotation (`POST /api/token/rotate`, valid token in hand), self-revoke (`DELETE /api/token`), admin revoke (`DELETE /api/admin/tokens/:id`). **Revocation freezes control**: when a user's last valid token is revoked (or they all expire), every share that user created becomes read-only for anyone holding its secret too — only the admin can unfreeze or reassign. Rotation never triggers this (the replacement is minted first).
+### Tokens (`osk_:`)
+Long-lived user tokens, SHA-256 hashed server-side, minted at enrollment or by the admin. Every token has a **class**:
 
-### Access codes (`osc_…`)
-Invite-gated enrollment for private servers. Parameters: `label`, `activations` (budget; one activation = one user+token; `-1` = unlimited), `ttlHours`, disable. Minted via `POST /api/admin/codes`.
+- **full** (default) - the account credential. Creates, syncs any of the owner's shares, mints/revokes tokens (`POST /api/token` self-service), edits settings, rotates anything. Only full tokens keep the account alive.
+- **scoped** - a service credential (CI, agents). Carries its own limits; creates within them; syncs/deletes/lists ONLY the shares it created (`creatorTokenId` is stamped on every share); self-rotates (the successor inherits the scope); cannot mint tokens, touch settings, or reach the owner's other shares. Minted by a full token: `POST /api/token {"kind":"scoped", "label", "limits"}`.
+
+Shared parameters:
+- `label` (:64 chars)
+- `limits` - `{ maxLiveShares, maxTtlDays, dailyCreates }`, each `0` = unlimited; enforced atomically at share create (scoped tokens count only their own shares). New enrollments inherit the `DEFAULT_*` vars as their limits
+- `expiresAt` - optional expiry
+- lifecycle - rotation (`POST /api/token/rotate`, valid token in hand; the successor keeps the class and a scoped rotation TRANSFERS its shares to the successor), self-revoke (`DELETE /api/token`), admin revoke (`DELETE /api/admin/tokens/:id`). **Revocation freezes control**: when a user's last valid FULL token is revoked (or they all expire), every share that user created becomes read-only for anyone holding its secret too - only the admin can unfreeze or reassign. Scoped tokens never keep the account alive. Rotation never triggers this (the replacement is minted first). Bulk: `POST /api/admin/tokens/:id/freeze-shares` freezes just the shares one token created.
+
+### Access codes (`osc_:`)
+Invite-gated enrollment. Codes mint a user PLUS their first full token (one activation = one user); holders of any valid token mint more without a code. On public servers enrollment needs a code unless `CODELESS_ONBOARDING` is on - anonymous creating stays open regardless. Parameters: `label`, `activations` (budget; `-1` = unlimited), `ttlHours`, disable. Minted via `POST /api/admin/codes`.
 
 ### Shares
 Created per shared session (`POST /api/share/<hex-suffix>` or the WS `init create`). Parameters at create:
@@ -85,7 +92,7 @@ Created per shared session (`POST /api/share/<hex-suffix>` or the WS `init creat
 
 Removing a share: delete (page gone) or disconnect (snapshot stays until TTL).
 
-Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token/rotate`, `DELETE /api/token`; admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/purge` (wipes everything).
+Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `POST /api/token/rotate`, `DELETE /api/token`; admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
 
 ---
 

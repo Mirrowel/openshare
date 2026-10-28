@@ -168,6 +168,11 @@ export default {
         const r = await authCall(env, "/token-delete", { token: bearer(req) })
         return json(r.status, r.body)
       }
+      if (path === "/api/token" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/token-self-mint", { token: bearer(req), ...body })
+        return json(r.status, r.body)
+      }
 
       // ---- admin (root CREATE_TOKEN only in this model) --------------------
       if (path.startsWith("/api/admin/") && path !== "/api/admin/purge") {
@@ -191,10 +196,14 @@ export default {
         if (path === "/api/admin/tokens" && req.method === "GET") return json(...(await call("/tokens-get")))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/token-revoke:" + m[1])))
+        m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/freeze-shares$/)
+        if (m && req.method === "POST") return json(...(await call("/freeze-by-token:" + m[1])))
         if (path === "/api/admin/codes" && req.method === "POST") return json(...(await call("/code-create")))
         if (path === "/api/admin/codes" && req.method === "GET") return json(...(await call("/codes-get")))
         m = path.match(/^\/api\/admin\/codes\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/code-disable:" + m[1])))
+        m = path.match(/^\/api\/admin\/codes\/([^/]+)\/revoke-lineage$/)
+        if (m && req.method === "POST") return json(...(await call("/code-lineage-revoke:" + m[1])))
         if (path === "/api/admin/shares" && req.method === "GET") {
           // global list straight from the KV index — the record rides in
           // key metadata (list() returns it inline; no per-key get = no
@@ -310,7 +319,7 @@ export default {
         }
         const chk = await authCall(env, "/create-check", { token: auth ?? "" })
         if (!chk.body?.ok) return json(chk.body?.httpStatus ?? 401, { error: chk.body?.error ?? "bad create token" })
-        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0)
+        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0, chk.body.tokenId, chk.body.tokenKind)
       }
 
       if (req.method === "POST" && op === "/sync") {
@@ -323,7 +332,7 @@ export default {
         const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/sync", {
           method: "POST",
-          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, data: body.data ?? [], status: body.status }),
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, data: body.data ?? [], status: body.status }),
         })
         return json(r.status, await r.json())
       }
@@ -349,7 +358,7 @@ export default {
         const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/remove", {
           method: "POST",
-          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root }),
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind }),
         })
         return json(r.status, await r.json())
       }
@@ -411,6 +420,13 @@ function authMode(env) {
   return String(env.AUTH_MODE ?? "private").toLowerCase() === "public" ? "public" : "private"
 }
 
+/** Public servers may accept onboarding without an access code only when
+ * this is explicitly enabled (default OFF - anonymous creating stays open
+ * either way; this gate is about minting ACCOUNTS). */
+function codelessOnboarding(env) {
+  return /^(1|true|yes|on)$/i.test(String(env.CODELESS_ONBOARDING ?? "").trim())
+}
+
 async function sha256hex(s) {
   const d = await crypto.subtle.digest("SHA-256", encoder.encode(s))
   return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("")
@@ -432,7 +448,7 @@ async function authCall(env, route, body) {
   }
 }
 
-async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0) {
+async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, tokenId = null, tokenKind = null) {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
   const newId = randomId()
   const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), env, ttlMax)
@@ -445,10 +461,11 @@ async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0) {
       authLogin: body.authLogin ?? "",
       authPassword: body.authPassword ?? "",
       ownerId,
+      ...(tokenId ? { creatorTokenId: tokenId } : {}),
     }),
   })
   const out = await r.json()
-  if (out.ok && ownerId) await authCall(env, "/register", { userId: ownerId, shareId: newId, sessionID: body.sessionID })
+  if (out.ok && ownerId) await authCall(env, "/register", { userId: ownerId, shareId: newId, sessionID: body.sessionID, ...(tokenId ? { tokenId } : {}) })
   if (out.ok) return json(r.status, { ...out, ttlDays })
   return json(r.status, out)
 }
@@ -501,7 +518,7 @@ async function resolveIdentity(env, req, body) {
   if (!token) return { ownerId: null, root: false }
   if (env.CREATE_TOKEN && token === env.CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await authCall(env, "/check", { token })
-  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false }
+  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false, tokenId: chk.body.tokenId, tokenKind: chk.body.tokenKind === "scoped" ? "scoped" : "full" }
   return { ownerId: null, root: false }
 }
 
@@ -533,6 +550,8 @@ export class ControlDO {
     this.attachSecret = undefined
     this.attachOwner = null
     this.attachRoot = false
+    this.attachTokenId = null
+    this.attachTokenKind = null
     this.token = ""
     this.earlySyncs = [] // syncs that raced init (each webSocketMessage runs concurrently)
     this.earlyBytes = 0 // byte budget beside the count cap (OOM guard)
@@ -564,6 +583,8 @@ export class ControlDO {
         this.attachSecret = saved.secret
         this.attachOwner = saved.ownerId ?? null
         this.attachRoot = !!saved.root
+        this.attachTokenId = saved.tokenId ?? null
+        this.attachTokenKind = saved.tokenKind ?? null
       }
     } catch {}
   }
@@ -578,27 +599,33 @@ export class ControlDO {
     return r.json()
   }
 
-  /** Resolve the socket's bearer token to {ownerId, root}. */
+  /** Resolve the socket's bearer token to {ownerId, root, tokenId, tokenKind}. */
   async socketIdentity() {
     const t = this.token ?? ""
     if (t && this.env.CREATE_TOKEN && t === this.env.CREATE_TOKEN) return { ownerId: null, root: true }
     if (!t) return { ownerId: null, root: false }
     const chk = await this.authCall("/check", { token: t })
-    return chk.kind === "user" ? { ownerId: chk.userId, root: false } : { ownerId: null, root: false }
+    return chk.kind === "user"
+      ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind === "scoped" ? "scoped" : "full", ttlMaxDays: chk.ttlMaxDays ?? 0 }
+      : { ownerId: null, root: false }
   }
 
-  /** Credential fields for ShareDO control calls (secret XOR owner XOR root). */
+  /** Credential fields for ShareDO control calls (secret XOR owner XOR root).
+   * tokenId/tokenKind: the write gate lets a SCOPED token touch only the
+   * shares it created; FULL tokens (absent kind) reach all owner shares. */
   attachBody() {
-    return { secret: this.attachSecret ?? "", ownerId: this.attachOwner ?? null, root: !!this.attachRoot }
+    return { secret: this.attachSecret ?? "", ownerId: this.attachOwner ?? null, root: !!this.attachRoot, tokenId: this.attachTokenId, tokenKind: this.attachTokenKind }
   }
 
-  async saveAttach(id, secret, ownerId = null, root = false) {
+  async saveAttach(id, secret, ownerId = null, root = false, tokenId = null, tokenKind = null) {
     this.attachId = id
     this.attachSecret = secret
     this.attachOwner = ownerId
     this.attachRoot = root
+    this.attachTokenId = tokenId
+    this.attachTokenKind = tokenKind
     try {
-      await this.state.storage.put("attach", { id, secret, ownerId, root })
+      await this.state.storage.put("attach", { id, secret, ownerId, root, tokenId, tokenKind })
     } catch {}
   }
 
@@ -607,6 +634,8 @@ export class ControlDO {
     this.attachSecret = undefined
     this.attachOwner = null
     this.attachRoot = false
+    this.attachTokenId = null
+    this.attachTokenKind = null
     this.earlySyncs = []
     this.earlyBytes = 0
     try {
@@ -686,12 +715,16 @@ export class ControlDO {
           let ownerId = null
           let ttlMax = 0
           let ownerDefault = 0
+          let creatorTokenId = null
+          let creatorTokenKind = null
           if (!(this.token && this.env.CREATE_TOKEN && this.token === this.env.CREATE_TOKEN)) {
             const chk = await this.authCall("/create-check", { token: this.token ?? "" })
             if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
             ownerId = chk.userId ?? null
             ttlMax = chk.ttlMaxDays ?? 0
             ownerDefault = chk.defaultTtlDays ?? 0
+            creatorTokenId = chk.tokenId ?? null
+            creatorTokenKind = chk.tokenKind ?? null
           }
           const id = randomId()
           // explicit ttlDays wins; otherwise the owner's stored default
@@ -719,13 +752,14 @@ export class ControlDO {
               authLogin: frame.create.authLogin ?? "",
               authPassword: frame.create.authPassword ?? "",
               ownerId,
+              ...(creatorTokenId ? { creatorTokenId } : {}),
               ...(Object.keys(custom).length ? { custom } : {}),
             }),
           })
           const body = await r.json()
           if (!body.ok) return send({ op: "init", ok: false, error: body.error })
-          if (ownerId) await this.authCall("/register", { userId: ownerId, shareId: id, sessionID: frame.create.sessionID })
-          await this.saveAttach(id, body.secret, ownerId)
+          if (ownerId) await this.authCall("/register", { userId: ownerId, shareId: id, sessionID: frame.create.sessionID, ...(creatorTokenId ? { tokenId: creatorTokenId } : {}) })
+          await this.saveAttach(id, body.secret, ownerId, false, creatorTokenId, creatorTokenKind)
           await this.flushEarlySyncs(send)
           // auth mirrors what we just sent (the DO builds a gate only
           // from a full non-empty pair)
@@ -734,18 +768,13 @@ export class ControlDO {
         if (frame.attach) {
           const ident = await this.socketIdentity()
           // explicit per-session TTL override changing mid-life: clamp it
-          // exactly like create (server cap + the token's maxTtlDays)
+          // exactly like create (server cap + the token's maxTtlDays).
+          // ident already resolved the token's limits - no create-check
+          // here (it burns a daily-create slot)
           let attachTtl
           const rawTtl = Number(frame.attach.ttlDays)
           if (Number.isFinite(rawTtl) && rawTtl > 0) {
-            let ttlMax = 0
-            if (ident.ownerId) {
-              try {
-                const chk = await this.authCall("/create-check", { token: this.token ?? "" })
-                ttlMax = chk.ttlMaxDays ?? 0
-              } catch {}
-            }
-            attachTtl = clampTtl(rawTtl, this.env, ttlMax)
+            attachTtl = clampTtl(rawTtl, this.env, ident.ttlMaxDays ?? 0)
           }
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(frame.attach.id)).fetch("https://do/attach", {
             method: "POST",
@@ -753,6 +782,8 @@ export class ControlDO {
               secret: frame.attach.secret ?? "",
               ownerId: ident.ownerId,
               root: ident.root,
+              tokenId: ident.tokenId,
+              tokenKind: ident.tokenKind,
               authLogin: frame.attach.authLogin,
               authPassword: frame.attach.authPassword,
               ...(attachTtl ? { ttlDays: attachTtl } : {}),
@@ -760,7 +791,7 @@ export class ControlDO {
           })
         const body = await r.json()
         if (!body.ok) return send({ op: "init", ok: false, error: body.error })
-        await this.saveAttach(frame.attach.id, frame.attach.secret, ident.ownerId, ident.root)
+        await this.saveAttach(frame.attach.id, frame.attach.secret, ident.ownerId, ident.root, ident.tokenId, ident.tokenKind)
         await this.flushEarlySyncs(send)
         return send({
             op: "init",
@@ -1056,6 +1087,9 @@ export class ShareDO {
         ownerId: body.ownerId ?? null,
         frozen: false,
         auth,
+        // which credential created this share (scoped-authority gate,
+        // per-token listings, bulk freeze-by-token)
+        creatorTokenId: body.creatorTokenId ?? null,
         // free-form labels from the plugin (B5), shown in admin listings
         custom: body.custom && typeof body.custom === "object" ? body.custom : {},
         tokens: [],
@@ -1322,7 +1356,7 @@ export class ShareDO {
     }
 
     // Internal (AuthDO fan-out): freeze/unfreeze a share's edits. Viewing
-    // is unaffected — a frozen share is read-only until unfrozen or TTL.
+    // is unaffected - a frozen share is read-only until unfrozen or TTL.
     if (path === "/set-frozen" && req.method === "POST") {
       const body = await req.json()
       const meta = await this.state.storage.get("meta")
@@ -1330,6 +1364,17 @@ export class ShareDO {
       meta.frozen = !!body.frozen
       await this.state.storage.put("meta", meta)
       console.log("[set-frozen]", this.state.id.name, body.frozen ? "frozen" : "unfrozen")
+      return json(200, { ok: true })
+    }
+
+    // Internal (AuthDO rotate): re-point a scoped token's share at its
+    // successor so rotation never orphans the pages it created
+    if (path === "/set-creator-token" && req.method === "POST") {
+      const body = await req.json()
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: true })
+      meta.creatorTokenId = body.tokenId ?? null
+      await this.state.storage.put("meta", meta)
       return json(200, { ok: true })
     }
 
@@ -1359,7 +1404,13 @@ export class ShareDO {
   writeGate(meta, body) {
     if (body?.root === true) return ""
     if (body?.secret && body.secret === meta.secret) return meta.frozen ? "frozen" : ""
-    if (body?.ownerId && meta.ownerId && body.ownerId === meta.ownerId) return meta.frozen ? "frozen" : ""
+    if (body?.ownerId && meta.ownerId && body.ownerId === meta.ownerId) {
+      if (meta.frozen) return "frozen"
+      // SCOPED tokens reach only the shares they created; FULL tokens
+      // (absent kind = pre-2a caller) reach every owner share
+      if (body.tokenKind === "scoped") return body.tokenId && body.tokenId === meta.creatorTokenId ? "" : "forbidden"
+      return ""
+    }
     return "forbidden"
   }
 
@@ -1589,6 +1640,10 @@ export class AuthDO {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-frozen", {
               method: "POST", body: JSON.stringify({ frozen: !!job.frozen }),
             })
+          } else if (job.action === "set-creator-token") {
+            await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-creator-token", {
+              method: "POST", body: JSON.stringify({ tokenId: job.tokenId }),
+            })
           } else {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
           }
@@ -1640,7 +1695,7 @@ export class AuthDO {
       } while (uc)
       if (expiredDead.length) {
         const tokens = await this.listPrefix("t:")
-        const aliveUsers = new Set(tokens.filter((t) => !t.revokedAt && !(t.expiresAt && t.expiresAt < now)).map((t) => t.userId))
+        const aliveUsers = new Set(tokens.filter((t) => t.kind !== "scoped" && !t.revokedAt && !(t.expiresAt && t.expiresAt < now)).map((t) => t.userId))
         for (const uid of expiredDead) {
           if (aliveUsers.has(uid)) continue
           const reg = (await this.state.storage.get(`uShares:${uid}`)) ?? []
@@ -1683,11 +1738,14 @@ export class AuthDO {
         case "/user-freeze": return json(...(await this.userFreeze(param === "1", body)))
         case "/user-delete": return json(...(await this.userDelete(param, body)))
         case "/token-mint": return json(...(await this.tokenMint(body)))
+        case "/token-self-mint": return json(...(await this.tokenSelfMint(body)))
         case "/tokens-get": return json(...(await this.tokensGet()))
         case "/token-revoke": return json(...(await this.tokenRevoke(param)))
         case "/code-create": return json(...(await this.codeCreate(body)))
         case "/codes-get": return json(...(await this.codesGet()))
         case "/code-disable": return json(...(await this.codeDisable(param)))
+        case "/code-lineage-revoke": return json(...(await this.codeLineageRevoke(param)))
+        case "/freeze-by-token": return json(...(await this.freezeByToken(param, body)))
         case "/reassign": return json(...(await this.reassign(param, body)))
         default: return json(404, { ok: false, error: "not found" })
       }
@@ -1710,12 +1768,15 @@ export class AuthDO {
       t.lastUsedAt = Date.now()
       await this.state.storage.put("t:" + t.hash, t)
     }
-    return { kind: "user", userId: t.userId, user: u, token: t }
+    // tokenKind rides every identity: the write gate needs it to tell a
+    // FULL token (any of the owner's shares) from a SCOPED one (only the
+    // shares it created). Absent kind = full (pre-2a records).
+    return { kind: "user", userId: t.userId, user: u, token: t, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full" }
   }
 
   async check(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
-    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label }
+    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxDays: chk.token.limits.maxTtlDays || 0 }
     return { kind: chk.kind }
   }
 
@@ -1741,8 +1802,15 @@ export class AuthDO {
     const t = chk.token
     const now = Date.now()
     if (t.limits.maxLiveShares > 0) {
-      const shares = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
-      if (shares.length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+      // SCOPED tokens count only their own shares; FULL counts the
+      // user's whole registry
+      if (t.kind === "scoped") {
+        const reg = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
+        if (reg.filter((s) => s.creatorTokenId === t.id).length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+      } else {
+        const shares = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
+        if (shares.length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+      }
     }
     if (t.limits.dailyCreates > 0) {
       const key = `dc:${t.id}:${new Date(now).toISOString().slice(0, 10)}`
@@ -1750,7 +1818,7 @@ export class AuthDO {
       if (n >= t.limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
       await this.state.storage.put(key, n + 1)
     }
-    return { ok: true, userId: t.userId, ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0 }
+    return { ok: true, userId: t.userId, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full", ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0 }
   }
 
   // ---- enrollment + lifecycle ----------------------------------------------
@@ -1775,10 +1843,10 @@ export class AuthDO {
     }
   }
 
-  async mint(userId, label, limits) {
+  async mint(userId, label, limits, kind = "full") {
     const value = "osk_" + randomId() + randomId()
     const hash = await sha256hex(value)
-    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
+    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, kind: kind === "scoped" ? "scoped" : "full", createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
     await this.state.storage.put("t:" + hash, rec)
     return { value, rec }
   }
@@ -1795,8 +1863,12 @@ export class AuthDO {
       code = await this.state.storage.get("c:" + (await sha256hex(String(body.code))))
       const invalid = !code || code.disabled || (code.expiresAt && code.expiresAt < now) || (code.activationsLeft !== -1 && code.activationsLeft <= 0)
       if (invalid) return [403, { ok: false, error: "invalid code" }]
-    } else if (mode !== "public") {
-      return [403, { ok: false, error: "code required" }]
+    } else if (mode !== "public" || !codelessOnboarding(this.env)) {
+      // codeless onboarding is a deliberate opt-in even on public
+      // servers (default OFF): anonymous creating stays open, but
+      // ACCOUNTS (escaping the anonymous caps) need a code unless the
+      // hoster says otherwise
+      return [403, { ok: false, error: mode === "public" ? "code required (codeless onboarding disabled)" : "code required" }]
     }
     if (!code) {
       const rl = await this.rateLimit(String(body.ip ?? "unknown"))
@@ -1809,10 +1881,10 @@ export class AuthDO {
     }
     const label = String(body.label ?? "").trim().slice(0, 64)
       || (code ? `${code.label || "invite"}-${code.used}` : "user-" + randomId().slice(0, 4))
-    const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: now, frozen: false, settings: {} }
+    const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: now, frozen: false, settings: {}, ...(code ? { createdByCode: code.id } : {}) }
     await this.state.storage.put("u:" + user.id, user)
-    const token = await this.mint(user.id, label, this.defaultLimits())
-    console.log("[authdo] enrolled", user.id, label, code ? "via code" : "anonymous")
+    const token = await this.mint(user.id, label, this.defaultLimits(), "full")
+    console.log("[authdo] enrolled", user.id, label, code ? "via code" : "codeless")
     return [200, { ok: true, token: token.value, userId: user.id, label }]
   }
 
@@ -1856,8 +1928,65 @@ export class AuthDO {
     const t = chk.token
     t.revokedAt = Date.now()
     await this.state.storage.put("t:" + t.hash, t)
-    const fresh = await this.mint(t.userId, t.label, t.limits)
-    return [200, { ok: true, token: fresh.value, userId: t.userId }]
+    // successor keeps the class: rotating a scoped token yields a scoped
+    // token (service credential), rotating a full token a full one
+    const fresh = await this.mint(t.userId, t.label, t.limits, t.kind === "scoped" ? "scoped" : "full")
+    // SCOPED authority is keyed by creatorTokenId: transfer the old
+    // token's shares to the successor or rotation orphans its own pages
+    if (t.kind === "scoped") await this.transferCreator(t.id, fresh.rec.id)
+    return [200, { ok: true, token: fresh.value, userId: t.userId, tokenKind: fresh.rec.kind }]
+  }
+
+  /** Re-point a retiring scoped token's shares at its successor: registry
+   * entries inline, ShareDO meta via the chunked fan-out. */
+  async transferCreator(oldId, newId) {
+    let uc
+    const targets = []
+    do {
+      const page = await this.state.storage.list({ prefix: "uShares:", cursor: uc })
+      for (const [k, reg] of page) {
+        if (!Array.isArray(reg)) continue
+        let dirty = false
+        for (const s of reg) {
+          if (s.creatorTokenId === oldId) {
+            s.creatorTokenId = newId
+            targets.push(s.id)
+            dirty = true
+          }
+        }
+        if (dirty) await this.state.storage.put(k, reg)
+      }
+      uc = page.list_complete ? undefined : page.cursor
+    } while (uc)
+    if (!targets.length) return
+    const first = targets.slice(0, 35)
+    const rest = targets.slice(35)
+    for (const id of first) {
+      try {
+        await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-creator-token", {
+          method: "POST", body: JSON.stringify({ tokenId: newId }),
+        })
+      } catch {}
+    }
+    if (rest.length) {
+      const q = (await this.state.storage.get("fanoutQueue")) ?? []
+      q.push({ action: "set-creator-token", tokenId: newId, shareIds: rest })
+      await this.state.storage.put("fanoutQueue", q)
+      const cur = await this.state.storage.getAlarm()
+      if (cur === null || cur > Date.now() + 60 * 1000) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+    }
+  }
+
+  /** Self-service mint: only FULL tokens may mint (a scoped credential
+   * must never bootstrap more credentials). Scoped mint target is the
+   * point - CI/agent credentials without account authority. */
+  async tokenSelfMint(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot mint tokens" }]
+    const kind = body.kind === "scoped" ? "scoped" : "full"
+    const t = await this.mint(chk.userId, body.label, this.normLimits(body.limits), kind)
+    return [200, { ok: true, token: t.value, id: t.rec.id, userId: chk.userId, kind: t.rec.kind }]
   }
 
   /** Revocation kills control (owner directive): a user whose LAST valid
@@ -1869,7 +1998,10 @@ export class AuthDO {
     if (!userId) return false
     const tokens = await this.listPrefix("t:")
     const now = Date.now()
-    const alive = tokens.filter((x) => x.userId === userId && !x.revokedAt && !(x.expiresAt && x.expiresAt < now))
+    // only FULL tokens keep the account alive - a user holding nothing
+    // but scoped credentials is dead (scoped = service access, not
+    // ownership)
+    const alive = tokens.filter((x) => x.userId === userId && x.kind !== "scoped" && !x.revokedAt && !(x.expiresAt && x.expiresAt < now))
     if (alive.length) return false
     const reg = (await this.state.storage.get(`uShares:${userId}`)) ?? []
     if (!reg.length) return false
@@ -1891,7 +2023,7 @@ export class AuthDO {
   // ---- self-service ---------------------------------------------------------
 
   tokenView(t) {
-    return { id: t.id, label: t.label, limits: t.limits, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
+    return { id: t.id, label: t.label, limits: t.limits, kind: t.kind === "scoped" ? "scoped" : "full", createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
   }
 
   async me(body) {
@@ -1903,6 +2035,7 @@ export class AuthDO {
   async settings(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot edit settings" }]
     const u = chk.user
     const patch = body.patch ?? {}
     const next = { ...(u.settings ?? {}) }
@@ -1919,7 +2052,9 @@ export class AuthDO {
   async meShares(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
-    const reg = (await this.state.storage.get(`uShares:${chk.userId}`)) ?? []
+    let reg = (await this.state.storage.get(`uShares:${chk.userId}`)) ?? []
+    // scoped tokens see ONLY the shares they created
+    if (chk.tokenKind === "scoped") reg = reg.filter((s) => s.creatorTokenId === chk.tokenId)
     // subrequest cap: a /meta DO fetch per share breaks past ~50 on the
     // free tier — resolve statuses for the first 50 (newest listed last),
     // mark the tail unhydrated rather than 500ing the whole call
@@ -1953,7 +2088,9 @@ export class AuthDO {
     const key = `uShares:${body.userId}`
     const reg = (await this.state.storage.get(key)) ?? []
     if (!reg.some((s) => s.id === body.shareId)) {
-      reg.push({ id: body.shareId, sessionID: body.sessionID ?? "", createdAt: Date.now() })
+      // creatorTokenId: which credential made the share - scoped-authority
+      // resolution, per-token listings, and the bulk freeze-by-token op
+      reg.push({ id: body.shareId, sessionID: body.sessionID ?? "", createdAt: Date.now(), ...(body.tokenId ? { creatorTokenId: body.tokenId } : {}) })
       await this.state.storage.put(key, reg.slice(-10000))
     }
     await this.state.storage.put(`shareOwner:${body.shareId}`, body.userId)
@@ -2122,6 +2259,74 @@ export class AuthDO {
     c.disabled = true
     await this.state.storage.put("c:" + c.hash, c)
     return [200, { ok: true }]
+  }
+
+  /** Code-lineage kill-switch: revoke EVERY token of EVERY user that this
+   * code onboarded, freezing each (no valid full token left -> D5 fan-out
+   * per user). The code itself is disabled so it cannot onboard anyone
+   * else. Viewing is untouched - shares stay readable to TTL. */
+  async codeLineageRevoke(codeId) {
+    const codes = await this.listPrefix("c:")
+    const c = codes.find((x) => x.id === codeId)
+    if (!c) return [404, { ok: false, error: "no such code" }]
+    c.disabled = true
+    await this.state.storage.put("c:" + c.hash, c)
+    const tokens = await this.listPrefix("t:")
+    let uc
+    const affected = []
+    do {
+      const page = await this.state.storage.list({ prefix: "u:", cursor: uc })
+      for (const [, u] of page) if (u?.createdByCode === codeId) affected.push(u.id)
+      uc = page.list_complete ? undefined : page.cursor
+    } while (uc)
+    let revoked = 0
+    let frozen = 0
+    for (const uid of affected) {
+      for (const t of tokens.filter((x) => x.userId === uid && !x.revokedAt)) {
+        t.revokedAt = Date.now()
+        await this.state.storage.put("t:" + t.hash, t)
+        revoked++
+      }
+      if (await this.freezeIfNoValidTokens(uid)) frozen++
+    }
+    console.log("[authdo] code-lineage revoke", codeId, `(${affected.length} users, ${revoked} tokens)`)
+    return [200, { ok: true, users: affected.length, revoked, frozen, codeDisabled: true }]
+  }
+
+  /** Bulk op: freeze every share a specific token created (scoped or
+   * full) without touching the rest of the owner's shares. Rides the
+   * chunked set-frozen fan-out. Rotation never lands here. */
+  async freezeByToken(tokenId, body) {
+    const frozen = body?.frozen === false ? false : true
+    let uc
+    const targets = []
+    do {
+      const page = await this.state.storage.list({ prefix: "uShares:", cursor: uc })
+      for (const [, reg] of page) {
+        if (!Array.isArray(reg)) continue
+        for (const s of reg) if (s.creatorTokenId === tokenId) targets.push(s.id)
+      }
+      uc = page.list_complete ? undefined : page.cursor
+    } while (uc)
+    if (!targets.length) return [404, { ok: false, error: "no shares created by that token" }]
+    const first = targets.slice(0, 35)
+    const rest = targets.slice(35)
+    for (const id of first) {
+      try {
+        await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-frozen", {
+          method: "POST", body: JSON.stringify({ frozen }),
+        })
+      } catch {}
+    }
+    if (rest.length) {
+      const q = (await this.state.storage.get("fanoutQueue")) ?? []
+      q.push({ action: "set-frozen", frozen, shareIds: rest })
+      await this.state.storage.put("fanoutQueue", q)
+      const cur = await this.state.storage.getAlarm()
+      if (cur === null || cur > Date.now() + 60 * 1000) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+    }
+    console.log("[authdo] freeze-by-token", tokenId, `(${targets.length} shares${rest.length ? `, ${rest.length} queued` : ""})`)
+    return [200, { ok: true, shares: targets.length, queued: rest.length }]
   }
 
   async reassign(shareId, body) {

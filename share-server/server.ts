@@ -133,11 +133,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT N
 try { db.exec("ALTER TABLE items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0") } catch {}
 try { db.exec("ALTER TABLE items ADD COLUMN del INTEGER NOT NULL DEFAULT 0") } catch {}
 try { db.exec("ALTER TABLE shares ADD COLUMN custom TEXT NOT NULL DEFAULT '{}'") } catch {}
-db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}')`)
-db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0)`)
+db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}', createdByCode TEXT)`)
+db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'full')`)
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS rate (ip TEXT PRIMARY KEY, n INTEGER NOT NULL, resetAt INTEGER NOT NULL)`)
 db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT NULL)`)
+// pre-existing databases: the 2a columns (after ALL creates - an ALTER
+// before its CREATE is swallowed by the catch on fresh DBs, leaving the
+// column missing; live-caught by the tui-flow F15 codeless enroll)
+try { db.exec("ALTER TABLE shares ADD COLUMN creatorTokenId TEXT") } catch {}
+try { db.exec("ALTER TABLE tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'") } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN createdByCode TEXT") } catch {}
 
 type ShareRow = {
   id: string; secret: string; sessionID: string; ttlDays: number; createdAt: number; lastActive: number
@@ -151,7 +157,7 @@ const q = {
 
 // --- identity ----------------------------------------------------------------
 
-type TokenRow = { id: string; hash: string; userId: string; label: string; limits: string; createdAt: number; lastUsedAt: number; revokedAt: number; expiresAt: number }
+type TokenRow = { id: string; hash: string; userId: string; label: string; limits: string; createdAt: number; lastUsedAt: number; revokedAt: number; expiresAt: number; kind?: string }
 
 function defaultLimits() {
   const num = (v: unknown) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0 }
@@ -170,6 +176,12 @@ function normLimits(input: unknown) {
   return { maxLiveShares: one(i.maxLiveShares, d.maxLiveShares), maxTtlDays: one(i.maxTtlDays, d.maxTtlDays), dailyCreates: one(i.dailyCreates, d.dailyCreates) }
 }
 
+/** Public servers may accept onboarding without a code only when
+ * explicitly enabled (default OFF - worker parity). */
+function codelessOnboarding(): boolean {
+  return /^(1|true|yes|on)$/i.test(String(process.env.CODELESS_ONBOARDING ?? "").trim())
+}
+
 async function checkToken(token: string): Promise<{ kind: "none" | "root" } | { kind: "user"; token: TokenRow; userId: string }> {
   if (!token) return { kind: "none" }
   if (CREATE_TOKEN && token === CREATE_TOKEN) return { kind: "root" }
@@ -178,7 +190,9 @@ async function checkToken(token: string): Promise<{ kind: "none" | "root" } | { 
   const user = db.query("SELECT * FROM users WHERE id = ?").get(row.userId) as { frozen: number } | undefined
   if (!user || user.frozen) return { kind: "none" }
   if (Date.now() - row.lastUsedAt > 60000) db.query("UPDATE tokens SET lastUsedAt = ? WHERE id = ?").run(Date.now(), row.id)
-  return { kind: "user", token: row, userId: row.userId }
+  // tokenKind (full|scoped) rides every identity: the write gate lets a
+  // SCOPED token touch only the shares it created (worker parity)
+  return { kind: "user", token: row, userId: row.userId, tokenId: row.id, tokenKind: row.kind === "scoped" ? "scoped" : "full" }
 }
 
 async function createCheck(token: string): Promise<{ ok: true; userId?: string; ttlMaxDays?: number; defaultTtlDays?: number } | { ok: false; error: string; httpStatus: number }> {
@@ -201,7 +215,9 @@ async function createCheck(token: string): Promise<{ ok: true; userId?: string; 
   }
   const limits = JSON.parse(chk.token.limits) as { maxLiveShares: number; maxTtlDays: number; dailyCreates: number }
   if (limits.maxLiveShares > 0) {
-    const n = db.query("SELECT COUNT(*) c FROM shares WHERE ownerId = ?").get(chk.userId) as { c: number }
+    // SCOPED tokens count only their own shares (worker parity)
+    const scoped = chk.token.kind === "scoped"
+    const n = db.query(scoped ? "SELECT COUNT(*) c FROM shares WHERE ownerId = ? AND creatorTokenId = ?" : "SELECT COUNT(*) c FROM shares WHERE ownerId = ?", ...(scoped ? [chk.userId, chk.token.id] : [chk.userId])) as { c: number }
     if (n.c >= limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
   }
   if (limits.dailyCreates > 0) {
@@ -212,15 +228,15 @@ async function createCheck(token: string): Promise<{ ok: true; userId?: string; 
   }
   const u = db.query("SELECT settings FROM users WHERE id = ?").get(chk.userId) as { settings: string } | undefined
   const defaultTtlDays = Number(JSON.parse(u?.settings ?? "{}").defaultTtlDays) || 0
-  return { ok: true, userId: chk.userId, ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays }
+  return { ok: true, userId: chk.userId, tokenId: chk.token.id, tokenKind: chk.token.kind === "scoped" ? "scoped" : "full", ttlMaxDays: limits.maxTtlDays || 0, defaultTtlDays }
 }
 
-async function mint(userId: string, label: string, limits: unknown): Promise<{ value: string; id: string }> {
+async function mint(userId: string, label: string, limits: unknown, kind: "full" | "scoped" = "full"): Promise<{ value: string; id: string; kind: string }> {
   const value = "osk_" + randomId() + randomId()
   const hash = await sha256hex(value)
   const id = "t_" + randomId().slice(0, 10)
-  db.query("INSERT INTO tokens (id, hash, userId, label, limits, createdAt) VALUES (?, ?, ?, ?, ?, ?)").run(id, hash, userId, String(label ?? "").slice(0, 64), JSON.stringify(normLimits(limits)), Date.now())
-  return { value, id }
+  db.query("INSERT INTO tokens (id, hash, userId, label, limits, createdAt, kind) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, hash, userId, String(label ?? "").slice(0, 64), JSON.stringify(normLimits(limits)), Date.now(), kind)
+  return { value, id, kind }
 }
 
 // --- share ops -----------------------------------------------------------------
@@ -233,12 +249,12 @@ function makeAuth(login: string, password: string) {
   })
 }
 
-function createShare(sessionID: string, ttlDays: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}): { id: string; secret: string } {
+function createShare(sessionID: string, ttlDays: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null): { id: string; secret: string } {
   const id = randomId()
   const secret = randomId() + randomId()
   const auth = authLogin && authPassword ? JSON.stringify({ salt: "", loginHash: "", passHash: "" }) : null
-  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?)")
-    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom))
+  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom, creatorTokenId) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?, ?)")
+    .run(id, secret, sessionID, ttlDays, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom), creatorTokenId)
   if (authLogin && authPassword) {
     // hash asynchronously then persist (the synchronous insert keeps the
     // response fast; the gate materializes a moment later)
@@ -266,10 +282,15 @@ function normCustom(raw: unknown): Record<string, string> {
 
 /** Write gate parity: owner token (ownerId resolved server-side), root, or
  * the per-share secret — while the owner is in good standing. */
-function writeGate(share: ShareRow, body: { secret?: string; ownerId?: string | null; root?: boolean }): "" | "forbidden" | "frozen" {
+function writeGate(share: ShareRow, body: { secret?: string; ownerId?: string | null; root?: boolean; tokenId?: string | null; tokenKind?: string | null }): "" | "forbidden" | "frozen" {
   if (body.root === true) return ""
   if (body.secret && body.secret === share.secret) return share.frozen ? "frozen" : ""
-  if (body.ownerId && share.ownerId && body.ownerId === share.ownerId) return share.frozen ? "frozen" : ""
+  if (body.ownerId && share.ownerId && body.ownerId === share.ownerId) {
+    if (share.frozen) return "frozen"
+    // SCOPED tokens reach only the shares they created (worker parity)
+    if (body.tokenKind === "scoped") return body.tokenId && body.tokenId === share.creatorTokenId ? "" : "forbidden"
+    return ""
+  }
   return "forbidden"
 }
 
@@ -308,7 +329,7 @@ function fitItem<T>(it: T): T {
   return clone as T
 }
 
-function applySync(shareId: string, body: { secret?: string; ownerId?: string | null; root?: boolean; data?: unknown[]; status?: string }): { status: number; body: Record<string, unknown> } {
+function applySync(shareId: string, body: { secret?: string; ownerId?: string | null; root?: boolean; tokenId?: string | null; tokenKind?: string | null; data?: unknown[]; status?: string }): { status: number; body: Record<string, unknown> } {
   const share = q.share(shareId)
   if (!share) return { status: 404, body: { ok: false, error: "share not found" } }
   const gate = writeGate(share, body)
@@ -465,6 +486,7 @@ async function httpHandler(req: Request): Promise<Response> {
   if (path === "/api/me/settings" && (req.method === "GET" || req.method === "PUT")) return settingsRoute(bearer(req), await bodyJson(req))
   if (path === "/api/me/shares" && req.method === "GET") return meSharesRoute(bearer(req))
   if (path === "/api/token/rotate" && req.method === "POST") return rotateRoute(bearer(req))
+  if (path === "/api/token" && req.method === "POST") return tokenSelfMintRoute(await bodyJson(req), bearer(req))
   if (path === "/api/token" && req.method === "DELETE") return tokenDeleteRoute(bearer(req))
 
   // admin (root only)
@@ -514,7 +536,7 @@ async function httpHandler(req: Request): Promise<Response> {
     const body = await bodyJson(req, 8_000_000)
     if (body._tooLarge) return json(413, { error: "payload too large" })
     const ident = await resolveIdentity(req, body)
-    const r = applySync(id, { ...body, ownerId: ident.ownerId, root: ident.root })
+    const r = applySync(id, { ...body, ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind })
     return json(r.status, r.body)
   }
   if (req.method === "GET" && op === "/data") {
@@ -549,7 +571,7 @@ async function httpHandler(req: Request): Promise<Response> {
     // reached writeGate and {"root":true} deleted any share by id).
     // Resolve identity from the bearer like every other write path.
     const ident = await resolveIdentity(req, body)
-    const gate = writeGate(share, { secret: body.secret, ownerId: ident.ownerId, root: ident.root })
+    const gate = writeGate(share, { secret: body.secret, ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind })
     if (gate) return json(403, { ok: false, error: gate })
     removeShare(id)
     return json(200, { ok: true })
@@ -563,14 +585,16 @@ async function resolveIdentity(req: Request, body: { secret?: string }): Promise
   if (!token) return { ownerId: null, root: false }
   if (CREATE_TOKEN && token === CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await checkToken(token)
-  return chk.kind === "user" ? { ownerId: chk.userId, root: false } : { ownerId: null, root: false }
+  return chk.kind === "user"
+    ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind }
+    : { ownerId: null, root: false }
 }
 
-async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number, ownerDefault = 0): Promise<Response> {
+async function httpCreate(body: Record<string, unknown>, ownerId: string | null, ttlMax: number, ownerDefault = 0, tokenId: string | null = null): Promise<Response> {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
   // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
   const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), ttlMax)
-  const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta))
+  const { id, secret } = createShare(body.sessionID, ttlDays, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
   return json(200, { ok: true, id, secret, ttlDays })
 }
 
@@ -625,8 +649,10 @@ async function enrollRoute(body: Record<string, unknown>, req: Request): Promise
     if (!codeRow || codeRow.disabled || (codeRow.expiresAt && codeRow.expiresAt < now) || (codeRow.activationsLeft !== -1 && codeRow.activationsLeft <= 0)) {
       return json(403, { ok: false, error: "invalid code" })
     }
-  } else if (authMode() !== "public") {
-    return json(403, { ok: false, error: "code required" })
+  } else if (authMode() !== "public" || !codelessOnboarding()) {
+    // codeless onboarding is an explicit opt-in even on public servers
+    // (default OFF): anonymous creating stays open, ACCOUNTS need a code
+    return json(403, { ok: false, error: authMode() === "public" ? "code required (codeless onboarding disabled)" : "code required" })
   }
   if (!codeRow) {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local"
@@ -653,9 +679,9 @@ async function enrollRoute(body: Record<string, unknown>, req: Request): Promise
   }
   const label = String(body.label ?? "").trim().slice(0, 64) || (codeRow ? `${codeRow.label || "invite"}-${codeRow.used + 1}` : "user-" + randomId().slice(0, 4))
   const userId = "u_" + randomId().slice(0, 10)
-  db.query("INSERT INTO users (id, label, createdAt) VALUES (?, ?, ?)").run(userId, label, now)
+  db.query("INSERT INTO users (id, label, createdAt, createdByCode) VALUES (?, ?, ?, ?)").run(userId, label, now, codeRow?.id ?? null)
   const token = await mint(userId, label, defaultLimits())
-  console.log(`[auth] enrolled ${userId} ${label}${codeRow ? " via code" : " anonymous"}`)
+  console.log(`[auth] enrolled ${userId} ${label}${codeRow ? " via code" : " codeless"}`)
   return json(200, { ok: true, token: token.value, userId, label })
 }
 
@@ -670,6 +696,7 @@ async function meRoute(token: string): Promise<Response> {
 async function settingsRoute(token: string, patch: Record<string, unknown>): Promise<Response> {
   const chk = await checkToken(token)
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+  if (chk.tokenKind === "scoped") return json(403, { ok: false, error: "scoped tokens cannot edit settings" })
   const user = db.query("SELECT * FROM users WHERE id = ?").get(chk.userId) as { settings: string }
   const next = JSON.parse(user.settings) as Record<string, unknown>
   if (patch.defaultTtlDays !== undefined) {
@@ -683,7 +710,10 @@ async function settingsRoute(token: string, patch: Record<string, unknown>): Pro
 async function meSharesRoute(token: string): Promise<Response> {
   const chk = await checkToken(token)
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
-  const rows = db.query("SELECT id, sessionID, createdAt, status FROM shares WHERE ownerId = ?").all(chk.userId) as Array<{ id: string; sessionID: string; createdAt: number; status: string }>
+  // scoped tokens see ONLY the shares they created (worker parity)
+  const rows = (chk.tokenKind === "scoped"
+    ? db.query("SELECT id, sessionID, createdAt, status FROM shares WHERE ownerId = ? AND creatorTokenId = ?").all(chk.userId, chk.tokenId)
+    : db.query("SELECT id, sessionID, createdAt, status FROM shares WHERE ownerId = ?").all(chk.userId)) as Array<{ id: string; sessionID: string; createdAt: number; status: string }>
   return json(200, { ok: true, shares: rows })
 }
 
@@ -691,8 +721,23 @@ async function rotateRoute(token: string): Promise<Response> {
   const chk = await checkToken(token)
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
   db.query("UPDATE tokens SET revokedAt = ? WHERE id = ?").run(Date.now(), chk.token.id)
-  const fresh = await mint(chk.userId, chk.token.label, JSON.parse(chk.token.limits))
-  return json(200, { ok: true, token: fresh.value, userId: chk.userId })
+  // successor keeps the class (rotating scoped yields scoped); a scoped
+  // rotation TRANSFERS its shares to the successor, or rotation would
+  // orphan the very pages it created (creatorTokenId is the scope key)
+  const fresh = await mint(chk.userId, chk.token.label, JSON.parse(chk.token.limits), chk.token.kind === "scoped" ? "scoped" : "full")
+  if (chk.token.kind === "scoped") db.query("UPDATE shares SET creatorTokenId = ? WHERE creatorTokenId = ?").run(fresh.id, chk.token.id)
+  return json(200, { ok: true, token: fresh.value, userId: chk.userId, tokenKind: fresh.kind })
+}
+
+/** Self-service mint (worker parity): only FULL tokens may mint; scoped
+ * mint target is the point - CI/agent credentials without authority. */
+async function tokenSelfMintRoute(body: Record<string, unknown>, token: string): Promise<Response> {
+  const chk = await checkToken(token)
+  if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+  if (chk.tokenKind === "scoped") return json(403, { ok: false, error: "scoped tokens cannot mint tokens" })
+  const kind = body.kind === "scoped" ? "scoped" : "full"
+  const t = await mint(chk.userId, String(body.label ?? ""), body.limits, kind)
+  return json(200, { ok: true, token: t.value, id: t.id, userId: chk.userId, kind })
 }
 
 async function tokenDeleteRoute(token: string): Promise<Response> {
@@ -709,7 +754,8 @@ async function tokenDeleteRoute(token: string): Promise<Response> {
  * never touched. Rotation never lands here (replacement minted first). */
 function freezeIfNoValidTokens(userId: string): boolean {
   const now = Date.now()
-  const alive = (db.query("SELECT id FROM tokens WHERE userId = ? AND revokedAt = 0 AND (expiresAt = 0 OR expiresAt > ?)").all(userId, now) as unknown[]).length
+  // only FULL tokens keep the account alive (worker parity)
+  const alive = (db.query("SELECT id FROM tokens WHERE userId = ? AND kind != 'scoped' AND revokedAt = 0 AND (expiresAt = 0 OR expiresAt > ?)").all(userId, now) as unknown[]).length
   if (alive) return false
   const n = db.query("UPDATE shares SET frozen = 1 WHERE ownerId = ? AND frozen = 0").run(userId).changes
   if (n > 0) {
@@ -768,12 +814,42 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
   if (path === "/api/admin/tokens" && req.method === "POST") {
     const user = db.query("SELECT id FROM users WHERE id = ?").get(String(body.userId ?? ""))
     if (!user) return json(404, { ok: false, error: "no such user" })
-    const t = await mint(String(body.userId), String(body.label ?? ""), body.limits)
-    return json(200, { ok: true, token: t.value, id: t.id, userId: body.userId })
+    const t = await mint(String(body.userId), String(body.label ?? ""), body.limits, body.kind === "scoped" ? "scoped" : "full")
+    return json(200, { ok: true, token: t.value, id: t.id, userId: body.userId, kind: t.kind })
   }
   if (path === "/api/admin/tokens" && req.method === "GET") {
     const tokens = db.query("SELECT * FROM tokens").all() as TokenRow[]
     return json(200, { ok: true, tokens: tokens.map((t) => ({ id: t.id, userId: t.userId, label: t.label, limits: JSON.parse(t.limits), createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt, revoked: !!t.revokedAt })) })
+  }
+  // code-lineage kill-switch: revoke every token of every user this
+  // code onboarded (freezing each per the no-full-token rule)
+  m = path.match(/^\/api\/admin\/codes\/([^/]+)\/revoke-lineage$/)
+  if (m && req.method === "POST") {
+    const codeId = m[1]
+    const res = db.query("UPDATE codes SET disabled = 1 WHERE id = ?").run(codeId)
+    if (!res.changes) return json(404, { ok: false, error: "no such code" })
+    const users = db.query("SELECT id FROM users WHERE createdByCode = ?").all(codeId) as Array<{ id: string }>
+    let revoked = 0
+    let frozen = 0
+    for (const u of users) {
+      const r = db.query("UPDATE tokens SET revokedAt = ? WHERE userId = ? AND revokedAt = 0").run(Date.now(), u.id)
+      revoked += r.changes ?? 0
+      if (freezeIfNoValidTokens(u.id)) frozen++
+    }
+    return json(200, { ok: true, users: users.length, revoked, frozen, codeDisabled: true })
+  }
+  // bulk op: freeze every share a specific token created
+  m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/freeze-shares$/)
+  if (m && req.method === "POST") {
+    const tokenId = m[1]
+    const frozen = body.frozen === false ? 0 : 1
+    const rows = db.query("SELECT id FROM shares WHERE creatorTokenId = ?").all(tokenId) as Array<{ id: string }>
+    if (!rows.length) return json(404, { ok: false, error: "no shares created by that token" })
+    for (const r of rows) {
+      db.query("UPDATE shares SET frozen = ? WHERE id = ?").run(frozen, r.id)
+      broadcast(r.id, { op: "frame", status: "frozen", rev: (q.share(r.id)?.rev ?? 0) + 1, items: [] })
+    }
+    return json(200, { ok: true, shares: rows.length })
   }
   m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
   if (m && req.method === "DELETE") {
@@ -935,6 +1011,8 @@ type ControlData = {
   attachSecret?: string
   attachOwner?: string | null
   attachRoot?: boolean
+  attachTokenId?: string | null
+  attachTokenKind?: string | null
   earlySyncs: Frame[]
 }
 type ViewerData = { kind: "viewer"; shareId: string; since?: string; delta?: string }
@@ -961,13 +1039,15 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
         // explicit ttlDays wins; otherwise the owner's stored default, re-clamped
         const ttlDays = clampTtl((frame.create as Record<string, unknown>).ttlDays ?? (chk.defaultTtlDays || undefined), chk.ttlMaxDays ?? 0)
-        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta))
+        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlDays, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)
         data.attachId = id
         data.attachSecret = secret
         data.attachOwner = chk.userId ?? null
+        data.attachTokenId = chk.tokenId ?? null
+        data.attachTokenKind = chk.tokenKind ?? null
         for (const early of data.earlySyncs) {
           // WS sync frames carry `items`; the HTTP apply path takes `data`
-          const r = applySync(id, { secret, ownerId: data.attachOwner, root: false, data: early.items ?? [], status: early.status })
+          const r = applySync(id, { secret, ownerId: data.attachOwner, root: false, tokenId: data.attachTokenId, tokenKind: data.attachTokenKind, data: early.items ?? [], status: early.status })
           send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: (early as Frame).seq })
         }
         data.earlySyncs = []
@@ -981,12 +1061,16 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         const chk = await checkToken(data.token)
         const ownerId = chk.kind === "user" ? chk.userId : null
         const root = chk.kind === "root"
-        const gate = writeGate(share, { secret: (frame.attach as Record<string, unknown>).secret, ownerId, root })
+        const tokenId = chk.kind === "user" ? chk.tokenId : null
+        const tokenKind = chk.kind === "user" ? chk.tokenKind : null
+        const gate = writeGate(share, { secret: (frame.attach as Record<string, unknown>).secret, ownerId, root, tokenId, tokenKind })
         if (gate) return send({ op: "init", ok: false, error: gate })
         data.attachId = share.id
         data.attachSecret = String((frame.attach as Record<string, unknown>).secret ?? "")
         data.attachOwner = ownerId
         data.attachRoot = root
+        data.attachTokenId = tokenId
+        data.attachTokenKind = tokenKind
         // attach = the plugin is actively here: cancel finalize, note the
         // contact, and keep TTL from expiring under a live-but-quiet session
         db.query("UPDATE shares SET pluginSeen = ?, lastActive = ?, finalizeAt = NULL WHERE id = ?").run(Date.now(), Date.now(), share.id)
@@ -1017,18 +1101,15 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         // sweeper deadline (worker parity)
         const attachTtlRaw = Number(attach.ttlDays)
         if (attach.ttlDays !== undefined && Number.isFinite(attachTtlRaw) && attachTtlRaw > 0) {
-          let ttlMax = 0
-          try {
-            const capChk = await createCheck(data.token)
-            ttlMax = capChk.ttlMaxDays ?? 0
-          } catch {}
-          const ttlDays = clampTtl(attachTtlRaw, ttlMax)
+          // chk (from /check) already carries the token's maxTtlDays - a
+          // create-check here would burn a daily-create slot
+          const ttlDays = clampTtl(attachTtlRaw, chk.kind === "user" ? (JSON.parse(chk.token.limits).maxTtlDays || 0) : 0)
           db.query("UPDATE shares SET ttlDays = ? WHERE id = ?").run(ttlDays, share.id)
           console.log("[attach] ttl updated to", ttlDays, "days")
         }
         const updated = q.share(share.id)!
         for (const early of data.earlySyncs) {
-          const r = applySync(share.id, { secret: data.attachSecret, ownerId, root, data: early.items ?? [], status: early.status })
+          const r = applySync(share.id, { secret: data.attachSecret, ownerId, root, tokenId: data.attachTokenId, tokenKind: data.attachTokenKind, data: early.items ?? [], status: early.status })
           send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: (early as Frame).seq })
         }
         data.earlySyncs = []
@@ -1051,14 +1132,14 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         return
       }
       // WS sync frames carry `items`; the HTTP apply path takes `data`
-      const r = applySync(data.attachId, { secret: data.attachSecret, ownerId: data.attachOwner, root: data.attachRoot, data: frame.items ?? [], status: frame.status })
+      const r = applySync(data.attachId, { secret: data.attachSecret, ownerId: data.attachOwner, root: data.attachRoot, tokenId: data.attachTokenId, tokenKind: data.attachTokenKind, data: frame.items ?? [], status: frame.status })
       // echo the client frame seq: the plugin clears pending per-chunk
       return send({ op: r.body.ok ? "ack" : "nack", ...r.body, seq: frame.seq })
     }
     if (frame.op === "delete" && data.attachId) {
       const share = q.share(data.attachId)
       if (share) {
-        const gate = writeGate(share, { secret: data.attachSecret, ownerId: data.attachOwner, root: data.attachRoot })
+        const gate = writeGate(share, { secret: data.attachSecret, ownerId: data.attachOwner, root: data.attachRoot, tokenId: data.attachTokenId, tokenKind: data.attachTokenKind })
         if (!gate) removeShare(data.attachId)
       }
       data.attachId = undefined

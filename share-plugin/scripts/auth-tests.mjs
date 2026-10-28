@@ -23,6 +23,7 @@ import {
 const BACKEND = process.env.OPENSHARE_BACKEND === "bun" || process.argv.includes("bun") ? "bun" : "wrangler"
 const B1_PORT = BACKEND === "bun" ? 8795 : WORKER_PORT
 const B2_PORT = B1_PORT + 10
+const B3_PORT = B1_PORT + 20
 const startBackend = (suiteDir, opts = {}) =>
   BACKEND === "bun" ? startBunServer(suiteDir, { ...opts, port: opts.port ?? B1_PORT }) : startWorker(suiteDir, opts)
 
@@ -104,6 +105,7 @@ const CREATE = "/api/share/00"
 const suiteDir = mkdtempSync(join(tmpdir(), "openshare-auth-"))
 let worker1
 let worker2
+let worker3
 
 try {
   console.log(`[${SUITE}] starting private-mode worker…`)
@@ -492,16 +494,121 @@ try {
   const meShares2 = (await req(W1, "GET", "/api/me/shares", { token: A2 })).json?.shares ?? []
   ok("T19c registry moved", meShares2.some((s) => s.id === u4share.json.id))
 
-  // T20 — public mode worker: open enrollment + anonymous creates
+  // T30 — token classes: FULL mints SCOPED; scoped creates/touches ONLY
+  // its own shares; scoped cannot mint or edit settings; scoped self-
+  // rotate stays scoped; scoped listing shows only its shares
+  {
+    const u5 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "token-classes" } })
+    const full = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u5.json?.userId } })
+    const FULL = full.json?.token
+    ok("T30 full token minted", typeof FULL === "string", JSON.stringify(full.json))
+    // full creates share A
+    const shareA = await req(W1, "POST", CREATE, { token: FULL, body: { sessionID: "ses_t30a" } })
+    ok("T30a full creates share A", shareA.json?.ok === true, JSON.stringify(shareA.json))
+    // full self-mints a scoped token
+    const scopedMint = await req(W1, "POST", "/api/token", { token: FULL, body: { kind: "scoped", label: "ci" } })
+    const SCOPED = scopedMint.json?.token
+    ok("T30b full self-mints scoped", scopedMint.json?.ok === true && scopedMint.json?.kind === "scoped", JSON.stringify(scopedMint.json))
+    // scoped creates share B (allowed within limits)
+    const shareB = await req(W1, "POST", CREATE, { token: SCOPED, body: { sessionID: "ses_t30b" } })
+    ok("T30c scoped creates its own share", shareB.json?.ok === true, JSON.stringify(shareB.json))
+    // scoped CANNOT sync share A (created by the full token)
+    const touchA = await req(W1, "POST", `/api/share/${shareA.json?.id}/sync`, { token: SCOPED, body: { data: [{ type: "message", data: { id: "msg_x", role: "user" } }] } })
+    ok("T30d scoped cannot touch the full token's share", touchA.json?.ok === false, JSON.stringify(touchA.json))
+    // scoped CAN sync its own share B
+    const touchB = await req(W1, "POST", `/api/share/${shareB.json?.id}/sync`, { token: SCOPED, body: { data: [{ type: "message", data: { id: "msg_y", role: "user" } }] } })
+    ok("T30e scoped syncs its own share", touchB.json?.ok === true, JSON.stringify(touchB.json))
+    // scoped cannot mint
+    const scopedMint2 = await req(W1, "POST", "/api/token", { token: SCOPED, body: { kind: "scoped" } })
+    ok("T30f scoped cannot mint", scopedMint2.status === 403, JSON.stringify(scopedMint2.json))
+    // scoped cannot edit user settings
+    const scopedSet = await req(W1, "PUT", "/api/me/settings", { token: SCOPED, body: { defaultTtlDays: 5 } })
+    ok("T30g scoped cannot edit settings", scopedSet.status === 403, JSON.stringify(scopedSet.json))
+    // scoped listing shows ONLY share B
+    const scopedList = await req(W1, "GET", "/api/me/shares", { token: SCOPED })
+    const ids = (scopedList.json?.shares ?? []).map((s) => s.id)
+    ok("T30h scoped lists only its shares", ids.includes(shareB.json?.id) && !ids.includes(shareA.json?.id), JSON.stringify(ids))
+    // scoped self-rotate stays scoped, and the successor still reaches B
+    const rot = await req(W1, "POST", "/api/token/rotate", { token: SCOPED })
+    ok("T30i scoped rotation stays scoped", rot.json?.ok === true && rot.json?.tokenKind === "scoped", JSON.stringify(rot.json))
+    const touchB2 = await req(W1, "POST", `/api/share/${shareB.json?.id}/sync`, { token: rot.json?.token, body: { data: [{ type: "message", data: { id: "msg_z", role: "user" } }] } })
+    ok("T30j rotated scoped still reaches its share", touchB2.json?.ok === true, JSON.stringify(touchB2.json))
+    // T31 — revoking the LAST full token freezes everything INCLUDING
+    // scoped shares (scoped never keeps the account alive)
+    const scopedRow = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const fullId = scopedRow.find((t) => t.userId === u5.json?.userId && t.kind === "full" && !t.revoked)?.id
+    const revFull = await req(W1, "DELETE", `/api/admin/tokens/${fullId}`, { token: CREATE_TOKEN })
+    ok("T31 last full revoked -> frozen", revFull.json?.ok === true && revFull.json?.frozen === true, JSON.stringify(revFull.json))
+    const afterFreeze = await req(W1, "POST", `/api/share/${shareB.json?.id}/sync`, { token: rot.json?.token, body: { data: [] } })
+    ok("T31b scoped path severed too", afterFreeze.json?.ok === false, JSON.stringify(afterFreeze.json))
+    const viewStill = await req(W1, "GET", `/api/share/${shareB.json?.id}/data`)
+    ok("T31c viewing untouched", viewStill.status === 200, String(viewStill.status))
+    await req(W1, "DELETE", `/api/share/${shareB.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/share/${shareA.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T32 — freeze-by-token bulk op: freezes only the shares one token
+  // created, leaving the owner's other shares writable
+  {
+    const u6 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "bulk" } })
+    const t6full = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u6.json?.userId } })
+    const T6FULL = t6full.json?.token
+    const s6own = await req(W1, "POST", CREATE, { token: T6FULL, body: { sessionID: "ses_t32own" } })
+    const t6scoped = await req(W1, "POST", "/api/token", { token: T6FULL, body: { kind: "scoped", label: "ci2" } })
+    const T6SCOPED = t6scoped.json?.token
+    const s6ci = await req(W1, "POST", CREATE, { token: T6SCOPED, body: { sessionID: "ses_t32ci" } })
+    // find the scoped token's row id for the bulk op
+    const rows6 = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const scopedId6 = rows6.find((t) => t.userId === u6.json?.userId && t.kind === "scoped" && !t.revoked)?.id
+    const bulk = await req(W1, "POST", `/api/admin/tokens/${scopedId6}/freeze-shares`, { token: CREATE_TOKEN, body: {} })
+    ok("T32 freeze-by-token froze the scoped shares", bulk.json?.ok === true && bulk.json?.shares === 1, JSON.stringify(bulk.json))
+    const ciTouch = await req(W1, "POST", `/api/share/${s6ci.json?.id}/sync`, { token: T6SCOPED, body: { data: [] } })
+    ok("T32a frozen CI share refuses writes", ciTouch.json?.ok === false, JSON.stringify(ciTouch.json))
+    const ownTouch = await req(W1, "POST", `/api/share/${s6own.json?.id}/sync`, { token: T6FULL, body: { data: [{ type: "message", data: { id: "msg_t32", role: "user" } }] } })
+    ok("T32b owner's other share untouched", ownTouch.json?.ok === true, JSON.stringify(ownTouch.json))
+    await req(W1, "DELETE", `/api/share/${s6ci.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/share/${s6own.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T33 — code-lineage revoke: one call kills every token of every user
+  // the code onboarded and freezes their shares
+  {
+    const linCode = await req(W1, "POST", "/api/admin/codes", { token: CREATE_TOKEN, body: { label: "lineage", activations: 2 } })
+    const e1 = await req(W1, "POST", "/api/enroll", { body: { code: linCode.json?.code, label: "lin-1" } })
+    const e1share = await req(W1, "POST", CREATE, { token: e1.json?.token, body: { sessionID: "ses_t33" } })
+    ok("T33 lineage user enrolled + shared", e1.json?.ok === true && e1share.json?.ok === true, JSON.stringify(e1.json))
+    const linRevoke = await req(W1, "POST", `/api/admin/codes/${linCode.json?.id}/revoke-lineage`, { token: CREATE_TOKEN, body: {} })
+    ok("T33a lineage revoke hit the user", linRevoke.json?.ok === true && linRevoke.json?.users === 1 && linRevoke.json?.revoked >= 1, JSON.stringify(linRevoke.json))
+    const deadTouch = await req(W1, "POST", `/api/share/${e1share.json?.id}/sync`, { token: e1.json?.token, body: { data: [] } })
+    ok("T33b lineage user's token dead", deadTouch.json?.ok === false, JSON.stringify(deadTouch.json))
+    // the code itself is disabled: no further onboarding from it
+    const e2 = await req(W1, "POST", "/api/enroll", { body: { code: linCode.json?.code } })
+    ok("T33c code disabled after lineage revoke", e2.json?.ok === false, JSON.stringify(e2.json))
+    await req(W1, "DELETE", `/api/share/${e1share.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T20 — public mode worker: codeless onboarding is OFF by default, so
+  // enrollment needs a code even on public; anonymous creates stay open
   console.log(`[${SUITE}] starting public-mode worker…`)
   worker2 = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public" }, authMode: "public" })
   const W2 = worker2.url
   const h2 = await req(W2, "GET", "/health")
   ok("T20 health auth.mode=public", h2.json?.auth?.mode === "public")
-  const pubEnroll = await req(W2, "POST", "/api/enroll", { body: {} })
-  ok("T20b open enrollment", pubEnroll.json?.ok === true && typeof pubEnroll.json?.token === "string")
+  const noCode = await req(W2, "POST", "/api/enroll", { body: {} })
+  ok("T20b codeless enrollment refused by default", noCode.status === 403 && /code required/.test(noCode.json?.error ?? ""), JSON.stringify(noCode.json))
+  // code path still onboards on a public server
+  const pubCode = await req(W2, "POST", "/api/admin/codes", { token: CREATE_TOKEN, body: { label: "pub", activations: 3 } })
+  const pubEnroll = await req(W2, "POST", "/api/enroll", { body: { code: pubCode.json?.code } })
+  ok("T20b2 code enrolls on public", pubEnroll.json?.ok === true && typeof pubEnroll.json?.token === "string", JSON.stringify(pubEnroll.json))
   ok("T20c anonymous ownerless create", (await req(W2, "POST", CREATE, { body: { sessionID: "ses_pubanon" } })).json?.ok === true)
   ok("T20d owned create with pub token", (await req(W2, "POST", CREATE, { token: pubEnroll.json?.token, body: { sessionID: "ses_pubuser" } })).json?.ok === true)
+
+  // T20e — codeless onboarding explicitly enabled: enroll without a code
+  // is allowed, on a separate instance (flag is per-deployment)
+  worker3 = await startBackend(suiteDir, { port: B3_PORT, configSuffix: "pub2", name: "b3", vars: { AUTH_MODE: "public", CODELESS_ONBOARDING: "1" }, authMode: "public" })
+  const W3 = worker3.url
+  const clEnroll = await req(W3, "POST", "/api/enroll", { body: { label: "codeless-one" } })
+  ok("T20e codeless onboarding when enabled", clEnroll.json?.ok === true && typeof clEnroll.json?.token === "string", JSON.stringify(clEnroll.json))
 } catch (e) {
   failed++
   failures.push(`suite crashed: ${e?.stack || e}`)
@@ -511,13 +618,16 @@ try {
 } finally {
   try { worker1?.kill() } catch {}
   try { worker2?.kill() } catch {}
+  try { worker3?.kill() } catch {}
   await waitFor(async () => false, "settle", 1500).catch(() => {})
   if (BACKEND === "wrangler") {
     killWranglerSuites(B1_PORT)
     killWranglerSuites(B2_PORT)
+    killWranglerSuites(B3_PORT)
   } else {
     killPortOwners(B1_PORT)
     killPortOwners(B2_PORT)
+    killPortOwners(B3_PORT)
   }
   try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
 }

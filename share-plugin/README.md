@@ -61,12 +61,20 @@ spec `"file:///…/openshare/share-plugin"` in both config files (run
 no build at all: [`ci/openshare.js`](ci/README.md), committed ready to
 use.
 
-**With no token the plugin enrolls itself** on first contact: public
-servers (hoster set `AUTH_MODE=public`) take anyone; private ones need
-a `code` from the hoster (activation-budgeted invite). The enrolled
-token persists to `~/.config/opencode/openshare.config.json` — enroll
-once per server, then it just works. A revoked token re-enrolls the
-same way (public/code available); if enrollment is impossible the
+**Identity is never assumed**: with no token configured the plugin does
+NOT silently enroll (owner directive). A configured `code` IS expressed
+intent — the engine enrolls with it headlessly (the CI shape). Without
+one: public servers share **anonymously** (ownerless shares under the
+server's global anonymous caps), private servers refuse with guidance.
+Onboarding happens through the ask-once TUI flow — `/share` first run
+or `/openshare` → Servers → Connect to a server offers "Onboard (get an
+account)" vs "Stay anonymous" (with the differences explained), detects
+whether a code is needed, and only then prompts for one; the outcome is
+remembered per server (token = onboarded, `anonymous` flag = declined,
+onboard later via the server menu's Enroll now). The enrolled token
+persists to `~/.config/opencode/openshare.config.json` — enroll once per
+server, then it just works. A revoked token re-enrolls the same way
+(code configured / codeless server); if enrollment is impossible the
 plugin says so on stderr and stops — no retry storms.
 
 ## Share modes

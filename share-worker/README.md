@@ -208,15 +208,18 @@ rest):
 - **Users** — anyone the hoster lets in. Full control of their OWN
   shares, tokens and settings; nothing else.
 
-**Enrollment** (`POST /api/enroll`): a **public** server (`AUTH_MODE =
-"public"`) issues a user token to anyone who knows the hostname
-(per-IP rate limit); a **private** server (default) additionally
-requires an **access code** (`osc_…`) minted by the admin with an
-activation budget — 1 for a personal invite, `-1` unlimited for a team
-code. Each activation burns one use and issues `osk_…`. Holding a valid
-token lets you rotate (`POST /api/token/rotate`) without a code,
-forever — tokens are long-lived by design (the OAuth-ish part without
-the refresh churn).
+**Enrollment** (`POST /api/enroll`): a code mints a user PLUS their
+first **full** token (one activation = one user). Private servers
+(default) require an **access code** (`osc_…`) minted by the admin
+with an activation budget — 1 for a personal invite, `-1` unlimited
+for a team code. Public servers also require a code unless
+`CODELESS_ONBOARDING` is enabled (default OFF — anonymous CREATING
+stays open on public regardless; the gate is about minting ACCOUNTS).
+Holders of any valid token mint more tokens without a code
+(`POST /api/token`, full tokens only). Holding a valid token lets you
+rotate (`POST /api/token/rotate`) without a code, forever — tokens
+are long-lived by design (the OAuth-ish part without the refresh
+churn).
 
 **Ownership**: every share records its owner. Control ops accept the
 owner's valid token **or** the per-share secret while the owner is in
@@ -226,17 +229,30 @@ until TTL) — the kill switch for leaked identities. Unfreeze and
 reassign-to-another-user are the admin rescue paths. Revoking a single
 token only invalidates that token.
 
+**Token classes** (both stay `osk_:` - the server knows the class):
+- **full** (default) - the account credential: creates, syncs any of
+  the owner's shares, mints/revokes tokens, edits settings. ONLY full
+  tokens keep the account alive.
+- **scoped** - a service credential (CI/agents), minted by a full
+  token (`POST /api/token {kind:"scoped"}`): creates within its own
+  limits, syncs/deletes/lists ONLY the shares it created (every share
+  stamps `creatorTokenId`), self-rotates (successor inherits the
+  scope), and nothing else. A scoped rotation TRANSFERS its shares to
+  the successor - rotation never orphans the pages it made.
+
 Per-token limits (enforced server-side at create): `maxLiveShares`,
 `maxTtlDays`, `dailyCreates` (0 = unlimited; defaults via
-`DEFAULT_*` vars). Default-limit knobs users may change themselves:
+`DEFAULT_*` vars; scoped tokens count only their own shares). Default-limit knobs users may change themselves:
 `GET`/`PUT /api/me/settings` — `defaultTtlDays` (clamped by the
 server; applied at create when the request omits `ttlDays`, the
 explicit value always wins).
 
 Self-service: `GET /api/me`, `GET /api/me/shares`,
-`GET`/`PUT /api/me/settings`, `POST /api/token/rotate`,
+`GET`/`PUT /api/me/settings` (full tokens only), `POST /api/token`
+(self-mint full/scoped; full tokens only), `POST /api/token/rotate`,
 `DELETE /api/token` (self-revoke). **Revocation freezes control**: when a
-user's last valid token is revoked (self or admin) — or they all expire —
+user's last valid FULL token is revoked (self or admin) — or they all
+expire —
 every share that user created turns read-only for EVERYONE holding its
 secret too (both write paths reject with `frozen`); viewing continues to
 TTL, and only the admin can unfreeze or reassign. Rotation never
@@ -251,10 +267,17 @@ Admin API (Bearer `CREATE_TOKEN`):
 - `POST /api/admin/users/:id/freeze` · `/unfreeze`
 - `DELETE /api/admin/users/:id {mode?}` — default freezes; `{"mode":
   "delete"}` also removes every share and token
-- `POST /api/admin/tokens {userId, label?, limits?}` · `GET
+- `POST /api/admin/tokens {userId, label?, limits?, kind?}` · `GET
   /api/admin/tokens` · `DELETE /api/admin/tokens/:id`
+  - `POST /api/admin/tokens/:id/freeze-shares` — bulk-freeze just the
+    shares that token created (scoped blast radius without touching the
+    owner's other shares; rotation never does this)
 - `POST /api/admin/codes {label, activations, ttlHours?}` · `GET
   /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
+  - `POST /api/admin/codes/:id/revoke-lineage` — kill switch: revokes
+    EVERY token of EVERY user that code onboarded (freezing each),
+    disables the code. Users record `createdByCode`.
+(dedup)  /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
 - `GET /api/admin/shares` (global, with ownerId; entries carry any
   `custom` labels the plugin stamped at create)
 - `POST /api/admin/shares/:id/reassign {userId}`

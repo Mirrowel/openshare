@@ -105,6 +105,8 @@ function normalizeServers(raw) {
       entry.adminToken = e.adminToken;
     if (e.active === true)
       entry.active = true;
+    if (e.anonymous === true)
+      entry.anonymous = true;
     out[url] = entry;
   }
   return Object.keys(out).length ? out : undefined;
@@ -753,32 +755,38 @@ function createEngine(deps) {
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS)
       return "";
     c.lastEnrollAt = Date.now();
-    try {
-      const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) });
-      const hb = h.ok ? await h.json().catch(() => null) : null;
-      const authMode2 = hb?.auth?.mode;
-      const code = target?.entry.code ?? "";
-      if (authMode2 === "public" || code) {
-        const r = await fetch(`${url}/api/enroll`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code }),
-          signal: AbortSignal.timeout(1e4)
-        });
-        const b = r.ok ? await r.json().catch(() => null) : null;
-        if (b?.ok && typeof b.token === "string") {
-          c.credential = b.token;
+    const code = target?.entry.code ?? "";
+    if (!code) {
+      try {
+        const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) });
+        const hb = h.ok ? await h.json().catch(() => null) : null;
+        if (hb?.auth?.mode === "public") {
           c.error = "";
-          const savedTo = saveServerToken(url, c.credential);
-          log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
-          return c.credential;
+          return "";
         }
-        c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
-      } else if (authMode2 === "private") {
-        c.error = "private server: add servers.{url}.code (or token) to enroll";
-      } else {
-        c.error = `server health unreachable (HTTP ${h.status})`;
+        c.error = "private server - onboard via /openshare (needs an access code)";
+      } catch (e) {
+        c.error = `server unreachable: ${e?.message || e}`;
       }
+      logError(`no credential for ${url}: ${c.error}`);
+      return "";
+    }
+    try {
+      const r = await fetch(`${url}/api/enroll`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code }),
+        signal: AbortSignal.timeout(1e4)
+      });
+      const b = r.ok ? await r.json().catch(() => null) : null;
+      if (b?.ok && typeof b.token === "string") {
+        c.credential = b.token;
+        c.error = "";
+        const savedTo = saveServerToken(url, c.credential);
+        log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
+        return c.credential;
+      }
+      c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
     } catch (e) {
       c.error = `enrollment failed: ${e?.message || e}`;
     }

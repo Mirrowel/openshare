@@ -57,7 +57,7 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **Live shares** — a running session streams to the server over one WebSocket per main session; open pages update in place.
 - **Backfill** — share a session mid-way (or after the fact) and the full history lands in the page: messages, parts, models, diff, subagent sessions. Including servers added *later*: joining a session mid-run mirrors its whole past.
 - **Multi-server fan-out** — one session can stream to several servers at once; switch the active set any time; per-session stop or leave-a-snapshot per server.
-- **Identity & enrollment** — the plugin enrolls itself: public servers take anyone who knows the host, private ones need an access code (activation-budgeted invites). Long-lived tokens, rotation, revocation, freeze — OAuth-ish without the refresh churn.
+- **Identity & enrollment** — accounts, not just tokens: full tokens (the account credential) and scoped tokens (CI/agent credentials that reach only their own shares), access codes that mint users with a one-call lineage kill-switch, and ask-once onboarding (onboard vs stay anonymous). Long-lived tokens, rotation, revocation, freeze — OAuth-ish without the refresh churn.
 - **Self-serve admin** — a full admin console *inside the TUI* (`/openshare → Servers → <server> → Admin panel`): users, freeze/delete, mint tokens, invite codes, shares, reassign, purge.
 - **Subagent pages** — child sessions (`parentID`) route into the parent's share as numbered sub-pages; task rows link to them.
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
@@ -166,7 +166,7 @@ curl -s http://127.0.0.1:8787/health
 
 ### 3. Decide who gets in
 
-- **Public** (`AUTH_MODE=public`): anyone knowing the hostname can enroll — fine for personal deployments behind a URL you keep to yourself. On the worker this is a `wrangler.toml` var (set `AUTH_MODE = "public"`, then redeploy); on the Bun server and Docker it's an env var at launch (`-e AUTH_MODE=public` for Docker). Same name, different mechanisms.
+- **Public** (`AUTH_MODE=public`): anyone knowing the hostname can create shares anonymously; enrolling an ACCOUNT needs an access code unless you also enable `CODELESS_ONBOARDING`. Fine for personal deployments behind a URL you keep to yourself. On the worker these are `wrangler.toml` vars (set `AUTH_MODE = "public"`, then redeploy); on the Bun server and Docker they're env vars at launch (`-e AUTH_MODE=public` for Docker). Same names, different mechanisms.
 - **Private** (default): mint an invite code with your root token and hand it out. Note the `code` field in the response — that's the invite:
 
 ```sh
@@ -242,11 +242,11 @@ Two roles, per server:
 - **Admin** — the root `CREATE_TOKEN` (env/secret, forever-valid bootstrap). Manages everything: users, tokens, codes, shares, policy. In the TUI: `/openshare → Servers → <server> → Admin panel`.
 - **Users** — everyone the hoster lets in. Full control of their *own* shares, tokens and settings; nothing else.
 
-**Enrollment** (`POST /api/enroll`): a **public** server issues a user token to anyone who knows the hostname (per-IP rate limit); a **private** server additionally requires an **access code** (`osc_…`) minted by the admin with an activation budget — 1 for a personal invite, unlimited for a team code. Each activation issues a long-lived `osk_` token; holding a valid one lets you rotate without a code, forever.
+**Enrollment** (`POST /api/enroll`): an access code (`osc_…`, minted by the admin with an activation budget — 1 for a personal invite, unlimited for a team code) mints a user PLUS their first **full** token. Private servers (default) require one; public servers too unless `CODELESS_ONBOARDING` is on (anonymous creating stays open regardless). Holders of any valid token mint more without a code — including **scoped** tokens (`POST /api/token {kind:"scoped"}`): service credentials (CI) that create within their own limits and reach ONLY the shares they created. Only full tokens keep an account alive; losing the last one freezes everything (scoped included). Codes record lineage: `POST /api/admin/codes/:id/revoke-lineage` kills every token of every user that code onboarded.
 
 **Ownership**: every share created by an enrolled user records its owner. Sync/delete accepts the owner's valid token **or** the per-share secret while the owner is in good standing. Root-bootstrap creates (and anonymous creates on public servers) are **ownerless** — secret-only control, never frozen. **Freezing a user** severs both paths on all their shares at once — the kill switch for leaked identities (viewing is unaffected; unfreeze/reassign are the admin rescue paths).
 
-**Multiple servers**: the `servers` config group holds one membership per URL (token, optional code/label/adminToken, `active` flag). Every **active** entry receives new sessions — fan-out, one socket and one spool per server per session. Switch the active set in `/openshare` at any time; a server added mid-session joins with a **full-history backfill**, and per-session you can stop one server (delete) or leave it as a read-only snapshot. Tokens persist per server in the settings home — enroll once, then it just works. A revoked token re-enrolls the same way (public/code available); if enrollment is impossible the plugin says so on stderr and stops — no retry storms.
+**Multiple servers**: the `servers` config group holds one membership per URL (token, optional code/label/adminToken, `active` flag). Every **active** entry receives new sessions — fan-out, one socket and one spool per server per session. Switch the active set in `/openshare` at any time; a server added mid-session joins with a **full-history backfill**, and per-session you can stop one server (delete) or leave it as a read-only snapshot. Tokens persist per server in the settings home — onboard once, then it just works (with no token the plugin never silently enrolls: a configured `code` enrolls, otherwise public servers share anonymously and the ask-once TUI flow handles onboarding). A revoked token re-enrolls the same way (public/code available); if enrollment is impossible the plugin says so on stderr and stops — no retry storms.
 
 Full semantics: [share-worker/README — Identity & enrollment](share-worker/README.md#identity--enrollment).
 
@@ -286,7 +286,7 @@ Priority (highest wins, per key): `OPENSHARE_*` env > plugin options (the config
 
 | Key | Default | Meaning |
 |---|---|---|
-| `servers` | — | **Multi-server memberships** (URL → `{ token?, code?, label?, active?, adminToken? }`). Every `active` entry (or the first, if none is flagged) receives new sessions — fan-out. With no token the plugin **enrolls**: public servers take anyone, private ones use `code`. Enrolled tokens persist to the settings home (field-level merge). `adminToken` is the server's root token for the TUI admin console. |
+| `servers` | — | **Multi-server memberships** (URL → `{ token?, code?, label?, active?, adminToken?, anonymous? }`). Every `active` entry (or the first, if none is flagged) receives new sessions — fan-out. With no token the plugin never silently enrolls: a configured `code` enrolls (the CI shape), otherwise public servers share anonymously and the ask-once TUI flow handles onboarding (`anonymous: true` marks a declined server). Enrolled tokens persist to the settings home (field-level merge). `adminToken` is the server's root token for the TUI admin console. |
 | `workerUrl` / `createToken` | — | Legacy single-server shorthand — synthesizes into the `servers` group. New setups should use `servers`. |
 | `shareMode` | presence | `"all"` / `"manual"`; omit for presence-based. Resolved once at load. |
 | `debounceMs` | `10000` | **Sync interval** — the max time between syncs while streaming, anchored at the previous flush. Turn-end batches flush instantly on idle; the first batch flushes as soon as it exists. Clamped into the server's window. |
@@ -366,6 +366,7 @@ Values apply per share creation — the file is read on every activation. `share
 | `share mode: manual` but you expected `all` | A tui.json layer registers the TUI — presence flips the mode. Set `shareMode` explicitly to override. |
 | Old sessions not auto-shared in all mode | By design — all-mode only shares **new** sessions; opt old ones in explicitly (flag or `/share`). |
 | url file not written | Manual mode never writes it; `urlFile: "none"` disables it. CI users have no TUI — check `OPENSHARE_URL_FILE` / the config file instead of `/openshare`. |
+| Scripted client gets HTTP 403 with a Cloudflare 'error 1010' page | Zone-level bot protection (Bot Fight Mode / browser integrity) is blocking the client's user-agent - the worker itself never returns 1010. Fix on the Cloudflare side: add a WAF exception for /api/* and /s/*, or send a browser-like User-Agent. |
 | Worker deploy fails on the KV namespace | The shipped namespace id belongs to the author — create your own and put its id in `wrangler.toml`. |
 
 ## Self-hosting
