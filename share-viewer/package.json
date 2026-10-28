@@ -7,6 +7,7 @@
     "build": "node scripts/link-vendor.mjs && vite build && node scripts/build-themes.mjs",
     "typecheck": "bunx tsc --noEmit",
     "dev": "vite",
+    "preview:tools": "vite --open /?preview",
     "vendor:check": "node scripts/vendor-v2.mjs --check"
   },
   "dependencies": {
