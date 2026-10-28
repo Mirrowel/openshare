@@ -239,22 +239,6 @@ function loadConfig(pluginDir, options) {
           cfg.servers = mergeServerGroups(cfg.servers, servers);
         continue;
       }
-      if (key === "scope") {
-        if (value && typeof value === "object") {
-          const sc = value;
-          const scope = {};
-          const ft = Math.floor(Number(sc.fromTurn));
-          if (Number.isFinite(ft) && ft > 1)
-            scope.fromTurn = ft;
-          for (const k of ["reasoning", "tools", "subagents", "fileContents"]) {
-            if (typeof sc[k] === "boolean")
-              scope[k] = sc[k];
-          }
-          if (Object.keys(scope).length)
-            cfg.scope = scope;
-        }
-        continue;
-      }
       if (key === "redact") {
         if (value && typeof value === "object" && Array.isArray(value.patterns)) {
           const pats = value.patterns.filter((x) => typeof x === "string" && x.length > 0 && x.length < 500).slice(0, 50);
@@ -808,93 +792,6 @@ function activeRules(userPatterns) {
   return [...BUILTINS, ...compile(userPatterns)];
 }
 
-// src/scope.ts
-function newScopeState() {
-  return { turn: 0, rank: new Map };
-}
-var FILE_TOOLS = new Set(["read", "write", "edit", "patch", "multiedit"]);
-function scopeSkipsChildren(scope) {
-  return scope?.subagents === false;
-}
-function scopeItem(item, scope, state, mainSid) {
-  if (!item)
-    return item;
-  if (!scope)
-    return item;
-  if (scope.subagents === false && item.sessionID && item.sessionID !== mainSid)
-    return null;
-  if (item.type === "session_diff")
-    return scope.fileContents === false ? null : item;
-  if (item.type !== "message")
-    return item;
-  const data = item.data;
-  if (!data || typeof data !== "object")
-    return item;
-  const id = typeof data.id === "string" ? data.id : "";
-  const role = data.role ?? data.type;
-  if (role === "user" && id && !state.rank.has(id)) {
-    state.turn += 1;
-    state.rank.set(id, state.turn);
-  }
-  const turn = id && state.rank.has(id) ? state.rank.get(id) : Math.max(1, state.turn);
-  if (scope.fromTurn && scope.fromTurn > 1 && turn < scope.fromTurn)
-    return null;
-  if (scope.reasoning === false || scope.tools === false || scope.fileContents === false) {
-    const content = data.content;
-    if (Array.isArray(content)) {
-      let touched = false;
-      const out = [];
-      for (const entry of content) {
-        const c = entry;
-        const ctype = c?.type;
-        if (ctype === "reasoning" && scope.reasoning === false) {
-          touched = true;
-          continue;
-        }
-        if (ctype === "tool" && scope.tools === false) {
-          touched = true;
-          continue;
-        }
-        if (ctype === "tool" && scope.fileContents === false) {
-          const name = String(c?.name ?? "");
-          if (FILE_TOOLS.has(name)) {
-            const clone = { ...c };
-            const st = clone.state && typeof clone.state === "object" ? { ...clone.state } : null;
-            if (st && "output" in st) {
-              delete st.output;
-              clone.state = st;
-              touched = true;
-            }
-            const meta = clone.metadata && typeof clone.metadata === "object" ? { ...clone.metadata } : null;
-            if (meta) {
-              let metaTouched = false;
-              for (const k of ["diff", "files", "filediff", "patch"]) {
-                if (k in meta) {
-                  delete meta[k];
-                  metaTouched = true;
-                }
-              }
-              if (metaTouched) {
-                clone.metadata = meta;
-                touched = true;
-              }
-            }
-            out.push(clone);
-            continue;
-          }
-        }
-        out.push(entry);
-      }
-      if (touched) {
-        if (out.length === 0 && role !== "user")
-          return null;
-        return { ...item, data: { ...data, content: out } };
-      }
-    }
-  }
-  return item;
-}
-
 // src/core.ts
 var DEFAULT_POLICY = {
   mode: "persistent",
@@ -973,19 +870,7 @@ function shareFlag(info) {
     const o = optsRaw;
     if (typeof o.ttlHours === "number" && o.ttlHours > 0)
       opts.ttlHours = Math.floor(o.ttlHours);
-    if (o.scope && typeof o.scope === "object") {
-      const sc = o.scope;
-      const scope = {};
-      const ft = Math.floor(Number(sc.fromTurn));
-      if (Number.isFinite(ft) && ft > 1)
-        scope.fromTurn = ft;
-      for (const k of ["reasoning", "tools", "subagents", "fileContents"]) {
-        if (typeof sc[k] === "boolean")
-          scope[k] = sc[k];
-      }
-      if (Object.keys(scope).length)
-        opts.scope = scope;
-    } else if (typeof o.ttlDays === "number" && o.ttlDays > 0)
+    else if (typeof o.ttlDays === "number" && o.ttlDays > 0)
       opts.ttlHours = Math.floor(o.ttlDays * 24);
     if (typeof o.authLogin === "string")
       opts.authLogin = o.authLogin;
@@ -2378,7 +2263,6 @@ function createEngine(deps) {
   })();
   const userPatterns = cfg.redact?.patterns;
   const redactionRules = activeRules(userPatterns);
-  const scopeStates = new Map;
   const enqueue = (st, entry) => {
     if (!st || !entry)
       return;
@@ -2409,20 +2293,6 @@ function createEngine(deps) {
             led.samples.push(hit);
         }
         redactionLedger.set(st.sid, led);
-      }
-    }
-    {
-      const scope = st.opts?.scope;
-      if (scope) {
-        const prevScope = scopeStates.get(st.sid) ?? newScopeState();
-        scopeStates.set(st.sid, prevScope);
-        const kept = scopeItem(entry.item, scope, prevScope, st.sid);
-        if (!kept) {
-          if (debugEvents)
-            log("scope drop", entry.item.type, entry.key.slice(0, 40));
-          return;
-        }
-        entry = { ...entry, item: kept };
       }
     }
     st.queue.set(entry.key, entry.item);
@@ -2608,7 +2478,7 @@ function createEngine(deps) {
     vue: "vue",
     svelte: "svelte"
   };
-  const FILE_TOOLS2 = new Set(["read", "write", "edit", "patch"]);
+  const FILE_TOOLS = new Set(["read", "write", "edit", "patch"]);
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant")
@@ -2620,7 +2490,7 @@ function createEngine(deps) {
       for (const part of content) {
         if (!part || part.type !== "tool")
           continue;
-        if (!FILE_TOOLS2.has(part.name))
+        if (!FILE_TOOLS.has(part.name))
           continue;
         const state = part.state;
         const meta = state?.metadata;
@@ -2915,7 +2785,7 @@ function createEngine(deps) {
       if (fetched)
         enqueue(st, itemFor("session", stripLocalFacts(redact(fetched)), st.sid));
     }
-    if (!scopeSkipsChildren(st.opts?.scope) && typeof client.session.list === "function") {
+    if (typeof client.session.list === "function") {
       try {
         const result = unwrap(await client.session.list({ query: query() }));
         if (Array.isArray(result)) {

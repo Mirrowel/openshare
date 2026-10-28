@@ -94,7 +94,7 @@ No selfwiring: which parts you install IS the switch.
 
 Manual mode stores the opt-in in session metadata:
 `metadata.openshare = { v: 2, enabled: true, opts? }` with per-session
-overrides (`ttlHours`, `scope`, `authLogin`, `authPassword`, `modelLabel`). The
+overrides (`ttlHours`, `authLogin`, `authPassword`, `modelLabel`). The
 per-server binding map (`servers: {url: {id, secret, rev, url}}`) is
 written next to it — legacy flat bindings migrate at read. The key is
 stripped from everything synced and never reaches viewers.
@@ -105,15 +105,10 @@ stays all-mode.
 
 ## Trust controls (config)
 
-Two client-side filters run at the engine's single enqueue choke point
-(backfill and live events both), so excluded content never reaches a
+Client-side redaction runs at the engine's single enqueue choke point
+(backfill and live events both), so stripped secrets never reach a
 queue, spool or wire:
 
-- `scope` — partial share: `{ fromTurn, reasoning, tools, subagents, fileContents }`.
-  Set a category to `false` to strip it; `fromTurn: N` publishes from the
-  Nth prompt. Fixed at create. An assistant message left empty by the
-  filters is dropped; with `subagents: false` child sessions are not
-  even fetched.
 - `redact.patterns` — extra regexes (strings) redacted beside the built-in
   detectors on UNGATED shares only (a gated share is already
   login-private): GitHub/AWS/Slack/Google key shapes, `sk-` keys, Bearer
@@ -129,14 +124,11 @@ queue, spool or wire:
   identical to `/openshare → This session`: copy links (per server, or
   all), stop sharing — delete or leave a snapshot, per-server stop on
   multi-server shares —, share to another server, session TTL, read
-  auth, and **Partial share scope** (from-turn + reasoning/tools/
-  subagents/file-contents toggles; the scope is fixed at create, so a
-  live page keeps its original until you share again). A credential
-  conflict opens the collision dialog (copy debug
+  auth. A credential conflict opens the collision dialog (copy debug
   info / share on a new share / don't share).
 - `/openshare` — grouped settings (compact root with live summaries →
   focused submenus): This session (share/stop — delete or leave a
-  snapshot —, TTL override, session read auth, partial-share scope),
+  snapshot —, TTL override, session read auth),
   **Servers** (connection
   AND membership: legacy pair, connect, enroll, rotate, get-a-user-token
   for root holders, disconnect, per-server **admin panel** — users,

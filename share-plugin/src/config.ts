@@ -19,7 +19,6 @@
 // selfwiring — the two parts are installed deliberately).
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import type { ShareScope } from "./scope.js"
 import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -69,8 +68,6 @@ export type ShareConfig = {
   /** Wave 3 redaction: user-supplied regex rules (client-side only)
    * applied beside the built-in detectors on UNGATED shares. */
   redact?: { patterns?: string[] }
-  /** Wave 3 partial share: what leaves the machine (opt-in scoping). */
-  scope?: ShareScope
   /** B4: which named config set on the server token this agent uses
    * (unset = the token's first/default set). Rides the create frame. */
   configSet?: string
@@ -380,19 +377,6 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
       if (key === "servers") {
         const servers = normalizeServers(value)
         if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
-        continue
-      }
-      if (key === "scope") {
-        if (value && typeof value === "object") {
-          const sc = value as Record<string, unknown>
-          const scope: ShareScope = {}
-          const ft = Math.floor(Number(sc.fromTurn))
-          if (Number.isFinite(ft) && ft > 1) scope.fromTurn = ft
-          for (const k of ["reasoning", "tools", "subagents", "fileContents"] as const) {
-            if (typeof sc[k] === "boolean") scope[k] = sc[k] as boolean
-          }
-          if (Object.keys(scope).length) cfg.scope = scope
-        }
         continue
       }
       if (key === "redact") {

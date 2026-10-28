@@ -72,7 +72,6 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
       "completedDelayMs",
       "modelLabel",
       "ttlHours",
-      "scope",
       "authLogin",
       "authPassword",
       "spoolDir",
@@ -603,22 +602,13 @@ export type FlowResult = { ok: boolean; message: string; url?: string; unconfigu
  * directive — no remembered consent, no silent creates). The dialog
  * carries the live context (server, TTL, gate state) so the decision is
  * informed, not ceremonial. */
-export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlHours?: number; auth: boolean; counts?: { messages: number; toolCalls: number }; redaction?: { hits: number; samples: string[] }; scope?: { fromTurn?: number; reasoning?: boolean; tools?: boolean; subagents?: boolean; fileContents?: boolean } }): Promise<boolean> {
+export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlHours?: number; auth: boolean; counts?: { messages: number; toolCalls: number }; redaction?: { hits: number; samples: string[] } }): Promise<boolean> {
   const lines: string[] = ["Publish this session (and its subagent sessions) to your openshare worker?"]
   if (context) {
     const bits: string[] = []
     if (context.server) bits.push(`server: ${context.server}`)
     if (context.ttlHours !== undefined) bits.push(`TTL: ${fmtHours(context.ttlHours)}`)
     if (context.redaction && context.redaction.hits > 0) bits.push(`redaction: ${context.redaction.hits} hit(s)`)
-    if (context.scope) {
-      const off: string[] = []
-      if (context.scope.reasoning === false) off.push("no reasoning")
-      if (context.scope.tools === false) off.push("no tool calls")
-      if (context.scope.subagents === false) off.push("no subagents")
-      if (context.scope.fileContents === false) off.push("no file contents")
-      const from = context.scope.fromTurn && context.scope.fromTurn > 1 ? `from turn ${context.scope.fromTurn}` : ""
-      bits.push(`partial: ${[from, ...off].filter(Boolean).join(", ") || "scoped"}`)
-    }
     bits.push(`read auth: ${context.auth ? "on" : "off"}`)
     lines.push(bits.join(" - "))
   }
@@ -662,8 +652,7 @@ export async function shareWithConsent(host: ShareHostApi, sessionID: string | u
         ttlHours: opts?.ttlHours ?? cfg.ttlHours,
         auth: gated,
         counts: { messages: stats.messages, toolCalls: stats.toolCalls },
-        scope: opts?.scope ?? cfg.scope,
-        // redaction only runs on ungated shares (a gated share is
+          // redaction only runs on ungated shares (a gated share is
         // private from casual observers; the ledger reflects that)
         redaction: gated ? undefined : { hits: stats.redaction.count, samples: stats.redaction.samples.map((h) => `${h.sample} [${h.kind}]`) },
       }))

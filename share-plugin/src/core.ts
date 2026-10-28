@@ -50,7 +50,6 @@ import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, loadConfig, re
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
 import { activeRules, redactItem, type RedactionHit } from "./redact.js"
-import { newScopeState, scopeItem, scopeSkipsChildren, type ScopeState, type ShareScope } from "./scope.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -90,8 +89,6 @@ export type ShareEvent =
 
 export type SessionOpts = {
   ttlHours?: number
-  /** Partial-share scope (Wave 3), fixed at create */
-  scope?: ShareScope
   authLogin?: string
   authPassword?: string
   modelLabel?: string
@@ -317,16 +314,6 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
     const o = optsRaw as Record<string, unknown>
     // legacy days-shaped opts migrate x24 (old bindings)
     if (typeof o.ttlHours === "number" && o.ttlHours > 0) opts.ttlHours = Math.floor(o.ttlHours)
-    if (o.scope && typeof o.scope === "object") {
-      const sc = o.scope as Record<string, unknown>
-      const scope: ShareScope = {}
-      const ft = Math.floor(Number(sc.fromTurn))
-      if (Number.isFinite(ft) && ft > 1) scope.fromTurn = ft
-      for (const k of ["reasoning", "tools", "subagents", "fileContents"] as const) {
-        if (typeof sc[k] === "boolean") scope[k] = sc[k] as boolean
-      }
-      if (Object.keys(scope).length) opts.scope = scope
-    }
     else if (typeof o.ttlDays === "number" && o.ttlDays > 0) opts.ttlHours = Math.floor(o.ttlDays * 24)
     if (typeof o.authLogin === "string") opts.authLogin = o.authLogin
     if (typeof o.authPassword === "string") opts.authPassword = o.authPassword
@@ -2047,8 +2034,6 @@ export function createEngine(deps: EngineDeps): Engine {
   const userPatterns = (cfg as { redact?: { patterns?: unknown } }).redact?.patterns
   const redactionRules = activeRules(userPatterns)
 
-  // Wave 3 partial share: per-session turn ranking for scope.fromTurn
-  const scopeStates = new Map<string, ScopeState>()
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
     // content dedupe at the machinery boundary: an identical re-feed has
@@ -2085,22 +2070,6 @@ export function createEngine(deps: EngineDeps): Engine {
           if (led.samples.length < 5 && !led.samples.some((x) => x.kind === hit.kind)) led.samples.push(hit)
         }
         redactionLedger.set(st.sid, led)
-      }
-    }
-    // Wave 3 partial share: the scope filter runs at the same choke
-    // point as redaction - backfill and live events both pass here, so
-    // excluded content never reaches a queue, a spool or a wire
-    {
-      const scope = st.opts?.scope
-      if (scope) {
-        const prevScope = scopeStates.get(st.sid) ?? newScopeState()
-        scopeStates.set(st.sid, prevScope)
-        const kept = scopeItem(entry.item as unknown as { type?: string; sessionID?: string; data?: unknown }, scope, prevScope, st.sid)
-        if (!kept) {
-          if (debugEvents) log("scope drop", (entry.item as { type?: string }).type, entry.key.slice(0, 40))
-          return
-        }
-        entry = { ...entry, item: kept as unknown as typeof entry.item }
       }
     }
     st.queue.set(entry.key, entry.item)
@@ -2644,9 +2613,8 @@ export function createEngine(deps: EngineDeps): Engine {
       if (fetched) enqueue(st, itemFor("session", stripLocalFacts(redact(fetched)), st.sid))
     }
 
-    // children (subagent sessions) share the parent's page, unless the
-    // partial-share scope excludes them (then don't even fetch them)
-    if (!scopeSkipsChildren(st.opts?.scope) && typeof client.session.list === "function") {
+    // children (subagent sessions) share the parent's page
+    if (typeof client.session.list === "function") {
       try {
         const result = unwrap(await client.session.list({ query: query() }))
         if (Array.isArray(result)) {

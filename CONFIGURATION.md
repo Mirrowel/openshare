@@ -126,7 +126,6 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `completedDelayMs` | `5000` | Grace before the status flips to `completed` (server-capped). Dispose flushes a pending flip |
 | `modelLabel` | `"$Provider/$Model"` | Template for the model label in share data |
 | `ttlHours` | `2160` | Default TTL in hours for this plugin's shares (still server-clamped; legacy `ttlDays` accepted x24) |
-| `scope` | whole session | Partial share: `{ fromTurn?, reasoning?, tools?, subagents?, fileContents? }` - `false` strips the category before anything is sent; `fromTurn: N` publishes from the Nth prompt. Fixed at create |
 | `redact.patterns` | built-ins | Extra regexes (strings) applied beside the built-in secret detectors on ungated shares |
 | `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |

@@ -353,52 +353,6 @@ try {
   failures.push("redact: block crashed")
 }
 
-// Wave 3 partial share (pure): turn ranking, category filters, file-body
-// stripping, subagent exclusion, empty-assistant drop, zero-cost passthrough
-try {
-  const { scopeItem, newScopeState } = await import(pathToFileURL(join(here(".."), "dist", "scope.js")).href)
-  const st = newScopeState()
-  const user = (id, text) => ({ type: "message", sessionID: "main", data: { id, role: "user", content: [{ type: "text", text }] } })
-  const asst = (id, content) => ({ type: "message", sessionID: "main", data: { id, role: "assistant", content } })
-  const keep = (it, scope, sid = "main") => scopeItem(it, scope, st, "main")
-  const ok1 = !!keep(user("u1", "first")) && !!keep(asst("a1", [{ type: "text", text: "one" }])) && !!keep(user("u2", "second")) && !!keep(asst("a2", [{ type: "text", text: "two" }])) && !!keep(user("u3", "third")) && !!keep(asst("a3", [{ type: "text", text: "three" }]))
-  console.log(`${ok1 ? "PASS" : "FAIL"} scope: unscope keeps everything`)
-  if (!ok1) failures.push("scope: passthrough")
-  const st2 = newScopeState()
-  const k2 = (it) => scopeItem(it, { fromTurn: 2 }, st2, "main")
-  const r = [k2(user("u1", "a")), k2(asst("a1", [{ type: "text", text: "x" }])), k2(user("u2", "b")), k2(asst("a2", [{ type: "text", text: "y" }]))]
-  const ok2 = r[0] === null && r[1] === null && !!r[2] && !!r[3]
-  console.log(`${ok2 ? "PASS" : "FAIL"} scope: fromTurn drops earlier turns`)
-  if (!ok2) failures.push("scope: fromTurn")
-  const st3 = newScopeState()
-  const content = [{ type: "reasoning", text: "think" }, { type: "text", text: "answer" }, { type: "tool", name: "bash", state: { status: "completed", input: "ls", output: "x" } }]
-  const m = scopeItem(asst("m1", content), { reasoning: false, tools: false }, st3, "main")
-  const kinds = (m?.data?.content ?? []).map((c) => c.type).join(",")
-  const ok3 = kinds === "text" && content.length === 3
-  console.log(`${ok3 ? "PASS" : "FAIL"} scope: reasoning+tools trimmed (content=${kinds})`)
-  if (!ok3) failures.push("scope: category trim")
-  const st4 = newScopeState()
-  const fileMsg = asst("f1", [{ type: "tool", name: "read", state: { status: "completed", input: { file: "/a" }, output: "FILE BODY" }, metadata: { diff: "PATCH", files: [{ patch: "P" }] } }])
-  const fm = scopeItem(fileMsg, { fileContents: false }, st4, "main")
-  const fEntry = fm?.data?.content?.[0]
-  const ok4 = !!fEntry && fEntry.state?.output === undefined && fEntry.metadata?.diff === undefined && fEntry.metadata?.files === undefined && fEntry.state?.input?.file === "/a"
-  console.log(`${ok4 ? "PASS" : "FAIL"} scope: file bodies stripped, call kept`)
-  if (!ok4) failures.push("scope: file contents")
-  const st5 = newScopeState()
-  const child = { type: "message", sessionID: "child1", data: { id: "c1", role: "user", content: [{ type: "text", text: "sub" }] } }
-  const ok5 = scopeItem(child, { subagents: false }, st5, "main") === null && scopeItem(child, undefined, st5, "main") === child
-  console.log(`${ok5 ? "PASS" : "FAIL"} scope: subagents excluded only when asked`)
-  if (!ok5) failures.push("scope: subagents")
-  const st6 = newScopeState()
-  const onlyTools = asst("t1", [{ type: "tool", name: "bash", state: { output: "x" } }])
-  const ok6 = scopeItem(onlyTools, { tools: false }, st6, "main") === null
-  console.log(`${ok6 ? "PASS" : "FAIL"} scope: assistant left empty is dropped`)
-  if (!ok6) failures.push("scope: empty assistant")
-} catch (e) {
-  console.log("FAIL scope block:", String(e.message || e))
-  failures.push("scope: block crashed")
-}
-
 if (failures.length) {
   console.error(`\n${failures.length} failure(s) — suite FAILED`)
   console.error(`suite dir kept for inspection: ${suiteDir}`)
