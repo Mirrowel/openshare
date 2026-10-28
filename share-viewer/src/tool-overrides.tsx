@@ -44,6 +44,45 @@ function OverflowToggle(props: { tool?: "read" | "write" | "edit" }) {
 }
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
+
+/** Copy the tool's rendered output. Clipboard API first, then a transient
+ *  textarea (the viewer is served over https, but local probes are http). */
+function CopyButton(props: { text: string }) {
+  const [copied, setCopied] = createSignal(false)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => timer && clearTimeout(timer))
+  const copy = async (e: MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(props.text)
+    } catch {
+      const area = document.createElement("textarea")
+      area.value = props.text
+      area.style.position = "fixed"
+      area.style.opacity = "0"
+      document.body.appendChild(area)
+      area.select()
+      try {
+        document.execCommand("copy")
+      } finally {
+        area.remove()
+      }
+    }
+    setCopied(true)
+    timer && clearTimeout(timer)
+    timer = setTimeout(() => setCopied(false), 1200)
+  }
+  return (
+    <button
+      type="button"
+      data-slot="osh-copy"
+      title={copied() ? "copied" : "copy output"}
+      onClick={copy}
+    >
+      {copied() ? "\u2713" : "\u2398"}
+    </button>
+  )
+}
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
 /** a display path: relativized against the session directory when under
  *  it, else the last two segments (live-caught: full absolute paths
@@ -633,6 +672,7 @@ const TextResultTool =
       >
         <div class="osh-pre-wrap">
           <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+          <CopyButton text={body()} />
           <OverflowToggle />
         </div>
       </BasicTool>

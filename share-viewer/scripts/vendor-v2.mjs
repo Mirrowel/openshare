@@ -399,6 +399,31 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: tone the word-diff emphasis down. Upstream paints emphasis at
+// 0.4 alpha (dark); a fully rewritten line marks every word as changed, so
+// the emphasis covered the whole line as a solid red/green band. Library
+// defaults stay upstream for the rest of the file.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: word-diff emphasis")) {
+      const before = s
+      s = s.replace(
+        "  --diffs-bg-addition-emphasis-override: light-dark(",
+        "  /* openshare fork: word-diff emphasis at 0.4 alpha painted a fully\n     rewritten line as a solid red/green band, and a rewrite marks every\n     word as changed, so the band was the norm rather than the exception */\n  --diffs-bg-addition-emphasis-override: light-dark(",
+      )
+      s = s
+        .replace("rgb(from var(--v2-green-600) r g b / 0.2)", "rgb(from var(--v2-green-600) r g b / 0.14)")
+        .replace("rgb(from var(--v2-green-600) r g b / 0.4)", "rgb(from var(--v2-green-600) r g b / 0.22)")
+        .replace("rgb(from var(--v2-red-600) r g b / 0.2)", "rgb(from var(--v2-red-600) r g b / 0.14)")
+        .replace("rgb(from var(--v2-red-600) r g b / 0.4)", "rgb(from var(--v2-red-600) r g b / 0.22)")
+      if (s === before) throw new Error("vendor-v2: pierre emphasis anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: file-change tools never merge with each other inside a
 // context group (owner directive 2026-10-24: grouping groups individual
 // tools; edit/write/patch each render as their own expandable card - the

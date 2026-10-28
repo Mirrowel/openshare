@@ -9,6 +9,34 @@
 @import "@opencode/session-ui/styles";
 @import "@opencode/ui/styles/tokens";
 
+/* Code syntax palette. The kit's theme tokens land on muted greys in dark
+   mode (they derive from the text scale), which reads as "no highlighting"
+   inside file cards. Unlayered, so it wins over the kit's theme layer, and
+   light-dark() keeps the pair in step with color-scheme (which every forced
+   theme pins). */
+:root {
+  --syntax-comment: light-dark(#8a8f98, #6b7a8c);
+  --syntax-string: light-dark(#3f8f3f, #7fd88f);
+  --syntax-keyword: light-dark(#a626a4, #c792ea);
+  --syntax-primitive: light-dark(#4078f2, #82aaff);
+  --syntax-function: light-dark(#4078f2, #82aaff);
+  --syntax-type: light-dark(#b58900, #e5c07b);
+  --syntax-constant: light-dark(#986801, #f5a742);
+  --syntax-number: light-dark(#986801, #f5a742);
+  --syntax-property: light-dark(#e45649, #f78c6c);
+  --syntax-variable: light-dark(#383a42, #d6deeb);
+  --syntax-operator: light-dark(#0184bc, #89ddff);
+  --syntax-punctuation: light-dark(#696c77, #8b93a7);
+  --syntax-tag: light-dark(#e45649, #f07178);
+  --syntax-regexp: light-dark(#0184bc, #89ddff);
+  --syntax-info: light-dark(#0184bc, #56b6c2);
+  --syntax-selector: light-dark(#a626a4, #c792ea);
+  --syntax-escape: light-dark(#986801, #f5a742);
+  --syntax-diff-add: light-dark(#2f7d32, #9bcd97);
+  --syntax-diff-delete: light-dark(#c0392b, #faa494);
+  --syntax-diff-unknown: light-dark(#b26a00, #ff8c00);
+}
+
 /* Reasoning collapse: a left rule marking the full block + a clickable
    label row; default collapsed, content styling untouched. */
 [data-component="reasoning-part"] details.reasoning-collapse {
@@ -485,6 +513,31 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   position: absolute;
   top: 4px;
   right: 4px;
+}
+.osh-pre-wrap [data-slot="osh-copy"] {
+  position: absolute;
+  top: 4px;
+  right: 28px;
+}
+[data-slot="osh-copy"] {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-weaker-base);
+  border-radius: 5px;
+  background: var(--surface-raised-base);
+  color: var(--text-weaker);
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+[data-slot="osh-copy"]:hover {
+  opacity: 1;
+  color: var(--text-strong);
 }
 [data-slot="osh-overflow-toggle"] {
   flex: none;
@@ -1233,9 +1286,15 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   border-color: var(--border-strong-base) !important;
 }
 
-/* shell output: upstream chrome and width (the kit's own card, copy button
-   included) — our hug rule sat on top of it and made every shell card a
-   narrow strip */
+/* shell output: the kit's own card (copy control included) at the width we
+   want - hugging its command output, capped so a one-word command does not
+   stretch a full-row empty surface */
+[data-row-key] [data-component="bash-output"],
+[data-timeline-row] [data-component="bash-output"] {
+  width: fit-content;
+  min-width: min(60%, 340px);
+  max-width: min(100%, 75vw);
+}
 
 /* --- deep links -------------------------------------------------------- */
 /* the hover link chip rides the hovered row's right edge */
