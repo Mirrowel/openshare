@@ -450,10 +450,16 @@ export function VirtualTimeline(props: {
               {/* reactive like the kit's own Row memo: re-reads the CURRENT
                   projection per update without remounting this row. Falls
                   back to the last known row object for the tick between a
-                  deletion and the prune effect (never null mid-render). */}
+                  deletion and the prune effect. A row whose key has not
+                  landed in rowByKey yet (session swap: the virtualizer's
+                  items can carry a new key before the projection memo
+                  publishes) renders a zero-impact TurnGap for that tick —
+                  a NULL row would throw inside the renderer's
+                  TimelineRow.key Match ("exhaustive: absurd") and kill
+                  the page (live-caught on subagent pages). */}
               {(() => {
                 let last: unknown = null
-                return <renderer.Row row={() => (last = projection.rowByKey().get(key) ?? last) as never} />
+                return <renderer.Row row={() => ((last = projection.rowByKey().get(key) ?? last) ?? new TimelineRow.TurnGap({ userMessageID: key })) as never} />
               })()}
             </div>
           ) as HTMLDivElement
