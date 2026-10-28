@@ -84,6 +84,9 @@ export function useShareSource(): Source {
   const [needsAuth, setNeedsAuth] = createSignal(false)
   const [authState, setAuthState] = createSignal<{ busy?: boolean; message?: string; retryAfterMs?: number }>({})
   const [brand, setBrand] = createSignal<Branding>({})
+  // Wave 3 private block: per-session machine facts (directory/worktree)
+  // that ride the envelope tail for authenticated readers of gated shares
+  const [priv, setPriv] = createSignal<Record<string, Record<string, string>> | undefined>(undefined)
 
   fetchBranding().then(setBrand).catch(() => {})
 
@@ -177,7 +180,7 @@ export function useShareSource(): Source {
     }
   }
   return liveSource({
-    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull,
+    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull, priv, setPriv,
     setItems, setStatus, setRev, setError, setNeedsAuth, setAuthState, setBrand,
     all: () => Array.from(items().values()),
     sessionID: () => {
@@ -232,6 +235,7 @@ function liveSource(ctx: any): Source {
       // until a hard reload.
       if (isFirst && frame.kind !== "delta" && (frame.items ?? []).length > 0) replaceFull(frame.items)
       else merge(frame.items ?? [])
+      if (frame.private) ctx.setPriv?.(frame.private)
       setRev(frame.rev ?? 0)
       if (frame.status === "gone") {
         setStatus("gone")
@@ -301,6 +305,7 @@ function liveSource(ctx: any): Source {
       } else {
         replaceFull(body.data ?? [])
       }
+      if (body.private) ctx.setPriv?.(body.private)
       setRev(body.rev ?? 0)
       setStatus(body.status ?? "live")
     } catch (e) {
@@ -365,7 +370,7 @@ function liveSource(ctx: any): Source {
   const all = ctx.all
   // memoized fold (see the local-source twin): one fold per change epoch
   // instead of one per call site per update
-  const dataMemo = createMemo(() => fold(all(), ctx.sessionID(), shareID, status()))
+  const dataMemo = createMemo(() => fold(all(), ctx.sessionID(), shareID, status(), ctx.priv?.()))
   return {
     mode: "live" as const,
     shareID,

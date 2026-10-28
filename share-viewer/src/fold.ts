@@ -75,7 +75,13 @@ export type SubSession = {
   session: SessionLite
 }
 
-export function fold(items: { type: string; data?: any; sessionID?: string }[], sessionID: string, shareID: string, status = "live"): ShareData {
+export function fold(
+  items: { type: string; data?: any; sessionID?: string }[],
+  sessionID: string,
+  shareID: string,
+  status = "live",
+  privateFacts?: Record<string, { directory?: string; worktree?: string } & Record<string, unknown>>,
+): ShareData {
   const result: ShareData = {
     shareID,
     sessionID,
@@ -88,9 +94,22 @@ export function fold(items: { type: string; data?: any; sessionID?: string }[], 
   }
   for (const item of items) {
     switch (item.type) {
-      case "session":
-        result.session.push(item.data)
+      case "session": {
+        // Wave 3: directory/worktree live in the envelope private block
+        // (authenticated readers of gated shares). Merge on top of what
+        // the item carries so old shares (facts inline) keep working.
+        const facts = privateFacts?.[item.data?.id ?? ""]
+        result.session.push(
+          facts && item.data
+            ? {
+                ...item.data,
+                ...(facts.directory && !item.data.directory ? { directory: facts.directory } : {}),
+                ...(facts.worktree && !item.data.worktree ? { worktree: facts.worktree } : {}),
+              }
+            : item.data,
+        )
         break
+      }
       case "session_diff":
         result.session_diff[item.sessionID ?? sessionID] = Array.isArray(item.data) ? item.data.map(normalizeDiff) : []
         break

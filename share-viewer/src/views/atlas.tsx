@@ -455,7 +455,6 @@ function AtlasInfoExtra() {
         <Show when={feed().info?.summary?.files != null}>
           {row("files", String(feed().info?.summary?.files))}
         </Show>
-        {row("session", sessionCode())}
       </div>
     </>
   )
