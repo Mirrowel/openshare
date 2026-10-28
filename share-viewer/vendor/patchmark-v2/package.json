@@ -1,0 +1,9 @@
+{
+  "name": "@opencode/patchmark",
+  "version": "0.0.0-vendor",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

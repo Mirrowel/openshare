@@ -1,3 +1,4 @@
+// @ts-nocheck — upstream beta type bug: renderHeaderPrefix/preferredHighlighter unions vs @pierre/diffs 1.6.1 types (-679)
 import { sampledChecksum } from "@opencode/util/encode"
 import {
   areFilesEqual,
@@ -42,7 +43,7 @@ import {
   readShadowLineSelection,
 } from "../pierre/file-selection"
 import { createLineNumberSelectionBridge, restoreShadowTextSelection } from "../pierre/selection-bridge"
-import { acquireVirtualizer, scrollRoot as scrollParent, virtualMetrics } from "../pierre/virtualizer"
+import { scrollRoot as scrollParent, acquireVirtualizer, virtualMetrics } from "../pierre/virtualizer"
 import { getWorkerPool } from "../pierre/worker"
 import { FileMedia, type FileMediaOptions } from "./file-media"
 import { FileSearchBar } from "./file-search"

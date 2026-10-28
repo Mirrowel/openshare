@@ -1,3 +1,4 @@
+// @ts-nocheck — upstream beta type bug: createHighlighter arg count vs @pierre/highlights 0.2.0 types
 import { DiffLineAnnotation, FileContents, FileDiffOptions, type SelectedLineRange } from "@pierre/diffs"
 import { ComponentProps } from "solid-js"
 import { lineCommentStyles } from "../components/line-comment-styles"

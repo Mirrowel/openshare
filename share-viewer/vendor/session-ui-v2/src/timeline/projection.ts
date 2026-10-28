@@ -479,10 +479,10 @@ export namespace Timeline {
     // rendered separately. Notices end a segment so none of those rows cross it.
     const appendAssistantSegment = (messages: SessionMessageAssistant[]) => {
       if (thoughtOnly) return
-
       // openshare fork: each segment call starts a NEW assistant message -
       // its first row gets the "message" break (consumed by appendGroups)
       openshareSegmentStart = true
+
 
       const refs = messages.flatMap((message, messageIndex) =>
         contentEntries(message)

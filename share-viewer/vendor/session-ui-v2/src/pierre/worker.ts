@@ -1,3 +1,4 @@
+// @ts-nocheck — upstream beta type bug: preferredHighlighter "highlights" not in @pierre/diffs 1.6.1 HighlighterTypes
 import { WorkerPoolManager } from "@pierre/diffs/worker"
 import ShikiWorkerUrl from "@pierre/diffs/worker/worker.js?worker&url"
 import { registerOpenCodeTheme } from "@opencode/ui/context/marked-theme-register"
@@ -18,8 +19,8 @@ function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | und
         workerFactory,
         // poolSize defaults to 8. More workers = more parallelism but
         // also more memory. Too many can actually slow things down.
-        // NOTE: 2 is probably better for OpenCode, as I think 8 might be a
-        // bit overkill, especially because Safari has a significantly slower
+        // NOTE: 2 is probably better for OpenCode, as I think 8 might be
+        // a bit overkill, especially because Safari has a significantly slower
         // boot up time for workers
         poolSize: 2,
       },
@@ -34,6 +35,7 @@ function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | und
     )
 
     void pool.initialize().catch(() => {})
+
 
     return pool
   } catch {

@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     "./path": "./src/path.ts",
-    "./encode": "./src/encode.ts"
+    "./encode": "./src/encode.ts",
+    "./abort": "./src/abort.ts",
+    "./session-mention": "./src/session-mention.ts"
   }
 }

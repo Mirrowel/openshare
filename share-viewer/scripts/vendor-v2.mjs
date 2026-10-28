@@ -18,6 +18,12 @@ import { fileURLToPath } from "node:url"
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const SRC = process.env.OPENSHARE_BETA_SRC ?? "c:/tools/opencode-beta"
 
+if (!existsSync(join(SRC, "packages/session-ui"))) {
+  console.error(`vendor-v2: beta source checkout not found at ${SRC}.`)
+  console.error("The vendored tree in this repo builds as-is (npm run build). Re-vendoring needs the opencode-beta checkout (OPENSHARE_BETA_SRC) at a TESTED rev — see vendor/V2-SOURCE.txt.")
+  process.exit(1)
+}
+
 const rev = execSync("git log -1 --format=%H", { cwd: SRC }).toString().trim()
 const describe = execSync("git describe --tags", { cwd: SRC }).toString().trim()
 console.log(`vendoring from ${SRC} @ ${describe}`)
@@ -94,9 +100,15 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
         "$1\n// openshare module: segment marker\nlet openshareSegmentStart = false\n// openshare fork: was the last pushed AssistantPart row a tool row? drives\n// the tool->tool message-break suppression (pure-tool message clusters)\nlet opensharePrevRowTool = false\n",
         "segment marker",
       )
+      // insert at the head of appendAssistantSegment; older revs guard
+      // thoughtOnly segments first (the marker arms AFTER the guard,
+      // matching the tested behavior exactly), newer revs have no guard
       patch(
-        /(const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{\r?\n {6}if \(thoughtOnly\) return)\r?\n/,
-        "$1\n\n      // openshare fork: each segment call starts a NEW assistant message -\n      // its first row gets the \"message\" break (consumed by appendGroups)\n      openshareSegmentStart = true\n",
+        /(const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{\r?\n)( {6}if \(thoughtOnly\) return\r?\n)?/,
+        (m, head, guard) =>
+          head +
+          (guard ?? "") +
+          "      // openshare fork: each segment call starts a NEW assistant message -\n      // its first row gets the \"message\" break (consumed by appendGroups)\n      openshareSegmentStart = true\n\n",
         "segment marker set",
       )
       patch(
@@ -302,7 +314,10 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown-worker.ts")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    // normalize to LF: the guard insert anchors on a literal \n line, and
+    // upstream files are CRLF — a missed replace wrote the call-site
+    // patches WITHOUT the guard (half-applied fork, typecheck-caught)
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: getWorker() THROWS synchronously")) {
       const before = s
       const guard = `// openshare fork: getWorker() THROWS synchronously once the worker is\n// known-unavailable (offline snapshot files run from file://, where\n// Worker construction throws SecurityError). The exports below turn\n// that throw into a normal promise rejection so consumers take their\n// fallback paths instead of the render boundary dying mid-effect.\nfunction workerOrNull(): Worker | null {\n  try {\n    return getWorker()\n  } catch {\n    return null\n  }\n}\n\n`
@@ -357,40 +372,20 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
     let s = readFileSync(p, "utf8")
     if (!s.includes("openshare fork: offline snapshot files run from file://")) {
       const before = s
-      const fork = `function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | undefined {
-  // openshare fork: offline snapshot files run from file://, where Worker
-  // construction throws SecurityError synchronously — a failed pool must
-  // degrade rendering to plain text, not kill the whole page
-  try {
-    const pool = new WorkerPoolManager(
-      {
-        workerFactory,
-        // poolSize defaults to 8. More workers = more parallelism but
-        // also more memory. Too many can actually slow things down.
-        // NOTE: 2 is probably better for OpenCode, as I think 8 might be a
-        // bit overkill, especially because Safari has a significantly slower
-        // boot up time for workers
-        poolSize: 2,
-      },
-      {
-        theme: "OpenCode",
-        lineDiffType,
-        // Pierre renders with the pool's options, not the viewer's, whenever the pool works. The "none" pool only
-        // serves diffs above the large-file threshold, so it carries the plain-text fallback the viewer requests.
-        ...(lineDiffType === "none" && { maxLineDiffLength: 0, tokenizeMaxLineLength: 1 }),
-        preferredHighlighter: "shiki-wasm",
-      },
-    )
-
-    void pool.initialize().catch(() => {})
-
-    return pool
-  } catch {
-    return undefined
-  }
-}`
-      s = s.replace(/function createPool\(lineDiffType: "none" \| "word-line"\) \{[\s\S]*?\n  return pool\n\}/, fork)
-      if (s === before) throw new Error("vendor-v2: pierre worker.ts createPool anchor missing - upstream drifted")
+      // generic body match (works across upstream revisions: the options
+      // object changed between them); the matched body is RE-INDENTED into
+      // the try instead of being hardcoded, so upstream changes ride along
+      const m = /function createPool\(lineDiffType: "none" \| "word-line"\) \{\r?\n([\s\S]*?)\r?\n  return pool\r?\n\}/.exec(s)
+      if (!m) throw new Error("vendor-v2: pierre worker.ts createPool anchor missing - upstream drifted")
+      const body = m[1]
+        .replace(/\r\n/g, "\n")
+        .split("\n")
+        .map((line) => (line.trim() ? "  " + line : line))
+        .join("\n")
+        .replace("void pool.initialize()", "void pool.initialize().catch(() => {})")
+      const fork = `function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | undefined {\n  // openshare fork: offline snapshot files run from file://, where Worker\n  // construction throws SecurityError synchronously — a failed pool must\n  // degrade rendering to plain text, not kill the whole page\n  try {\n${body}\n\n    return pool\n  } catch {\n    return undefined\n  }\n}`
+      s = s.replace(m[0], fork)
+      if (s === before) throw new Error("vendor-v2: pierre worker.ts createPool fork failed")
       writeFileSync(p, s)
     }
   }
@@ -516,15 +511,20 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
     let s = readFileSync(p, "utf8")
     if (!s.includes("osh-task-wrap")) {
       const nl = s.includes("\r\n") ? "\r\n" : "\n"
-      const openA = ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
-      const openB = [
-        "    const trigger = () => (",
-        "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
-        '      // card (app.css: height 0 -> 22px on hover; the card box never grows)',
-        '      <div class="osh-task-wrap">',
-        "      <div",
-        '        data-component="task-tool-card"',
-      ].join(nl)
+      // upstream reformatted the card div between revs (multi-line vs
+      // single-line attributes) — match either shape
+      const openA = s.includes('    const trigger = () => (\n      <div data-component="task-tool-card">')
+        ? ['    const trigger = () => (', '      <div data-component="task-tool-card">'].join(nl)
+        : ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
+      const openB = openA.replace(
+        /(      <div)/,
+        [
+          "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
+          '      // card (app.css: height 0 -> 22px on hover; the card box never grows)',
+          '      <div class="osh-task-wrap">',
+          "$1",
+        ].join(nl),
+      )
       // close anchor rides the task-unique `delegating()` Show that follows
       const closeA = ["      </div>", "    )", "", "    return (", "      <Show", "        when={delegating()}"].join(nl)
       const closeB = [
@@ -545,17 +545,24 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 }
 
 // vendor fork: grouped task rows label the agent that ACTUALLY ran.
-// Upstream's grouped label ignores the task input's agent entirely (it
-// always reads ui.tool.agent.default = "Agent"). The viewer's fold
-// (subagent-map.ts) rewrites part.input.agent from the plugin-stamped
-// metadata.agent (authoritative) or the old-share fallback, so the kit
-// reads one field; subagent_type stays as a last-resort fallback.
+// Upstream's toolTitle switch ignores the task input's agent entirely
+// (always ui.tool.agent.default). The viewer's fold (subagent-map.ts)
+// rewrites part.input.agent from the plugin-stamped metadata.agent
+// (authoritative) or the old-share fallback; subagent_type stays as a
+// last-resort fallback. The task ROW itself reads the agent natively
+// since v2.0.18 (taskAgentName at the call site).
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8")
     if (!s.includes("openshare fork: grouped label prefers the stamped agent")) {
       const before = s
+      // two upstream shapes: the ternary in the group label (older revs)
+      // and the toolTitle switch case (newer revs)
+      s = s.replace(
+        /    case "subagent":\r?\n      return i18n\.t\("ui\.tool\.agent\.default"\)/,
+        '    case "subagent":\n      // openshare fork: grouped label prefers the stamped agent (the fold\n      // rewrites state.input.agent from metadata.agent)\n      return taskAgentName((tool as any).state?.input?.agent ?? (tool as any).state?.input?.subagent_type, undefined) ?? i18n.t("ui.tool.agent.default")',
+      )
       s = s.replace(
         /: part\.name === "subagent"\r?\n\s*\? i18n\.t\("ui\.tool\.agent\.default"\)/,
         ': part.name === "subagent"\n                  // openshare fork: grouped label prefers the stamped agent\n                  // (fold rewrites state.input.agent from metadata.agent)\n                  ? taskAgent((part as any).state?.input?.agent ?? (part as any).state?.input?.subagent_type, undefined).name ?? i18n.t("ui.tool.agent.default")',
@@ -577,8 +584,8 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       let before = s
       s = s.replace(/export function GenericTool\(props: \{[^}]*\}\) \{/, (m) =>
         m.replace(
-          "input?: Record<string, unknown>",
-          "input?: Record<string, unknown>\n  /** openshare fork: generic tools show output */\n  output?: string\n  metadata?: Record<string, unknown>",
+          /input\?: (GenericToolInput|Record<string, unknown>)/,
+          "input?: $1\n  /** openshare fork: generic tools show output */\n  output?: string\n  metadata?: Record<string, unknown>",
         ),
       )
       if (s === before) throw new Error("vendor-v2: GenericTool signature anchor missing")
@@ -796,9 +803,11 @@ $2`,
   p = join(ROOT, "vendor/session-ui-v2/src/components/file.tsx")
   s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
   if (!s.includes("scrollRoot as scrollParent")) {
+    // import anchor is member-agnostic (upstream adds/removes named
+    // exports from pierre/virtualizer between revisions)
     patch(
-      `import { acquireVirtualizer, virtualMetrics } from "../pierre/virtualizer"`,
-      `import { acquireVirtualizer, scrollRoot as scrollParent, virtualMetrics } from "../pierre/virtualizer"`,
+      /import \{ ([^}]*) \} from "\.\.\/pierre\/virtualizer"/,
+      (m, members) => m.replace(members, members.includes("scrollRoot") ? members : `scrollRoot as scrollParent, ${members}`),
     )
     patch(/function scrollParent\(el: HTMLElement\): HTMLElement \| undefined \{[\s\S]+?\n\}\n\n/, "")
     writeFileSync(p, s)
@@ -868,6 +877,8 @@ writeFileSync(
         "@opencode/client": "file:../client-v2",
         "@opencode/ui": "file:../ui-v2",
         "@opencode/util": "file:../util-v2",
+        // only when the vendored tree exists (newer betas only)
+        ...(existsSync(join(ROOT, "vendor/patchmark-v2")) ? { "@opencode/patchmark": "file:../patchmark-v2" } : {}),
       },
     },
     null,
@@ -938,9 +949,9 @@ writeFileSync(
   ),
 )
 
-// --- util (path + encode only) ---
+// --- util (leaf helpers only; self-contained modules) ---
 mkdirSync(join(ROOT, "vendor/util-v2/src"), { recursive: true })
-for (const f of ["path.ts", "encode.ts"]) {
+for (const f of ["path.ts", "encode.ts", "abort.ts", "session-mention.ts"]) {
   const p = join(SRC, "packages/util/src", f)
   if (existsSync(p)) cpSync(p, join(ROOT, "vendor/util-v2/src", f))
 }
@@ -955,6 +966,8 @@ writeFileSync(
       exports: {
         "./path": "./src/path.ts",
         "./encode": "./src/encode.ts",
+        "./abort": "./src/abort.ts",
+        "./session-mention": "./src/session-mention.ts",
       },
     },
     null,
@@ -962,14 +975,36 @@ writeFileSync(
   ),
 )
 
+// --- patchmark (upstream's own markdown streaming/patch parser, a
+// session-ui dependency in newer betas; absent in older pins) ---
+if (existsSync(join(SRC, "packages/patchmark/src"))) {
+  mkdirSync(join(ROOT, "vendor/patchmark-v2/src"), { recursive: true })
+  copyTree(join(SRC, "packages/patchmark/src"), join(ROOT, "vendor/patchmark-v2/src"))
+  writeFileSync(
+    join(ROOT, "vendor/patchmark-v2/package.json"),
+    JSON.stringify({ name: "@opencode/patchmark", version: "0.0.0-vendor", private: true, type: "module", exports: { ".": "./src/index.ts" } }, null, 2),
+  )
+}
+
 writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), `vendored from ${SRC}\ngit: ${rev} (${describe})\ndate: ${new Date().toISOString()}\n`)
 {
   // upstream beta type bugs (narrowed unions) — suppress typechecking for
   // these files rather than forking them
-  const suppress = ["session-ui-v2/src/tools/shell-output.ts", "ui-v2/src/forms/select/select.tsx"]
+  const suppress = [
+    "session-ui-v2/src/tools/shell-output.ts",
+    "ui-v2/src/forms/select/select.tsx",
+    "session-ui-v2/src/components/file.tsx",
+    "session-ui-v2/src/pierre/index.ts",
+    "session-ui-v2/src/pierre/worker.ts",
+    "ui-v2/src/motion-tuning-fields.ts",
+  ]
   const notes = {
     "session-ui-v2/src/tools/shell-output.ts": "string|object union narrowed as object-only",
     "ui-v2/src/forms/select/select.tsx": "onCleanup(void|fn) union",
+    "session-ui-v2/src/components/file.tsx": "renderHeaderPrefix/preferredHighlighter unions vs @pierre/diffs 1.6.1 types (-679)",
+    "session-ui-v2/src/pierre/index.ts": "createHighlighter arg count vs @pierre/highlights 0.2.0 types",
+    "session-ui-v2/src/pierre/worker.ts": "preferredHighlighter \"highlights\" not in @pierre/diffs 1.6.1 HighlighterTypes",
+    "ui-v2/src/motion-tuning-fields.ts": "imports storybook-only 'knobs' (upstream leak)",
   }
   for (const rel of suppress) {
     const p = join(ROOT, "vendor", rel)
