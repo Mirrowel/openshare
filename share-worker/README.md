@@ -362,6 +362,19 @@ title/version/model.
   Class B (modelLabel/shareMode) is the fetchable suggestion view. Creates
   carry an optional `set` name; unset = the token's first set. Mints
   accept inline `sets` and inherit the minter's when omitted.
+- `GET /api/share/:id/og.png` — per-share OG card (1200x630 PNG,
+  rendered once per rev into a bounded isolate cache): deployment
+  wordmark + accent edge, session title, status pill, stat line
+  (turns · tools · duration · model). Gated shares render the GENERIC
+  card ("Private share — log in to view") with no title and no stats —
+  a link preview never leaks what a gated share contains. `?v=<rev>`
+  in the served og:image URL busts Discord's per-URL preview cache.
+  Link-preview crawlers (Discord/Telegram/Slack/etc) hitting `/s/<id>`
+  get per-share `og:title`/`og:description` (stat line) + this card +
+  `theme-color` (deployment accent); the landing page and gated shares
+  keep the deployment-generic tags. Text rasterization: resvg-wasm with
+  embedded Inter subsets (OFL). A design pass on the card look is
+  scheduled (note #90).
 - `GET /branding` — the deployment's resolved skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl, backgroundUrl, description,
   ogTitle, ogImage; all optional — absent = neutral default; see

@@ -343,6 +343,49 @@ try {
     ok("T38h cleanup", (await req(W1, "DELETE", `/api/share/${g38.json.id}`, { body: { secret: g38.json.secret } })).json?.ok === true)
   }
 
+  // T39 — per-share OG embed: rendered card PNG + per-share crawler tags.
+  // Gated shares never leak: generic card, deployment-title tags only.
+  {
+    const now = Date.now()
+    const g39 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t39", status: "completed" } })
+    await req(W1, "POST", `/api/share/${g39.json.id}/sync`, {
+      body: {
+        secret: g39.json.secret, status: "completed",
+        data: [
+          { type: "session", sessionID: "ses_t39", data: { id: "ses_t39", title: "og card test session", time: { created: now } } },
+          { type: "message", sessionID: "ses_t39", data: { id: "m39a", type: "user", time: { created: now + 1 }, text: "hi" } },
+          { type: "message", sessionID: "ses_t39", data: { id: "m39b", type: "assistant", model: { id: "gm", providerID: "mock" }, time: { created: now + 2 }, content: [{ type: "text", text: "done" }, { type: "tool", tool: "bash" }] } },
+          { type: "model", sessionID: "ses_t39", data: { id: "gm", name: "Mock 1", providerID: "mock" } },
+        ],
+      },
+    })
+    const png = await fetch(`${W1}/api/share/${g39.json.id}/og.png`)
+    const buf = Buffer.from(await png.arrayBuffer())
+    ok("T39 og card 200 png", png.status === 200 && (png.headers.get("content-type") ?? "").includes("image/png") && buf.subarray(0, 4).toString("hex") === "89504e47", `${png.status} ${buf.length}b`)
+    const crawl = await fetch(`${W1}/s/${g39.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })
+    const ch = await crawl.text()
+    const t = /<meta property="og:title" content="([^"]*)">/.exec(ch)?.[1] ?? ""
+    const im = /<meta property="og:image" content="([^"]*)">/.exec(ch)?.[1] ?? ""
+    const dsc = /<meta property="og:description" content="([^"]*)">/.exec(ch)?.[1] ?? ""
+    ok("T39a crawler tags carry the session title", t === "og card test session", t)
+    ok("T39b stat line derived", /1 turn.*1 tool.*Mock 1/.test(dsc), dsc)
+    ok("T39c image url is the per-share card with rev", im.endsWith(`/api/share/${g39.json.id}/og.png?v=1`), im)
+    ok("T39d summary_large_image", /twitter:card" content="summary_large_image"/.test(ch))
+
+    // gated: generic card + generic tags, no title anywhere
+    const g39b = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t39g", status: "completed", authLogin: "v", authPassword: "p" } })
+    await req(W1, "POST", `/api/share/${g39b.json.id}/sync`, { body: { secret: g39b.json.secret, status: "completed", data: [{ type: "session", sessionID: "ses_t39g", data: { id: "ses_t39g", title: "SECRET NEVER LEAK T39", time: { created: now } } }] } })
+    const gpng = await fetch(`${W1}/api/share/${g39b.json.id}/og.png`)
+    const gbuf = Buffer.from(await gpng.arrayBuffer())
+    ok("T39e gated card 200 png", gpng.status === 200 && gbuf.subarray(0, 4).toString("hex") === "89504e47", `${gpng.status} ${gbuf.length}b`)
+    const ghtml = await (await fetch(`${W1}/s/${g39b.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })).text()
+    const gt = /<meta property="og:title" content="([^"]*)">/.exec(ghtml)?.[1] ?? ""
+    ok("T39f gated tags stay generic", !gt.includes("SECRET") && !gt.includes("og card"), gt)
+    ok("T39g gated card leaks no title", !ghtml.includes("SECRET NEVER LEAK") && !gbuf.includes(Buffer.from("SECRET NEVER LEAK")))
+    ok("T39h cleanup", (await req(W1, "DELETE", `/api/share/${g39.json.id}`, { body: { secret: g39.json.secret } })).json?.ok === true && (await req(W1, "DELETE", `/api/share/${g39b.json.id}`, { body: { secret: g39b.json.secret } })).json?.ok === true)
+  }
+
+
   // T23 - route shape: share-referencing paths need a real 32-hex id
   ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)
   ok("T23b junk id 404s", (await req(W1, "POST", `/api/share/zzzz/sync`, { body: {} })).status === 404)

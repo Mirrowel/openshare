@@ -636,7 +636,7 @@ async function httpHandler(req: Request): Promise<Response> {
 
   // share-referencing ops need a REAL share id (32 hex); the bare POST
   // create keeps its flexible hex suffix (routing convention)
-  const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|)$/)
+  const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|)$/)
   if (!sm) return staticOr404(req, url)
   const id = sm[1]
   const op = sm[2]
@@ -710,6 +710,22 @@ async function httpHandler(req: Request): Promise<Response> {
       name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "",
     })}}`
     return serveSnapshot(url, id, island)
+  }
+  // per-share OG card (worker parity), rendered once per rev
+  if (req.method === "GET" && op === "/og.png") {
+    const share = q.share(id)
+    if (!share) return json(404, { error: "gone" })
+    const meta = ogMetaOf(share)
+    const cached = ogPngCache.get(id)
+    if (cached && cached.rev === meta.rev) return new Response(cached.bytes, { status: 200, headers: { "content-type": "image/png", "cache-control": "public, max-age=300" } })
+    try {
+      const bytes = await renderOgPng({ title: meta.gated ? undefined : meta.title, status: meta.status, stats: meta.stats ?? {}, branding: { name: process.env.BRAND_NAME ?? "", accent: process.env.BRAND_ACCENT ?? "" } })
+      ogPngCache.set(id, { rev: meta.rev, bytes })
+      if (ogPngCache.size > 8) ogPngCache.delete(ogPngCache.keys().next().value as string)
+      return new Response(bytes, { status: 200, headers: { "content-type": "image/png", "cache-control": "public, max-age=300" } })
+    } catch (e) {
+      return json(500, { error: `og render failed: ${(e as Error)?.message ?? e}` })
+    }
   }
   // #13: edit ANY share setting after creation (worker parity)
   if (req.method === "PATCH" && op === "") {
@@ -1200,6 +1216,39 @@ function htmlEscape(s: string): string {
 
 /** Frozen self-contained HTML snapshot (worker serveSnapshot parity):
  * viewer bundle inlined from disk, share data as a JSON island. */
+// per-share OG card renderer shared with the worker (satori + resvg-wasm;
+// Bun imports the wasm module natively)
+import { renderOgPng } from "../share-worker/og/og-card.js"
+
+const ogPngCache = new Map<string, { rev: number; bytes: Uint8Array }>()
+
+/** Share stats for crawler tags (worker ShareDO /og parity). */
+function ogMetaOf(share: ShareRow) {
+  if (share.auth) return { ok: true as const, gated: true, status: share.status, rev: share.rev }
+  const items = redactItems(shareData(share)) as Array<{ type: string; sessionID?: string; data?: any }>
+  let rootId = ""
+  for (const it of items) if (it.type === "session" && it.data && !it.data.parentID) { rootId = it.data.id ?? ""; break }
+  let title = ""
+  let turns = 0
+  let tools = 0
+  let first = 0
+  let last = 0
+  let model = ""
+  for (const it of items) {
+    if (it.type === "session" && it.data && it.data.id === rootId) title = it.data.title ?? title
+    if (it.type === "model" && it.sessionID === rootId && !model) model = it.data?.name ?? ""
+    if (it.type !== "message" || (rootId && it.sessionID !== rootId)) continue
+    const d = it.data ?? {}
+    const c = d.time?.created ?? 0
+    if (c) { if (!first || c < first) first = c; if (c > last) last = c }
+    if (d.type === "user") turns++
+    if (d.type === "assistant" && Array.isArray(d.content)) for (const p of d.content) if (p?.type === "tool") tools++
+  }
+  return { ok: true as const, gated: false, title: title || "shared session", status: share.status, rev: share.rev, stats: { turns, tools, durationMs: first && last ? last - first : 0, model } }
+}
+
+/** Frozen self-contained HTML snapshot (worker serveSnapshot parity):
+ * viewer bundle inlined from disk, share data as a JSON island. */
 async function serveSnapshot(url: URL, id: string, island: string): Promise<Response> {
   const index = Bun.file(join(VIEWER_DIR, "index.html"))
   if (!(await index.exists())) return json(502, { error: "viewer assets unavailable" })
@@ -1252,23 +1301,54 @@ async function serveSnapshot(url: URL, id: string, island: string): Promise<Resp
   return new Response(html, { headers })
 }
 
-async function ogIndex(url: URL): Promise<Response> {  const index = Bun.file(join(VIEWER_DIR, "index.html"))
+async function ogIndex(url: URL): Promise<Response> {
+  const index = Bun.file(join(VIEWER_DIR, "index.html"))
   const name = process.env.BRAND_NAME ?? "openshare"
   const desc = process.env.BRAND_DESCRIPTION ?? "shared agent sessions, self-hosted"
-  const image = process.env.BRAND_OG_IMAGE ?? process.env.BRAND_LOGO_URL ?? ""
-  const title = process.env.BRAND_OG_TITLE ?? `${name} · Open(code)Share`
-  const absImage = image && image.startsWith("/") ? url.origin + image : image
+  const accent = process.env.BRAND_ACCENT ?? ""
+  let image = process.env.BRAND_OG_IMAGE ?? process.env.BRAND_LOGO_URL ?? ""
+  if (image && image.startsWith("/")) image = url.origin + image
+  let ogTitle = process.env.BRAND_OG_TITLE ?? `${name} · Open(code)Share`
+  let ogDesc = desc
+  let card = image ? "summary_large_image" : "summary"
+  // per-share tags (worker parity): title/stat line only for UNGATED
+  // shares — a preview must never leak what a gated share contains
+  const sm = url.pathname.match(/^\/s\/([0-9a-f]{32})/)
+  if (sm) {
+    const share = q.share(sm[1])
+    if (share) {
+      const meta = ogMetaOf(share)
+      image = `${url.origin}/api/share/${sm[1]}/og.png?v=${meta.rev}`
+      card = "summary_large_image"
+      if (!meta.gated) {
+        ogTitle = String(meta.title ?? "shared session").slice(0, 96)
+        const s = meta.stats as { turns?: number; tools?: number; durationMs?: number; model?: string }
+        const bits: string[] = []
+        if (s.turns) bits.push(`${s.turns} turn${s.turns === 1 ? "" : "s"}`)
+        if (s.tools) bits.push(`${s.tools} tool${s.tools === 1 ? "" : "s"}`)
+        if ((s.durationMs ?? 0) >= 60000) {
+          const min = Math.round((s.durationMs ?? 0) / 60000)
+          bits.push(min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`)
+        }
+        if (s.model) bits.push(s.model)
+        ogDesc = bits.join(" · ") || desc
+      } else {
+        ogDesc = "Private share — log in to view"
+      }
+    }
+  }
   const tags = [
-    `<meta property="og:title" content="${htmlEscape(title)}">`,
-    `<meta property="og:description" content="${htmlEscape(desc)}">`,
+    `<meta property="og:title" content="${htmlEscape(ogTitle)}">`,
+    `<meta property="og:description" content="${htmlEscape(ogDesc)}">`,
     `<meta property="og:site_name" content="${htmlEscape(name)}">`,
-    `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
-    `<meta name="twitter:title" content="${htmlEscape(title)}">`,
-    `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
+    `<meta name="twitter:card" content="${card}">`,
+    `<meta name="twitter:title" content="${htmlEscape(ogTitle)}">`,
+    `<meta name="twitter:description" content="${htmlEscape(ogDesc)}">`,
   ]
-  if (absImage) {
-    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(absImage)}">`)
-    tags.push(`<meta name="twitter:image" content="${htmlEscape(absImage)}">`)
+  if (accent) tags.push(`<meta name="theme-color" content="${htmlEscape(accent)}">`)
+  if (image) {
+    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(image)}">`)
+    tags.push(`<meta name="twitter:image" content="${htmlEscape(image)}">`)
   }
   const html = (await index.text()).replace(/<head>/i, "<head>\n    " + tags.join("\n    "))
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } })

@@ -158,30 +158,74 @@ async function serveSnapshot(req, env, url, snap) {
   return new Response(html, { status: 200, headers })
 }
 
-// index.html with og:/twitter: tags for link-preview crawlers
+// index.html with og:/twitter: tags for link previews. /s/<id> pages get
+// PER-SHARE tags (session title + stat line + the rendered card) for
+// UNGATED shares; gated shares and the landing page stay generic — a
+// preview must never leak what a gated share contains.
 async function serveOgIndex(req, env, url) {
   const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
   if (!r.ok) return r
   const name = brandingField(env, "name") || "openshare"
   const desc = brandingField(env, "description") || "shared agent sessions, self-hosted"
+  const accent = brandingField(env, "accent") || ""
   const image = brandingField(env, "ogImage") || brandingField(env, "logoUrl") || ""
   const title = brandingField(env, "ogTitle") || `${name} · Open(code)Share`
   const absImage = image && image.startsWith("/") ? url.origin + image : image
+
+  let ogTitle = title
+  let ogDesc = desc
+  let ogImage = absImage
+  let card = absImage ? "summary_large_image" : "summary"
+  const sm = url.pathname.match(/^\/s\/([0-9a-f]{32})/)
+  if (sm) {
+    // per-share card: any failure keeps the deployment-generic tags
+    try {
+      const ogRes = await shareStub(env, sm[1]).fetch("https://do/og")
+      if (ogRes.ok) {
+        const meta = await ogRes.json()
+        ogImage = `${url.origin}/api/share/${sm[1]}/og.png?v=${meta.rev ?? 0}`
+        card = "summary_large_image"
+        if (!meta.gated) {
+          ogTitle = String(meta.title ?? "shared session").slice(0, 96)
+          const s = meta.stats ?? {}
+          const bits = []
+          if (s.turns) bits.push(`${s.turns} turn${s.turns === 1 ? "" : "s"}`)
+          if (s.tools) bits.push(`${s.tools} tool${s.tools === 1 ? "" : "s"}`)
+          if (s.durationMs >= 60000) {
+            const min = Math.round(s.durationMs / 60000)
+            bits.push(min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`)
+          }
+          if (s.model) bits.push(s.model)
+          ogDesc = bits.join(" · ") || desc
+        } else {
+          ogDesc = "Private share — log in to view"
+        }
+      }
+    } catch {}
+  }
   const tags = [
-    `<meta property="og:title" content="${htmlEscape(title)}">`,
-    `<meta property="og:description" content="${htmlEscape(desc)}">`,
+    `<meta property="og:title" content="${htmlEscape(ogTitle)}">`,
+    `<meta property="og:description" content="${htmlEscape(ogDesc)}">`,
     `<meta property="og:site_name" content="${htmlEscape(name)}">`,
-    `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
-    `<meta name="twitter:title" content="${htmlEscape(title)}">`,
-    `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
+    `<meta name="twitter:card" content="${card}">`,
+    `<meta name="twitter:title" content="${htmlEscape(ogTitle)}">`,
+    `<meta name="twitter:description" content="${htmlEscape(ogDesc)}">`,
   ]
-  if (absImage) {
-    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(absImage)}">`)
-    tags.push(`<meta name="twitter:image" content="${htmlEscape(absImage)}">`)
+  if (accent) tags.push(`<meta name="theme-color" content="${htmlEscape(accent)}">`)
+  if (ogImage) {
+    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(ogImage)}">`)
+    tags.push(`<meta name="twitter:image" content="${htmlEscape(ogImage)}">`)
   }
   const html = (await r.text()).replace(/<head>/i, "<head>\n    " + tags.join("\n    "))
   return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })
 }
+
+import { renderOgPng } from "./og/og-card.js"
+
+// OG card render cache: PNG bytes per share at its rev (bounded LRU-ish;
+// the ?v=<rev> URL makes crawler caches self-busting anyway)
+const ogPngCache = new Map()
+const ogPngHeaders = (rev) => ({ "content-type": "image/png", "cache-control": `public, max-age=300`, "x-og-rev": rev })
 
 export default {
   async fetch(req, env) {
@@ -379,7 +423,7 @@ export default {
       // 404s here instead of waking a Durable Object per guess); the bare
       // POST create keeps its flexible hex suffix (routing convention —
       // the share id is minted server-side)
-      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|)$/)
+      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|)$/)
       if (!sm) return json(404, { error: "not found" })
       const id = sm[1]
       const op = sm[2]
@@ -438,6 +482,24 @@ export default {
         const r = await shareStub(env, id).fetch(doUrl)
         if (!r.ok) return json(r.status, await r.json().catch(() => ({})))
         return await serveSnapshot(req, env, url, { ...(await r.json()), id })
+      }
+
+      if (req.method === "GET" && op === "/og.png") {
+        // per-share OG card, rendered once per rev (bounded isolate cache;
+        // ?v=<rev> busts Discord's per-URL preview cache)
+        const r = await shareStub(env, id).fetch("https://do/og")
+        if (!r.ok) return new Response("gone", { status: 404 })
+        const ogMeta = await r.json()
+        const cached = ogPngCache.get(id)
+        if (cached && cached.rev === ogMeta.rev) return new Response(cached.bytes, { status: 200, headers: ogPngHeaders(String(ogMeta.rev)) })
+        try {
+          const bytes = await renderOgPng({ title: ogMeta.gated ? undefined : ogMeta.title, status: ogMeta.status, stats: ogMeta.stats ?? {}, branding: resolveBrandingObj(env) })
+          ogPngCache.set(id, { rev: ogMeta.rev, bytes })
+          if (ogPngCache.size > 8) ogPngCache.delete(ogPngCache.keys().next().value)
+          return new Response(bytes, { status: 200, headers: ogPngHeaders(String(ogMeta.rev)) })
+        } catch (e) {
+          return json(500, { error: `og render failed: ${e?.message ?? e}` })
+        }
       }
 
       if (req.method === "DELETE" && op === "") {
@@ -1529,6 +1591,41 @@ export class ShareDO {
       // authenticated, so the private block always rides the island.
       const island = `{"items":${cache.islandBody},"status":${JSON.stringify(meta.status)},"rev":${meta.rev ?? 0},"sessionID":${JSON.stringify(sessionID)}${cache.privJson ? `,"private":{${cache.privJson}}` : ""},"branding":${JSON.stringify(resolveBrandingObj(this.env))}}`
       return json(200, { ok: true, island, status: meta.status, rev: meta.rev ?? 0, sessionID })
+    }
+
+    if (path === "/og") {
+      // per-share embed meta for crawlers: title/stat line only for
+      // UNGATED shares (a link preview must not leak what a gated share
+      // contains — those answer gated:true and the card stays generic)
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: false })
+      const rev = meta.rev ?? 0
+      if (meta.auth) return json(200, { ok: true, gated: true, status: meta.status, rev })
+      const items = redactItems(await this.loadItems())
+      let rootId = ""
+      for (const it of items) if (it.type === "session" && it.data && !it.data.parentID) { rootId = it.data.id ?? ""; break }
+      let title = ""
+      let turns = 0
+      let tools = 0
+      let first = 0
+      let last = 0
+      let model = ""
+      for (const it of items) {
+        if (it.type === "session" && it.data && it.data.id === rootId) title = it.data.title ?? title
+        if (it.type === "model" && it.sessionID === rootId && !model) model = it.data?.name ?? ""
+        if (it.type !== "message" || (rootId && it.sessionID !== rootId)) continue
+        const d = it.data ?? {}
+        const c = d.time?.created ?? 0
+        if (c) {
+          if (!first || c < first) first = c
+          if (c > last) last = c
+        }
+        if (d.type === "user") turns++
+        if (d.type === "assistant" && Array.isArray(d.content)) {
+          for (const part of d.content) if (part?.type === "tool") tools++
+        }
+      }
+      return json(200, { ok: true, gated: false, title: title || "shared session", status: meta.status, rev, stats: { turns, tools, durationMs: first && last ? last - first : 0, model } })
     }
 
     if (path === "/meta" && req.method === "GET") {
