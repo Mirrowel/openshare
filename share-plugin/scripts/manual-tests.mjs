@@ -153,9 +153,7 @@ try {
   const urlFile = join(sandbox, "share-url.txt")
 
   const variant = { name: "manual", path: PKG }
-  console.log("probe: pre-startServe")
   const serve = await startServe(variant, sandbox, projectDir, { OPENSHARE_DEBUG_FILE: join(sandbox, "debug.json") })
-  console.log("probe: post-startServe")
 
   let sid
   let shareId
@@ -456,6 +454,9 @@ try {
   } // end allmode shard
 
   if (shardRuns("engine")) {
+  const engineA = SHARD === "all" || SHARD === "engine" || SHARD === "engine1"
+  const engineB = SHARD === "all" || SHARD === "engine" || SHARD === "engine2"
+  if (engineA) {
   // S9: undo tombstones — revert marks (viewer hides), the NEXT prompt
   // hard-deletes the reverted range (message.removed / part.removed).
   // The share must PHYSICALLY drop those items: without tombstones the
@@ -720,6 +721,8 @@ try {
       }
     }
   }
+  } // end engineA
+  if (engineB) {
 
   // S11: turn-scoped sockets (suite worker: 127.0.0.1 -> auto -> turn,
   // TURN_GRACE_MS=2000): settle -> grace -> clean drop; the next prompt
@@ -830,6 +833,7 @@ try {
       await stopServe(s13Serve)
     }
   }
+  } // end engineB
   } // end engine shard
 } catch (error) {
   console.error("SUITE ERROR:", error.message)

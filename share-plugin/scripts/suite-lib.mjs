@@ -376,7 +376,7 @@ let startServeSeq = 0
 // sandbox pays a full npm install (~70s live-measured after the 1.18.31
 // update). The first serve warms it once; every later serve copies the
 // warmed tree in.
-let warmedConfigOpencode = null
+let warmedConfigOpencode = process.env.OPENSHARE_WARMED_CONFIG && existsSync(join(process.env.OPENSHARE_WARMED_CONFIG, "node_modules")) ? process.env.OPENSHARE_WARMED_CONFIG : null
 function portBindable(port) {
   return new Promise((resolve) => {
     const srv = net.createServer()
@@ -432,8 +432,8 @@ function openShareEnv(sandbox, extra = {}) {
   }
 }
 
-async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
-  await sweepPortIfOccupied(SERVE_PORT)
+async function startServe(variant, sandbox, projectDir, extraEnv = {}, servePort = SERVE_PORT) {
+  await sweepPortIfOccupied(servePort)
   const configPath = join(sandbox, "opencode.json")
   writeFileSync(configPath, opencodeConfig(variant, sandbox))
   // hermetic, in three dimensions (all three are required — learned the
@@ -455,16 +455,19 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   mkdirSync(join(sandbox, "xdg-data"), { recursive: true })
   if (warmedConfigOpencode) {
     try {
-      cpSync(warmedConfigOpencode, join(sandbox, "xdg", "opencode"), { recursive: true })
+      // ONLY node_modules: the warm tree may belong to a DIFFERENT sandbox
+      // (concurrent chains in one process), and copying its whole config
+      // home would clobber this sandbox's persisted plugin settings.
+      cpSync(join(warmedConfigOpencode, "node_modules"), join(sandbox, "xdg", "opencode", "node_modules"), { recursive: true })
     } catch {}
   }
   const stateDir = join(sandbox, `xdg-state-${serveSeq}`)
   mkdirSync(stateDir, { recursive: true })
-  if (!(await waitForPortBindable(SERVE_PORT, 30000))) {
-    throw new Error(`[${variant.name}] port ${SERVE_PORT} not bindable before spawn`)
+  if (!(await waitForPortBindable(servePort, 30000))) {
+    throw new Error(`[${variant.name}] port ${servePort} not bindable before spawn`)
   }
 
-  const { child, kill } = spawnTree("opencode", ["serve", "--port", String(SERVE_PORT), "--hostname", "127.0.0.1"], {
+  const { child, kill } = spawnTree("opencode", ["serve", "--port", String(servePort), "--hostname", "127.0.0.1"], {
     cwd: projectDir,
     env: {
       ...process.env,
@@ -479,7 +482,7 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   let output = ""
   child.stdout.on("data", (d) => (output += d))
   child.stderr.on("data", (d) => (output += d))
-  const base = `http://127.0.0.1:${SERVE_PORT}`
+  const base = `http://127.0.0.1:${servePort}`
   await waitFor(async () => {
     try {
       // /health (NOT /config): 1.18.31 requires the workspace routing
@@ -492,8 +495,8 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
     }
   }, `[${variant.name}] opencode serve`, 60000).catch(async (error) => {
     kill()
-    killPortOwners(SERVE_PORT)
-    await waitForPortFree(SERVE_PORT)
+    killPortOwners(servePort)
+    await waitForPortFree(servePort)
     throw new Error(`[${variant.name}] serve failed: ${error.message}\n--- serve output ---\n${output.slice(-4000)}`)
   })
   // warm-up: the FIRST request spins the instance (provider npm install
@@ -505,19 +508,20 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
     const warmed = join(sandbox, "xdg", "opencode")
     if (existsSync(join(warmed, "node_modules"))) warmedConfigOpencode = warmed
   }
-  return { base, kill, output: () => output, configPath }
+  return { base, kill, output: () => output, configPath, port: servePort }
 }
 
 /** Kills a serve instance and waits for the port to actually free (a
  * half-dead predecessor races its successor's session events). */
 async function stopServe(serve) {
+  const port = serve.port ?? SERVE_PORT
   serve.kill()
   const start = Date.now()
   while (Date.now() - start < 30000) {
-    if (!(await isPortOpen(SERVE_PORT))) break
+    if (!(await isPortOpen(port))) break
     await sleep(100)
   }
-  if (await isPortOpen(SERVE_PORT)) await sweepPortIfOccupied(SERVE_PORT)
+  if (await isPortOpen(port)) await sweepPortIfOccupied(port)
 }
 
 // --- share data normalization ------------------------------------------------------

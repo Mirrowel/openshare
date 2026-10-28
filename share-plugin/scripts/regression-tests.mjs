@@ -51,12 +51,12 @@ const watchdog = setTimeout(() => {
   process.exit(124)
 }, WATCHDOG_MS)
 
-async function runVariant(variant, suiteDir) {
+async function runVariant(variant, suiteDir, servePort) {
   const sandbox = join(suiteDir, variant.name)
   const projectDir = join(sandbox, "project")
   mkdirSync(projectDir, { recursive: true })
 
-  const serve = await startServe(variant, sandbox, projectDir)
+  const serve = await startServe(variant, sandbox, projectDir, {}, servePort)
   const urlFile = join(sandbox, "share-url.txt")
   try {
     const created = await httpGet(`${serve.base}/session`, {
@@ -145,15 +145,19 @@ try {
     { name: "package-dir", path: new URL("../", import.meta.url).href.replace(/\/$/, "") },
   ]
 
-  const results = []
-  for (const variant of variants) {
-    const onDisk = variant.path.startsWith("file://") ? fileURLToPath(variant.path) : variant.path
-    if (!existsSync(onDisk)) throw new Error(`variant ${variant.name} missing: ${variant.path}`)
-    console.log(`running variant: ${variant.name}`)
-    const result = await runVariant(variant, suiteDir)
-    results.push(result)
-    console.log(`  share ${result.shareId} status=${result.normalized.status} items=${result.normalized.items.map((i) => i.type).join(",")}`)
-  }
+  // The three variants are independent (own sandbox, own share), so they
+  // run CONCURRENTLY on disjoint serve ports: the suite's wall clock is
+  // one lifecycle, not three.
+  const results = await Promise.all(
+    variants.map(async (variant, index) => {
+      const onDisk = variant.path.startsWith("file://") ? fileURLToPath(variant.path) : variant.path
+      if (!existsSync(onDisk)) throw new Error(`variant ${variant.name} missing: ${variant.path}`)
+      console.log(`running variant: ${variant.name}`)
+      const result = await runVariant(variant, suiteDir, SERVE_PORT + index * 20)
+      console.log(`  share ${result.shareId} status=${result.normalized.status} items=${result.normalized.items.map((i) => i.type).join(",")}`)
+      return result
+    }),
+  )
 
   const check = (label, ok, detail) => {
     if (ok) console.log(`PASS ${label}`)
@@ -203,7 +207,7 @@ try {
     llm?.close()
   } catch {}
   if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
-  killPortOwners(SERVE_PORT)
+  for (let i = 0; i < 3; i++) killPortOwners(SERVE_PORT + i * 20)
   killPortOwners(LLM_PORT)
 }
 
