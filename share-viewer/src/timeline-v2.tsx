@@ -365,8 +365,11 @@ export function VirtualTimeline(props: {
     onCleanup(() => window.removeEventListener("hashchange", onHash))
   })
 
-  // hover affordance: one link chip that follows the hovered row
-  const [hoverRow, setHoverRow] = createSignal<{ key: string; top: number }>()
+  // hover affordance: one link chip that follows the hovered row.
+  // Position comes from live geometry (rows are absolutely positioned inside
+  // the virtualizer with transforms, so `offsetTop` read 0 and pinned the chip
+  // to the top-right corner).
+  const [hoverEl, setHoverEl] = createSignal<HTMLElement>()
   const trackHover = (event: Event) => {
     const pe = event as PointerEvent
     const target = pe.target instanceof Element ? pe.target.closest<HTMLElement>("[data-row-key]") : null
@@ -374,10 +377,23 @@ export function VirtualTimeline(props: {
     if (pe.type === "pointerout") {
       const next = pe.relatedTarget
       if (next instanceof Node && target.contains(next)) return
-      setHoverRow(undefined)
+      setHoverEl(undefined)
       return
     }
-    setHoverRow({ key: target.dataset.rowKey, top: target.offsetTop })
+    setHoverEl(target)
+  }
+  const chipBox = () => {
+    const el = hoverEl()
+    const sc = scrollElement
+    if (!el || !sc || !el.isConnected) return undefined
+    // scrollTick: follow the row while the reader scrolls
+    void scrollTick()
+    const row = el.getBoundingClientRect()
+    const box = sc.getBoundingClientRect()
+    // the chip is fixed-positioned (viewport coords), so virtualizer
+    // transforms and scroll offsets never enter the math
+    if (row.bottom < box.top + 4 || row.top > box.bottom - 4) return undefined
+    return { top: row.top + 4, left: box.right - 40 }
   }
 
   // pin state: at end → pinned (follows new content); nudge up → unpinned
@@ -628,19 +644,16 @@ export function VirtualTimeline(props: {
       />
       <Show when={props.footer}>{props.footer}</Show>
       {/* deep-link chip: appears at the hovered row's right edge */}
-      <Show when={hoverRow()}>
-        {(row) => (
+      <Show when={chipBox()}>
+        {(box) => (
           <button
             class="osh-rowlink"
             title="copy link to this row"
-            style={{
-              // scrollTick() subscribes the chip to scrolling so it rides
-              // the row instead of detaching on the first wheel event
-              top: `${row().top - (scrollTick(), scrollElement?.scrollTop ?? 0) + 4}px`,
-            }}
+            style={{ top: `${box().top}px`, left: `${box().left}px` }}
             onClick={(e) => {
               e.stopPropagation()
-              void copyRowLink(row().key)
+              const key = hoverEl()?.dataset.rowKey
+              if (key) void copyRowLink(key)
             }}
           >
             <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">

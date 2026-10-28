@@ -1242,8 +1242,8 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 /* --- deep links -------------------------------------------------------- */
 /* the hover link chip rides the hovered row's right edge */
 .osh-rowlink {
-  position: absolute;
-  right: 14px;
+  /* fixed: viewport coords keep virtualizer transforms out of the math */
+  position: fixed;
   z-index: 30;
   display: flex;
   align-items: center;

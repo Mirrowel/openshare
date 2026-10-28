@@ -48,11 +48,29 @@ export function exportSessionDocument(items: AnyRecord[], sessionID: string): { 
   const messages = items
     .filter((it) => it.type === "message" && !it.del && (it.sessionID === sessionID || it.data?.sessionID === sessionID))
     .map((it) => it.data as AnyRecord)
-    .sort((a, b) => {
-      const ta = Number(a?.time?.created ?? 0)
-      const tb = Number(b?.time?.created ?? 0)
-      return ta - tb || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0)
-    })
+  return convertSession(String(session.data?.id ?? sessionID), session.data as AnyRecord, messages)
+}
+
+/**
+ * Build the document from the viewer's folded data (what the page renders).
+ *
+ * @param data      the folded share data (`session` list + per-session `message`)
+ * @param sessionID which session to export
+ */
+export function exportSessionFromShare(data: { session: AnyRecord[]; message: Record<string, AnyRecord[]> }, sessionID: string): { info: AnyRecord; messages: AnyRecord[] } {
+  const info = data.session.find((s) => String(s?.id) === sessionID)
+  if (!info) throw new Error(`session ${sessionID} is not in this share`)
+  return convertSession(sessionID, info, data.message[sessionID] ?? [])
+}
+
+/** Shared converter: session info + ordered messages -> import document. */
+function convertSession(sessionID: string, sessionInfo: AnyRecord, input: AnyRecord[]) {
+  const messages = [...input].sort((a, b) => {
+    const ta = Number(a?.time?.created ?? 0)
+    const tb = Number(b?.time?.created ?? 0)
+    return ta - tb || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0)
+  })
+  const session = { data: sessionInfo, sessionID }
 
   const fallbackModel = messages.find((m) => m.type === "assistant" && m.model?.id)?.model ?? { id: "", providerID: "" }
   const modelOf = (model: AnyRecord | undefined) => ({
@@ -136,14 +154,14 @@ export function exportSessionDocument(items: AnyRecord[], sessionID: string): { 
     })
   }
   const updated = messages.reduce((max, m) => Math.max(max, Number(m?.time?.completed ?? m?.time?.created ?? 0)), 0)
-  const info = { ...session.data, id: sessionID }
+  const info: AnyRecord = { ...session.data, id: sessionID }
   info.time = { created: Number(info?.time?.created ?? updated ?? 0), updated: updated || Number(info?.time?.updated ?? 0) }
   return { info, messages: out }
 }
 
 /** Browser download of the export document, named after the session title. */
-export function downloadSessionExport(items: AnyRecord[], sessionID: string, title: string | undefined) {
-  const doc = exportSessionDocument(items, sessionID)
+export function downloadSessionExport(data: { session: AnyRecord[]; message: Record<string, AnyRecord[]> }, sessionID: string, title: string | undefined) {
+  const doc = exportSessionFromShare(data, sessionID)
   const safe = String(title ?? sessionID).replace(/[^\w.\- ]+/g, "").trim().slice(0, 60) || sessionID
   const blob = new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" })
   const url = URL.createObjectURL(blob)
