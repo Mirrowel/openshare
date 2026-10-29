@@ -42,6 +42,7 @@ import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
+import { buildTimelineDetail } from "./timeline-detail"
 import { fullStamp, timezoneHint, toggleLocalTime, useLocalTime } from "./timefmt"
 import { promptNavKey, registerPromptNav } from "./prompt-nav"
 import { findParentTurn } from "./parent-link"
@@ -387,28 +388,7 @@ function SessionView(props: {
                 return name ?? modelID()
               })
               const diffs = createMemo(() => props.data.session_diff[sessionID()] ?? [])
-              // Grouping is PER RESPONSE (one assistant message = one
-              // response) and never merges thinking: each reasoning part is
-              // its own "Thought" row. OFF = every tool call its own row.
-              // Always passed so ungrouped rows keep content spacing.
-              const timelineDetail = createMemo(() => {
-                const mode = props.settings.toolGrouping
-                const picks = new Set(props.settings.groupTools ?? [])
-                const gp = (tool: string) => mode === "all" || (mode === "custom" && picks.has(tool))
-                // per-tool auto-expand drives everything (renderer's
-                // toolDefaultOpen, consulted before categories); category
-                // details stay collapsed so unlisted tools never open
-                const details = "collapsed" as const
-                return {
-                  shell: { placement: gp("shell") ? "grouped" : "separate", details },
-                  edit: { placement: gp("edit") ? "grouped" : "separate", details },
-                  thinking: { placement: "separate", details: props.settings.reasoningOpen ? "expanded" : "collapsed" },
-                  subagents: { placement: gp("task") ? "grouped" : "separate" },
-                  notices: { placement: "separate" },
-                  tools: { placement: mode === "off" ? "separate" : "grouped", ...(mode === "custom" ? { only: [...picks] } : {}) },
-                  commentary: { placement: "separate" },
-                } as any
-              })
+              const timelineDetail = createMemo(() => buildTimelineDetail(props.settings))
               // the v2 timeline document: full session (continuous mode)
               const document = createMemo(() => ({
                 sessionID: sessionID(),

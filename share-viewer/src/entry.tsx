@@ -8,9 +8,11 @@ import { MetaProvider } from "@solidjs/meta"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { I18nProvider, pluralCategory, pluralKey, type UiI18nParams } from "@opencode/ui/context/i18n"
 import { dict as uiEn } from "@opencode/ui/i18n/en"
-import { Suspense } from "solid-js"
+import { Suspense, lazy } from "solid-js"
 import { App } from "./app"
-import { Preview } from "./preview"
+// the gallery is dev-only: a lazy dev-gated import keeps its fixtures out of
+// the production bundle (a static import ships them dead)
+const Preview = import.meta.env.DEV ? lazy(() => import("./preview").then((m) => ({ default: m.Preview }))) : () => null
 // register our tool renderers before anything renders - an entry-level
 // import guarantees registration order regardless of which component
 // tree mounts first (classic or a skin)

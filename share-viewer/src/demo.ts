@@ -37,20 +37,20 @@ const batchModify = {
   patch: "diff --git a/share-viewer/src/index.css b/share-viewer/src/index.css\n--- a/share-viewer/src/index.css\n+++ b/share-viewer/src/index.css\n@@ -1,2 +1,2 @@\n-@import \"./old-tokens.css\";\n+@import \"./tokens.css\";\n body { margin: 0; }\n",
 }
 
-const user = (id: string, text: string, minute: number) => ({
+const user = (id: string, text: string, minute: number, metadata: Record<string, unknown> = {}) => ({
   type: "message",
   sessionID,
-  data: { id, sessionID, role: "user", type: "user", text, time: { created: now + minute * 60_000 } },
+  data: { id, sessionID, role: "user", type: "user", text, metadata, time: { created: now + minute * 60_000 } },
 })
 
-const assistant = (id: string, minute: number, content: any[]) => ({
+const assistant = (id: string, minute: number, content: any[], extra: Record<string, unknown> = {}) => ({
   type: "message",
   sessionID,
   data: {
     id, sessionID, role: "assistant", type: "assistant", agent: "build",
     model: { providerID: "anthropic", id: "claude-sonnet-4" },
     time: { created: now + minute * 60_000, completed: now + (minute + 1) * 60_000 },
-    content,
+    content, ...extra,
   },
 })
 
@@ -105,6 +105,19 @@ export const demoSnapshot = {
     { type: "message", sessionID: childID, data: { id: "msg_demo_child_assistant", sessionID: childID, role: "assistant", type: "assistant", agent: "explore", model: { providerID: "anthropic", id: "claude-sonnet-4" }, time: { created: now + 22 * 60_000, completed: now + 25 * 60_000 }, content: [text("The parent task row links to this subagent session. At phone widths, keep the link easy to tap, allow preformatted content to scroll inside its own region, and avoid horizontal overflow on the page.")] } },
     { type: "message", sessionID: childID, data: { id: "msg_demo_child_user_2", sessionID: childID, role: "user", type: "user", text: "Now double-check the sidebar and pill render correctly on this child page too.", time: { created: now + 27 * 60_000 } } },
     { type: "message", sessionID: childID, data: { id: "msg_demo_child_assistant_2", sessionID: childID, role: "assistant", type: "assistant", agent: "explore", model: { providerID: "anthropic", id: "claude-sonnet-4" }, time: { created: now + 28 * 60_000, completed: now + 29 * 60_000 }, content: [text("Both navigation states mount on child pages the same way as on the parent; the parent row sits above the prompt list so the way back is always one click.")] } },
+    // turn 5: the feature shapes a share can carry that the story above
+    // doesn't hit - compaction, an agent switch, math, an image write, and
+    // a retry-then-error finish
+    { type: "message", sessionID, data: { id: "msg_demo_compact", sessionID, type: "compaction", summary: "Turns 1-4 compacted: the mobile layout work landed (smaller gutters, scrolling code, independent output regions) and the legacy styles were removed.", time: { created: now + 40 * 60_000 } } },
+    user("msg_demo_user_5", "Switch to plan mode: sketch how math rendering and image assets should look here.", 42, { agentSwitch: "plan", agent: "plan", model: { id: "claude-sonnet-4-plan", providerID: "anthropic" } }),
+    assistant("msg_demo_assistant_5", 43, [
+      text("Display math, inline math like $E = mc^2$, and a real image asset:"),
+      text("$$\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}$$"),
+      tool("tool_demo_img", "write", { filePath: "/workspace/openshare/assets/blue-dot.png", content: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGOInvMNK2IYWhIAAdh7QU52w2gAAAAASUVORK5CYII=" }, "Wrote an 8x8 PNG."),
+    ]),
+    user("msg_demo_user_6", "Retry once, then let it fail.", 46),
+    assistant("msg_demo_assistant_6", 47, [text("Retried once and failed again.")], { retry: true }),
+    assistant("msg_demo_assistant_7", 48, [text("Never completed.")], { error: { type: "rate_limited", message: "rate limited: retry after 60s" } }),
     { type: "session_diff", sessionID, data: [cssDiff] },
   ],
 }

@@ -1,10 +1,13 @@
-// Tool gallery: every tool we render, in every state it can be in, in one
-// static page. No share, no network. Run `npm run preview:tools` and open the
-// URL it prints; the settings that change a tool's appearance sit in the left
-// column. The point is to answer "how does X look when Y" without hunting
-// through shares, so every variant lives here, including hover-only ones.
+// Gallery: every tool in every state, plus whole-message feature docs
+// (prompts, reasoning, markdown, math, images, transcript structures,
+// grouping), in one static page. No share, no network. Run `npm run
+// preview:tools` and open the URL it prints; the settings that change
+// appearance sit in the left column. The point is to answer "how does X
+// look when Y" without hunting through shares, so every variant lives
+// here, including hover-only ones.
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
 import { VendoredPart, setVendoredData } from "./views/vendored-part"
+import { GalleryTimeline } from "./gallery-timeline"
 import { SettingsBody } from "./settings-panel"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
 import type { ToolEntry } from "./views/session-data"
@@ -275,6 +278,159 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
   },
 ]
 
+// --- message fixtures -------------------------------------------------------
+// Whole-message docs rendered through the production projection + row
+// renderer (GalleryTimeline): prompts, reasoning, markdown, math, images,
+// transcript structures and grouping - the parts the single-tool cards
+// above cannot show.
+const T0 = Date.now() - 3_600_000
+const gUser = (id: string, text: string, minute: number, metadata: Record<string, unknown> = {}) => ({
+  id, sessionID: SESSION, role: "user", type: "user", text, metadata,
+  time: { created: T0 + minute * 60_000 },
+})
+const gAssistant = (id: string, minute: number, content: unknown[], extra: Record<string, unknown> = {}) => ({
+  id, sessionID: SESSION, role: "assistant", type: "assistant", agent: "build",
+  model: { providerID: "zai", id: "glm-5.3" }, content, ...extra,
+  time: { created: T0 + minute * 60_000, completed: T0 + (minute + 1) * 60_000 },
+})
+const gText = (text: string) => ({ type: "text", text })
+const gThought = (id: string, text: string) => ({ type: "reasoning", id, text })
+const gTool = (id: string, name: string, input: Record<string, unknown>, output: string, metadata: Record<string, unknown> = {}) => ({
+  type: "tool", id, name, state: { status: "completed", input, content: [{ type: "text", text: output }], metadata },
+})
+
+// 8x8 solid blue PNG (base64): the smallest payload that proves image
+// rendering in write/read cards without a network fetch
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGOInvMNK2IYWhIAAdh7QU52w2gAAAAASUVORK5CYII="
+// precomputed literal (not btoa at module scope): a module-level function
+// call is a side effect and keeps the dev-only gallery in the prod bundle
+const SVG_DATAURI = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiPjxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiIHJ4PSI4IiBmaWxsPSIjNWI5Y2Y2Ii8+PHRleHQgeD0iMTIiIHk9IjMwIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjE0IiBmaWxsPSIjMGIwZTE0Ij5vc2ggJmx0O3N2ZyZndDs8L3RleHQ+PC9zdmc+"
+
+const messageDocs: Array<{ label: string; blurb: string; messages: unknown[] }> = [
+  {
+    label: "prompts",
+    blurb: "bubble vs flat via settings; agent-switch event row; per-prompt model change",
+    messages: [
+      gUser("g_u1", "Summarise the repository layout in two sentences.", 0),
+      gAssistant("g_a1", 1, [gText("Two source roots: the plugin (TUI + engine) and the viewer. The worker and the portable server are backends for the same contract.")]),
+      gUser("g_u2", "Switch to plan mode and outline a redesign before touching code.", 4, { agentSwitch: "plan", agent: "plan", model: { id: "glm-5.3-plan", providerID: "zai" } }),
+      gAssistant("g_a2", 5, [gText("Plan: keep the two-root layout, extract the shared contract types, then move the settings keys behind one module.")]),
+    ],
+  },
+  {
+    label: "reasoning",
+    blurb: "compact collapsed thought rows; expand by clicking; durations stay untouched",
+    messages: [
+      gUser("g_u3", "Why did the flaky test only fail cold?", 10),
+      gAssistant("g_a3", 11, [
+        gThought("g_t1", "Cold start means the first paint runs before the worker pool is warm. The measurement cache starts empty, so the first estimate is used for layout, then corrected. If a click lands in that window it hits a row that is about to be replaced."),
+        gText("The flake was a race between first measurement and first click: the row was remeasured after the click target mounted, so the click landed on stale geometry."),
+      ]),
+      gUser("g_u4", "Show a long one.", 14),
+      gAssistant("g_a4", 15, [
+        gThought("g_t2", Array.from({ length: 12 }, (_, i) => `Reasoning paragraph ${i + 1}: the worker pool warms lazily, the virtualizer defers its first measure, and the disclosure store owns open state, so a remount preserves nothing unless keyed.`).join(" ")),
+        gText("Long reasoning collapses the same way; expansion is per row."),
+      ]),
+    ],
+  },
+  {
+    label: "markdown",
+    blurb: "headings, lists, tables, quotes, links, inline code - everything prose can carry",
+    messages: [
+      gUser("g_u5", "Write a markdown kitchen sink.", 20),
+      gAssistant("g_a5", 21, [gText(`# Heading one
+## Heading two
+### Heading three
+
+- bullet one
+- bullet two
+  - nested bullet
+1. ordered one
+2. ordered two
+
+| column a | column b | notes |
+| --- | --- | --- |
+| 1 | 2 | short cell |
+| a longer cell | 22 | wraps when the table outgrows the column |
+
+> A blockquote line that stands apart from the flow.
+
+Inline \`code\`, **bold**, *italic*, ~~struck~~, and a [link](https://example.com/docs).
+
+---`)]),
+    ],
+  },
+  {
+    label: "code blocks",
+    blurb: "min-width floor, cap, wrap; the copy button rides the corner",
+    messages: [
+      gUser("g_u6", "Show code blocks at every width.", 24),
+      gAssistant("g_a6", 25, [
+        gText("Tiny block (shows the 18rem floor):"),
+        gText("```ts\nconst x = 1\n```"),
+        gText("Medium with syntax highlighting:"),
+        gText("```python\ndef sieve(limit: int) -> list[int]:\n    flags = [True] * (limit + 1)\n    flags[0] = flags[1] = False\n    for n in range(2, int(limit ** 0.5) + 1):\n        if flags[n]:\n            for m in range(n * n, limit + 1, n):\n                flags[m] = False\n    return [i for i, ok in enumerate(flags) if ok]\n```"),
+        gText("A very long line (wrap, not scroll):"),
+        gText("```bash\ndocker run --rm -it -e OPENSHARE_WORKER_URL -e OPENSHARE_CREATE_TOKEN -v \"$PWD/work:/work\" -w /work ghcr.io/example/agent:latest opencode run \"review the diff and post findings\"\n```"),
+        gText("```json\n{ \"name\": \"openshare\", \"version\": \"0.2.1\", \"private\": true, \"works\": [\"worker\", \"server\", \"viewer\", \"plugin\"] }\n```"),
+      ]),
+    ],
+  },
+  {
+    label: "math",
+    blurb: "katex render: $$display$$ blocks and $inline$ math",
+    messages: [
+      gUser("g_u7", "Render some math.", 30),
+      gAssistant("g_a7", 31, [
+        gText("Inline math renders mid-sentence: the discriminant $b^2 - 4ac$ decides the root count, and $E = mc^2$ stays famous."),
+        gText("$$\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}$$"),
+        gText("$$c = \\pm\\sqrt{a^2 + b^2} \\quad\\text{and}\\quad \\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}$$"),
+      ]),
+    ],
+  },
+  {
+    label: "images",
+    blurb: "markdown image, a written PNG, a read PNG - the card renders media, not base64 soup",
+    messages: [
+      gUser("g_u8", "Show every way an image can appear.", 34),
+      gAssistant("g_a8", 35, [
+        gText("An inline markdown image:"),
+        gText(`![sample badge](${SVG_DATAURI})`),
+        gTool("g_img_write", "write", { filePath: `${DIR}/assets/blue-dot.png`, content: PNG_B64 }, PNG_B64),
+        gTool("g_img_read", "read", { filePath: `${DIR}/assets/blue-dot.png` }, PNG_B64),
+        gText("The write created an 8x8 PNG; the read of the same file renders it through the same media path."),
+      ]),
+    ],
+  },
+  {
+    label: "structures",
+    blurb: "compaction divider, retry notice, error finish - the rows between turns",
+    messages: [
+      gUser("g_u9", "Clean up the workspace.", 40),
+      gAssistant("g_a9", 41, [gText("Deleted the stale export files."), gTool("g_rm", "bash", { command: "rm -rf export/" }, "removed 3 files")]),
+      { id: "g_compact", sessionID: SESSION, type: "compaction", summary: "Earlier turns compacted: the workspace cleanup finished and the export directory was removed.", time: { created: T0 + 42 * 60_000 } },
+      gUser("g_u10", "Continue with the retry story.", 44),
+      gAssistant("g_a10", 45, [gText("This attempt failed once and was retried.")], { retry: true }),
+      gUser("g_u11", "And an error finish?", 48),
+      gAssistant("g_a11", 49, [gText("Never completed.")], { error: { type: "rate_limited", message: "rate limited: retry after 60s" } }),
+    ],
+  },
+  {
+    label: "grouping",
+    blurb: "one response, four reads - flip Grouping off / custom / all in settings",
+    messages: [
+      gUser("g_u12", "Read these four files.", 52),
+      gAssistant("g_a12", 53, [
+        gTool("g_grp_r1", "read", { filePath: `${DIR}/src/one.ts` }, READ_SMALL, { lineStart: 1, language: "typescript" }),
+        gTool("g_grp_r2", "read", { filePath: `${DIR}/src/two.ts` }, READ_SMALL, { lineStart: 1, language: "typescript" }),
+        gTool("g_grp_r3", "read", { filePath: `${DIR}/src/three.ts` }, READ_SMALL, { lineStart: 1, language: "typescript" }),
+        gTool("g_grp_r4", "read", { filePath: `${DIR}/src/four.ts` }, READ_SMALL, { lineStart: 1, language: "typescript" }),
+        gText("Four separate reads in one response."),
+      ]),
+    ],
+  },
+]
+
 export function Preview() {
   // task cards render their chevron/link affordances only when a child
   // session is reachable; register a no-op nav so the gallery shows them
@@ -302,7 +458,7 @@ export function Preview() {
       <Show when={showSettings()}>
         <aside class="w-[320px] shrink-0 overflow-y-auto border-r border-border-weak-base px-3 py-3">
           <div class="mb-2 flex items-center justify-between">
-            <div class="text-14-medium">Tool gallery settings</div>
+            <div class="text-14-medium">Gallery settings</div>
             <button class="text-12-regular text-text-weaker hover:text-text-base" onClick={() => setShowSettings(false)}>hide</button>
           </div>
           <SettingsBody settings={settings()} update={update} branding={{}} search={search()} onSearch={setSearch} sessionTools={groups.map((g) => g.tool)} />
@@ -310,8 +466,8 @@ export function Preview() {
       </Show>
       <main class="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <header class="sticky top-0 z-20 flex items-center gap-3 border-b border-border-weak-base bg-background-base px-5 py-3">
-          <div class="text-14-medium">Tool gallery</div>
-          <div class="text-12-regular text-text-weaker">{total()} states / {groups.length} tools / no share data</div>
+          <div class="text-14-medium">Gallery</div>
+          <div class="text-12-regular text-text-weaker">{total()} tool states / {groups.length} tools / {messageDocs.length} feature docs / no share data</div>
           <label class="ml-auto flex items-center gap-2 text-12-regular text-text-weaker">
             <input type="checkbox" checked={forceHover()} onChange={(e) => toggleHover(e.currentTarget.checked)} />
             force hover everywhere
@@ -353,6 +509,19 @@ export function Preview() {
                       </div>
                     )}
                   </For>
+                </div>
+              </section>
+            )}
+          </For>
+          <For each={messageDocs}>
+            {(doc) => (
+              <section>
+                <div class="mb-1 flex items-baseline gap-2">
+                  <h2 class="text-14-medium">{doc.label}</h2>
+                  <span class="text-12-regular text-text-weaker">{doc.blurb}</span>
+                </div>
+                <div class="border-l-2 border-border-weak-base pl-3">
+                  <GalleryTimeline messages={doc.messages} data={data as any} settings={settings()} />
                 </div>
               </section>
             )}
