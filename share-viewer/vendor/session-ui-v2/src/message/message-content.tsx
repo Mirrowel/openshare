@@ -351,13 +351,10 @@ export function CurrentUserMessageDisplay(props: {
 
   const stamp = createMemo(() => {
     const created = props.message.time.created
-    // openshare fork: absolute stamps in 24-hour form. Today shows the clock
-    // alone; any other day prefixes it with the day and month.
-    const d = new Date(created)
-    const n = new Date(now())
-    const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
-    if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return time
-    return `${time} ${d.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]}`
+    // openshare fork: the host owns the clock. Default is the time as
+    // recorded; the header toggle switches every stamp to the reader's
+    // timezone (both formats live in src/timefmt.ts).
+    return ((globalThis as any).__oshStamp?.(created) as string | undefined) ?? new Date(created).toISOString().slice(11, 16)
   })
 
   // In a run, only the last message keeps the meta line; the others offer their actions beside the bubble.

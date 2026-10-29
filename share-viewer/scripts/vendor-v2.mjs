@@ -399,14 +399,15 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: prompt timestamps are absolute, 24-hour, locale-free. The
-// kit renders "now" / "3 minutes ago" / "1 day ago", which reads wrong on a
-// shared session; today shows the clock alone, other days add the date.
+// vendor fork: prompt timestamps come from the host clock. The kit renders
+// "now" / "3 minutes ago" / "1 day ago", which reads wrong on a shared
+// session; ours shows the time as recorded and switches the whole session to
+// the reader's timezone from the header toggle (src/timefmt.ts).
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes("openshare fork: absolute stamps")) {
+    if (!s.includes("openshare fork: the host owns the clock")) {
       const anchor = [
         "  const stamp = createMemo(() => {",
         "    const created = props.message.time.created",
@@ -422,40 +423,40 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       const body = [
         "  const stamp = createMemo(() => {",
         "    const created = props.message.time.created",
-        "    // openshare fork: absolute stamps in 24-hour form. Today shows the clock",
-        "    // alone; any other day prefixes it with the day and month.",
-        "    const d = new Date(created)",
-        "    const n = new Date(now())",
-        '    const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`',
-        "    if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return time",
-        '    return `${time} ${d.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]}`',
+        "    // openshare fork: the host owns the clock. Default is the time as",
+        "    // recorded; the header toggle switches every stamp to the reader's",
+        "    // timezone (both formats live in src/timefmt.ts).",
+        '    return ((globalThis as any).__oshStamp?.(created) as string | undefined) ?? new Date(created).toISOString().slice(11, 16)',
         "  })",
       ].join("\n")
       if (!s.includes(anchor)) throw new Error("vendor-v2: message stamp anchor missing - upstream drifted")
-      writeFileSync(p, s.replace(anchor, body))
+      s = s.replace(anchor, body)
     }
+    writeFileSync(p, s)
   }
 }
 
-// vendor fork: unknown tools use the catch-all renderer our overrides
-// register (`"*"`), so ctx_*/MCP tools get the shared output card instead of
-// the kit's bare GenericTool dump.
+// vendor fork: the shell card opts into the shared output-surface behavior
+// (drag handle, clipped fade, resize listener) with data attributes; the
+// scroller is named so the delegated code can find it.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes("state[\"*\"]?.render")) {
-      const before = s
-      s = s.replace(
-        "function getTool(name: string) {\n  return state[name]?.render\n}",
-        'function getTool(name: string) {\n  // openshare fork: unregistered tools fall back to the catch-all renderer\n  return state[name]?.render ?? state["*"]?.render\n}',
-      )
-      if (s === before) throw new Error("vendor-v2: getTool anchor missing - upstream drifted")
-      writeFileSync(p, s)
-    }
+    const before = s
+    s = s.replace(
+      '<div data-component="bash-output" data-variant="shell" dir="ltr">',
+      '<div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">',
+    )
+    s = s.replace(
+      '<div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">\n',
+      '<div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">\n      <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />\n',
+    )
+    s = s.replace('        data-slot="bash-scroll"\n', '        data-slot="bash-scroll"\n        data-osh-scroll\n')
+    if (s === before) throw new Error("vendor-v2: shell card anchors missing - upstream drifted")
+    writeFileSync(p, s)
   }
 }
-
 // vendor fork: calmer word emphasis inside diffs. On a rewritten line every
 // word counts as changed, so the 0.4 (dark) / 0.2 (light) fill painted the
 // whole line as a saturated band; 0.3 / 0.16 keeps the changed words

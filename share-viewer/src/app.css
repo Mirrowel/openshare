@@ -474,6 +474,11 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 }
 .osh-pre-wrap {
   position: relative;
+  /* room for both controls (copy + wrap) so a short output does not run
+     them over the text; min-height stays hugging - an empty result is not
+     stretched to a fixed box */
+  min-width: 15rem;
+  padding-right: 0;
   /* outputs HUG their content (owner directive): a plain block fills the
      row width - the toggle floated to the far-right edge of the page and
      short outputs showed a wide empty surface (live-caught on grep; the
@@ -618,7 +623,15 @@ html[data-osh-code-surface] .osh-pre {
   max-width: min(100%, 75vw);
 }
 html[data-osh-overflow="scroll"] .osh-pre,
-html[data-osh-overflow="scroll"] [data-component="tool-output"],
+html[data-osh-overflow="scroll"] [data-component="tool-output"] {
+  /* the base rule wraps unconditionally, so scroll mode never scrolled:
+     a card that still wrapped horizontally had nothing to scroll */
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
 html[data-osh-overflow="scroll"] [data-slot="bash-scroll"] {
   overflow-x: auto;
   scrollbar-width: none;
@@ -646,9 +659,17 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 :root body [data-timeline-row] .osh-content [data-component="user-message"] [data-slot="user-message-text"] {
   background: var(--v2-background-bg-layer-01);
 }
-:root body [data-timeline-row] [data-slot="user-message-copy-wrapper"] {
-  opacity: 1;
-  pointer-events: auto;
+/* both footers keep the kit's hover reveal; only their type is pinned so the
+   prompt footer and the assistant-turn footer read as one family */
+:root body [data-timeline-row] [data-slot="text-part-copy-wrapper"],
+:root body [data-row-key] [data-slot="text-part-copy-wrapper"],
+:root body [data-slot="text-part-meta"] {
+  font-size: 13px;
+  color: var(--text-weak);
+}
+:root body [data-slot="text-part-meta"] :where(span, time) {
+  font-size: 13px;
+  color: var(--text-weak);
 }
 :root body [data-timeline-row] [data-slot="user-message-meta-wrap"],
 :root body [data-timeline-row] [data-slot="user-message-meta-tail"],
@@ -1299,31 +1320,84 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   max-width: min(100%, 75vw);
 }
 
-/* --- resizable shell output -------------------------------------------
-   The kit hides the scrollbar and caps output at 240px, so a long result
-   looked static. The card gets a drag handle on its bottom edge (per card,
-   not persisted), a visible thin scrollbar, and a fade while clipped. */
-[data-osh-shell] {
+/* --- output heights, drag resizing and scroll affordances -------------
+   One behavior set for every output surface: shell, text results, generic
+   tools and file bodies. `--osh-out-h` is the per-card height set by
+   dragging the bottom grip; `--osh-cap` is the global cap (~25 lines) that
+   the "Cap tall outputs" setting can lift for file bodies. */
+:root { --osh-cap: 32rem; }
+html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
+.osh-file-scroll {
+  max-height: var(--osh-cap);
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.osh-file-scroll::-webkit-scrollbar { display: none; }
+/* chevrons on the file card's right edge: only while there is more */
+.osh-file-arrow {
+  position: absolute;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  display: none;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-raised-base, var(--background-base));
+  color: var(--text-weak);
+  box-shadow: 0 0 0 1px var(--border-weaker-base);
+  pointer-events: none;
+  z-index: 4;
+}
+.osh-file-arrow::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-left: 1.5px solid currentColor;
+  border-top: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(1px, 1px);
+}
+.osh-file-arrow[data-osh-arrow="up"] { top: 36px; }
+.osh-file-arrow[data-osh-arrow="down"] { bottom: 8px; }
+.osh-file-arrow[data-osh-arrow="down"]::before { transform: rotate(225deg) translate(1px, 1px); }
+[data-osh-out="file"][data-more-down] .osh-file-arrow[data-osh-arrow="down"],
+[data-osh-out="file"][data-more-up] .osh-file-arrow[data-osh-arrow="up"] { display: grid; }
+/* text results share the file card's cap and scroll inside it */
+.osh-pre {
+  max-height: var(--osh-out-h, var(--osh-cap));
+}
+
+/* --- drag resizing, scrollbars and the clipped fade ------------------- */
+[data-osh-out] {
   position: relative;
 }
-[data-osh-shell] [data-slot="bash-scroll"] {
-  max-height: var(--osh-shell-h, 240px);
+[data-osh-out] [data-osh-scroll] {
+  max-height: var(--osh-out-h, var(--osh-cap));
+}
+[data-osh-out="shell"] [data-osh-scroll] {
+  /* the kit's own default is 240px; keep it for shell until dragged */
+  max-height: var(--osh-out-h, 240px);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.45)) transparent;
 }
-[data-osh-shell] [data-slot="bash-scroll"]::-webkit-scrollbar {
+[data-osh-out="shell"] [data-osh-scroll]::-webkit-scrollbar {
   display: block;
   width: 8px;
   height: 8px;
 }
-[data-osh-shell] [data-slot="bash-scroll"]::-webkit-scrollbar-track {
+[data-osh-out="shell"] [data-osh-scroll]::-webkit-scrollbar-track {
   background: transparent;
 }
-[data-osh-shell] [data-slot="bash-scroll"]::-webkit-scrollbar-thumb {
+[data-osh-out="shell"] [data-osh-scroll]::-webkit-scrollbar-thumb {
   background: var(--border-strong-base, rgba(128, 128, 128, 0.45));
   border-radius: 999px;
 }
-.osh-shell-grip {
+/* text results: thin bar too, but only while the body is tall enough */
+[data-osh-out="text"] [data-osh-scroll] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.4)) transparent;
+}
+.osh-out-grip {
   position: absolute;
   left: 0;
   right: 0;
@@ -1333,7 +1407,7 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   cursor: ns-resize;
   touch-action: none;
 }
-.osh-shell-grip::after {
+.osh-out-grip::after {
   content: "";
   position: absolute;
   left: 50%;
@@ -1344,14 +1418,14 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   border-radius: 2px;
   background: var(--border-weak-base, rgba(128, 128, 128, 0.3));
 }
-[data-osh-shell]:hover .osh-shell-grip::after,
-[data-osh-shell][data-osh-resizing] .osh-shell-grip::after {
+[data-osh-out]:hover .osh-out-grip::after,
+[data-osh-out][data-osh-resizing] .osh-out-grip::after {
   background: var(--openshare-accent, var(--icon-strong-base));
 }
-[data-osh-shell][data-osh-resizing] {
+[data-osh-out][data-osh-resizing] {
   user-select: none;
 }
-[data-osh-shell][data-osh-clipped]::after {
+[data-osh-out][data-osh-clipped]::after {
   content: "";
   position: absolute;
   left: 1px;
@@ -1362,16 +1436,22 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   pointer-events: none;
   background: linear-gradient(to bottom, transparent, var(--v2-background-bg-base));
 }
-
+/* the file card scrolls without a bar; its chevrons say more is there */
+[data-osh-out="file"]::after {
+  content: none;
+}
 /* --- deep links -------------------------------------------------------- */
-/* alt held: every transcript row advertises "click copies this row's link" */
-html[data-osh-linkmode] [data-transcript-scroll] [data-row-key] {
+/* ctrl held: message bodies (never gap/spacer rows) advertise that a click
+   copies a link to the message */
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="user-message:"],
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="assistant-part:"] {
   cursor: copy;
   outline: 1px dashed color-mix(in oklab, var(--openshare-accent, #e0af68) 55%, transparent);
-  outline-offset: -1px;
+  outline-offset: -2px;
   border-radius: 6px;
 }
-html[data-osh-linkmode] [data-transcript-scroll] [data-row-key]:hover {
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="user-message:"]:hover,
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="assistant-part:"]:hover {
   outline-style: solid;
   outline-color: var(--openshare-accent, #e0af68);
 }
@@ -1413,4 +1493,29 @@ html[data-osh-linkmode] [data-transcript-scroll] [data-row-key]:hover {
 .osh-toast[data-on="true"] {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+/* --- tool gallery hover showcase --------------------------------------
+   The gallery renders hover-only affordances statically: a card wrapped in
+   [data-osh-preview-hover] gets the same treatments :hover would apply, so
+   the chevron, the underline and the copy controls are visible in a
+   screenshot as well as live. */
+[data-osh-preview-hover] .osh-task-wrap::after,
+html[data-osh-preview-hover] .osh-task-wrap::after {
+  transform: scaleX(1);
+}
+[data-osh-preview-hover] [data-slot="user-message-copy-wrapper"],
+[data-osh-preview-hover] [data-slot="text-part-copy-wrapper"],
+[data-osh-preview-hover] [data-slot="bash-copy"],
+[data-osh-preview-hover] [data-slot="user-message-run-actions"],
+html[data-osh-preview-hover] [data-slot="user-message-copy-wrapper"],
+html[data-osh-preview-hover] [data-slot="text-part-copy-wrapper"],
+html[data-osh-preview-hover] [data-slot="bash-copy"],
+html[data-osh-preview-hover] [data-slot="user-message-run-actions"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-osh-preview-hover] .osh-out-grip::after,
+html[data-osh-preview-hover] .osh-out-grip::after {
+  background: var(--openshare-accent, var(--icon-strong-base));
 }

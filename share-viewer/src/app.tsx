@@ -41,6 +41,7 @@ import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
+import { fullStamp, timezoneHint, toggleLocalTime, useLocalTime } from "./timefmt"
 import { promptNavKey, registerPromptNav } from "./prompt-nav"
 import { findParentTurn } from "./parent-link"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -298,9 +299,9 @@ function SessionView(props: {
               function setActiveMessage(message: any) {
                 setStore("messageId", message ? message.id : undefined)
               }
-              // exact date by default, relative on click (title block toggle)
-              const [relativeDate, setRelativeDate] = createSignal(false)
-              // focus mode (owner round 2026-10-25): alt+click a prompt ->
+              // timezone conversion for the whole session (title toggle)
+              const [localTime, setLocalTime] = createSignal(useLocalTime())
+              // focus mode (owner round 2026-10-25): ctrl+click a prompt ->
               // one turn as an overlay over the still-mounted transcript.
               // Replaces paged-vs-continuous as the "read one turn" surface.
               const [focused, setFocused] = createSignal(false)
@@ -454,16 +455,16 @@ function SessionView(props: {
                         <div class="text-12-regular text-text-base">{modelDisplay()}</div>
                       </div>
                       <div class="text-12-regular text-text-weaker">
+                        {/* time as recorded by default; the click converts the
+                            whole session to the reader's timezone and says so */}
                         <button
                           type="button"
                           class="bg-transparent border-none p-0 cursor-pointer text-12-regular text-text-weaker hover:text-text-base"
-                          title={relativeDate() ? "Show exact date" : "Show relative time"}
-                          aria-pressed={relativeDate()}
-                          onClick={() => setRelativeDate((v) => !v)}
+                          title={timezoneHint()}
+                          aria-pressed={localTime()}
+                          onClick={() => setLocalTime(toggleLocalTime())}
                         >
-                          {relativeDate()
-                            ? DateTime.fromMillis(info().time.created).toRelative({ locale: "en" })
-                            : DateTime.fromMillis(info().time.created).toFormat("dd MMM yyyy, HH:mm")}
+                          {fullStamp(info().time.created)}
                         </button>
                       </div>
                     </div>
@@ -700,7 +701,7 @@ function SessionView(props: {
                                 sidebar column or the floating pill (one of
                                 the two, never neither). Paged pages the turn,
                                 continuous jumps to the user message row;
-                                alt+click focuses the turn. */}
+                                ctrl+click focuses the turn. */}
                             <Show when={userTurns().length >= NAV_MIN_TURNS}>
                               <PromptNav
                                 only="desktop"
