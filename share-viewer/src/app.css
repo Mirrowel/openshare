@@ -1523,6 +1523,14 @@ html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="assistant-part:
 html[data-osh-preview-hover] .osh-task-wrap::after {
   transform: scaleX(1);
 }
+/* the chevron reveal is hover-nested in the kit; show it statically too */
+[data-osh-preview-hover] .osh-task-wrap [data-component="task-tool-card"] [data-component="task-tool-action"],
+html[data-osh-preview-hover] .osh-task-wrap [data-component="task-tool-card"] [data-component="task-tool-action"] {
+  width: 16px;
+  margin-inline-start: 2px;
+  opacity: 1;
+  transform: none;
+}
 [data-osh-preview-hover] [data-slot="user-message-copy-wrapper"],
 [data-osh-preview-hover] [data-slot="text-part-copy-wrapper"],
 [data-osh-preview-hover] [data-slot="bash-copy"],
@@ -1596,4 +1604,12 @@ html[data-osh-preview-hover] .osh-out-grip::after {
   .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
     animation: none;
   }
+}
+/* hover affordances belong to FINISHED subagent cards: a running card
+   carries the sweep instead (the card stays clickable, just quiet) */
+.osh-task-wrap:has([data-component="task-tool-card"][data-running])::after {
+  content: none;
+}
+.osh-task-wrap [data-component="task-tool-card"][data-running] [data-component="task-tool-action"] {
+  display: none;
 }

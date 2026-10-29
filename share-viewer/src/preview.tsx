@@ -4,7 +4,7 @@
 // column. The point is to answer "how does X look when Y" without hunting
 // through shares, so every variant lives here, including hover-only ones.
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
-import { VendoredPart } from "./views/vendored-part"
+import { VendoredPart, setVendoredData } from "./views/vendored-part"
 import { SettingsBody } from "./settings-panel"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
 import type { ToolEntry } from "./views/session-data"
@@ -14,7 +14,7 @@ const SESSION = "ses_preview"
 const MESSAGE = "msg_preview"
 const DIR = "/home/dev/preview-project"
 
-const data: ShareData = {
+const data = {
   shareID: "preview",
   sessionID: SESSION,
   session: [{ id: SESSION, title: "Tool gallery", directory: DIR } as any],
@@ -22,6 +22,9 @@ const data: ShareData = {
   session_diff: { [SESSION]: [] },
   model: {},
   provider: { all: new Map(), default: {}, connected: [] },
+  // task cards render their chevron only when they can open a child; give
+  // the gallery a no-op navigation target so the hover affordances exist
+  navigateToSession: () => {},
   status: "completed",
 }
 
@@ -242,8 +245,8 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
     tool: "subagent",
     blurb: "hover shows the chevron + accent underline; clicking opens the child page",
     states: [
-      { label: "completed", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "Child session finished: 4 files summarised.", "completed") },
-      { label: "completed, hover", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "Child session finished.", "completed") },
+      { label: "completed", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "Child session finished: 4 files summarised.", "completed", { sessionID: "ses_preview_child" }) },
+      { label: "completed, hover", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "Child session finished.", "completed", { sessionID: "ses_preview_child" }) },
       { label: "running", entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", agent: "build", prompt: "Move the header" }, "", "running") },
       { label: "running, hover", hover: true, entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", agent: "build", prompt: "Move the header" }, "", "running") },
       { label: "failed", entry: entry("subagent", { description: "Audit security", subagent_type: "explore", agent: "explore", prompt: "Audit" }, "Subagent aborted", "error") },
@@ -251,11 +254,15 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
       { label: "running - combined sweep (general = dark red)", entry: entry("subagent", { description: "Refactor layout", subagent_type: "general", agent: "general", prompt: "Move the header" }, "", "running") },
       { label: "running - combined sweep (unnamed type = next palette slot)", entry: entry("subagent", { description: "Check the build", subagent_type: "verify", agent: "verify", prompt: "Run tests" }, "", "running") },
       { label: "running - animation off (A/B)", subanim: "plain", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running") },
+      { label: "running, hover (no underline, no chevron)", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running", { sessionID: "ses_preview_child" }) },
     ],
   },
 ]
 
 export function Preview() {
+  // task cards render their chevron/link affordances only when a child
+  // session is reachable; register a no-op nav so the gallery shows them
+  setVendoredData(data as any, { sessionHref: () => "#preview-child", navigateToSession: () => {} })
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
   const [showSettings, setShowSettings] = createSignal(true)
   const [forceHover, setForceHover] = createSignal(false)

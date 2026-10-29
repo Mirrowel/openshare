@@ -20,7 +20,7 @@ import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
-import { deepQueryAll, injectShadowStyle, onDeepChange } from "./shadow-dom"
+import { deepQueryAll, onDeepChange } from "./shadow-dom"
 import { syncOutputCards } from "./output-resize"
 
 /** Per-card overflow toggle (owner directive): on the EXPANDED card body -
@@ -292,16 +292,7 @@ function GutterOffset(props: { start: number; children: JSX.Element }) {
   }
   const attach = (el: HTMLDivElement) => {
     root = el
-    // divider between pierre's line numbers and the content lives inside the
-    // shadow root; a page stylesheet cannot reach it, so inject one (idempotent)
-    const inject = () => injectShadowStyle(el, "osh-gutter-divider", "[data-column-number] { border-right: 1px solid color-mix(in oklab, var(--text-weak, #888) 25%, transparent); margin-right: 8px; }")
-    inject()
-    onCleanup(
-      onDeepChange(el, () => {
-        renumber()
-        inject()
-      }),
-    )
+    onCleanup(onDeepChange(el, renumber))
   }
   return <div ref={attach}>{props.children}</div>
 }

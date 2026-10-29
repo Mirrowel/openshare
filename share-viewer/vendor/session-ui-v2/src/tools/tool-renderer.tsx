@@ -240,14 +240,32 @@ import { resolveFileDiff } from "../components/session-diff"
 // every other type takes the next free slot in first-use order, so one
 // session always paints the same assignment.
 const OSH_AGENT_NAMED: Record<string, string> = { explore: "#5b9cf6", general: "#d65454" }
-const OSH_AGENT_PALETTE = ["#5b9cf6", "#d65454", "#56b6c2", "#e0a75e", "#c678dd", "#98c379", "#e0849c"]
+const OSH_AGENT_PALETTE = [
+  "#5b9cf6", // blue
+  "#d65454", // dark red
+  "#e08a54", // orange
+  "#c9c05a", // khaki
+  "#8fc772", // green
+  "#4fc9a0", // mint
+  "#57b9d6", // cyan
+  "#a78bfa", // violet
+  "#d577c7", // magenta
+  "#e58fb0", // pink
+]
 const oshAgentAssigned = new Map<string, string>()
+let oshAgentSeq = 0
 function oshAgentColor(agent: string | undefined): string {
   if (!agent) return ""
   const hit = oshAgentAssigned.get(agent)
   if (hit) return hit
   const used = new Set(oshAgentAssigned.values())
-  const color = OSH_AGENT_NAMED[agent] ?? OSH_AGENT_PALETTE.find((c) => !used.has(c)) ?? OSH_AGENT_PALETTE[0]
+  // past the base palette, colors are GENERATED (golden-angle hue steps)
+  // so two types never share a color, however many appear
+  const generated = () => {
+    oshAgentSeq += 1
+    return `hsl(${(oshAgentSeq * 137) % 360} 62% 64%)`
+  }
+  const color = OSH_AGENT_NAMED[agent] ?? OSH_AGENT_PALETTE.find((c) => !used.has(c)) ?? generated()
   oshAgentAssigned.set(agent, color)
   return color
 }
