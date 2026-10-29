@@ -13,7 +13,7 @@
 // Focus mode affordances (classic): the reticle glyph on a row is
 // CLICKABLE (span, not button - a button inside a button is invalid
 // HTML; click handler + stopPropagation), right-click opens a
-// "Focus on turn" menu, and alt+click works anywhere on the row. The
+// "Focus on turn" menu, and ctrl+click works anywhere on the row. The
 // reticle renders FILLED and always-visible on the turn currently in
 // the focus overlay, following focus switches.
 //
@@ -124,7 +124,7 @@ export function PromptNav(props: {
   /** response preview for hover cards; undefined = no preview */
   preview?: (i: number) => string | undefined
   onSelect: (i: number) => void
-  /** focus mode (classic): alt+click, the reticle, or the right-click
+  /** focus mode (classic): ctrl+click, the reticle, or the right-click
    *  menu opens the turn as an overlay over the transcript */
   onFocusTurn?: (i: number) => void
   /** skin custom rows (replaces the default list). undefined = default */
@@ -290,13 +290,13 @@ function NavRow(props: {
         setMenuAt({ x: e.clientX, y: e.clientY })
       }}
       onClick={(e) => {
-        if (e.altKey && props.onFocus) {
+        if (e.ctrlKey && props.onFocus) {
           props.onFocus(props.i)
           return
         }
         props.onSelect(props.i)
       }}
-      title={props.onFocus ? "click: jump here - alt+click or the reticle: focus this turn - right-click: menu" : undefined}
+      title={props.onFocus ? "click: jump here - ctrl+click or the reticle: focus this turn - right-click: menu" : undefined}
     >
       <span
         classList={{

@@ -365,27 +365,45 @@ export function VirtualTimeline(props: {
     onCleanup(() => window.removeEventListener("hashchange", onHash))
   })
 
-  // deep-link affordance: alt+click a row copies its link. No floating
+  // deep-link affordance: ctrl+click a message copies its link. No floating
   // button - a fixed chip pinned to the scroller edge flickered between
   // clickable and not while the pointer crossed it (owner-caught), and it
-  // covered content. Holding Alt outlines rows so the gesture is findable.
-  const onAltClick = (event: MouseEvent) => {
-    if (!event.altKey) return
+  // covered content. Holding Ctrl outlines message bodies so it is findable.
+  // Ctrl+click a MESSAGE -> copy a link to where it starts. Rows are finer
+  // than messages (an assistant message is many part rows), and gap/spacer
+  // rows carry no content at all, so both the outline and the copy resolve
+  // through the message: the first content row of that message.
+  const messageStartKey = (row: HTMLElement): string | undefined => {
+    const key = row.dataset.rowKey ?? ""
+    if (!key || !row.innerText.trim()) return undefined
+    const marker = row.querySelector("[data-message-id]")?.getAttribute("data-message-id")
+    const id = marker ?? key.match(/msg_[A-Za-z0-9]+/)?.[0]
+    if (!id) return undefined
+    if (key.startsWith("user-message:")) return key
+    const host = row.closest("[data-transcript-content]") ?? document
+    const first = [...host.querySelectorAll<HTMLElement>("[data-row-key]")].find(
+      (el) => (el.dataset.rowKey ?? "").includes(id) && el.innerText.trim(),
+    )
+    return first?.dataset.rowKey
+  }
+  const onLinkClick = (event: MouseEvent) => {
+    if (!event.ctrlKey) return
     const row = (event.target as Element | null)?.closest<HTMLElement>("[data-row-key]")
-    const key = row?.dataset.rowKey
+    if (!row) return
+    const key = messageStartKey(row)
     if (!key) return
     event.preventDefault()
     event.stopPropagation()
     void copyRowLink(key)
   }
-  // reveal the gesture: while Alt is held, rows outline as link targets
+  // reveal the gesture: while Ctrl is held, message bodies outline as link targets
   onMount(() => {
     const root = document.documentElement
     const down = (e: KeyboardEvent) => {
-      if (e.key === "Alt") root.setAttribute("data-osh-linkmode", "")
+      if (e.key === "Control") root.setAttribute("data-osh-linkmode", "")
     }
     const up = (e: KeyboardEvent) => {
-      if (e.key === "Alt") root.removeAttribute("data-osh-linkmode")
+      if (e.key === "Control") root.removeAttribute("data-osh-linkmode")
     }
     const blur = () => root.removeAttribute("data-osh-linkmode")
     window.addEventListener("keydown", down)
@@ -629,7 +647,7 @@ export function VirtualTimeline(props: {
         })
       }}
       onScroll={onScroll}
-      onClick={onAltClick}
+      onClick={onLinkClick}
       data-transcript-scroll
       data-osh-gutter
       style={{ "overflow-y": "auto", "min-height": "0", position: "relative" }}
