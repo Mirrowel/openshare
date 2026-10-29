@@ -3,7 +3,7 @@
 // URL it prints; the settings that change a tool's appearance sit in the left
 // column. The point is to answer "how does X look when Y" without hunting
 // through shares, so every variant lives here, including hover-only ones.
-import { For, Show, createMemo, createSignal } from "solid-js"
+import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
 import { VendoredPart } from "./views/vendored-part"
 import { SettingsBody } from "./settings-panel"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
@@ -113,6 +113,12 @@ type State = {
   entry: ToolEntry
   /** renders the card with hover styling applied (hover-only affordances) */
   hover?: boolean
+  /** scroll the card body once mounted: shows both scroll chevrons */
+  scrollTo?: "middle"
+  /** design-trial wrapper attribute for the subagent running animation */
+  subanim?: "orbit" | "shimmer" | "breathe" | "dots" | "bar"
+  /** shrink the column so split cannot fit - shows the starved indicator */
+  narrow?: boolean
 }
 
 const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
@@ -135,6 +141,7 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
       { label: "small file", entry: entry("read", { filePath: `${DIR}/src/app.ts`, offset: 0, limit: 12 }, READ_SMALL, "completed", { lineStart: 1, language: "typescript" }) },
       { label: "offset (numbering starts at 41)", entry: entry("read", { filePath: `${DIR}/src/deep.ts`, offset: 40, limit: 8 }, READ_SMALL, "completed", { lineStart: 41, language: "typescript" }) },
       { label: "long (capped, scrolls)", entry: entry("read", { filePath: `${DIR}/src/long.ts`, offset: 0, limit: 40 }, READ_LONG, "completed", { lineStart: 1, language: "typescript" }) },
+      { label: "scrolled to the middle (both chevrons)", entry: entry("read", { filePath: `${DIR}/src/long.ts`, offset: 0, limit: 40 }, READ_LONG, "completed", { lineStart: 1, language: "typescript" }), scrollTo: "middle" },
       { label: "very long lines (wrap/scroll toggle)", entry: entry("read", { filePath: `${DIR}/src/wide.ts`, offset: 0, limit: 6 }, READ_HUGE_LINES, "completed", { lineStart: 1, language: "typescript" }) },
       { label: "failed", entry: entry("read", { filePath: `${DIR}/missing.ts` }, "ENOENT: no such file or directory", "error") },
       { label: "hover (controls)", hover: true, entry: entry("read", { filePath: `${DIR}/src/app.ts`, offset: 0, limit: 6 }, READ_SMALL, "completed", { lineStart: 1, language: "typescript" }) },
@@ -144,11 +151,11 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
     tool: "write",
     blurb: "new file contents in the shared file card",
     states: [
-      { label: "create", entry: entry("write", { filePath: `${DIR}/NOTES.md` }, "# Notes\n\n- one\n- two", "completed", { language: "markdown" }) },
-      { label: "overwrite existing", entry: entry("write", { filePath: `${DIR}/src/app.ts` }, READ_SMALL, "completed", { language: "typescript" }) },
-      { label: "large file (capped)", entry: entry("write", { filePath: `${DIR}/src/generated.ts` }, READ_LONG, "completed", { language: "typescript" }) },
+      { label: "create", entry: entry("write", { filePath: `${DIR}/NOTES.md`, content: "# Notes\n\n- one\n- two" }, "# Notes\n\n- one\n- two", "completed", { language: "markdown" }) },
+      { label: "overwrite existing", entry: entry("write", { filePath: `${DIR}/src/app.ts`, content: READ_SMALL }, READ_SMALL, "completed", { language: "typescript" }) },
+      { label: "large file (capped)", entry: entry("write", { filePath: `${DIR}/src/generated.ts`, content: READ_LONG }, READ_LONG, "completed", { language: "typescript" }) },
       { label: "failed", entry: entry("write", { filePath: `${DIR}/locked.ts` }, "EACCES: permission denied", "error") },
-      { label: "hover (controls)", hover: true, entry: entry("write", { filePath: `${DIR}/NOTES.md` }, "# Notes\n\n- one", "completed", { language: "markdown" }) },
+      { label: "hover (controls)", hover: true, entry: entry("write", { filePath: `${DIR}/NOTES.md`, content: "# Notes\n\n- one" }, "# Notes\n\n- one", "completed", { language: "markdown" }) },
     ],
   },
   {
@@ -162,6 +169,7 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
       { label: "new file (additions only)", entry: entry("edit", { filePath: `${DIR}/src/new.ts` }, "", "completed", editFiles("src/new.ts", PATCH_ADD, 4, 0)) },
       { label: "deletion only", entry: entry("edit", { filePath: `${DIR}/src/dead.ts` }, "", "completed", editFiles("src/dead.ts", PATCH_DELETE, 0, 3)) },
       { label: "failed", entry: entry("edit", { filePath: `${DIR}/src/app.ts`, oldString: "nope", newString: "x" }, "Could not find oldString in the file", "error") },
+      { label: "no room to split (narrow column)", narrow: true, entry: entry("edit", { filePath: `${DIR}/src/app.ts` }, "", "completed", editFiles("src/app.ts", PATCH_SINGLE, 2, 1)) },
       { label: "hover (controls)", hover: true, entry: entry("edit", { filePath: `${DIR}/src/app.ts` }, "", "completed", editFiles("src/app.ts", PATCH_SINGLE, 2, 1)) },
     ],
   },
@@ -238,6 +246,11 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
       { label: "running", entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", prompt: "Move the header" }, "", "running") },
       { label: "running, hover", hover: true, entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", prompt: "Move the header" }, "", "running") },
       { label: "failed", entry: entry("subagent", { description: "Audit security", subagent_type: "explore", prompt: "Audit" }, "Subagent aborted", "error") },
+      { label: "running - A orbit", subanim: "orbit", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
+      { label: "running - B shimmer", subanim: "shimmer", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
+      { label: "running - C breathe", subanim: "breathe", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
+      { label: "running - D dots", subanim: "dots", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
+      { label: "running - E progress bar", subanim: "bar", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
     ],
   },
 ]
@@ -295,9 +308,25 @@ export function Preview() {
                 <div class="flex flex-col gap-3 border-l-2 border-border-weak-base pl-3">
                   <For each={group.states}>
                     {(state) => (
-                      <div data-osh-preview-hover={state.hover ? "" : undefined}>
+                      <div data-osh-preview-hover={state.hover ? "" : undefined} data-osh-subanim={state.subanim} data-osh-col={state.narrow ? "" : undefined} style={state.narrow ? { "max-width": "38rem" } : undefined}>
                         <div class="mb-1 text-12-regular text-text-weaker">{state.label}</div>
-                        <VendoredPart entry={state.entry} settings={allOpen()} data={data} />
+                        <div ref={(el) => {
+                          if (state.scrollTo !== "middle") return
+                          // pierre paints inside a shadow root at its own pace:
+                          // retry until the body actually has somewhere to go
+                          const park = () => {
+                            const sc = el.querySelector<HTMLElement>("[data-osh-scroll]")
+                            if (sc && sc.scrollHeight > sc.clientHeight + 20) {
+                              sc.scrollTop = Math.round((sc.scrollHeight - sc.clientHeight) / 2)
+                              return true
+                            }
+                            return false
+                          }
+                          const timers = [600, 1500, 3000].map((ms) => window.setTimeout(() => { if (!park()) return; for (const t of timers) clearTimeout(t) }, ms))
+                          onCleanup(() => timers.forEach((t) => clearTimeout(t)))
+                        }}>
+                          <VendoredPart entry={state.entry} settings={allOpen()} data={data} />
+                        </div>
                       </div>
                     )}
                   </For>
