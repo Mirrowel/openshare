@@ -46,3 +46,7 @@ share-server/openshare.db-*
 *.tsbuildinfo
 npm-debug.log*
 
+
+design.md
+product.md
+upstream-reports/
