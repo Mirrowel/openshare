@@ -8,7 +8,7 @@
 // Drives the vendored session-ui projection + row renderer, so rendering
 // is identical to the non-virtualized timeline.
 import { createVirtualizer } from "@tanstack/solid-virtual"
-import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, createRoot, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, createRoot, type JSX , For } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session-ui/timeline/projection"
 import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
@@ -396,16 +396,50 @@ export function VirtualTimeline(props: {
     event.stopPropagation()
     void copyRowLink(key)
   }
-  // reveal the gesture: while Ctrl is held, message bodies outline as link targets
+  // reveal the gesture: while Ctrl is held, one box per MESSAGE marks the
+  // link targets. Rows are absolutely positioned by the virtualizer, so a
+  // message's parts cannot share a CSS box; the boxes are computed from the
+  // rendered rows and repainted on scroll.
+  const [linkBoxes, setLinkBoxes] = createSignal<Array<{ id: string; top: number; height: number }>>([])
+  const refreshLinkBoxes = () => {
+    const sc = scrollElement
+    if (!sc || !document.documentElement.hasAttribute("data-osh-linkmode")) return
+    const base = sc.getBoundingClientRect()
+    const groups = new Map<string, { top: number; bottom: number }>()
+    for (const row of sc.querySelectorAll<HTMLElement>("[data-row-key]")) {
+      const key = row.dataset.rowKey ?? ""
+      if (!key.startsWith("user-message:") && !key.startsWith("assistant-part:")) continue
+      if (!row.innerText.trim()) continue
+      const id = key.match(/msg_[A-Za-z0-9]+/)?.[0]
+      if (!id) continue
+      const r = row.getBoundingClientRect()
+      const top = r.top - base.top + sc.scrollTop
+      const bottom = r.bottom - base.top + sc.scrollTop
+      const g = groups.get(id)
+      if (!g) groups.set(id, { top, bottom })
+      else {
+        g.top = Math.min(g.top, top)
+        g.bottom = Math.max(g.bottom, bottom)
+      }
+    }
+    setLinkBoxes([...groups].map(([id, g]) => ({ id, top: Math.round(g.top), height: Math.round(g.bottom - g.top) })))
+  }
   onMount(() => {
     const root = document.documentElement
     const down = (e: KeyboardEvent) => {
-      if (e.key === "Control") root.setAttribute("data-osh-linkmode", "")
+      if (e.key !== "Control") return
+      root.setAttribute("data-osh-linkmode", "")
+      requestAnimationFrame(refreshLinkBoxes)
     }
     const up = (e: KeyboardEvent) => {
-      if (e.key === "Control") root.removeAttribute("data-osh-linkmode")
+      if (e.key !== "Control") return
+      root.removeAttribute("data-osh-linkmode")
+      setLinkBoxes([])
     }
-    const blur = () => root.removeAttribute("data-osh-linkmode")
+    const blur = () => {
+      root.removeAttribute("data-osh-linkmode")
+      setLinkBoxes([])
+    }
     window.addEventListener("keydown", down)
     window.addEventListener("keyup", up)
     window.addEventListener("blur", blur)
@@ -646,7 +680,10 @@ export function VirtualTimeline(props: {
           setPinned(el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON)
         })
       }}
-      onScroll={onScroll}
+      onScroll={(event) => {
+        onScroll()
+        if (document.documentElement.hasAttribute("data-osh-linkmode")) requestAnimationFrame(refreshLinkBoxes)
+      }}
       onClick={onLinkClick}
       data-transcript-scroll
       data-osh-gutter
@@ -662,6 +699,14 @@ export function VirtualTimeline(props: {
         style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
       />
       <Show when={props.footer}>{props.footer}</Show>
+      {/* ctrl-held link targets: one box per message, never per part */}
+      <Show when={linkBoxes().length > 0}>
+        <div class="osh-link-overlay" aria-hidden="true">
+          <For each={linkBoxes()}>
+            {(box) => <div class="osh-link-box" style={{ top: `${box.top}px`, height: `${box.height}px` }} />}
+          </For>
+        </div>
+      </Show>
     </div>
   )
 }
