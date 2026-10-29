@@ -236,6 +236,22 @@ function displayDirectory(path: string | undefined) {
 
 import { resolveFileDiff } from "../components/session-diff"
 
+// openshare fork: per-agent colors. explore is blue, general dark red, and
+// every other type takes the next free slot in first-use order, so one
+// session always paints the same assignment.
+const OSH_AGENT_NAMED: Record<string, string> = { explore: "#5b9cf6", general: "#d65454" }
+const OSH_AGENT_PALETTE = ["#5b9cf6", "#d65454", "#56b6c2", "#e0a75e", "#c678dd", "#98c379", "#e0849c"]
+const oshAgentAssigned = new Map<string, string>()
+function oshAgentColor(agent: string | undefined): string {
+  if (!agent) return ""
+  const hit = oshAgentAssigned.get(agent)
+  if (hit) return hit
+  const used = new Set(oshAgentAssigned.values())
+  const color = OSH_AGENT_NAMED[agent] ?? OSH_AGENT_PALETTE.find((c) => !used.has(c)) ?? OSH_AGENT_PALETTE[0]
+  oshAgentAssigned.set(agent, color)
+  return color
+}
+
 export function taskAgentName(raw: string | undefined, list?: readonly { name: string }[]) {
   if (!raw) return undefined
   const key = raw.toLowerCase()
@@ -1801,9 +1817,11 @@ ToolRegistry.register({
 
     const trigger = () => (
       // openshare fork: .osh-task-wrap carries the in-flow hint below the
-      // card (app.css: height 0 -> 22px on hover; the card box never grows)
+      // card (app.css: height 0 -> 22px on hover; the card box never grows).
+      // data-running drives the sweep animation; --osh-agent paints the card
+      // in its type color (src/agent-colors.ts).
       <div class="osh-task-wrap">
-      <div data-component="task-tool-card">
+      <div data-component="task-tool-card" data-running={running() ? "" : undefined} style={{ "--osh-agent": oshAgentColor(input()?.agent) || undefined }}>
         <div data-component="task-tool-surface">
           <div data-slot="basic-tool-tool-info-structured">
             <div data-slot="basic-tool-tool-info-main">

@@ -1000,9 +1000,10 @@ html[data-color-scheme="light"] {
   border: none;
   outline: none;
 }
-/* the subagent name is a scan target, not a label washed into the body text */
+/* the subagent name is a scan target, not a label washed into the body text;
+   its color follows the agent type when the card carries one */
 .osh-task-wrap [data-component="task-tool-title"] {
-  color: var(--v2-text-text-accent);
+  color: var(--osh-agent, var(--v2-text-text-accent));
 }
 .osh-task-wrap::after {
   content: "";
@@ -1012,7 +1013,8 @@ html[data-color-scheme="light"] {
   bottom: 0;
   height: 1px;
   border-radius: 1px;
-  background: var(--openshare-accent, var(--icon-strong-base));
+  /* the underline follows the agent type when the card carries one */
+  background: var(--osh-agent, var(--openshare-accent, var(--icon-strong-base)));
   transform: scaleX(0);
   transform-origin: center;
   transition: transform 180ms ease-out;
@@ -1536,107 +1538,62 @@ html[data-osh-preview-hover] [data-slot="user-message-run-actions"] {
 html[data-osh-preview-hover] .osh-out-grip::after {
   background: var(--openshare-accent, var(--icon-strong-base));
 }
-/* --- subagent "running" animation candidates (design trial, gallery only) --
-   Five interchangeable effects, selected by [data-osh-subanim] on a wrapper.
-   Production keeps the current look until one is picked; the gallery renders
-   every candidate side by side (owner rule: prototype in the gallery first).
-   All of them animate paint only - no layout, no text motion. */
-@keyframes osh-orbit {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@keyframes osh-shimmer {
-  from { transform: translateX(-60%); }
-  to { transform: translateX(160%); }
-}
-@keyframes osh-breathe {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 1; }
-}
-@keyframes osh-dotpulse {
-  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-1px); }
-}
 
-/* A: the agent mark's ring rotates while a dot orbits it */
-[data-osh-subanim="orbit"] [data-component="task-tool-card"] {
-  position: relative;
+/* --- subagent "running" animation (owner round 2026-10-29) ---------------
+   A soft sweep crosses the card while a thin glow rides the bottom edge.
+   Both pseudos travel the same distance over the same duration with the
+   same easing, so they move as one; the sweep starts fully outside the card
+   (-115% of its own width) so nothing pops in, and the color follows the
+   agent type (--osh-agent, set by the vendored task renderer). The gallery
+   renders a plain variant for A/B behind data-osh-subanim="plain". */
+@keyframes osh-sweep {
+  from { transform: translateX(-115%); }
+  to { transform: translateX(235%); }
 }
-[data-osh-subanim="orbit"] [data-component="task-tool-card"]::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 10px;
-  width: 18px;
-  height: 18px;
-  margin-top: -9px;
-  border-radius: 999px;
-  border: 1.5px solid color-mix(in oklab, var(--openshare-accent, #7aa2f7) 22%, transparent);
-  border-top-color: var(--openshare-accent, #7aa2f7);
-  animation: osh-orbit 1.6s linear infinite;
-  pointer-events: none;
-}
-
-/* B: a soft accent sweep crosses the card every 2.4s */
-[data-osh-subanim="shimmer"] [data-component="task-tool-card"] {
+.osh-task-wrap [data-component="task-tool-card"][data-running] {
   position: relative;
   overflow: hidden;
 }
-[data-osh-subanim="shimmer"] [data-component="task-tool-card"]::after {
+.osh-task-wrap [data-component="task-tool-card"][data-running]::after {
   content: "";
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
   width: 45%;
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in oklab, var(--openshare-accent, #7aa2f7) 14%, transparent),
+    color-mix(in oklab, var(--osh-agent, var(--openshare-accent, #7aa2f7)) 13%, transparent),
     transparent
   );
-  animation: osh-shimmer 2.4s ease-in-out infinite;
+  animation: osh-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
   pointer-events: none;
 }
-
-/* C: the card breathes - accent edge fades in and out */
-[data-osh-subanim="breathe"] [data-component="task-tool-card"] {
-  border-color: color-mix(in oklab, var(--openshare-accent, #7aa2f7) 45%, var(--v2-border-border-base));
-  animation: osh-breathe 2.2s ease-in-out infinite;
-}
-
-/* D: three dots after the label, staggered */
-[data-osh-subanim="dots"] [data-component="task-tool-card"] [data-component="task-tool-title"]::after {
-  content: "\2009\2009\2009";
-  display: inline-block;
-  letter-spacing: 2px;
-  color: var(--openshare-accent, #7aa2f7);
-  animation: osh-breathe 1.2s ease-in-out infinite;
-}
-
-/* E: a thin progress bar at the card's bottom edge (indeterminate) */
-[data-osh-subanim="bar"] [data-component="task-tool-card"] {
-  position: relative;
-  overflow: hidden;
-}
-[data-osh-subanim="bar"] [data-component="task-tool-card"]::after {
+.osh-task-wrap [data-component="task-tool-card"][data-running]::before {
   content: "";
   position: absolute;
   left: 0;
-  right: 0;
   bottom: 0;
+  width: 45%;
   height: 2px;
   background: linear-gradient(
     90deg,
     transparent,
-    var(--openshare-accent, #7aa2f7),
+    var(--osh-agent, var(--openshare-accent, #7aa2f7)),
     transparent
   );
-  animation: osh-shimmer 1.8s ease-in-out infinite;
+  animation: osh-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  pointer-events: none;
 }
-
+[data-osh-subanim="plain"] .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
+[data-osh-subanim="plain"] .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+  animation: none;
+  content: none;
+}
 @media (prefers-reduced-motion: reduce) {
-  [data-osh-subanim] [data-component="task-tool-card"],
-  [data-osh-subanim] [data-component="task-tool-card"]::after,
-  [data-osh-subanim] [data-component="task-tool-card"] [data-component="task-tool-title"]::after {
-    animation: none !important;
+  .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
+  .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+    animation: none;
   }
 }

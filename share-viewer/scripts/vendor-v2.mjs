@@ -390,7 +390,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
         .split("\n")
         .map((line) => (line.trim() ? "  " + line : line))
         .join("\n")
-        .replace("void pool.initialize()", "void pool.initialize().catch((e) => console.warn(\\"[openshare] pierre pool init failed; code renders plain\\", e))")
+        .replace("void pool.initialize()", 'void pool.initialize().catch((e) => console.warn("[openshare] pierre pool init failed; code renders plain", e))')
       const fork = `function createPool(lineDiffType: "none" | "word-line"): WorkerPoolManager | undefined {\n  // openshare fork: offline snapshot files run from file://, where Worker\n  // construction throws SecurityError synchronously — a failed pool must\n  // degrade rendering to plain text, not kill the whole page\n  try {\n${body}\n\n    return pool\n  } catch {\n    return undefined\n  }\n}`
       s = s.replace(m[0], fork)
       if (s === before) throw new Error("vendor-v2: pierre worker.ts createPool fork failed")
@@ -629,11 +629,21 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       const openA = s.includes('    const trigger = () => (\n      <div data-component="task-tool-card">')
         ? ['    const trigger = () => (', '      <div data-component="task-tool-card">'].join(nl)
         : ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
-      const openB = openA.replace(
+      // card attrs: the running animation hook + the agent type color var
+      const openA2 = openA.replace(
+        /(      <div data-component="task-tool-card")>/,
+        '$1 data-running={running() ? "" : undefined} style={{ "--osh-agent": oshAgentColor(input()?.agent) || undefined }}>',
+      ).replace(
+        /(      <div\n        data-component="task-tool-card")/,
+        '$1\n        data-running={running() ? "" : undefined}\n        style={{ "--osh-agent": oshAgentColor(input()?.agent) || undefined }}',
+      )
+      const openB = openA2.replace(
         /(      <div)/,
         [
           "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
-          '      // card (app.css: height 0 -> 22px on hover; the card box never grows)',
+          '      // card (app.css: height 0 -> 22px on hover; the card box never grows).',
+          '      // data-running drives the sweep animation; --osh-agent paints the',
+          '      // card in its type color (oshAgentColor above).',
           '      <div class="osh-task-wrap">',
           "$1",
         ].join(nl),
@@ -652,6 +662,42 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       if (!s.includes(openA)) throw new Error("vendor-v2: task trigger open anchor missing - upstream drifted")
       if (!s.includes(closeA)) throw new Error("vendor-v2: task trigger close anchor missing - upstream drifted")
       s = s.replace(openA, openB).replace(closeA, closeB)
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: per-agent colors for task cards. explore is blue, general
+// dark red, every other type takes the next free palette slot in first-use
+// order (stable for the page). Inserted above taskAgentName; the card reads
+// it through the --osh-agent style var.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("oshAgentColor")) {
+      const anchor = "export function taskAgentName("
+      const block = [
+        "// openshare fork: per-agent colors. explore is blue, general dark red, and",
+        "// every other type takes the next free slot in first-use order, so one",
+        "// session always paints the same assignment.",
+        'const OSH_AGENT_NAMED: Record<string, string> = { explore: "#5b9cf6", general: "#d65454" }',
+        'const OSH_AGENT_PALETTE = ["#5b9cf6", "#d65454", "#56b6c2", "#e0a75e", "#c678dd", "#98c379", "#e0849c"]',
+        "const oshAgentAssigned = new Map<string, string>()",
+        "function oshAgentColor(agent: string | undefined): string {",
+        '  if (!agent) return ""',
+        "  const hit = oshAgentAssigned.get(agent)",
+        "  if (hit) return hit",
+        "  const used = new Set(oshAgentAssigned.values())",
+        "  const color = OSH_AGENT_NAMED[agent] ?? OSH_AGENT_PALETTE.find((c) => !used.has(c)) ?? OSH_AGENT_PALETTE[0]",
+        "  oshAgentAssigned.set(agent, color)",
+        "  return color",
+        "}",
+        "",
+        "",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: taskAgentName anchor missing - upstream drifted")
+      s = s.replace(anchor, block + anchor)
       writeFileSync(p, s)
     }
   }
