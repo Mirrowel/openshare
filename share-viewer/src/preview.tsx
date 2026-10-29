@@ -254,7 +254,7 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
       { label: "running - combined sweep (general = dark red)", entry: entry("subagent", { description: "Refactor layout", subagent_type: "general", agent: "general", prompt: "Move the header" }, "", "running") },
       { label: "running - combined sweep (unnamed type = next palette slot)", entry: entry("subagent", { description: "Check the build", subagent_type: "verify", agent: "verify", prompt: "Run tests" }, "", "running") },
       { label: "running - animation off (A/B)", subanim: "plain", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running") },
-      { label: "running, hover (no underline, no chevron)", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running", { sessionID: "ses_preview_child" }) },
+      { label: "running, hover (sweep + underline + chevron)", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running", { sessionID: "ses_preview_child" }) },
     ],
   },
 ]

@@ -1605,11 +1605,3 @@ html[data-osh-preview-hover] .osh-out-grip::after {
     animation: none;
   }
 }
-/* hover affordances belong to FINISHED subagent cards: a running card
-   carries the sweep instead (the card stays clickable, just quiet) */
-.osh-task-wrap:has([data-component="task-tool-card"][data-running])::after {
-  content: none;
-}
-.osh-task-wrap [data-component="task-tool-card"][data-running] [data-component="task-tool-action"] {
-  display: none;
-}
