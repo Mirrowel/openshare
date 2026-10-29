@@ -629,17 +629,20 @@ html[data-osh-overflow="scroll"] [data-component="tool-output"] {
   white-space: pre;
   overflow-wrap: normal;
   overflow-x: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  /* thin, never none: `scrollbar-width: none` hid the VERTICAL bar too, so a
+     long result lost its "more below" cue the moment scroll mode was on.
+     Only the horizontal bar is suppressed, where the pseudo exists. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.4)) transparent;
 }
 html[data-osh-overflow="scroll"] [data-slot="bash-scroll"] {
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-html[data-osh-overflow="scroll"] .osh-pre::-webkit-scrollbar,
-html[data-osh-overflow="scroll"] [data-component="tool-output"]::-webkit-scrollbar,
-html[data-osh-overflow="scroll"] [data-slot="bash-scroll"]::-webkit-scrollbar {
+html[data-osh-overflow="scroll"] .osh-pre::-webkit-scrollbar:horizontal,
+html[data-osh-overflow="scroll"] [data-component="tool-output"]::-webkit-scrollbar:horizontal,
+html[data-osh-overflow="scroll"] [data-slot="bash-scroll"]::-webkit-scrollbar:horizontal {
   display: none;
 }
 html[data-osh-overflow="wrap"] .osh-pre,
@@ -1425,7 +1428,10 @@ html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
 [data-osh-out][data-osh-resizing] {
   user-select: none;
 }
-[data-osh-out][data-osh-clipped]::after {
+/* the clipped fade belongs to shell and text cards only: a file card marks
+   clipping with chevrons, and the fade painted a dark band over its last
+   lines (live-caught) */
+[data-osh-out]:not([data-osh-out="file"])[data-osh-clipped]::after {
   content: "";
   position: absolute;
   left: 1px;
@@ -1438,22 +1444,33 @@ html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
 }
 /* the file card scrolls without a bar; its chevrons say more is there */
 [data-osh-out="file"]::after {
-  content: none;
+  content: none !important;
 }
 /* --- deep links -------------------------------------------------------- */
-/* ctrl held: message bodies (never gap/spacer rows) advertise that a click
-   copies a link to the message */
+/* ctrl held: ONE box per message marks the link target. A message is many
+   absolutely-positioned rows, so the boxes are computed and painted in an
+   overlay (see timeline-v2); rows only borrow the copy cursor. */
 html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="user-message:"],
 html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="assistant-part:"] {
   cursor: copy;
-  outline: 1px dashed color-mix(in oklab, var(--openshare-accent, #e0af68) 55%, transparent);
-  outline-offset: -2px;
-  border-radius: 6px;
 }
-html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="user-message:"]:hover,
-html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="assistant-part:"]:hover {
-  outline-style: solid;
-  outline-color: var(--openshare-accent, #e0af68);
+.osh-link-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.osh-link-box {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border: 1px dashed color-mix(in oklab, var(--openshare-accent, #e0af68) 55%, transparent);
+  border-radius: 8px;
+  transition: border-color 120ms ease-out;
+}
+.osh-link-overlay:hover .osh-link-box {
+  border-style: solid;
+  border-color: color-mix(in oklab, var(--openshare-accent, #e0af68) 80%, transparent);
 }
 
 /* a deep-link target flashes long enough to be noticed while scrolling */
@@ -1518,4 +1535,108 @@ html[data-osh-preview-hover] [data-slot="user-message-run-actions"] {
 [data-osh-preview-hover] .osh-out-grip::after,
 html[data-osh-preview-hover] .osh-out-grip::after {
   background: var(--openshare-accent, var(--icon-strong-base));
+}
+/* --- subagent "running" animation candidates (design trial, gallery only) --
+   Five interchangeable effects, selected by [data-osh-subanim] on a wrapper.
+   Production keeps the current look until one is picked; the gallery renders
+   every candidate side by side (owner rule: prototype in the gallery first).
+   All of them animate paint only - no layout, no text motion. */
+@keyframes osh-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes osh-shimmer {
+  from { transform: translateX(-60%); }
+  to { transform: translateX(160%); }
+}
+@keyframes osh-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+@keyframes osh-dotpulse {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-1px); }
+}
+
+/* A: the agent mark's ring rotates while a dot orbits it */
+[data-osh-subanim="orbit"] [data-component="task-tool-card"] {
+  position: relative;
+}
+[data-osh-subanim="orbit"] [data-component="task-tool-card"]::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in oklab, var(--openshare-accent, #7aa2f7) 22%, transparent);
+  border-top-color: var(--openshare-accent, #7aa2f7);
+  animation: osh-orbit 1.6s linear infinite;
+  pointer-events: none;
+}
+
+/* B: a soft accent sweep crosses the card every 2.4s */
+[data-osh-subanim="shimmer"] [data-component="task-tool-card"] {
+  position: relative;
+  overflow: hidden;
+}
+[data-osh-subanim="shimmer"] [data-component="task-tool-card"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--openshare-accent, #7aa2f7) 14%, transparent),
+    transparent
+  );
+  animation: osh-shimmer 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* C: the card breathes - accent edge fades in and out */
+[data-osh-subanim="breathe"] [data-component="task-tool-card"] {
+  border-color: color-mix(in oklab, var(--openshare-accent, #7aa2f7) 45%, var(--v2-border-border-base));
+  animation: osh-breathe 2.2s ease-in-out infinite;
+}
+
+/* D: three dots after the label, staggered */
+[data-osh-subanim="dots"] [data-component="task-tool-card"] [data-component="task-tool-title"]::after {
+  content: "\2009\2009\2009";
+  display: inline-block;
+  letter-spacing: 2px;
+  color: var(--openshare-accent, #7aa2f7);
+  animation: osh-breathe 1.2s ease-in-out infinite;
+}
+
+/* E: a thin progress bar at the card's bottom edge (indeterminate) */
+[data-osh-subanim="bar"] [data-component="task-tool-card"] {
+  position: relative;
+  overflow: hidden;
+}
+[data-osh-subanim="bar"] [data-component="task-tool-card"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--openshare-accent, #7aa2f7),
+    transparent
+  );
+  animation: osh-shimmer 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-osh-subanim] [data-component="task-tool-card"],
+  [data-osh-subanim] [data-component="task-tool-card"]::after,
+  [data-osh-subanim] [data-component="task-tool-card"] [data-component="task-tool-title"]::after {
+    animation: none !important;
+  }
 }

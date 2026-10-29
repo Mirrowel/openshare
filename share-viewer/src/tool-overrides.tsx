@@ -20,6 +20,8 @@ import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
+import { deepQueryAll, onDeepChange } from "./shadow-dom"
+import { syncOutputCards } from "./output-resize"
 
 /** Per-card overflow toggle (owner directive): on the EXPANDED card body -
  *  never the collapsed trigger row. Wraps vs hidden-scrollbar scroll for
@@ -181,35 +183,17 @@ function ChangeCounts(props: { adds: number; dels: number }) {
  * math) is gone: card width is stable by construction, so the class of
  * hug-poisons-measurement bugs (a 264px collapsed scroller refusing the
  * split forever) cannot exist. */
-const [colWidth, setColWidth] = createSignal(0)
-let colEl: HTMLElement | undefined
-let colRO: ResizeObserver | undefined
-function trackColumn(el: HTMLElement) {
-  const host =
-    el.closest<HTMLElement>("[data-transcript-content]") ??
-    el.closest<HTMLElement>("[data-transcript-scroll]") ??
-    el
-  if (host === colEl) {
-    if (colRO) setColWidth(host.clientWidth)
-    return
-  }
-  colEl = host
-  colRO?.disconnect()
-  colRO = new ResizeObserver(() => setColWidth(host.clientWidth))
-  colRO.observe(host)
-  setColWidth(host.clientWidth)
-}
 const CARD_W = 480 // px — mirrors --osh-card: 30rem in app.css
-const splitFits = () => colWidth() >= CARD_W * 2 + 24
+const splitFits = (colWidth: () => number) => colWidth() >= CARD_W * 2 + 24
 
 /** effective diff layout: forced unified stays unified; forced split needs
  * the room (falls back unified with the starved indicator); auto splits
  * exactly when the column fits two cards side by side */
-function effectiveDiffMode(): () => "split" | "unified" {
+function effectiveDiffMode(colWidth: () => number): () => "split" | "unified" {
   return createMemo<"split" | "unified">(() => {
     const m = diffModeSignal()
     if (m === "unified") return "unified"
-    return splitFits() ? "split" : "unified"
+    return splitFits(colWidth) ? "split" : "unified"
   })
 }
 
@@ -291,27 +275,24 @@ function errorText(props: ToolProps): string {
 function GutterOffset(props: { start: number; children: JSX.Element }) {
   let root: HTMLDivElement | undefined
   const renumber = () => {
-    if (!root || props.start <= 1) return
-    const shift = props.start - 1
-    for (const cell of root.querySelectorAll("[data-column-number]")) {
+    if (!root) return
+    for (const cell of deepQueryAll(root, "[data-column-number]")) {
       const raw = cell.getAttribute("data-column-number")
       const n = raw == null ? NaN : Number(raw)
       if (!Number.isFinite(n)) continue
-      // idempotent: recompute from the 0-based line index pierre stamps
+      // the offset renumbers from the REAL first line; at start 1 it also
+      // undoes a stale number from a previous slice of the same file
       const idx = Number(cell.getAttribute("data-line-index") ?? "0")
       const next = (Number.isFinite(idx) ? idx : n - 1) + props.start
       if (next === n) continue
       cell.setAttribute("data-column-number", String(next))
-      const text = cell.querySelector("[data-line-number-content]")
+      const text = deepQueryAll(cell, "[data-line-number-content]")[0]
       if (text) text.textContent = String(next)
     }
   }
   const attach = (el: HTMLDivElement) => {
     root = el
-    renumber()
-    const mo = new MutationObserver(() => requestAnimationFrame(renumber))
-    mo.observe(el, { childList: true, subtree: true })
-    onCleanup(() => mo.disconnect())
+    onCleanup(onDeepChange(el, renumber))
   }
   return <div ref={attach}>{props.children}</div>
 }
@@ -341,8 +322,9 @@ function FileCard(props: {
     setTimeout(() => {
       const root = inner
       if (!root) return
-      const cells = root.querySelectorAll("[data-column-number]").length
-      const tokens = root.querySelectorAll("[data-line] span[style]").length
+      // pierre paints inside a shadow root: both counts must look deeper
+      const cells = deepQueryAll(root, "[data-column-number]").length
+      const tokens = deepQueryAll(root, "[data-line] span[style]").length
       if (cells > 0 && tokens === 0) setAttempt(1)
     }, 1200)
   }
@@ -362,6 +344,9 @@ function FileCard(props: {
               overflow={ov()}
               onRendered={() => {
                 settle()
+                // pierre paints in a shadow root: the clipped/arrow pass
+                // cannot rely on document mutations, so re-run it here
+                syncOutputCards()
                 props.onRendered?.()
               }}
             />
@@ -372,7 +357,10 @@ function FileCard(props: {
               mode="text"
               file={{ name: props.path, contents: props.contents }}
               overflow={ov()}
-              onRendered={() => props.onRendered?.()}
+              onRendered={() => {
+                syncOutputCards()
+                props.onRendered?.()
+              }}
             />
           </Show>
         </GutterOffset>
@@ -386,7 +374,7 @@ function FileCard(props: {
  *  row's right edge. */
 function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; controls?: JSX.Element; children: JSX.Element }) {
   return (
-    <div data-component="osh-file-body" data-osh-out="file" ref={(el) => queueMicrotask(() => trackColumn(el))}>
+    <div data-component="osh-file-body" data-osh-out="file">
       <div class="osh-file-titlebar">
         <Show when={props.title}>
           <FileTitle path={props.title!} />
@@ -482,9 +470,23 @@ const EditTool = (props: ToolProps) => {
       : undefined,
   )
   // fixed card widths (owner round 2026-10-25): the split/unified decision
-  // rides the shared column measurement — no per-card measurement left
-  const effMode = effectiveDiffMode()
-  const starved = () => diffModeSignal() === "split" && !splitFits()
+  // rides this card's own column measurement (per instance - see
+  // useColumnWidth)
+  const [colW, setColW] = createSignal(0)
+  const bindColumn = (el: HTMLDivElement) => {
+    const host =
+      el.closest<HTMLElement>("[data-osh-col]") ??
+      el.closest<HTMLElement>("[data-transcript-content]") ??
+      el.closest<HTMLElement>("main") ??
+      el.parentElement ??
+      el
+    const ro = new ResizeObserver(() => setColW(host.clientWidth))
+    ro.observe(host)
+    setColW(host.clientWidth)
+    onCleanup(() => ro.disconnect())
+  }
+  const effMode = effectiveDiffMode(colW)
+  const starved = () => diffModeSignal() === "split" && !splitFits(colW)
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -499,7 +501,7 @@ const EditTool = (props: ToolProps) => {
     return { adds, dels }
   })
   return (
-    <div data-component="osh-edit-tool" data-osh-split={effMode() === "split" ? "on" : "off"}>
+    <div data-component="osh-edit-tool" data-osh-split={effMode() === "split" ? "on" : "off"} ref={bindColumn}>
       <BasicTool
         {...props}
         icon="code-lines"
