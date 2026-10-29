@@ -36,6 +36,7 @@ import { useShareSource, type Branding } from "./data-source"
 import { copySessionMarkdown } from "./copy-markdown"
 import { downloadSessionExport } from "./export-session"
 import { SearchControl } from "./search-palette"
+import { searchQuery, setSearchQuery } from "./search-state"
 import { useSessionSections } from "./views/session-data"
 import { BrandMark } from "./views/chrome"
 import { SettingsPanel, togglePanel } from "./settings-panel"
@@ -984,7 +985,12 @@ export function App() {
   const source = useShareSource()
   const [sub, setSub] = createSignal<number | undefined>(source.sub)
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
-  const [search, setSearch] = createSignal("")
+  // ONE search query for the whole page: the palette engine (marks, scopes,
+  // jump) and every skin's filter read this store. The old page-local
+  // signal meant a skin's input and the palette were two unrelated
+  // searches; they are the same search now.
+  const search = searchQuery
+  const setSearch = setSearchQuery
 
   // the reader's transcript offset, tracked from real scroll events so a
   // settings-driven reflow can put them back exactly where they were
