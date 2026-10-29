@@ -58,7 +58,7 @@ render(
       <DialogProvider>
         <I18nProvider value={{ locale, t, plural }}>
           <Suspense>
-            {new URLSearchParams(location.search).has("preview") ? <Preview /> : <App />}
+            {import.meta.env.DEV && new URLSearchParams(location.search).has("preview") ? <Preview /> : <App />}
           </Suspense>
         </I18nProvider>
       </DialogProvider>

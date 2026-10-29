@@ -43,7 +43,7 @@ function entry(tool: string, input: Record<string, unknown>, output = "", status
 const PATCH = (file: string, body: string) =>
   `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1,6 +1,7 @@\n import { app } from "./app"\n \n-const port = 3000\n+const port = 3001\n+const host = "127.0.0.1"\n app.listen(port)\n export default app\n`
 
-const READ_BODY = Array.from({ length: 14 }, (_, i) => `${String(i + 1).padStart(3, " ")}  const value${i + 1} = compute(${i + 1}) // result`).join("\n")
+const READ_BODY = Array.from({ length: 14 }, (_, i) => `const value${i + 1} = compute(${i + 1}) // result`).join("\n")
 
 type State = { label: string; entry: ToolEntry }
 
@@ -154,6 +154,8 @@ export function Preview() {
     setForceHover(on)
     document.documentElement.toggleAttribute("data-osh-preview-hover", on)
   }
+  // every card starts open: this page exists to show states, not to click them open
+  const allOpen = createMemo(() => ({ ...settings(), autoExpand: groups.map((g) => g.tool) }))
   const total = createMemo(() => groups.reduce((n, g) => n + g.states.length, 0))
 
   return (
@@ -192,7 +194,7 @@ export function Preview() {
                     {(state) => (
                       <div>
                         <div class="mb-1 text-12-regular text-text-weaker">{state.label}</div>
-                        <VendoredPart entry={state.entry} settings={settings()} data={data} />
+                        <VendoredPart entry={state.entry} settings={allOpen()} data={data} />
                       </div>
                     )}
                   </For>
