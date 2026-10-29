@@ -19,6 +19,7 @@ import { useFileComponent } from "@opencode/ui/context"
 import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
+import { mediaKindFromPath } from "@opencode/session-ui/pierre/media"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
 import { deepQueryAll, onDeepChange } from "./shadow-dom"
 import { syncOutputCards } from "./output-resize"
@@ -313,6 +314,18 @@ function FileCard(props: {
 }) {
   const fileComponent = useFileComponent()
   const ov = () => fileOverflowSignal()[props.tool] ?? "wrap"
+  // image/svg/audio payloads arrive base64-encoded from the host; the kit's
+  // FileMedia turns the record into a data URL and paints the media itself
+  // (the text viewer stays as the fallback). Without this, reading a PNG
+  // renders a wall of base64.
+  const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml" }
+  const media = () => {
+    const kind = mediaKindFromPath(props.path)
+    if (!kind || !props.path) return undefined
+    const mime = MIME[props.path.split(".").pop()!.toLowerCase()]
+    if (!mime) return undefined
+    return { path: props.path, current: { content: props.contents, encoding: "base64", mimeType: mime } }
+  }
   let inner: HTMLDivElement | undefined
   const [attempt, setAttempt] = createSignal(0)
   let retried = false
@@ -353,6 +366,7 @@ function FileCard(props: {
               mode="text"
               file={{ name: props.path, contents: props.contents }}
               overflow={ov()}
+              media={media() as any}
               onRendered={() => {
                 settle()
                 // pierre paints in a shadow root: the clipped/arrow pass
@@ -368,6 +382,7 @@ function FileCard(props: {
               mode="text"
               file={{ name: props.path, contents: props.contents }}
               overflow={ov()}
+              media={media() as any}
               onRendered={() => {
                 syncOutputCards()
                 props.onRendered?.()
