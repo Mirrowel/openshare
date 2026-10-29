@@ -20,7 +20,7 @@ import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
-import { deepQueryAll, onDeepChange } from "./shadow-dom"
+import { deepQueryAll, injectShadowStyle, onDeepChange } from "./shadow-dom"
 import { syncOutputCards } from "./output-resize"
 
 /** Per-card overflow toggle (owner directive): on the EXPANDED card body -
@@ -292,7 +292,16 @@ function GutterOffset(props: { start: number; children: JSX.Element }) {
   }
   const attach = (el: HTMLDivElement) => {
     root = el
-    onCleanup(onDeepChange(el, renumber))
+    // divider between pierre's line numbers and the content lives inside the
+    // shadow root; a page stylesheet cannot reach it, so inject one (idempotent)
+    const inject = () => injectShadowStyle(el, "osh-gutter-divider", "[data-column-number] { border-right: 1px solid color-mix(in oklab, var(--text-weak, #888) 25%, transparent); margin-right: 8px; }")
+    inject()
+    onCleanup(
+      onDeepChange(el, () => {
+        renumber()
+        inject()
+      }),
+    )
   }
   return <div ref={attach}>{props.children}</div>
 }
@@ -330,7 +339,18 @@ function FileCard(props: {
   }
   return (
     <FileBody title={props.path} tool={props.tool}>
-      <div ref={(el) => (inner = el)} style={{ display: "contents" }}>
+      <div
+        ref={(el) => {
+          inner = el
+          // chevrons/fade depend on the scroll geometry, but pierre lays out
+          // inside a shadow root at its own pace and NO light-DOM mutation
+          // fires when it finishes - re-check the card a few times after
+          // mount so the arrow state settles without a reader scroll
+          const timers = [400, 1200, 3000].map((ms) => window.setTimeout(() => syncOutputCards(), ms))
+          onCleanup(() => timers.forEach((t) => clearTimeout(t)))
+        }}
+        style={{ display: "contents" }}
+      >
         <GutterOffset start={props.lineStart ?? 1}>
           {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
               prop is just passed through) - a distinct <Show keyed> branch

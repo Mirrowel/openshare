@@ -116,7 +116,8 @@ type State = {
   /** scroll the card body once mounted: shows both scroll chevrons */
   scrollTo?: "middle"
   /** design-trial wrapper attribute for the subagent running animation */
-  subanim?: "orbit" | "shimmer" | "breathe" | "dots" | "bar"
+  /** disable the running animation for A/B (gallery only) */
+  subanim?: "plain"
   /** shrink the column so split cannot fit - shows the starved indicator */
   narrow?: boolean
 }
@@ -241,16 +242,15 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
     tool: "subagent",
     blurb: "hover shows the chevron + accent underline; clicking opens the child page",
     states: [
-      { label: "completed", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "Child session finished: 4 files summarised.", "completed") },
-      { label: "completed, hover", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "Child session finished.", "completed") },
-      { label: "running", entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", prompt: "Move the header" }, "", "running") },
-      { label: "running, hover", hover: true, entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", prompt: "Move the header" }, "", "running") },
-      { label: "failed", entry: entry("subagent", { description: "Audit security", subagent_type: "explore", prompt: "Audit" }, "Subagent aborted", "error") },
-      { label: "running - A orbit", subanim: "orbit", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
-      { label: "running - B shimmer", subanim: "shimmer", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
-      { label: "running - C breathe", subanim: "breathe", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
-      { label: "running - D dots", subanim: "dots", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
-      { label: "running - E progress bar", subanim: "bar", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", prompt: "List files" }, "", "running") },
+      { label: "completed", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "Child session finished: 4 files summarised.", "completed") },
+      { label: "completed, hover", hover: true, entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "Child session finished.", "completed") },
+      { label: "running", entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", agent: "build", prompt: "Move the header" }, "", "running") },
+      { label: "running, hover", hover: true, entry: entry("subagent", { description: "Refactor layout", subagent_type: "build", agent: "build", prompt: "Move the header" }, "", "running") },
+      { label: "failed", entry: entry("subagent", { description: "Audit security", subagent_type: "explore", agent: "explore", prompt: "Audit" }, "Subagent aborted", "error") },
+      { label: "running - combined sweep (explore = blue)", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running") },
+      { label: "running - combined sweep (general = dark red)", entry: entry("subagent", { description: "Refactor layout", subagent_type: "general", agent: "general", prompt: "Move the header" }, "", "running") },
+      { label: "running - combined sweep (unnamed type = next palette slot)", entry: entry("subagent", { description: "Check the build", subagent_type: "verify", agent: "verify", prompt: "Run tests" }, "", "running") },
+      { label: "running - animation off (A/B)", subanim: "plain", entry: entry("subagent", { description: "Explore the repo", subagent_type: "explore", agent: "explore", prompt: "List files" }, "", "running") },
     ],
   },
 ]

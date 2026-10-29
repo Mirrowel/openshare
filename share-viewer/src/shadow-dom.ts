@@ -21,6 +21,29 @@ export function deepQueryAll(root: ParentNode, selector: string): HTMLElement[] 
   return out
 }
 
+/** Append `css` into every shadow root under `root`, once per root. Pierre
+ *  paints its gutters and lines inside shadow DOM, so a divider between the
+ *  numbers and the content can only be styled from inside. Custom properties
+ *  still inherit from the page, so theme tokens keep working. */
+export function injectShadowStyle(root: ParentNode, id: string, css: string) {
+  const style = (scope: ParentNode) => {
+    const host = scope as ShadowRoot
+    if (!(host instanceof ShadowRoot) || host.getElementById(id)) return
+    const el = document.createElement("style")
+    el.id = id
+    el.textContent = css
+    host.appendChild(el)
+  }
+  const walk = (node: ParentNode) => {
+    style(node)
+    for (const el of node.querySelectorAll<HTMLElement>("*")) {
+      const shadow = el.shadowRoot
+      if (shadow) walk(shadow as unknown as ParentNode)
+    }
+  }
+  walk(root)
+}
+
 /** Run `fn` once the element's shadow content settles: immediately, on a
  *  couple of animation frames, and whenever a shadow root under it mutates
  *  or resizes. Returns a disposer. */
