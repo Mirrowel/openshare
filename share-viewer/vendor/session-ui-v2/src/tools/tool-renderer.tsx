@@ -1859,10 +1859,11 @@ function ConsoleOutput(props: { command?: string; output: string }) {
   const i18n = useI18n()
 
   return (
-    <div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-shell>
-      <div class="osh-shell-grip" data-osh-shell-grip title="drag to resize - double-click resets" />
+    <div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">
+      <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
       <div
         data-slot="bash-scroll"
+        data-osh-scroll
         data-scrollable
         tabIndex={0}
         role="region"

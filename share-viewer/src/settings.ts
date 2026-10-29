@@ -79,6 +79,9 @@ export type OshSettings = {
   /** file-tool card width in rem (text cards; split diffs render at 2x,
    *  viewport-capped) - applied live as --osh-card on <html> */
   cardWidth: number
+  /** tall outputs: capped (file cards stop at ~25 lines and scroll) or
+   *  full (the pre-cap behavior - file bodies render at natural height) */
+  outHeight: "capped" | "full"
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -112,6 +115,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   rowPromptLines: 1,
   rowResponseLines: 0,
   cardWidth: 40,
+  outHeight: "capped",
 }
 
 const COOKIE = "osh_settings"
@@ -341,6 +345,9 @@ export function applySettings(s: OshSettings) {
   // at the value, split diffs at 2x, both viewport-capped)
   const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))
   html.style.setProperty("--osh-card", `${cardWidth}rem`)
+  // tall-output cap: file bodies scroll inside a ~25-line window unless the
+  // reader turns the cap off (the older uncapped behavior)
+  html.dataset.oshHeight = s.outHeight === "full" ? "full" : "capped"
 }
 
 /** wipe every saved setting and re-apply the defaults live: same as

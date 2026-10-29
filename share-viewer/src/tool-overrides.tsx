@@ -386,7 +386,7 @@ function FileCard(props: {
  *  row's right edge. */
 function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; controls?: JSX.Element; children: JSX.Element }) {
   return (
-    <div data-component="osh-file-body" ref={(el) => queueMicrotask(() => trackColumn(el))}>
+    <div data-component="osh-file-body" data-osh-out="file" ref={(el) => queueMicrotask(() => trackColumn(el))}>
       <div class="osh-file-titlebar">
         <Show when={props.title}>
           <FileTitle path={props.title!} />
@@ -396,7 +396,13 @@ function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; con
           <OverflowToggle tool={props.tool} />
         </div>
       </div>
-      {props.children}
+      {/* capped scroll surface: chevrons mark clipped content instead
+          of a scrollbar (a file body is read, not navigated) */}
+      <div class="osh-file-scroll" data-osh-scroll>
+        {props.children}
+      </div>
+      <span class="osh-file-arrow" data-osh-arrow="up" aria-hidden="true" />
+      <span class="osh-file-arrow" data-osh-arrow="down" aria-hidden="true" />
     </div>
   )
 }
@@ -670,8 +676,9 @@ const TextResultTool =
           </div>
         )}
       >
-        <div class="osh-pre-wrap">
-          <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+        <div class="osh-pre-wrap" data-osh-out="text">
+          <pre data-component="osh-pre" class="osh-pre" data-osh-scroll>{body()}</pre>
+          <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
           <CopyButton text={body()} />
           <OverflowToggle />
         </div>
@@ -716,8 +723,9 @@ const GenericOutputTool = (props: ToolProps) => {
         </div>
       )}
     >
-      <div class="osh-pre-wrap">
-        <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+      <div class="osh-pre-wrap" data-osh-out="text">
+        <pre data-component="osh-pre" class="osh-pre" data-osh-scroll>{body()}</pre>
+        <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
         <CopyButton text={body()} />
         <OverflowToggle />
       </div>

@@ -20,9 +20,9 @@ import "./views/skins.css"
 // boot the pierre worker pools now: the kit creates them lazily on first
 // card open, which made the first expanded file card paint plain for a beat
 import { getWorkerPool } from "@opencode/session-ui/pierre/worker"
-import { installShellResize } from "./shell-resize"
+import { installOutputResize } from "./output-resize"
 getWorkerPool()
-installShellResize()
+installOutputResize()
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge

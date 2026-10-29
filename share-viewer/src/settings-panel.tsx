@@ -468,6 +468,13 @@ export function SettingsBody(props: {
             hint="invocation titles and queries"
             on={props.settings.toolInfo}
             onChange={() => props.update({ toolInfo: !props.settings.toolInfo })}
+          />          <Toggle
+            label="Cap tall outputs"
+            hint="file cards stop at about 25 lines and scroll (chevrons mark the rest); off = full natural height"
+            on={(props.settings.outHeight ?? "capped") === "capped"}
+            onChange={() =>
+              props.update({ outHeight: (props.settings.outHeight ?? "capped") === "capped" ? "full" : "capped" })
+            }
           />
            {/* grouping: off = every call its own row; custom = only the
                checked tools collapse; all = everything. The checklist
