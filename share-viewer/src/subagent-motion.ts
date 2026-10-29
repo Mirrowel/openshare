@@ -1,22 +1,40 @@
-// Pause the subagent running-sweep for offscreen cards. The sweep is a
-// compositor animation, but every running card carries two animating
-// pseudos; a share with many subagents keeps them all animating while the
-// reader is nowhere near them, and the layer churn costs real frames
-// (live-caught in the gallery: passing the subagent previews lagged the
-// page). An IntersectionObserver pauses the animation the moment a card
-// leaves the viewport.
+// Shared clock for the subagent running-sweep. Every card's two pseudos run
+// the same 2.6s keyframes; pausing an offscreen card (IntersectionObserver)
+// freezes its phase, and cards re-entering view at different times drift
+// apart. All cards are phase-LOCKED to one page-wide timeline instead: at
+// mount and at every re-entry, the card restarts its animations with
+// animation-delay = -(elapsed mod 2600ms), so every visible card sweeps in
+// unison and pausing never desyncs them.
+const DUR = 2600
+const T0 = performance.now()
+
 let installed = false
 
 export function installSubagentMotion() {
   if (installed) return
   installed = true
 
+  const relock = (el: HTMLElement) => {
+    if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return
+    const delay = -((performance.now() - T0) % DUR)
+    el.style.setProperty("--osh-phase", `${delay}ms`)
+    // animation-delay only applies at start: kill and restart the pseudos'
+    // animations so the new delay takes; two rAFs guarantee the kill
+    // committed before the restart
+    el.setAttribute("data-osh-relock", "")
+    requestAnimationFrame(() => requestAnimationFrame(() => el.removeAttribute("data-osh-relock")))
+  }
+
   const io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
         const el = e.target as HTMLElement
-        if (e.isIntersecting) el.removeAttribute("data-osh-off")
-        else el.setAttribute("data-osh-off", "")
+        if (e.isIntersecting) {
+          el.removeAttribute("data-osh-off")
+          relock(el)
+        } else {
+          el.setAttribute("data-osh-off", "")
+        }
       }
     },
     { rootMargin: "120px" },
@@ -27,6 +45,7 @@ export function installSubagentMotion() {
       if (el.dataset.oshWatched) continue
       el.dataset.oshWatched = "1"
       io.observe(el)
+      relock(el)
     }
   }
 

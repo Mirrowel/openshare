@@ -107,8 +107,13 @@ export function installOutputResize() {
   // geometry: on a cold first load the chevrons/clipped markers stayed
   // missing until the reader scrolled (live-caught); a warm reload painted
   // fast enough to race the mount timers. Watch every discovered shadow
-  // root too, coalesced to one sweep per frame.
+  // root too, coalesced to one sweep per frame — plus TRAILING sweeps:
+  // a body that finished painting before this frame's shadow watcher
+  // attached never mutates again, so re-measure a few times after each
+  // burst (live-caught: the first tall card opened by click stayed
+  // chevron-less until a page reload).
   let scheduled = false
+  let trailing: number[] = []
   const schedule = () => {
     if (scheduled) return
     scheduled = true
@@ -116,6 +121,13 @@ export function installOutputResize() {
       scheduled = false
       watchShadows()
       syncOutputCards()
+      for (const t of trailing) clearTimeout(t)
+      trailing = [300, 1000, 3000].map((ms) =>
+        window.setTimeout(() => {
+          watchShadows()
+          syncOutputCards()
+        }, ms),
+      )
     })
   }
   const watched = new WeakSet<Node>()
