@@ -85,7 +85,7 @@
     "@solid-primitives/event-listener": "2.4.6",
     "@solid-primitives/resize-observer": "2.2.0",
     "fuzzysort": "3.1.0",
-    "katex": "0.16.47",
+    "katex": "0.18.11",
     "knobs": "npm:@kitlangton/knobs@0.4.0-next.22",
     "marked": "18.0.11",
     "solid-list": "0.3.0",

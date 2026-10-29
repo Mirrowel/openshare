@@ -467,12 +467,27 @@ const EditTool = (props: ToolProps) => {
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
   // the host's patch: v1 stamps metadata.filediff, v2 stamps metadata.files
-  const patch = createMemo(() => {
+  const rawPatch = createMemo(() => {
     const meta = (props.metadata as any) ?? {}
     const p1 = meta.filediff?.patch
     if (typeof p1 === "string" && p1) return p1
     const p2 = Array.isArray(meta.files) ? meta.files[0]?.patch : undefined
     return typeof p2 === "string" && p2 ? p2 : undefined
+  })
+  // v1 hosts emit node-diff's `Index:`-flavoured unified patch; the current
+  // kit parser only accepts `diff --git` headers and renders nothing for
+  // the Index form (live-caught: every v1 share's edit cards went blank).
+  // Normalize: synthetic git header, drop the Index/=== preamble lines.
+  const patch = createMemo(() => {
+    const raw = rawPatch()
+    if (raw == null) return undefined
+    if (raw.startsWith("diff --git")) return raw
+    const f = (path() ?? "file").replace(/\\/g, "/")
+    const body = raw
+      .split("\n")
+      .filter((l) => !(l.startsWith("Index:") || l.startsWith("===")))
+      .join("\n")
+    return `diff --git a/${f} b/${f}\n${body}`
   })
   const fileDiff = createMemo(() =>
     patch() != null

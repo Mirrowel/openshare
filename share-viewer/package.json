@@ -28,7 +28,7 @@
     "effect": "4.0.1",
     "fuzzysort": "3.1.0",
     "js-base64": "3.7.7",
-    "katex": "0.16.47",
+    "katex": "0.18.11",
     "luxon": "3.6.1",
     "marked": "18.0.11",
     "marked-shiki": "1.2.1",

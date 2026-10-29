@@ -1,39 +1,100 @@
 // Vendor the opencode v2 (beta) UI kit into share-viewer/vendor.
 // Deterministic + re-runnable; records the source git rev for provenance.
 //
-//   node scripts/vendor-v2.mjs
+//   node scripts/vendor-v2.mjs          regenerate vendor/ at the PIN below
+//   node scripts/vendor-v2.mjs --check  dry-run the port against the PIN
+//                                       (no repo file is touched)
 //
-// Sources (c:\tools\opencode-beta, recorded in vendor/V2-SOURCE.txt):
+// THE PIN is the whole point: vendor/ is a committed, pinned copy of
+// upstream (like a library version in package.json), patched by this
+// script. The pin is a full commit sha of anomalyco/opencode's dev branch;
+// the script downloads EXACTLY that from GitHub, caches it briefly, and
+// deletes the cache again once the port succeeds (kept only on failure, for
+// debugging; older cache entries are always removed). A local checkout is
+// NOT needed - OPENSHARE_BETA_SRC=<path> overrides the download for working
+// against a checkout (documented in VENDOR.md), but the ambient checkout is
+// never read implicitly again.
+//
+// Sources (per VENDOR.md - the patch catalogue lives there):
 //   packages/session-ui  -> vendor/session-ui-v2  (@opencode/session-ui)
 //   packages/ui          -> vendor/ui-v2          (@opencode/ui)
 //   packages/client      -> vendor/client-v2      (@opencode/client, types only)
 //   packages/util        -> vendor/util-v2        (@opencode/util, path+encode)
 //
 // Stories/tests are excluded (storybook/test deps are not vendored).
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync as writeFileImpl, existsSync, readdirSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync as writeFileImpl, existsSync, readdirSync, statSync } from "node:fs"
 import { join, dirname } from "node:path"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
 import { execSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
-// `--check` runs the whole port into a throwaway directory: every anchor is
-// validated against the candidate checkout and no repo file is touched. This
-// is the manual canary before an update.
 const DRY = process.argv.includes("--check")
 
 const REAL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const ROOT = DRY ? mkdtempSync(join(tmpdir(), "osh-vendor-check-")) : REAL_ROOT
 const writeFileSync = writeFileImpl
-const SRC = process.env.OPENSHARE_BETA_SRC ?? "c:/tools/opencode-beta"
 
-if (!existsSync(join(SRC, "packages/session-ui"))) {
-  console.error(`vendor-v2: beta source checkout not found at ${SRC}.`)
-  console.error("The vendored tree in this repo builds as-is (npm run build). Re-vendoring needs the opencode-beta checkout (OPENSHARE_BETA_SRC) at a TESTED rev — see vendor/V2-SOURCE.txt.")
-  process.exit(1)
+/** THE PIN. Bump this one line to update the vendored kit; every patch
+ *  block below then either re-applies or throws "upstream drifted" at the
+ *  exact spot that needs adapting (VENDOR.md describes the ritual). */
+const PIN = {
+  repo: "anomalyco/opencode",
+  ref: "c1b5f1b416c2bff799a4be6a75d640e9ba28d42f", // dev head, 2026-10-29
 }
 
-const rev = execSync("git log -1 --format=%H", { cwd: SRC }).toString().trim()
-const describe = execSync("git describe --tags", { cwd: SRC }).toString().trim()
+const CACHE_ROOT = join(homedir(), "AppData", "Local", "openshare", "vendor-src")
+
+/** Resolve the source tree for the PIN: an explicit OPENSHARE_BETA_SRC
+ *  checkout wins (documented override); otherwise download the pinned
+ *  commit tarball from GitHub into the cache, reusing an existing download
+ *  of the same sha. Returns { src, fromDownload, cacheDir? }. */
+async function resolveSource() {
+  const override = process.env.OPENSHARE_BETA_SRC
+  if (override) {
+    if (!existsSync(join(override, "packages/session-ui"))) {
+      console.error(`vendor-v2: OPENSHARE_BETA_SRC checkout has no packages/session-ui: ${override}`)
+      process.exit(1)
+    }
+    return { src: override, fromDownload: false }
+  }
+  const cacheDir = join(CACHE_ROOT, PIN.ref)
+  const findSrc = () => {
+    if (!existsSync(cacheDir)) return undefined
+    // reuse: either a prior rename or the as-extracted GitHub top dir
+    for (const e of readdirSync(cacheDir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue
+      if (existsSync(join(cacheDir, e.name, "packages/session-ui"))) return join(cacheDir, e.name)
+    }
+    return undefined
+  }
+  const cached = findSrc()
+  if (cached) return { src: cached, fromDownload: true, cacheDir }
+  rmSync(CACHE_ROOT, { recursive: true, force: true }) // never keep older pins
+  mkdirSync(cacheDir, { recursive: true })
+  const url = `https://codeload.github.com/${PIN.repo}/tar.gz/${PIN.ref}`
+  console.log(`vendor-v2: fetching pin ${PIN.ref.slice(0, 10)} from ${url}`)
+  const res = await fetch(url)
+  if (!res.ok) {
+    console.error(`vendor-v2: download failed (${res.status} ${res.statusText})`)
+    process.exit(1)
+  }
+  const bundle = join(cacheDir, "src.tar.gz")
+  writeFileSync(bundle, Buffer.from(await res.arrayBuffer()))
+  execSync(`tar -xzf "${bundle}" -C "${cacheDir}"`, { stdio: "inherit" })
+  rmSync(bundle, { force: true })
+  const src = findSrc()
+  if (!src) {
+    console.error("vendor-v2: tarball layout unexpected - no packages/session-ui after extract")
+    process.exit(1)
+  }
+  return { src, fromDownload: true, cacheDir }
+}
+
+// resolve the source, then run the port; the download cache is deleted on
+// SUCCESS (both real and --check runs) and kept only when the port throws
+const { src: SRC, fromDownload, cacheDir } = await resolveSource()
+const rev = fromDownload ? PIN.ref : execSync("git log -1 --format=%H", { cwd: SRC }).toString().trim()
+const describe = fromDownload ? `${PIN.repo}@${PIN.ref.slice(0, 10)}` : execSync("git describe --tags", { cwd: SRC }).toString().trim()
 console.log(`vendoring from ${SRC} @ ${describe}`)
 
 const EXCLUDE = /\.(stories|test)\.[ttsx]+$/
@@ -482,28 +543,6 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: keep the token colours the previous (shiki) engine produced.
-// The kit's Zed palette maps a few token classes differently from the
-// TextMate scopes the old build tokenized through, so a plain code read
-// changed hue after the engine switch: punctuation went from body text to a
-// dim grey, JSON/property keys from the primitive hue to the variable one,
-// and markdown headings from the info hue to the keyword one.
-{
-  const p = join(ROOT, "vendor/ui-v2/src/context/highlight-theme.tsx")
-  if (existsSync(p)) {
-    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes('punctuation: "text-base"')) {
-      const before = s
-      s = s
-        .replace('      punctuation: "syntax-punctuation",', '      punctuation: "text-base",')
-        .replace('      property: "syntax-variable",', '      property: "syntax-primitive",')
-        .replace('      title: { color: "syntax-keyword", font_weight: 700 },', '      title: { color: "syntax-info", font_weight: 700 },')
-      if (s === before) throw new Error("vendor-v2: highlight-theme anchor missing - upstream drifted")
-      writeFileSync(p, s)
-    }
-  }
-}
-
 // vendor fork: file-change tools never merge with each other inside a
 // context group (owner directive 2026-10-24: grouping groups individual
 // tools; edit/write/patch each render as their own expandable card - the
@@ -642,8 +681,8 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
         [
           "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
           '      // card (app.css: height 0 -> 22px on hover; the card box never grows).',
-          '      // data-running drives the sweep animation; --osh-agent paints the',
-          '      // card in its type color (oshAgentColor above).',
+          '      // data-running drives the sweep animation; --osh-agent paints the card',
+          '      // in its type color (src/agent-colors.ts).',
           '      <div class="osh-task-wrap">',
           "$1",
         ].join(nl),
@@ -667,6 +706,28 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: unregistered tools fall back to the catch-all output card
+// (ctx_*, MCP tools) registered under name "*"; without this upstream
+// returns undefined for every unknown tool and the row renders nothing.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes('state["*"]?.render')) {
+      const anchor = ["function getTool(name: string) {", "  return state[name]?.render", "}"].join("\n")
+      const body = [
+        "function getTool(name: string) {",
+        "  // openshare fork: unregistered tools fall back to the catch-all renderer",
+        '  return state[name]?.render ?? state["*"]?.render',
+        "}",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: getTool anchor missing - upstream drifted")
+      s = s.replace(anchor, body)
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: per-agent colors for task cards. explore is blue, general
 // dark red, every other type takes the next free palette slot in first-use
 // order (stable for the page); past ten types, colors are generated by
@@ -676,7 +737,9 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes("oshAgentColor")) {
+    // guard on the DEFINITION, not the name: the card fork above already
+    // inserts an oshAgentColor(...) usage, which would defeat a name guard
+    if (!s.includes("function oshAgentColor")) {
       const anchor = "export function taskAgentName("
       const block = [
         "// openshare fork: per-agent colors. explore is blue, general dark red, and",
@@ -1067,6 +1130,29 @@ writeFileSync(
 // --- ui ---
 copyTree(join(SRC, "packages/ui/src"), join(ROOT, "vendor/ui-v2/src"))
 
+// vendor fork (MUST live AFTER the ui copyTree above): keep the token
+// colours the previous (shiki) engine produced. The kit's Zed palette maps
+// three token classes differently from the old TextMate scopes, so code
+// cards changed hue after the engine swap - punctuation went body-text to
+// dim grey, JSON/property keys primitive to variable, markdown headings
+// info to keyword (live-caught in the A/B compare). Forks placed BEFORE the
+// copy edit a stale file and get overwritten - exactly what happened once.
+{
+  const p = join(ROOT, "vendor/ui-v2/src/context/highlight-theme.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes('punctuation: "text-base"')) {
+      const before = s
+      s = s
+        .replace('      punctuation: "syntax-punctuation",', '      punctuation: "text-base",')
+        .replace('      property: "syntax-variable",', '      property: "syntax-primitive",')
+        .replace('      title: { color: "syntax-keyword", font_weight: 700 },', '      title: { color: "syntax-info", font_weight: 700 },')
+      if (s === before) throw new Error("vendor-v2: highlight-theme anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // (en locale: the kit's group label reads ui.tool.todos for todowrite
 // rows, but upstream en.ts ships without the key. The key is merged in
 // the viewer's OWN dictionary at src/entry.tsx - a vendor fork is not
@@ -1164,7 +1250,46 @@ if (existsSync(join(SRC, "packages/patchmark/src"))) {
   )
 }
 
-writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), `vendored from ${SRC}\ngit: ${rev} (${describe})\ndate: ${new Date().toISOString()}\n`)
+writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), [
+  `vendored from github.com/${PIN.repo} (downloaded at the PIN in scripts/vendor-v2.mjs)`,
+  `git: ${rev} (${describe})`,
+  `date: ${new Date().toISOString()}`,
+  `regenerate: npm run vendor  (downloads the pin; OPENSHARE_BETA_SRC=<checkout> overrides)`,
+  `patches + ritual: VENDOR.md`,
+  "",
+].join("\n"))
+
+// root-dep parity: vendored packages resolve peers from the ROOT tree (they
+// are junctioned into node_modules), so a root pin that lags the vendored
+// catalog silently changes kit behavior. Live-caught 2026-10-28: root
+// @pierre/diffs 1.5.1 vs a kit that tokenizes via @pierre/highlights - every
+// code card rendered with zero colored spans, no error anywhere. This check
+// makes that class a hard failure naming the exact packages to bump.
+{
+  const root = JSON.parse(readFileSync(join(REAL_ROOT, "package.json"), "utf8"))
+  const rootDeps = { ...(root.dependencies ?? {}), ...(root.devDependencies ?? {}) }
+  const mismatches = []
+  for (const pkg of readdirSync(join(ROOT, "vendor"))) {
+    const vp = join(ROOT, "vendor", pkg, "package.json")
+    if (!existsSync(vp)) continue
+    const vend = JSON.parse(readFileSync(vp, "utf8"))
+    for (const [name, range] of Object.entries({ ...(vend.dependencies ?? {}), ...(vend.peerDependencies ?? {}) })) {
+      if (!(name in rootDeps)) continue // root pins only the shared set
+      const norm = (r) => String(r).replace(/^[~^]/, "").split(/[-+]/)[0]
+      if (norm(range) !== norm(rootDeps[name])) mismatches.push(`${name}: root ${rootDeps[name]} vs vendored ${range}`)
+    }
+  }
+  if (mismatches.length) {
+    console.error("vendor-v2: root dependency pins disagree with the vendored catalog:")
+    for (const m of mismatches) console.error(`  ${m}`)
+    console.error("Bump the root package.json pins to match (they feed the junctioned peer resolution).")
+    process.exit(1)
+  }
+}
+
+// the download cache is scratch: delete it on success, keep it only when the
+// port threw (the catch above rethrows before reaching here)
+if (fromDownload && cacheDir && !process.env.OPENSHARE_VENDOR_KEEP_CACHE) rmSync(cacheDir, { recursive: true, force: true })
 {
   // upstream beta type bugs (narrowed unions) — suppress typechecking for
   // these files rather than forking them

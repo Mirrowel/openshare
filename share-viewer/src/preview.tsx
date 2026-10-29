@@ -73,7 +73,23 @@ const editFiles = (file: string, p: string, additions: number, deletions: number
   files: [{ file, patch: p, additions, deletions }],
 })
 
-const PATCH_SINGLE = patch("src/app.ts", [{ from: 10, before: ['const port = 3000'], after: ['const port = 3001', 'const host = "127.0.0.1"'] }])
+const PATCH_SINGLE = [
+  "Index: src/app.ts",
+  "===================================================================",
+  "--- a/src/app.ts",
+  "+++ b/src/app.ts",
+  "@@ -8,7 +8,8 @@",
+  " context line 5",
+  " context line 6",
+  " context line 7",
+  "-const port = 3000",
+  "+const port = 3001",
+  '+const host = "127.0.0.1"',
+  " context line 8",
+  " context line 9",
+  " context line 10",
+  " context line 11",
+].join("\n")
 const PATCH_MULTI = patch("src/app.ts", [
   { from: 10, before: ["const port = 3000"], after: ["const port = 3001"] },
   { from: 24, before: ["app.listen(port)"], after: ["app.listen(port, host)"] },
@@ -166,7 +182,7 @@ const groups: Array<{ tool: string; blurb: string; states: State[] }> = [
     tool: "edit",
     blurb: "unified/split via the U|A|S toggle; every diff shape the host emits",
     states: [
-      { label: "one changed line", entry: entry("edit", { filePath: `${DIR}/src/app.ts` }, "", "completed", editFiles("src/app.ts", PATCH_SINGLE, 2, 1)) },
+      { label: "one changed line (v1 Index-style patch)", entry: entry("edit", { filePath: `${DIR}/src/app.ts` }, "", "completed", editFiles("src/app.ts", PATCH_SINGLE, 2, 1)) },
       { label: "two hunks close together", entry: entry("edit", { filePath: `${DIR}/src/app.ts` }, "", "completed", editFiles("src/app.ts", PATCH_MULTI, 2, 2)) },
       { label: "hunks 50 lines apart (separate blocks)", entry: entry("edit", { filePath: `${DIR}/src/app.ts` }, "", "completed", editFiles("src/app.ts", PATCH_FAR, 3, 2)) },
       { label: "many changes (large diff)", entry: entry("edit", { filePath: `${DIR}/src/big.ts` }, "", "completed", editFiles("src/big.ts", PATCH_LARGE, 4, 3)) },
