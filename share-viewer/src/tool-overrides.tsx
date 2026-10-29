@@ -322,6 +322,10 @@ function FileCard(props: {
   const media = () => {
     const kind = mediaKindFromPath(props.path)
     if (!kind || !props.path) return undefined
+    // a payload that is already a data URL passes through as the value
+    // itself (FileMedia accepts a plain string); raw base64 needs the
+    // record form or the URL gets the prefix twice
+    if (/^data:image\//.test(props.contents)) return { path: props.path, current: props.contents }
     const mime = MIME[props.path.split(".").pop()!.toLowerCase()]
     if (!mime) return undefined
     return { path: props.path, current: { content: props.contents, encoding: "base64", mimeType: mime } }
@@ -493,11 +497,15 @@ const EditTool = (props: ToolProps) => {
   // kit parser only accepts `diff --git` headers and renders nothing for
   // the Index form (live-caught: every v1 share's edit cards went blank).
   // Normalize: synthetic git header, drop the Index/=== preamble lines.
+  // The header path comes from the patch's own `--- a/` line when present:
+  // the tool's filePath can be absolute, and `a//abs/path` is a malformed
+  // git header that parses empty (live-caught in the gallery).
   const patch = createMemo(() => {
     const raw = rawPatch()
     if (raw == null) return undefined
     if (raw.startsWith("diff --git")) return raw
-    const f = (path() ?? "file").replace(/\\/g, "/")
+    const own = raw.match(/^--- "?a\/(.+?)"?(?:\t[\d.]+)?\r?$/m)?.[1]
+    const f = (own ?? path() ?? "file").replace(/\\/g, "/").replace(/^\/+/, "")
     const body = raw
       .split("\n")
       .filter((l) => !(l.startsWith("Index:") || l.startsWith("===")))

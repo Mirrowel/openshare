@@ -76,23 +76,15 @@ const editFiles = (file: string, p: string, additions: number, deletions: number
   files: [{ file, patch: p, additions, deletions }],
 })
 
-const PATCH_SINGLE = [
-  "Index: src/app.ts",
-  "===================================================================",
-  "--- a/src/app.ts",
-  "+++ b/src/app.ts",
-  "@@ -8,7 +8,8 @@",
-  " context line 5",
-  " context line 6",
-  " context line 7",
-  "-const port = 3000",
-  "+const port = 3001",
-  '+const host = "127.0.0.1"',
-  " context line 8",
-  " context line 9",
-  " context line 10",
-  " context line 11",
-].join("\n")
+// v1-flavoured Index patch: a REAL host hunk (counts the parser accepts -
+// pierre throws on declared/parsed hunk-count mismatch, which the kit's
+// splitPatch swallows into an empty diff) behind node-diff's Index preamble,
+// so this fixture exercises the viewer's Index->git normalization itself
+const PATCH_SINGLE = (() => {
+  const git = patch("src/app.ts", [{ from: 8, before: ["const port = 3000"], after: ["const port = 3001", 'const host = "127.0.0.1"'] }])
+  const body = git.split("\n").filter((l) => !l.startsWith("diff --git")).join("\n")
+  return `Index: src/app.ts\n===================================================================\n${body}`
+})()
 const PATCH_MULTI = patch("src/app.ts", [
   { from: 10, before: ["const port = 3000"], after: ["const port = 3001"] },
   { from: 24, before: ["app.listen(port)"], after: ["app.listen(port, host)"] },
@@ -299,12 +291,9 @@ const gTool = (id: string, name: string, input: Record<string, unknown>, output:
   type: "tool", id, name, state: { status: "completed", input, content: [{ type: "text", text: output }], metadata },
 })
 
-// 8x8 solid blue PNG (base64): the smallest payload that proves image
-// rendering in write/read cards without a network fetch
-const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGOInvMNK2IYWhIAAdh7QU52w2gAAAAASUVORK5CYII="
-// precomputed literal (not btoa at module scope): a module-level function
-// call is a side effect and keeps the dev-only gallery in the prod bundle
-const SVG_DATAURI = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiPjxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiIHJ4PSI4IiBmaWxsPSIjNWI5Y2Y2Ii8+PHRleHQgeD0iMTIiIHk9IjMwIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjE0IiBmaWxsPSIjMGIwZTE0Ij5vc2ggJmx0O3N2ZyZndDs8L3RleHQ+PC9zdmc+"
+// real payloads (embedded base64, dev-only module): a deployment logo and
+// a rendered OG share card, so the media path is shown on actual images
+import { MIRROBOT_PNG, OG_CARD_PNG } from "./preview-assets"
 
 const messageDocs: Array<{ label: string; blurb: string; messages: unknown[] }> = [
   {
@@ -394,11 +383,11 @@ Inline \`code\`, **bold**, *italic*, ~~struck~~, and a [link](https://example.co
     messages: [
       gUser("g_u8", "Show every way an image can appear.", 34),
       gAssistant("g_a8", 35, [
-        gText("An inline markdown image:"),
-        gText(`![sample badge](${SVG_DATAURI})`),
-        gTool("g_img_write", "write", { filePath: `${DIR}/assets/blue-dot.png`, content: PNG_B64 }, PNG_B64),
-        gTool("g_img_read", "read", { filePath: `${DIR}/assets/blue-dot.png` }, PNG_B64),
-        gText("The write created an 8x8 PNG; the read of the same file renders it through the same media path."),
+        gText("An inline markdown image (a deployment logo):"),
+        gText(`![mirrobot logo](${MIRROBOT_PNG})`),
+        gTool("g_img_write", "write", { filePath: `${DIR}/assets/share-card.png`, content: OG_CARD_PNG.split(",")[1] }, "Wrote the OG share card PNG."),
+        gTool("g_img_read", "read", { filePath: `${DIR}/assets/share-card.png` }, OG_CARD_PNG),
+        gText("The write created a real PNG (a rendered share card); the read of the same file renders it through the same media path."),
       ]),
     ],
   },
@@ -491,17 +480,27 @@ export function Preview() {
                         <div class="mb-1 text-12-regular text-text-weaker">{state.label}</div>
                         <div ref={(el) => {
                           if (state.scrollTo !== "middle") return
-                          // pierre paints inside a shadow root at its own pace:
-                          // retry until the body actually has somewhere to go
+                          // pierre paints inside a shadow root at its own
+                          // pace and a cold load can outrun any fixed timer
+                          // list: retry until the body actually has
+                          // somewhere to go, then stop
+                          let parked = false
                           const park = () => {
+                            if (parked) return true
                             const sc = el.querySelector<HTMLElement>("[data-osh-scroll]")
                             if (sc && sc.scrollHeight > sc.clientHeight + 20) {
                               sc.scrollTop = Math.round((sc.scrollHeight - sc.clientHeight) / 2)
+                              parked = true
                               return true
                             }
                             return false
                           }
-                          const timers = [600, 1500, 3000].map((ms) => window.setTimeout(() => { if (!park()) return; for (const t of timers) clearTimeout(t) }, ms))
+                          const timers: number[] = []
+                          const tick = () => {
+                            if (park()) { timers.splice(0).forEach((t) => clearTimeout(t)); return }
+                            timers.push(window.setTimeout(tick, 350))
+                          }
+                          timers.push(window.setTimeout(tick, 400))
                           onCleanup(() => timers.forEach((t) => clearTimeout(t)))
                         }}>
                           <VendoredPart entry={state.entry} settings={allOpen()} data={data} />

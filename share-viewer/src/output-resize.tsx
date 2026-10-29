@@ -102,6 +102,31 @@ export function installOutputResize() {
     true,
   )
 
-  new MutationObserver(() => syncOutputCards()).observe(document.body, { childList: true, subtree: true })
+  // pierre paints file bodies inside shadow roots, so a document-level
+  // MutationObserver never sees the paint that gives a card its scroll
+  // geometry: on a cold first load the chevrons/clipped markers stayed
+  // missing until the reader scrolled (live-caught); a warm reload painted
+  // fast enough to race the mount timers. Watch every discovered shadow
+  // root too, coalesced to one sweep per frame.
+  let scheduled = false
+  const schedule = () => {
+    if (scheduled) return
+    scheduled = true
+    requestAnimationFrame(() => {
+      scheduled = false
+      watchShadows()
+      syncOutputCards()
+    })
+  }
+  const watched = new WeakSet<Node>()
+  const watchShadows = () => {
+    for (const el of document.querySelectorAll<HTMLElement>("*")) {
+      const shadow = el.shadowRoot
+      if (!shadow || watched.has(shadow)) continue
+      watched.add(shadow)
+      new MutationObserver(schedule).observe(shadow, { childList: true, subtree: true, characterData: true })
+    }
+  }
+  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true })
   window.addEventListener("resize", () => syncOutputCards())
 }

@@ -23,8 +23,10 @@ import "./views/skins.css"
 // card open, which made the first expanded file card paint plain for a beat
 import { getWorkerPool } from "@opencode/session-ui/pierre/worker"
 import { installOutputResize } from "./output-resize"
+import { installSubagentMotion } from "./subagent-motion"
 getWorkerPool()
 installOutputResize()
+installSubagentMotion()
 
 // Provider stack for the vendored v2 kit: en locale only, but with the
 // REAL dictionary (raw keys rendering on the page were this bridge

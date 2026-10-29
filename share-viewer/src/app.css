@@ -1576,6 +1576,7 @@ html[data-osh-preview-hover] .osh-out-grip::after {
     transparent
   );
   animation: osh-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
   pointer-events: none;
 }
 .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
@@ -1592,7 +1593,14 @@ html[data-osh-preview-hover] .osh-out-grip::after {
     transparent
   );
   animation: osh-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
   pointer-events: none;
+}
+/* offscreen running cards cost frames for nothing: the motion module pauses
+   them (IntersectionObserver toggles data-osh-off on the wrap) */
+.osh-task-wrap[data-osh-off] [data-component="task-tool-card"][data-running]::after,
+.osh-task-wrap[data-osh-off] [data-component="task-tool-card"][data-running]::before {
+  animation-play-state: paused;
 }
 [data-osh-subanim="plain"] .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
 [data-osh-subanim="plain"] .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
