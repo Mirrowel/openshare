@@ -39,6 +39,8 @@ export default defineConfig(({ command }) => ({
     include: ["@pierre/diffs", "lru_map"],
   },
   server: {
-    fs: { allow: [path.resolve(__dirname), path.resolve(__dirname, "vendor")] },
+    // share-worker/og/snapshot.js is the one snapshot builder shared by the
+    // worker, the Bun server and this page's download button
+    fs: { allow: [path.resolve(__dirname), path.resolve(__dirname, "vendor"), path.resolve(__dirname, "..", "share-worker")] },
   },
 }))

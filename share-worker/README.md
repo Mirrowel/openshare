@@ -355,13 +355,18 @@ title/version/model.
   `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
   when `since >= rev` (unchanged, or the server rewound/recreated — the
   client prunes), only the items touched since when `since < rev`),
-  `GET /api/share/:id/snapshot` (ONE self-contained HTML file: the
-  viewer bundle inlined + the share frozen as a JSON island + a boot
-  shim; opens offline in any browser as a point-in-time record. The
-  read gate applies exactly as `/data` — a gated share demands a
-  satisfied viewer session (login cookie or bearer viewer token), no
-  bypass. `?download=1` adds an attachment disposition. On `file://`
-  browsers block worker/wasm loading, so code blocks render unhighlighted
+  `GET /api/share/:id/snapshot` and `GET /s/:id/snapshot` (ONE
+  self-contained HTML file: the viewer, every chunk it can reach and the
+  fonts inlined, the share frozen as a JSON island, a boot shim; opens
+  offline in any browser as a point-in-time record. The read gate applies
+  exactly as `/data` - a gated share demands a satisfied viewer session
+  (login cookie or bearer viewer token), no bypass. `?download=1` adds
+  an attachment disposition. Offline the page runs pierre and the
+  markdown parser on the main thread (browsers block workers on
+  `file://`) through vendored forks, so file cards and highlighting are
+  complete. Assembling it in the worker costs one subrequest per asset
+  (~1300), above the free plan's 50-per-invocation cap - the viewer's
+  own download button builds the same file in the browser),
   — every other surface is identical),
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
 - `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:

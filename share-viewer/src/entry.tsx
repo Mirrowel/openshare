@@ -17,6 +17,14 @@ const Preview = import.meta.env.DEV ? lazy(() => import("./preview").then((m) =>
 // import guarantees registration order regardless of which component
 // tree mounts first (classic or a skin)
 import "./tool-overrides"
+// the UI fonts ship with the app: the CSS only names Inter / IBM Plex Mono,
+// so without these a machine that lacks them renders the fallback (and the
+// offline snapshot has nothing to inline). Latin subsets only.
+import "@fontsource/inter/latin-400.css"
+import "@fontsource/inter/latin-500.css"
+import "@fontsource/inter/latin-600.css"
+import "@fontsource/ibm-plex-mono/latin-400.css"
+import "@fontsource/ibm-plex-mono/latin-500.css"
 import "./app.css"
 import "./views/skins.css"
 // boot the pierre worker pools now: the kit creates them lazily on first

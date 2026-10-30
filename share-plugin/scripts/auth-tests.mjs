@@ -316,7 +316,15 @@ try {
     const html38 = await s38res.text()
     ok("T38 snapshot 200 html", s38res.status === 200 && (s38res.headers.get("content-type") ?? "").includes("text/html"), `${s38res.status}`)
     ok("T38a island present with items+status", html38.includes("__MIRROBOT_SNAPSHOT__") && html38.includes('"items":') && html38.includes('"sessionID":"ses_t38"'), html38.slice(0, 120))
-    ok("T38b bundle inlined (no external assets)", !/src="\/assets\//.test(html38) && !/href="\/assets\/[^"]+\.css"/.test(html38) && html38.includes("<script type=\"module\">"))
+        ok(
+      "T38b bundle inlined (no external assets)",
+      // the entry is a data: module and every chunk rides an import map,
+      // so nothing loads from /assets/ after the download
+      !/src="\/assets\//.test(html38) &&
+        !/href="\/assets\/[^"]+\.css"/.test(html38) &&
+        /<script type="module" src="data:text\/javascript/.test(html38) &&
+        html38.includes('type="importmap"'),
+    )
     ok("T38c data frozen in island", html38.includes("frozen hello") && html38.includes("snapshot test"))
     ok("T38d download disposition", (await req(W1, "GET", `/api/share/${g38.json.id}/snapshot?download=1`)).res?.headers?.get?.("content-disposition")?.includes("attachment"))
 

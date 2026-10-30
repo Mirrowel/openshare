@@ -123,11 +123,16 @@ function itemKey(item: unknown): string | undefined {
 
 function redactItems(items: unknown[]): unknown[] {
   return items.map((it) => {
-    if ((it as { type?: string })?.type === "session" && (it as { data?: { metadata?: unknown } }).data?.metadata) {
-      const { metadata, ...rest } = (it as { data: Record<string, unknown> }).data
-      return { ...it, data: rest }
-    }
-    return it
+    const item = it as { type?: string; data?: Record<string, unknown> }
+    if (item?.type !== "session" || !item.data) return it
+    const d = item.data
+    if (!d.metadata && d.directory === undefined && d.worktree === undefined) return it
+    // session metadata carries the share binding (incl. the write secret);
+    // directory/worktree are private machine facts (older shares stored them
+    // inline - newer ones only send pmeta, to gated readers). Scrub at read
+    // so no existing share keeps leaking the sharer's filesystem layout.
+    const { metadata, directory, worktree, ...rest } = d
+    return { ...it, data: rest }
   })
 }
 
@@ -631,6 +636,29 @@ async function httpHandler(req: Request): Promise<Response> {
     return new Response(null, { status: 200 }) // upgraded in fetch() below
   }
 
+  // /s/<id>/snapshot - the human spelling of the snapshot download
+  const ps = path.match(/^\/s\/([0-9a-f]{32})\/snapshot\/?$/)
+  if (ps && req.method === "GET") {
+    const share = q.share(ps[1])
+    if (!share) return json(404, { error: "gone" })
+    if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, ps[1])))) {
+      return json(401, { authRequired: true })
+    }
+    const items = redactItems(shareData(share))
+    const body = JSON.stringify(items).replace(/</g, "\\u003c")
+    let sessionID = ""
+    for (const it of items as Array<{ type: string; data?: { id?: string; parentID?: string } }>) {
+      if (it.type === "session" && it.data && !it.data.parentID) {
+        sessionID = it.data.id ?? ""
+        break
+      }
+    }
+    const priv = JSON.parse(share.private || "{}") as Record<string, unknown>
+    const island = `{"items":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev},"sessionID":${JSON.stringify(sessionID)}${Object.keys(priv).length ? `,"private":${JSON.stringify(priv)}` : ""}}`
+    const dl = new URL(url.toString())
+    dl.searchParams.set("download", "1")
+    return serveSnapshot(dl, ps[1], island)
+  }
   const am = path.match(/^\/api\/share\/([0-9a-f]{32})\/auth$/)
   if (am && req.method === "POST") return shareAuthRoute(am[1], await bodyJson(req), req)
 
@@ -1219,6 +1247,7 @@ function htmlEscape(s: string): string {
 // per-share OG card renderer shared with the worker (satori + resvg-wasm;
 // Bun imports the wasm module natively)
 import { renderOgPng } from "../share-worker/og/og-card.js"
+import { buildSnapshotHtml } from "../share-worker/og/snapshot.js"
 
 const ogPngCache = new Map<string, { rev: number; bytes: Uint8Array }>()
 
@@ -1252,50 +1281,14 @@ function ogMetaOf(share: ShareRow) {
 async function serveSnapshot(url: URL, id: string, island: string): Promise<Response> {
   const index = Bun.file(join(VIEWER_DIR, "index.html"))
   if (!(await index.exists())) return json(502, { error: "viewer assets unavailable" })
-  let html = await index.text()
-  const grab = async (src: string) => {
-    const f = Bun.file(join(VIEWER_DIR, src.replace(/^\//, "")))
-    return (await f.exists()) ? await f.text() : null
-  }
-  html = html.replace(/[ \t]*<link[^>]*rel="modulepreload"[^>]*>\r?\n?/g, "")
-  // collect asset texts first, then replace synchronously (async replace
-  // callbacks are not supported)
-  const scriptRe = /<script[^>]*src="(\/assets\/[^"]+\.js)"[^>]*>\s*<\/script>/g
-  const scriptAssets = new Map<string, string | null>()
-  for (const m of [...html.matchAll(scriptRe)]) scriptAssets.set(m[1], await grab(m[1]))
-  html = html.replace(scriptRe, (whole: string, src: string) => {
-    const code = scriptAssets.get(src)
-    return code == null ? whole : `<script type="module">\n${code}\n</script>`
+  const html = await buildSnapshotHtml({
+    html: await index.text(),
+    island,
+    readAsset: async (name) => {
+      const f = Bun.file(join(VIEWER_DIR, "assets", name))
+      return (await f.exists()) ? await f.text() : null
+    },
   })
-  const cssRe = /<link[^>]*href="(\/assets\/[^"]+\.css)"[^>]*>/g
-  const cssAssets = new Map<string, string | null>()
-  for (const m of [...html.matchAll(cssRe)]) cssAssets.set(m[1], await grab(m[1]))
-  html = html.replace(cssRe, (whole: string, src: string) => {
-    const css = cssAssets.get(src)
-    return css == null ? whole : `<style>\n${css}\n</style>`
-  })
-  const islandTag = `<script>window.__MIRROBOT_SNAPSHOT__=${island};</script>` + `
-<script>(function(){
-  // a snapshot file runs from file:// — its PATH cannot be rewritten
-  // (pushState across file paths throws SecurityError), so /s/<id>[/<n>][#h]
-  // URLs translate to same-path hashes: subagent page n becomes #n<n>,
-  // message anchors keep their hash (worker serveSnapshot parity)
-  if (!window.__MIRROBOT_SNAPSHOT__) return
-  var orig = history.pushState.bind(history)
-  history.pushState = function(st, title, url) {
-    if (typeof url === "string" && url.charAt(0) === "/") {
-      var m = /^\\/s\\/[^/]+(?:\\/(\\d+))?/.exec(url)
-      var hi = url.indexOf("#")
-      var hash = hi >= 0 ? url.slice(hi) : ""
-      var sub = m && m[1] ? "#n" + m[1] : ""
-      var next = sub || hash
-      if (next) return orig(st, title, location.pathname + location.search + next)
-      return
-    }
-    return orig(st, title, url)
-  }
-})()</script>`
-  html = html.replace(/<head>/i, "<head>\n    " + islandTag)
   const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   if (url.searchParams.has("download")) headers["content-disposition"] = `attachment; filename="openshare-${id}.html"`
   return new Response(html, { headers })

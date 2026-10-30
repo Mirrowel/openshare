@@ -99,7 +99,13 @@ function displayPath(path: string): string {
     directory = undefined
   }
   if (!path) return ""
-  if (!directory || directory === "/" || directory === "\\") return path
+  if (!directory || directory === "/" || directory === "\\") {
+    // no session directory (anonymous share, or an old share whose
+    // machine facts were scrubbed): never render an absolute path
+    if (!/^[A-Za-z]:[\\/]|^\//.test(path)) return path
+    const segs = path.split(/[/\\]/).filter(Boolean)
+    return segs.length > 2 ? "..." + "/" + segs.slice(-2).join("/") : path
+  }
   const sep = directory.includes("\\") ? "\\" : "/"
   const prefix = directory.endsWith(sep) ? directory : directory + sep
   if (path.startsWith(prefix)) return "." + sep + path.slice(directory.length)
@@ -123,7 +129,12 @@ function displayPathDir(path: string): string {
   const norm = (p: string) => p.replace(/\\/g, "/")
   const dir = dirname(path)
   if (!dir) return ""
-  if (!directory || directory === "/" || directory === "\\") return norm(dir)
+  if (!directory || directory === "/" || directory === "\\") {
+    const abs = norm(dir)
+    if (!/^[A-Za-z]:[\\/]|^\//.test(abs)) return abs
+    const segs = abs.split("/").filter(Boolean)
+    return segs.length > 2 ? "..." + "/" + segs.slice(-2).join("/") : abs
+  }
   // dirname() drops the leading slash; strip it from BOTH sides or the
   // prefix compare never matches an absolute session dir
   const strip = (p: string) => p.replace(/^\/+/, "")

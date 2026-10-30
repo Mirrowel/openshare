@@ -10,7 +10,8 @@ export async function copySessionMarkdown(data: ShareData, sessionID: string) {
   const parts: string[] = [
     `# ${info?.title ?? sessionID}`,
     "",
-    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"} · ${info?.directory ?? ""}_`,
+    // machine facts never leave in markdown (the directory is private)
+    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"}_`,
     "",
   ]
   const toolOutputText = (state: any): string => {

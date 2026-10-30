@@ -99,60 +99,19 @@ function resolveBrandingObj(env) {
   }
 }
 
-// GET /api/share/:id/snapshot — ONE self-contained HTML file: the viewer
-// bundle inlined (JS+CSS), the share frozen as a JSON island, a boot shim
-// feeding it to the embedded data path. Opens offline in any browser;
+// GET /api/share/:id/snapshot - ONE self-contained HTML file: the viewer
+// bundle and every chunk it can reach inlined (see og/snapshot.js), the
+// share frozen as a JSON island. Opens offline in any browser; a
 // point-in-time record that outlives the deployment. Read gate applies
 // exactly as /data: a gated share demands a satisfied viewer session.
 async function serveSnapshot(req, env, url, snap) {
   const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
   if (!r.ok) return new Response("viewer assets unavailable", { status: 502 })
-  let html = await r.text()
-  const assets = new Map()
-  const grab = async (src) => {
-    if (!assets.has(src)) {
-      const a = await env.ASSETS.fetch(new Request(url.origin + src))
-      assets.set(src, a.ok ? await a.text() : null)
-    }
-    return assets.get(src)
+  const readAsset = async (name) => {
+    const a = await env.ASSETS.fetch(new Request(url.origin + "/assets/" + name))
+    return a.ok ? await a.text() : null
   }
-  // modulepreload hints are dead weight when every module is inline
-  html = html.replace(/[ \t]*<link[^>]*rel="modulepreload"[^>]*>\r?\n?/g, "")
-  const scriptRe = /<script[^>]*src="(\/assets\/[^"]+\.js)"[^>]*>\s*<\/script>/g
-  for (const m of [...html.matchAll(scriptRe)]) await grab(m[1])
-  html = html.replace(scriptRe, (whole, src) => {
-    const code = assets.get(src)
-    return code == null ? whole : `<script type="module">\n${code}\n</script>`
-  })
-  const cssRe = /<link[^>]*href="(\/assets\/[^"]+\.css)"[^>]*>/g
-  for (const m of [...html.matchAll(cssRe)]) await grab(m[1])
-  html = html.replace(cssRe, (whole, src) => {
-    const css = assets.get(src)
-    return css == null ? whole : `<style>\n${css}\n</style>`
-  })
-  const island = `<script>window.__MIRROBOT_SNAPSHOT__=${snap.island};</script>` + `
-<script>(function(){
-  // a snapshot file runs from file:// — its PATH cannot be rewritten
-  // (pushState across file paths throws SecurityError), so /s/<id>[/<n>][#h]
-  // URLs translate to same-path hashes: subagent page n becomes #n<n>,
-  // message anchors keep their hash. Without this shim every subagent
-  // click would throw and the page would die mid-handler.
-  if (!window.__MIRROBOT_SNAPSHOT__) return
-  var orig = history.pushState.bind(history)
-  history.pushState = function(st, title, url) {
-    if (typeof url === "string" && url.charAt(0) === "/") {
-      var m = /^\\/s\\/[^/]+(?:\\/(\\d+))?/.exec(url)
-      var hi = url.indexOf("#")
-      var hash = hi >= 0 ? url.slice(hi) : ""
-      var sub = m && m[1] ? "#n" + m[1] : ""
-      var next = sub || hash
-      if (next) return orig(st, title, location.pathname + location.search + next)
-      return
-    }
-    return orig(st, title, url)
-  }
-})()</script>`
-  html = html.replace(/<head>/i, "<head>\n    " + island)
+  const html = await buildSnapshotHtml({ html: await r.text(), island: snap.island, readAsset })
   const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   if (url.searchParams.has("download")) headers["content-disposition"] = `attachment; filename="openshare-${snap.id}.html"`
   return new Response(html, { status: 200, headers })
@@ -221,6 +180,7 @@ async function serveOgIndex(req, env, url) {
 }
 
 import { renderOgPng } from "./og/og-card.js"
+import { buildSnapshotHtml } from "./og/snapshot.js"
 
 // OG card render cache: PNG bytes per share at its rev (bounded LRU-ish;
 // the ?v=<rev> URL makes crawler caches self-busting anyway)
@@ -266,12 +226,34 @@ export default {
         return json(404, { error: "no comparison build deployed" })
       }
 
+      // /s/<id>/snapshot - the human spelling of the download: same file,
+      // attachment disposition (the menu links /api/...; this handles a
+      // hand-typed URL)
+      const pageSnapshot = path.match(/^\/s\/([0-9a-f]+)\/snapshot\/?$/)
+      if (req.method === "GET" && pageSnapshot) {
+        const id = pageSnapshot[1]
+        const token = bearer(req) || cookieToken(req, id)
+        const doUrl = new URL("https://do/snapshot")
+        doUrl.searchParams.set("token", token)
+        const r = await shareStub(env, id).fetch(doUrl)
+        if (!r.ok) return json(r.status, await r.json().catch(() => ({})))
+        const downloadUrl = new URL(url.toString())
+        downloadUrl.searchParams.set("download", "1")
+        return await serveSnapshot(req, env, downloadUrl, { ...(await r.json()), id })
+      }
       if (req.method === "GET" && (path === "/" || path === "/index.html" || path.startsWith("/s/"))) {
         const ua = (req.headers.get("user-agent") || "").toLowerCase()
         if (/(discordbot|discordapp|telegrambot|slackbot|slack-imgproxy|facebookexternalhit|facebookcatalog|whatsapp|twitterbot|x-bot|linkedinbot|pinterestbot|skypeuripreview|snapchat|bluefish|mattermost|gitter|flowdock)/.test(ua)) {
           return await serveOgIndex(req, env, url)
         }
-        return env.ASSETS.fetch(req)
+        // HTML must never be cached: it names hashed chunks that the next
+        // deploy deletes, and a stale index 404s every lazy import (the
+        // assets binding answers missing paths with index.html, so the
+        // failure looked like "chunk is html")
+        const page = await env.ASSETS.fetch(req)
+        const headers = new Headers(page.headers)
+        headers.set("cache-control", "no-store")
+        return new Response(page.body, { status: page.status, headers })
       }
 
       if (path === "/health")
@@ -1970,11 +1952,15 @@ function itemKey(item) {
 // share binding — incl. the write secret — in session metadata).
 function redactItems(items) {
   return items.map((it) => {
-    if (it?.type === "session" && it.data?.metadata) {
-      const { metadata, ...rest } = it.data
-      return { ...it, data: rest }
-    }
-    return it
+    if (it?.type !== "session" || !it.data) return it
+    const d = it.data
+    if (!d.metadata && d.directory === undefined && d.worktree === undefined) return it
+    // session metadata carries the share binding (incl. the write secret);
+    // directory/worktree are private machine facts (older shares stored them
+    // inline - newer ones only send pmeta, to gated readers). Scrub at read
+    // so no existing share keeps leaking the sharer's filesystem layout.
+    const { metadata, directory, worktree, ...rest } = d
+    return { ...it, data: rest }
   })
 }
 

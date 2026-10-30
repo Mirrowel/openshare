@@ -89,6 +89,10 @@ half-updates the page. `vite.config.ts` picks dev vs build variant;
   junctions the packages into `node_modules/@opencode/*` and the root pins
   shared deps (effect, katex, solid-js, dompurify, `@pierre/*`) at the
   vendored catalog versions.
+- **`npm install` deletes the junctions.** Any npm/npx install inside
+  `share-viewer` replaces `node_modules/@opencode/*`, and every vendored
+  import then fails typecheck and build. Re-run `node scripts/link-vendor.mjs`
+  after any install, or use `bun install`.
 
 ## Patch catalogue
 
@@ -138,12 +142,14 @@ idempotently or throws "upstream drifted". Files are under
   output-surface behavior (drag-resize, clipped fade) can find it.
 
 ### pierre / rendering engine
-
-- **Worker pool never kills the page**: Worker construction on `file://`
-  throws synchronously (offline snapshots) — a failed pool degrades to plain
-  rendering instead of crashing; init failures warn once.
-- **The markdown worker's unavailable-throw is synchronous** in some paths —
-  made rejecting so the promise chain survives offline snapshots.
+- **Workers unavailable = main thread, never degradation**: offline
+  snapshot files run from `file://`, where `new Worker` cannot start. pierre
+  and the markdown parser then run COPIES of the same worker modules in-page
+  (`pierre/diffs-main{,-none}/worker.ts` + `pierre/worker-shim.ts`,
+  `components/markdown.worker-main.ts`), imported lazily so http pages never
+  ship them: identical output, no parallelism. The pool checks
+  `location.protocol === "file:"`/the snapshot island first and only probes
+  `new Worker` on http. Init failures warn once instead of killing the page.
 - **Calmer word emphasis inside diffs**: rewritten lines painted as
   saturated bands at 0.4 alpha; ours is 0.3 dark / 0.16 light.
 - **Default theme names are aliases of our palette** (`pierre/index.ts`):

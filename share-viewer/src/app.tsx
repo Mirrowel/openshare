@@ -32,13 +32,14 @@ import { Icon } from "@opencode/ui/icon"
 import { createEffect, createMemo, createSignal, ErrorBoundary, For, onCleanup, Show } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
-import { useShareSource, type Branding } from "./data-source"
+import { useShareSource, isEmbeddedShare, type Branding } from "./data-source"
 import { copySessionMarkdown } from "./copy-markdown"
 import { downloadSessionExport } from "./export-session"
 import { SearchControl } from "./search-palette"
 import { searchQuery, setSearchQuery } from "./search-state"
 import { useSessionSections } from "./views/session-data"
-import { BrandMark } from "./views/chrome"
+import { BrandMark, TranscriptMenuCore } from "./views/chrome"
+import { downloadSnapshot } from "./download-snapshot"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
@@ -607,20 +608,12 @@ function SessionView(props: {
                         sections={searchSections}
                         onJump={(sectionId) => setJumpTarget({ id: sectionId, nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })}
                       />
-                      <button
-                        class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
-                        title="copy session as markdown"
-                        onClick={() => copySessionMarkdown(props.data, sessionID())}
-                      >
-                        <Icon name="copy" size="small" />
-                      </button>
-                      <button
-                        class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
-                        title="export session (opencode import file)"
-                        onClick={() => downloadSessionExport(props.data as never, sessionID(), info()?.title)}
-                      >
-                        <Icon name="download" size="small" />
-                      </button>
+                      <TranscriptMenuCore
+                        shareID={props.source.shareID}
+                        onCopyMarkdown={() => copySessionMarkdown(props.data, sessionID())}
+                        onExport={() => downloadSessionExport(props.data as never, sessionID(), info()?.title)}
+                        onSnapshot={() => downloadSnapshot(props.source.shareID, props.source.branding())}
+                      />
                       <a href={OPENSHARE_REPO_URL} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
                         <Icon name="github" size="small" />
                       </a>
@@ -913,7 +906,10 @@ function subHref(source: ReturnType<typeof useShareSource>, childSessionID: stri
   if (!d) return undefined
   const subs = children(d)
   const hit = subs.find((s) => s.sessionID === childSessionID)
-  return hit ? `/s/${source.shareID}/${hit.index}` : undefined
+  if (!hit) return undefined
+  // a snapshot file cannot rewrite its path: its hrefs are in-page hashes
+  // (middle/ctrl-click then opens the same file at the right sub-page)
+  return isEmbeddedShare() ? `#n${hit.index}` : `/s/${source.shareID}/${hit.index}`
 }
 
 // serialize the visible session to markdown (clipboard)

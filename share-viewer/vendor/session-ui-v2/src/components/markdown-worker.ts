@@ -66,6 +66,58 @@ const projectTransport = createWorkerTransport<Extract<MarkdownWorkerRequest, { 
   },
 })
 
+// openshare fork: workers unavailable (file:// snapshots) -> the same
+// markdown module runs in-page behind a Worker-shaped shim; identical
+// output, no worker (see scripts/vendor-v2.mjs)
+function mainThreadWorker(): Worker {
+  type Listener = (event: { data: MarkdownWorkerResponse }) => void
+  const listeners: Listener[] = []
+  const queue: MarkdownWorkerRequest[] = []
+  let real: { handleMessage: (event: any) => unknown; __setMarkdownReply: (fn: Listener) => void } | undefined
+  let dead = false
+  let onmessage: Listener | null = null
+  const emit: Listener = (event) => {
+    for (const listener of [...listeners]) listener(event)
+  }
+  void import("./markdown.worker-main").then((m) => {
+    if (dead) return
+    m.__setMarkdownReply((data: unknown) => emit({ data } as { data: MarkdownWorkerResponse }))
+    real = m as any
+    for (const request of queue.splice(0)) void (m.handleMessage as any)({ data: request })
+  })
+  const fake = {
+    postMessage: (request: MarkdownWorkerRequest) => {
+      if (real) void real.handleMessage({ data: request })
+      else queue.push(request)
+    },
+    addEventListener: (_type: string, listener: Listener) => {
+      listeners.push(listener)
+    },
+    removeEventListener: (_type: string, listener: Listener) => {
+      const index = listeners.indexOf(listener)
+      if (index >= 0) listeners.splice(index, 1)
+    },
+    terminate: () => {
+      dead = true
+      real = undefined
+    },
+    get onmessage() {
+      return onmessage
+    },
+    set onmessage(listener: Listener | null) {
+      if (onmessage) {
+        const index = listeners.indexOf(onmessage)
+        if (index >= 0) listeners.splice(index, 1)
+      }
+      onmessage = listener
+      if (listener) listeners.push(listener)
+    },
+    onerror: null,
+    dispatchEvent: () => false,
+  }
+  return fake as unknown as Worker
+}
+
 // openshare fork: getWorker() THROWS synchronously once the worker is
 // known-unavailable (offline snapshot files run from file://, where
 // Worker construction throws SecurityError). The exports below turn
@@ -164,11 +216,13 @@ function getWorker() {
 
   if (disabled) throw new MarkdownWorkerUnavailableError(disabled.message)
 
+  // offline snapshot files and data: module pages cannot run workers
+  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) return mainThreadWorker()
   try {
     worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })
-  } catch (error) {
-    disabled = error instanceof Error ? error : new Error(String(error))
-    throw new MarkdownWorkerUnavailableError(disabled.message)
+  } catch {
+    // openshare fork: no workers offline (file:// snapshots) - run in-page
+    return mainThreadWorker()
   }
 
   worker.onmessage = (event: MessageEvent<MarkdownWorkerResponse>) => {

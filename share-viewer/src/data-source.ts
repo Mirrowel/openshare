@@ -63,6 +63,12 @@ function parsePath(): { shareID: string; sub: number | undefined } {
 }
 
 let brandingCache: Branding | null = null
+
+/** True when the page booted from an embedded snapshot island (file:// or
+ * downloaded HTML): the path cannot change, so navigation rides hashes. */
+export function isEmbeddedShare(): boolean {
+  return typeof window !== "undefined" && !!(window as any).__MIRROBOT_SNAPSHOT__
+}
 async function fetchBranding(): Promise<Branding> {
   if (brandingCache) return brandingCache
   try {
