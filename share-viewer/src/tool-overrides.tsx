@@ -325,7 +325,7 @@ function FileCard(props: {
     // a payload that is already a data URL passes through as the value
     // itself (FileMedia accepts a plain string); raw base64 needs the
     // record form or the URL gets the prefix twice
-    if (/^data:image\//.test(props.contents)) return { path: props.path, current: props.contents }
+    if (/^data:/.test(props.contents)) return { path: props.path, current: props.contents }
     const mime = MIME[props.path.split(".").pop()!.toLowerCase()]
     if (!mime) return undefined
     return { path: props.path, current: { content: props.contents, encoding: "base64", mimeType: mime } }

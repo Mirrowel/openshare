@@ -131,24 +131,23 @@ export function installOutputResize() {
 
   // Chevron/clipped state derives from the scroller's layout, and the
   // observable signal for "the scrollable content changed size" is a
-  // ResizeObserver on the content — the same moment a scrollbar would
-  // appear or grow. Previous designs polled (mutation bursts + document
-  // walks + trailing timers) and both missed cold shadow paints and stole
-  // main-thread time during load; this one does no walking at all:
-  //   - a MutationObserver that only inspects added/removed nodes wires
-  //     each card ONCE (cards mount collapsed; the scroller arrives when
+  // ResizeObserver on the content - the same moment a scrollbar would
+  // appear or grow. Previous designs polled (mutation bursts, document
+  // walks, trailing timers): they missed cold shadow paints and stole
+  // main-thread time during load. This one never walks the document:
+  //   - a MutationObserver inspects only added/removed nodes and wires
+  //     each card once (cards mount collapsed; the scroller arrives when
   //     the content opens, so wiring retries until it exists)
   //   - the shared ResizeObserver watches the scroller box plus a short
-  //     first-child chain, crossing into pierre's shadow root: row
-  //     layout inside it resizes that chain and re-measures exactly the
-  //   - one card. Card removal unobserves (RO holds strong refs).
+  //     first-child chain, crossing into pierre's shadow root, so row
+  //     layout inside it re-measures exactly that card
+  //   - card removal unobserves everything (RO holds strong refs)
   const ro = new ResizeObserver((entries) => {
     for (const e of entries) {
       const card = (e.target as Element).closest("[data-osh-out]")
       if (card) markDirty(card)
     }
   })
-  const wired = new WeakSet<Element>()
   const cardTargets = new Map<Element, Element[]>()
   const cardObservers = new Map<Element, MutationObserver>()
   const pending = new Set<Element>()
@@ -203,7 +202,6 @@ export function installOutputResize() {
       pending.add(card)
       return
     }
-    wired.add(card)
     pending.delete(card)
     // scoped structural watch: pierre mounts its shadow shell and rows
     // after the card opens, and none of that reaches the document-level

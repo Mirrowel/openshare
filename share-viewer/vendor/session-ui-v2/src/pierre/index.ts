@@ -13,9 +13,16 @@ import quoteHighlightStyles from "../components/quote-highlight.css?inline"
 
 // Pierre resolves themes on the main thread and hands them to its workers, so register before any viewer renders.
 registerCustomTheme(OpenCodeTheme.name, () => Promise.resolve(OpenCodeTheme), "zed")
+// openshare fork: default theme aliases (see VENDOR.md)
+const oshAliasedTheme = (name: string) => ({ ...OpenCodeTheme, name })
+registerCustomTheme("pierre-dark", () => Promise.resolve(oshAliasedTheme("pierre-dark")), "zed")
+registerCustomTheme("pierre-light", () => Promise.resolve(oshAliasedTheme("pierre-light")), "zed")
 
 // Viewers and worker pools must agree: the pool's options win whenever it renders.
-export const highlightOptions = { theme: OpenCodeTheme.name, preferredHighlighter: "highlights" } as const
+export const highlightOptions = {
+  theme: { dark: "pierre-dark", light: "pierre-light" },
+  preferredHighlighter: "highlights",
+} as const
 
 export type DiffProps<T = {}> = FileDiffOptions<T, undefined> & {
   before: FileContents

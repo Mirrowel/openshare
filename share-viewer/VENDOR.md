@@ -146,6 +146,13 @@ idempotently or throws "upstream drifted". Files are under
   made rejecting so the promise chain survives offline snapshots.
 - **Calmer word emphasis inside diffs**: rewritten lines painted as
   saturated bands at 0.4 alpha; ours is 0.3 dark / 0.16 light.
+- **Default theme names are aliases of our palette** (`pierre/index.ts`):
+  a worker bundle can evaluate its module graph twice in dev (vite serves
+  the entry and a plain copy under different URLs), leaving a copy that
+  renders with the library default `pierre-dark`/`pierre-light` and throws
+  "Theme ... has not been resolved" on every task. Registering those names
+  as aliases of the OpenCode theme and initializing the pool with them
+  means every copy resolves; the palette is unchanged.
 - **Token palette (ui-v2 highlight-theme.tsx)**: the new tokenizer maps
   punctuation/property/heading differently than the old TextMate scopes;
   mapped back so code colors match the shiki-era reader (runs AFTER the ui

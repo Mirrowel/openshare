@@ -543,6 +543,37 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
+// vendor fork: aliasing the library's default theme names. A worker bundle can
+// evaluate its module graph twice (vite dev serves the entry and a plain copy
+// under different URLs), leaving a copy that renders with DEFAULT_THEMES
+// ("pierre-dark"/"pierre-light") instead of the pool theme; every task in that
+// copy throws "Theme ... has not been resolved". Registering the default names
+// as aliases of the same palette and initializing with them means every copy
+// resolves, handshake or not. Palette unchanged; only the names differ.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: default theme aliases")) {
+      const before = s
+      s = s.replace(
+        'registerCustomTheme(OpenCodeTheme.name, () => Promise.resolve(OpenCodeTheme), "zed")\n',
+        'registerCustomTheme(OpenCodeTheme.name, () => Promise.resolve(OpenCodeTheme), "zed")\n' +
+          "// openshare fork: default theme aliases (see VENDOR.md)\n" +
+          'const oshAliasedTheme = (name: string) => ({ ...OpenCodeTheme, name })\n' +
+          'registerCustomTheme("pierre-dark", () => Promise.resolve(oshAliasedTheme("pierre-dark")), "zed")\n' +
+          'registerCustomTheme("pierre-light", () => Promise.resolve(oshAliasedTheme("pierre-light")), "zed")\n',
+      )
+      s = s.replace(
+        "export const highlightOptions = { theme: OpenCodeTheme.name, preferredHighlighter: \"highlights\" } as const",
+        "export const highlightOptions = {\n  theme: { dark: \"pierre-dark\", light: \"pierre-light\" },\n  preferredHighlighter: \"highlights\",\n} as const",
+      )
+      if (s === before || !s.includes("oshAliasedTheme")) throw new Error("vendor-v2: theme alias anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: file-change tools never merge with each other inside a
 // context group (owner directive 2026-10-24: grouping groups individual
 // tools; edit/write/patch each render as their own expandable card - the
