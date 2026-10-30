@@ -151,32 +151,41 @@ mark + version), **footer** = brand wordmark image or styled text
 description, **accent** = status dot, login card, prompt-rail marker,
 agent-switch name.
 
-### Link previews (og: tags)
+### Link previews (og: tags + rendered cards)
 
-Crawler user-agents (Discordbot, TelegramBot, Slackbot, WhatsApp,
-Twitterbot, ...) never run the SPA, so the worker serves them
-`index.html` with `og:`/`twitter:` tags injected from the branding:
-`og:title` = `ogTitle` (or `name · Open(code)Share` — the
-**deployment** identity, never a session title; a link preview must
-not leak what a share contains), `og:description` = `description`,
-`og:image` = `ogImage` (absolute URL **or** a root-relative path,
-resolved against the deployment origin; falls back to `logoUrl`). `/s/*` and `/` are
-in `run_worker_first` for this; regular browsers pass straight through
-to the static assets, and the viewer injects the same tags client-side
-as a fallback.
+Two mechanisms, both deployment-branded, both leak-proof for gated shares:
+
+- **Crawler tags** — crawler user-agents (Discordbot, TelegramBot,
+  Slackbot, WhatsApp, Twitterbot, ...) never run the SPA, so the worker
+  serves them `index.html` with `og:`/`twitter:` tags injected from the
+  branding: `og:title` = `ogTitle` (or `name · Open(code)Share` — the
+  **deployment** identity, never a session title), `og:description` =
+  `description`, `og:image` = the per-share card below (or `ogImage` /
+  `logoUrl`). `/s/*` and `/` are in `run_worker_first` for this; regular
+  browsers pass straight through to the static assets, and the viewer
+  injects the same tags client-side as a fallback.
+- **Per-share cards** — `GET /api/share/:id/og.png` (1200x630 PNG,
+  rendered once per rev into a bounded isolate cache; resvg-wasm with
+  embedded Inter subsets, OFL): deployment wordmark + accent, session
+  title, status pill, stat line (turns · tools · duration · model).
+  Gated shares render the GENERIC card ("Private share — log in to
+  view") with no title and no stats — a preview never leaks what a
+  gated share contains. `?v=<rev>` in the served og:image URL busts
+  Discord's per-URL preview cache.
+
+Five card styles, selected by the `OG_STYLE` var (`aurora` default;
+`minimap`, `poster`, `blueprint`, `terminal` the alternatives; unknown
+values fall back to `aurora`): a gradient glass panel, a turn strip, a
+paper poster, a spec sheet, an editor window. Sample renders of every
+state: `example/og-samples/`.
 
 ## Viewer settings (cookie)
 
 The gear in the header (or Ctrl+K, in every view) opens the settings
 panel — persisted in a `osh_settings` cookie, applied pre-paint (no
-theme flash). The canonical list of settings (theme, view, paged mode
-per view, prompt rail, follow-live, text sizes, diff layout, reasoning
-auto-open, auto-expand tools, long-line scroll/wrap, background image,
-search) lives in one place: the
-[viewer README](../share-viewer/README.md#what-the-page-does). Defaults:
-system theme, continuous scroll, nothing auto-expanded.
-
-Header extras: copy session as markdown, `j`/`k` prompt navigation.
+theme flash). Every setting, its default, and the cookie shape live in
+one place: [CONFIGURATION.md §5](../CONFIGURATION.md) (behavior notes:
+[viewer README](../share-viewer/README.md)).
 
 ## Read auth (optional, casual-eyes resistance)
 
@@ -241,9 +250,9 @@ token only invalidates that token.
   the successor - rotation never orphans the pages it made.
 
 Per-token limits (enforced server-side at create): `maxLiveShares`,
-`maxTtlDays`, `dailyCreates` (0 = unlimited; defaults via
+`maxTtlHours`, `dailyCreates` (0 = unlimited; defaults via
 `DEFAULT_*` vars; scoped tokens count only their own shares). Default-limit knobs users may change themselves:
-`GET`/`PUT /api/me/settings` — `defaultTtlDays` (clamped by the
+`GET`/`PUT /api/me/settings` — `defaultTtlHours` (clamped by the
 server; applied at create when the request omits `ttlHours`, the
 explicit value always wins).
 
@@ -277,7 +286,6 @@ Admin API (Bearer `CREATE_TOKEN`):
   - `POST /api/admin/codes/:id/revoke-lineage` — kill switch: revokes
     EVERY token of EVERY user that code onboarded (freezing each),
     disables the code. Users record `createdByCode`.
-(dedup)  /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
 - `GET /api/admin/shares` (global, with ownerId; entries carry any
   `custom` labels the plugin stamped at create)
 - `POST /api/admin/shares/:id/reassign {userId}`
@@ -362,19 +370,8 @@ title/version/model.
   Class B (modelLabel/shareMode) is the fetchable suggestion view. Creates
   carry an optional `set` name; unset = the token's first set. Mints
   accept inline `sets` and inherit the minter's when omitted.
-- `GET /api/share/:id/og.png` — per-share OG card (1200x630 PNG,
-  rendered once per rev into a bounded isolate cache): deployment
-  wordmark + accent edge, session title, status pill, stat line
-  (turns · tools · duration · model). Gated shares render the GENERIC
-  card ("Private share — log in to view") with no title and no stats —
-  a link preview never leaks what a gated share contains. `?v=<rev>`
-  in the served og:image URL busts Discord's per-URL preview cache.
-  Link-preview crawlers (Discord/Telegram/Slack/etc) hitting `/s/<id>`
-  get per-share `og:title`/`og:description` (stat line) + this card +
-  `theme-color` (deployment accent); the landing page and gated shares
-  keep the deployment-generic tags. Text rasterization: resvg-wasm with
-  embedded Inter subsets (OFL). A design pass on the card look is
-  scheduled (note #90).
+- `GET /api/share/:id/og.png` — the per-share OG card. Rendering, gating
+  and style selection: [Link previews](#link-previews-og-tags--rendered-cards) above.
 - `GET /branding` — the deployment's resolved skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl, backgroundUrl, description,
   ogTitle, ogImage; all optional — absent = neutral default; see
@@ -391,25 +388,11 @@ title/version/model.
 
 ## Plugin config
 
-The plugin lives in `share-plugin/` (see its README). Three artifacts:
-`ci/openshare.js` (single file, always share-all — the CI bundle),
-`dist/server.js` (package server; share-all unless the TUI is
-registered), `dist/tui.js` (package TUI; its presence flips the server
-to manual mode with per-session opt-in via `/share`).
-
-The full config contract (precedence chain, every key, env vars,
-recipes) is documented once, in the [root README's Configuration
-section](../README.md#configuration). Short version: `OPENSHARE_*` env
-beats files; the `servers` group is the canonical multi-server form;
-`workerUrl`/`createToken` is the legacy single-server shorthand.
-
-Manual mode stores the opt-in in session metadata
-(`metadata.openshare = { v: 2, enabled: true, opts? }`; per-session
-opts: ttlHours, scope, authLogin, authPassword, modelLabel) next to the
-per-server binding map `servers: {url: {id, secret, rev, url}}`
-(legacy flat `{id, secret, rev, url}` bindings migrate at read); flag
-removal deletes the share on every server. The key is stripped from all
-synced data (worker strips session metadata on read paths as well).
+The plugin lives in `share-plugin/` — its README covers the three
+artifacts (`ci/openshare.js`, `dist/server.js`, `dist/tui.js`) and the
+TUI surface. The full config contract (precedence chain, every key,
+env vars, recipes) is documented once in
+[CONFIGURATION.md](../CONFIGURATION.md).
 
 ## Local viewing (agent-side)
 
