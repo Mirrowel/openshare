@@ -1616,6 +1616,11 @@ html[data-osh-preview-hover] .osh-out-grip::after {
   animation: none;
   content: none;
 }
+/* temp A/B (gallery-only checkbox / ?oshanim=off): isolates the sweep cost */
+html[data-osh-sweep="off"] .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
+html[data-osh-sweep="off"] .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+  animation: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
   .osh-task-wrap [data-component="task-tool-card"][data-running]::before {

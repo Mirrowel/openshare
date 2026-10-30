@@ -12,6 +12,10 @@ const maxHeight = () => Math.round(window.innerHeight * 0.8)
 
 let installed = false
 
+// load-bench counters (gallery reads them via window.__oshOutStats)
+const outStats = { bursts: 0, syncs: 0 }
+if (import.meta.env.DEV) (window as any).__oshOutStats = outStats
+
 const scrollerOf = (card: Element | null) => card?.querySelector<HTMLElement>("[data-osh-scroll]") ?? null
 
 function syncCard(card: Element) {
@@ -28,6 +32,7 @@ function syncCard(card: Element) {
 
 /** Sweep mounted cards; cheap and called after data/scroll changes. */
 export function syncOutputCards(root: ParentNode = document) {
+  outStats.syncs++
   root.querySelectorAll("[data-osh-out]").forEach(syncCard)
 }
 
@@ -102,43 +107,114 @@ export function installOutputResize() {
     true,
   )
 
-  // pierre paints file bodies inside shadow roots, so a document-level
-  // MutationObserver never sees the paint that gives a card its scroll
-  // geometry: on a cold first load the chevrons/clipped markers stayed
-  // missing until the reader scrolled (live-caught); a warm reload painted
-  // fast enough to race the mount timers. Watch every discovered shadow
-  // root too, coalesced to one sweep per frame — plus TRAILING sweeps:
-  // a body that finished painting before this frame's shadow watcher
-  // attached never mutates again, so re-measure a few times after each
-  // burst (live-caught: the first tall card opened by click stayed
-  // chevron-less until a page reload).
-  let scheduled = false
-  let trailing: number[] = []
-  const schedule = () => {
-    if (scheduled) return
-    scheduled = true
-    requestAnimationFrame(() => {
-      scheduled = false
-      watchShadows()
-      syncOutputCards()
-      for (const t of trailing) clearTimeout(t)
-      trailing = [300, 1000, 3000].map((ms) =>
-        window.setTimeout(() => {
-          watchShadows()
-          syncOutputCards()
-        }, ms),
-      )
-    })
-  }
-  const watched = new WeakSet<Node>()
-  const watchShadows = () => {
-    for (const el of document.querySelectorAll<HTMLElement>("*")) {
-      const shadow = el.shadowRoot
-      if (!shadow || watched.has(shadow)) continue
-      watched.add(shadow)
-      new MutationObserver(schedule).observe(shadow, { childList: true, subtree: true, characterData: true })
+  // Chevron/clipped state derives from the scroller's layout, and the
+  // observable signal for "the scrollable content changed size" is a
+  // ResizeObserver on the content — the same moment a scrollbar would
+  // appear or grow. Previous designs polled (mutation bursts + document
+  // walks + trailing timers) and both missed cold shadow paints and stole
+  // main-thread time during load; this one does no walking at all:
+  //   - a MutationObserver that only inspects added/removed nodes wires
+  //     each card ONCE (cards mount collapsed; the scroller arrives when
+  //     the content opens, so wiring retries until it exists)
+  //   - the shared ResizeObserver watches the scroller box plus a short
+  //     first-child chain, crossing into pierre's shadow root: row
+  //     layout inside it resizes that chain and re-measures exactly the
+  //   - one card. Card removal unobserves (RO holds strong refs).
+  const ro = new ResizeObserver((entries) => {
+    for (const e of entries) {
+      const card = (e.target as Element).closest("[data-osh-out]")
+      if (card) syncCard(card)
     }
+  })
+  const wired = new WeakSet<Element>()
+  const cardTargets = new Map<Element, Element[]>()
+  const cardObservers = new Map<Element, MutationObserver>()
+  const pending = new Set<Element>()
+
+  const targetsFor = (card: Element): Element[] => {
+    const sc = scrollerOf(card)
+    if (!sc) return []
+    const out: Element[] = [sc]
+    let node: Element | null = sc
+    for (let d = 0; d < 3 && node; d++) {
+      node = node.firstElementChild
+      if (node) out.push(node)
+    }
+    for (const t of [...out]) {
+      const sr = (t as HTMLElement).shadowRoot
+      if (!sr) continue
+      let n: Element | null = sr.firstElementChild
+      for (let d = 0; d < 3 && n; d++) {
+        out.push(n)
+        n = n.firstElementChild
+      }
+    }
+    return out
   }
-  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true })
+
+  const wire = (card: Element) => {
+    const sc = scrollerOf(card)
+    if (!sc) {
+      // deferred content: retry on the next mutation under this card
+      pending.add(card)
+      return
+    }
+    wired.add(card)
+    pending.delete(card)
+    // scoped structural watch: pierre mounts its shadow shell and rows
+    // after the card opens, and none of that reaches the document-level
+    // observer — a per-card MutationObserver (scroller subtree + every
+    // discovered shadow root) re-exands the observed chain when new
+    // content appears and re-measures just this card
+    const mo = new MutationObserver(() => refresh(card))
+    mo.observe(sc, { childList: true, subtree: true })
+    cardObservers.set(card, mo)
+    refresh(card)
+  }
+
+  const refresh = (card: Element) => {
+    const known = cardTargets.get(card) ?? []
+    const seen = new Set(known)
+    const targets = targetsFor(card)
+    if (!targets.length) return
+    const mo = cardObservers.get(card)
+    for (const t of targets) {
+      if (!seen.has(t)) ro.observe(t)
+      const sr = (t as HTMLElement).shadowRoot
+      if (sr && mo && !(sr as unknown as { __oshCardMo?: boolean }).__oshCardMo) {
+        ;(sr as unknown as { __oshCardMo?: boolean }).__oshCardMo = true
+        mo.observe(sr, { childList: true, subtree: true })
+      }
+    }
+    cardTargets.set(card, targets)
+    syncCard(card)
+  }
+
+  const unwire = (card: Element) => {
+    const targets = cardTargets.get(card)
+    if (targets) for (const t of targets) ro.unobserve(t)
+    cardTargets.delete(card)
+    cardObservers.get(card)?.disconnect()
+    cardObservers.delete(card)
+    pending.delete(card)
+  }
+
+  new MutationObserver((records) => {
+    outStats.bursts++
+    for (const r of records) {
+      for (const n of r.addedNodes) {
+        if (!(n instanceof Element)) continue
+        if (n.hasAttribute("data-osh-out")) wire(n)
+        else for (const c of n.querySelectorAll("[data-osh-out]")) wire(c)
+      }
+      for (const n of r.removedNodes) {
+        if (!(n instanceof Element)) continue
+        if (n.hasAttribute("data-osh-out")) unwire(n)
+        else for (const c of n.querySelectorAll("[data-osh-out]")) unwire(c)
+      }
+    }
+    if (pending.size) for (const card of [...pending]) wire(card)
+  }).observe(document.body, { childList: true, subtree: true })
+  for (const card of document.querySelectorAll("[data-osh-out]")) wire(card)
   window.addEventListener("resize", () => syncOutputCards())
 }

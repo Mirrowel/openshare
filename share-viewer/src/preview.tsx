@@ -5,7 +5,7 @@
 // appearance sit in the left column. The point is to answer "how does X
 // look when Y" without hunting through shares, so every variant lives
 // here, including hover-only ones.
-import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { VendoredPart, setVendoredData } from "./views/vendored-part"
 import { GalleryTimeline } from "./gallery-timeline"
 import { SettingsBody } from "./settings-panel"
@@ -421,12 +421,68 @@ Inline \`code\`, **bold**, *italic*, ~~struck~~, and a [link](https://example.co
 ]
 
 export function Preview() {
+  // --- load benchmark ------------------------------------------------------
+  // Marks the phases from navigation to "settled" (every tall card measured
+  // and chevroned), exposes them as window.__oshBench and renders the corner
+  // panel. Dev build, so absolute numbers include vite transforms; the point
+  // is catching load REGRESSIONS between rounds, and the probe reads the
+  // same object for automation.
+  const bench: Record<string, number | string> = { boot: Math.round(performance.now()) }
+  ;(window as any).__oshBench = bench
+  const [benchDone, setBenchDone] = createSignal<boolean>(false)
+  onMount(() => {
+    bench.mount = Math.round(performance.now())
+    const t0 = Date.now()
+    const poll = window.setInterval(() => {
+      const stats = (window as any).__oshOutStats ?? { bursts: 0, syncs: 0 }
+      const h2s = document.querySelectorAll("h2").length
+      let deep = 0
+      const walk = (node: ParentNode) => {
+        deep += node.querySelectorAll("[data-line]").length
+        for (const el of node.querySelectorAll("*")) if ((el as HTMLElement).shadowRoot) walk((el as HTMLElement).shadowRoot!)
+      }
+      walk(document)
+      if (!bench.paint && h2s >= 20 && deep > 100) bench.paint = Math.round(performance.now())
+      if (bench.paint && !bench.settle) {
+        // the exact regression this bench guards: the first tall read card
+        // measured and chevroned without any interaction or reload
+        const sec = [...document.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "read")
+        const row = [...(sec?.querySelectorAll(":scope > div > div") ?? [])].find((r) => r.querySelector(".text-12-regular")?.textContent?.includes("long (capped, scrolls)"))
+        const card = row?.querySelector('[data-osh-out="file"]')
+        if (card?.hasAttribute("data-osh-clipped")) {
+          bench.settle = Math.round(performance.now())
+          bench.bursts = stats.bursts
+          bench.syncs = stats.syncs
+          bench.wallMs = Date.now() - t0
+          setBenchDone(true)
+          window.clearInterval(poll)
+        }
+      }
+      if (Date.now() - t0 > 40000) {
+        bench.error = "timeout"
+        setBenchDone(true)
+        window.clearInterval(poll)
+      }
+    }, 120)
+    onCleanup(() => window.clearInterval(poll))
+  })
+
   // task cards render their chevron/link affordances only when a child
   // session is reachable; register a no-op nav so the gallery shows them
   setVendoredData(data as any, { sessionHref: () => "#preview-child", navigateToSession: () => {} })
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
   const [showSettings, setShowSettings] = createSignal(true)
   const [forceHover, setForceHover] = createSignal(false)
+  // temp A/B (owner round): kill switch for the running-subagent sweeps,
+  // gallery-only, for isolating the FPS cost on real hardware
+  const [sweepOff, setSweepOff] = createSignal<boolean>(new URLSearchParams(location.search).get("oshanim") === "off" || document.documentElement.dataset.oshSweep === "off")
+  const setSweep = (mode: "on" | "off") => {
+    if (mode === "off") document.documentElement.dataset.oshSweep = "off"
+    else delete document.documentElement.dataset.oshSweep
+    setSweepOff(mode === "off")
+  }
+  // the URL param initializes the signal; the CSS consumes the attribute
+  if (sweepOff()) document.documentElement.dataset.oshSweep = "off"
   const [search, setSearch] = createSignal("")
   const update = (patch: Partial<OshSettings>) => {
     const next = { ...readSettings(), ...patch }
@@ -443,7 +499,15 @@ export function Preview() {
   const total = createMemo(() => groups.reduce((n, g) => n + g.states.length, 0))
 
   return (
-    <div class="osh-gallery flex h-dvh w-full overflow-hidden bg-background-base text-text-base">
+    <>
+      <Show when={benchDone()}>
+        <div style={{ position: "fixed", right: "10px", bottom: "10px", "z-index": "200", "font-size": "11px", "font-family": "monospace", padding: "6px 9px", background: "color-mix(in srgb, var(--background-base, #111) 88%, transparent)", border: "1px solid var(--border-weak-base, #333)", "border-radius": "8px", color: "var(--text-weaker, #999)", "pointer-events": "none" }}>
+          <div>load bench {bench.error ? `(error: ${bench.error})` : ""}</div>
+          <div>boot {bench.boot}ms · paint +{typeof bench.paint === "number" ? bench.paint - (bench.boot as number) : "?"}ms · settle +{typeof bench.settle === "number" ? bench.settle - (bench.boot as number) : "?"}ms</div>
+          <div>mutation bursts {bench.bursts ?? "?"} · card syncs {bench.syncs ?? "?"}</div>
+        </div>
+      </Show>
+      <div class="osh-gallery flex h-dvh w-full overflow-hidden bg-background-base text-text-base">
       <Show when={showSettings()}>
         <aside class="w-[320px] shrink-0 overflow-y-auto border-r border-border-weak-base px-3 py-3">
           <div class="mb-2 flex items-center justify-between">
@@ -460,6 +524,10 @@ export function Preview() {
           <label class="ml-auto flex items-center gap-2 text-12-regular text-text-weaker">
             <input type="checkbox" checked={forceHover()} onChange={(e) => toggleHover(e.currentTarget.checked)} />
             force hover everywhere
+          </label>
+          <label class="flex items-center gap-2 text-12-regular text-text-weaker" title="temp A/B: kills the running-subagent sweep animations to isolate the FPS cost">
+            <input type="checkbox" checked={sweepOff()} onChange={(e) => setSweep(e.currentTarget.checked ? "off" : "on")} />
+            sweeps off (temp A/B)
           </label>
           <Show when={!showSettings()}>
             <button class="text-12-regular text-text-weaker hover:text-text-base" onClick={() => setShowSettings(true)}>settings</button>
@@ -528,5 +596,6 @@ export function Preview() {
         </div>
       </main>
     </div>
+    </>
   )
 }
