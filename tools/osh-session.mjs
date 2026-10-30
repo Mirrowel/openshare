@@ -102,11 +102,30 @@ export function envelopeFromExports(exports) {
         } else if (p?.type === "tool") {
           const st = p.state ?? {}
           const tt = st.time ?? {}
+          const stOut = { ...st, input: inputV1toV2(String(p.tool ?? ""), st.input) }
+          // range language: a read inside an html file's script/style block
+          // tokenizes as untyped soup under the html grammar when the snippet
+          // has no tag context; the stamp carries the language of the RANGE.
+          // Sniff the clean content (preview/display), never the raw v1 output
+          // whose <path> header reads as an html tag.
+          if (String(p.tool ?? "") === "read" && stOut.status === "completed") {
+            const meta = (stOut.metadata = st.metadata ?? {})
+            const rawPath = String(st.input?.filePath ?? st.input?.path ?? "")
+            const ext = rawPath.includes(".") ? rawPath.split(".").pop().toLowerCase() : ""
+            if ((!meta.language || meta.language === "html") && (ext === "html" || ext === "htm")) {
+              const clean = (typeof meta.preview === "string" && meta.preview) || (typeof meta.display?.text === "string" && meta.display.text) || String(st.output ?? "").replace(/^<path>[^]*?<\/path>\s*/i, "")
+              const head = clean.slice(0, 4000)
+              if (!/<[a-zA-Z][^>\n]*>/.test(head)) {
+                if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) meta.language = "css"
+                else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) meta.language = "javascript"
+              }
+            }
+          }
           content.push({
             type: "tool",
             id: String(p.id ?? ""),
             name: TO_V2_NAME[String(p.tool ?? "")] ?? String(p.tool ?? "unknown"),
-            state: { ...st, input: inputV1toV2(String(p.tool ?? ""), st.input) },
+            state: stOut,
             time: { created: tt.start, completed: tt.end },
           })
         } else if (p?.type === "step-finish") {
@@ -213,6 +232,25 @@ export function exportFromItems(items, sessionID) {
               : status === "running"
                 ? { status, input: inputV2toV1(String(c.name ?? ""), st.input) ?? {}, title: String(st.title ?? ""), metadata: st.metadata ?? {}, time: { start } }
                 : { status, input: inputV2toV1(String(c.name ?? ""), st.input) ?? {}, raw: String(st.raw ?? "") }
+        // range language: a read inside an html file's script/style block
+        // tokenizes as untyped soup under the html grammar when the snippet
+        // has no tag context; the stamp carries the language of the RANGE
+        if (String(c.name ?? "") === "read" && status === "completed" && outputText) {
+          const meta = toolState.metadata
+          const p = String(toolState.input?.filePath ?? toolState.input?.path ?? "")
+          const ext = p.includes(".") ? p.split(".").pop().toLowerCase() : ""
+          if ((!meta.language || meta.language === "html") && (ext === "html" || ext === "htm")) {
+            // the viewer highlights meta.preview when stamped, so sniff the
+            // clean content, never the raw v1-shaped output (its <path>
+            // header would read as an html tag)
+            const clean = (typeof meta.preview === "string" && meta.preview) || (typeof meta.display?.text === "string" && meta.display.text) || outputText.replace(/^<path>[^]*?<\/path>\s*/i, "")
+            const head = clean.slice(0, 4000)
+            if (!/<[a-zA-Z][^>\n]*>/.test(head)) {
+              if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) meta.language = "css"
+              else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) meta.language = "javascript"
+            }
+          }
+        }
         parts.push({
           id: String(c.id || pid(`p${i}`)),
           sessionID,
