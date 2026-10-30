@@ -1,0 +1,34 @@
+name: pages
+
+# The marketing site in website/ deploys to GitHub Pages as-is (static files,
+# relative asset paths). Triggers on website changes landing on master or dev,
+# plus manual dispatch so the site can ship before a branch merge.
+on:
+  push:
+    branches: [master, dev]
+    paths: ["website/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+      - id: deployment
+        uses: actions/deploy-pages@v4
