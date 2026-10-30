@@ -2007,7 +2007,17 @@ function wireItems(items, facts) {
     if (it?.type === "session" && it.data?.id && typeof it.data.directory === "string") dirs.set(it.data.id, normPath(it.data.directory))
   }
   const fallbackDir = facts?.directory ? normPath(facts.directory) : undefined
-  const home = facts?.home ? normPath(facts.home) : undefined
+  // home: the plugin's private stamp when present; otherwise DERIVE it from
+  // the working folder, so a share made before the stamp still masks the
+  // sharer's user directory instead of printing it
+  const home = facts?.home
+    ? normPath(facts.home)
+    : (() => {
+        const probe = fallbackDir ?? [...dirs.values()][0]
+        if (!probe) return undefined
+        const m = /^([A-Za-z]:\/Users\/[^/]+|\/home\/[^/]+|\/Users\/[^/]+)/.exec(probe)
+        return m ? m[1] : undefined
+      })()
   return items.map((it) => {
     if (it?.type !== "message" || !it.data) return it
     const dir = dirs.get(it.sessionID) ?? dirs.get(it.data.sessionID) ?? fallbackDir

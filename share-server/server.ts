@@ -161,7 +161,15 @@ function wireItems(items: unknown[], facts?: Record<string, unknown>): unknown[]
     }
   }
   const fallbackDir = typeof facts?.directory === "string" ? normPath(facts.directory) : undefined
-  const home = typeof facts?.home === "string" ? normPath(facts.home) : undefined
+  // home: the plugin's private stamp when present, else DERIVE it from the
+  // working folder so pre-stamp shares still mask the user directory
+  const home = (() => {
+    if (typeof facts?.home === "string") return normPath(facts.home)
+    const probe = fallbackDir ?? [...dirs.values()][0]
+    if (!probe) return undefined
+    const m = /^([A-Za-z]:\/Users\/[^/]+|\/home\/[^/]+|\/Users\/[^/]+)/.exec(probe)
+    return m ? m[1] : undefined
+  })()
   return items.map((it) => {
     const item = it as { type?: string; sessionID?: string; data?: any }
     if (item?.type !== "message" || !item.data) return it
