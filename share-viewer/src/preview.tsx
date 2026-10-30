@@ -433,24 +433,31 @@ export function Preview() {
   onMount(() => {
     bench.mount = Math.round(performance.now())
     const t0 = Date.now()
+    // cheap sampling: the deep [data-line] walk (shadow roots included) is
+    // the expensive check, so it runs only UNTIL paint; after that the poll
+    // is a single attribute read. The bench must not cost the load it
+    // measures.
     const poll = window.setInterval(() => {
       const stats = (window as any).__oshOutStats ?? { bursts: 0, syncs: 0 }
-      const h2s = document.querySelectorAll("h2").length
-      let deep = 0
-      const walk = (node: ParentNode) => {
-        deep += node.querySelectorAll("[data-line]").length
-        for (const el of node.querySelectorAll("*")) if ((el as HTMLElement).shadowRoot) walk((el as HTMLElement).shadowRoot!)
+      if (!bench.paint) {
+        const h2s = document.querySelectorAll("h2").length
+        let deep = 0
+        const walk = (node: ParentNode) => {
+          deep += node.querySelectorAll("[data-line]").length
+          for (const el of node.querySelectorAll("*")) if ((el as HTMLElement).shadowRoot) walk((el as HTMLElement).shadowRoot!)
+        }
+        walk(document)
+        if (h2s >= 20 && deep > 100) bench.paint = Math.round(performance.now())
       }
-      walk(document)
-      if (!bench.paint && h2s >= 20 && deep > 100) bench.paint = Math.round(performance.now())
       if (bench.paint && !bench.settle) {
         // the exact regression this bench guards: the first tall read card
         // measured and chevroned without any interaction or reload
         const sec = [...document.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "read")
         const row = [...(sec?.querySelectorAll(":scope > div > div") ?? [])].find((r) => r.querySelector(".text-12-regular")?.textContent?.includes("long (capped, scrolls)"))
         const card = row?.querySelector('[data-osh-out="file"]')
-        if (card?.hasAttribute("data-osh-clipped")) {
+        if (card?.hasAttribute("data-osh-clipped") || Date.now() - t0 > 25000) {
           bench.settle = Math.round(performance.now())
+          if (!card?.hasAttribute("data-osh-clipped")) bench.note = "tall card never clipped (plain render?)"
           bench.bursts = stats.bursts
           bench.syncs = stats.syncs
           bench.wallMs = Date.now() - t0
@@ -463,7 +470,7 @@ export function Preview() {
         setBenchDone(true)
         window.clearInterval(poll)
       }
-    }, 120)
+    }, 400)
     onCleanup(() => window.clearInterval(poll))
   })
 
@@ -502,8 +509,8 @@ export function Preview() {
     <>
       <Show when={benchDone()}>
         <div style={{ position: "fixed", right: "10px", bottom: "10px", "z-index": "200", "font-size": "11px", "font-family": "monospace", padding: "6px 9px", background: "color-mix(in srgb, var(--background-base, #111) 88%, transparent)", border: "1px solid var(--border-weak-base, #333)", "border-radius": "8px", color: "var(--text-weaker, #999)", "pointer-events": "none" }}>
-          <div>load bench {bench.error ? `(error: ${bench.error})` : ""}</div>
-          <div>boot {bench.boot}ms · paint +{typeof bench.paint === "number" ? bench.paint - (bench.boot as number) : "?"}ms · settle +{typeof bench.settle === "number" ? bench.settle - (bench.boot as number) : "?"}ms</div>
+          <div>load bench {bench.error ? `(error: ${bench.error})` : ""} {bench.note ? `(${bench.note})` : ""}</div>
+          <div>modules {bench.boot}ms (dev) · paint +{typeof bench.paint === "number" ? bench.paint - (bench.boot as number) : "?"}ms · settle +{typeof bench.settle === "number" ? bench.settle - (bench.boot as number) : "?"}ms</div>
           <div>mutation bursts {bench.bursts ?? "?"} · card syncs {bench.syncs ?? "?"}</div>
         </div>
       </Show>
