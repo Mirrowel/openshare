@@ -85,9 +85,10 @@ Deploying is nothing special: `wrangler deploy` in `share-worker/` picks up `../
 
 `vendor/` carries the opencode **v2** kit (`session-ui-v2`, `ui-v2`,
 `client-v2`, `util-v2`) plus a **vendored solid-js** (snapshot-loop fix
-for a re-entrant disposal crash — see
-[`../DEVELOPMENT.md`](../DEVELOPMENT.md)), all under upstream licensing
-(MIT), modified only where surgical forks require it. Regenerate with
+for a re-entrant disposal crash), all under upstream licensing
+(MIT), modified only where surgical forks require it. What the pin is,
+the update ritual, and the full patch catalogue:
+[`vendor/VENDOR.md`](vendor/VENDOR.md). Regenerate with
 `npm run vendor`; provenance in `vendor/V2-SOURCE.txt`. The theme
 builder and data source are OpenShare's own.
 
