@@ -2263,6 +2263,27 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const FILE_TOOLS = new Set(["read", "write", "edit", "patch"])
 
+  /** A read that returns lines from inside an html file's <script>/<style>
+   *  block gets tokenized as html by the viewer, and a snippet with no tag
+   *  context tokenizes as untyped soup (one default span per line). The
+   *  viewer only sees the snippet, so the stamp carries the language that is
+   *  true for the RETURNED RANGE: no tags plus code shape means the range sat
+   *  inside an embedded script or style block. */
+  const refineEmbeddedLanguage = (meta: { language?: unknown }, text: string): boolean => {
+    if (meta.language !== "html") return false
+    const head = text.slice(0, 4000)
+    if (/<[a-zA-Z][^>\n]*>/.test(head)) return false
+    let refined: string | undefined
+    if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) {
+      refined = "css"
+    } else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) {
+      refined = "javascript"
+    }
+    if (!refined || meta.language === refined) return false
+    meta.language = refined
+    return true
+  }
+
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant") continue
@@ -2288,6 +2309,10 @@ export function createEngine(deps: EngineDeps): Engine {
             meta.language = lang
             mutated = true
           }
+        }
+        // range refinement: html-stamped reads inside script/style blocks
+        if (part.name === "read" && typeof state.output === "string" && state.output.length > 0) {
+          if (refineEmbeddedLanguage(meta, state.output)) mutated = true
         }
         // lineStart stamp: reads sliced from an offset keep REAL file line
         // numbers in the viewer's unified file card (pierre numbers from 1;
