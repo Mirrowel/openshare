@@ -11,23 +11,18 @@
 </p>
 
 <p align="center">
+  <a href="https://ko-fi.com/C0C0UZS4P"><img alt="ko-fi" src="https://ko-fi.com/img/githubbutton_sm.svg"></a>
+</p>
+
+<p align="center">
   <a href="#tldr">TL;DR</a> ·
   <a href="#is-this-for-me">Is this for me</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#architecture">Architecture</a> ·
-  <a href="#share-modes">Share modes</a> ·
-  <a href="#identity--servers">Identity & servers</a> ·
-  <a href="#tui-commands">TUI commands</a> ·
-  <a href="#the-viewer">The viewer</a> ·
-  <a href="#configuration">Configuration</a> ·
+  <a href="#where-everything-lives">Doc map</a> ·
   <a href="#how-your-data-is-handled">Data handling</a> ·
-  <a href="#read-auth--security">Security</a> ·
-  <a href="#troubleshooting">Troubleshooting</a> ·
-  <a href="#self-hosting">Self-hosting</a> ·
-  <a href="#uninstalling">Uninstalling</a> ·
-  <a href="#glossary">Glossary</a> ·
-  <a href="#development">Development</a>
+  <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
 ---
@@ -50,51 +45,40 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 
 - **Yes** if you want share links for opencode sessions on infrastructure you control, with live streaming, subagent pages, multi-server fan-out, and no third-party service in the middle.
 - **Yes** if you run agents in CI and want a durable, linkable transcript of every run (the single-file CI bundle emits URLs without any interaction).
-- **Yes** if someone else runs a server you've been invited to — a friend's host or a community server works out of the box. There is no public directory of servers (yet): ask the hoster for the URL, plus an access code if the server is private.
+- **Yes** if someone else runs a server you've been invited to — a friend's host or a community server works out of the box. There is no public directory of servers: ask the hoster for the URL, plus an access code if the server is private.
 
 ## What you get
 
-- **Live shares** — a running session streams to the server over one WebSocket per main session; open pages update in place.
-- **Backfill** — share a session mid-way (or after the fact) and the full history lands in the page: messages, parts, models, diff, subagent sessions. Including servers added *later*: joining a session mid-run mirrors its whole past.
+- **Live shares** — a running session streams over one WebSocket per main session; open pages update in place.
+- **Backfill** — share a session mid-way (or after the fact) and the full history lands in the page: messages, parts, models, diffs, subagent sessions. Servers added later mirror the whole past too.
 - **Multi-server fan-out** — one session can stream to several servers at once; switch the active set any time; per-session stop or leave-a-snapshot per server.
-- **Identity & enrollment** — accounts, not just tokens: full tokens (the account credential) and scoped tokens (CI/agent credentials that reach only their own shares), access codes that mint users with a one-call lineage kill-switch, and ask-once onboarding (onboard vs stay anonymous). Long-lived tokens, rotation, revocation, freeze — OAuth-ish without the refresh churn.
-- **Self-serve admin** — a full admin console *inside the TUI* (`/openshare → Servers → <server> → Admin panel`): users, freeze/delete, mint tokens, invite codes, shares, reassign, purge.
-- **Subagent pages** — child sessions (`parentID`) route into the parent's share as numbered sub-pages; task rows link to them.
+- **Identity** — accounts, not just tokens: full tokens (the account credential), scoped tokens for CI that reach only their own shares, access codes that mint users with a one-call lineage kill-switch, ask-once onboarding.
+- **Self-serve admin** — a full admin console *inside the TUI*: users, freeze/delete, mint tokens, invite codes, shares, reassign, purge.
+- **Subagent pages** — child sessions route into the parent's share as numbered sub-pages; task rows link to them.
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
-- **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share (per-token caps enforced server-side).
-- **Branding** — your deployment's logo, wordmark, accent, background, description, link previews — config only, no code ([worked example](share-worker/branding-example/)).
-- **Twelve reading views, two cores** — classic and conversation are the core reading surfaces (conversation: the ported TurnNav-sidebar design with hover previews and a focus overlay); reader and nine full-page skins (terminal, casefile, blueprint, cinema, timeline, letterpress, atlas, teletype, grove) ride the same SDK: the data, sync, search, settings and virtualization are the SDK's, the look is the skin's ([the view contract](share-viewer/src/views/README.md)).
-- **Viewer settings** — per-visitor: theme, view, paged vs continuous scroll (per capable view; classic is continuous + focus mode), prompt nav (sidebar by default or the pill, toggled in the control; hover-preview sizes from the nav gear in both states; ghost mode rests the pill invisible until approached; double-pings once per page load while on)), smooth scrolling (instant/near/always lever), prompt style (bubble or flat lever), auto-expanded tools, tool grouping (off/custom/all lever: custom collapses only the checked tools), follow-live, text sizes (live sliders) — plus the header search palette (/ - prompts, responses, thinking and tool text with scope chips), prompt-and-response search, `j`/`k` and `[`/`]` turn navigation, focus mode (ctrl+click a prompt in the sidebar or pill, the row reticle, or right-click), and copy-as-markdown plus session export in every view.
-
-- **Deep links** - ctrl+click a message to copy a link to where it starts; holding Ctrl outlines message bodies so the gesture is visible. The URL carries the row data key (`#row=user-message:msg_...`), so opening it scrolls to that exact row, expands it if collapsed, and flashes it. Links live only in the URL (nothing is stored on the share) and keep working across reloads and deployments. Continuous modes only (classic, every skin, conversation, focus overlay).
-
-- **Times** - shown as recorded (UTC) by default; clicking the time in the session header converts every stamp in the session to your timezone and remembers it. Prompt footers read `07:57` on the same day, `07:57 27 Oct` otherwise; the header carries the full date.
-
-- **Tall output** - shell, search results and unknown tools scroll, and dragging a card's bottom edge resizes that output (double-click resets, nothing is saved). File cards stop at about 25 lines with chevrons marking content below; "Cap tall outputs" turns the cap off.
-
-- **Export a session** - the header export button downloads the current session as JSON that `opencode import` accepts; the `tools/` converters do the same from the command line and in reverse. See [`tools/README.md`](tools/README.md).
+- **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share.
+- **Branding + link previews** — your deployment's logo, wordmark, accent, background, and rendered OG cards (five styles) from config alone: [worked example](share-worker/branding-example/).
+- **A serious viewer** — twelve reading views on one SDK, every view virtualized to handle multi-thousand-message shares, live search, focus mode, deep links, offline snapshots, one-click session export: [the viewer](share-viewer/README.md).
 
 ## Quick start
 
-**Already have a server URL** (a community host, a friend's deployment, your own from before)? Install the plugin (step 1) and skip to step 4.
+**Already have a server URL** (a community host, a friend's deployment)? Install the plugin (step 1) and skip to step 4.
 
 **Prerequisites**
 
 | Piece | Need it for | Minimum |
 |---|---|---|
-| [opencode](https://opencode.ai) | the plugin | v1.18+ ("v2" hosts — the next-gen plugin API — are supported by the same package; see step 1 for how to tell which you have) |
+| [opencode](https://opencode.ai) | the plugin | v1.18+ ("v2" hosts — the next-gen plugin API — are supported by the same package) |
 | [Node.js](https://nodejs.org) | building the viewer, running wrangler | 20.19+ (or 22.12+) — the viewer build uses Vite 7 |
 | [Bun](https://bun.sh) | the portable backend, or building from source | 1.1+ |
-| [wrangler](https://developers.cloudflare.com/workers/wrangler/) | deploying the Cloudflare backend | any recent version — every command below uses `npx wrangler`, no global install needed |
+| [wrangler](https://developers.cloudflare.com/workers/wrangler/) | deploying the Cloudflare backend | any recent version — every command uses `npx wrangler` |
 | A Cloudflare account | the worker backend | free tier is enough |
-
-Everything else (a mock LLM, local workers) only matters for development — see [Development](#development).
 
 ### 1. Install the plugin
 
 **Which host am I on?** v1 is the current stable opencode (1.18+); "v2" is the next-generation host with the new plugin API and CLI commands. Quick check: `opencode plugin list` works on v2 — v1 only has the positional `opencode plugin <module>`.
 
-Add the package to your config files — the **bare package name in both** (opencode resolves the TUI entrypoint from the package itself; no `/tui` suffix). Add the string to the existing `plugin` array if you already have one; create the files with exactly this content if you don't:
+Add the package to your config files — the **bare package name in both** (opencode resolves the TUI entrypoint from the package itself; no `/tui` suffix):
 
 ```jsonc
 // ~/.config/opencode/opencode.json  (the server engine; on Windows: %USERPROFILE%\.config\opencode\)
@@ -103,11 +87,11 @@ Add the package to your config files — the **bare package name in both** (open
 { "plugin": ["@mirrowel/opencode-openshare"] }
 ```
 
-**Don't skip the tui.json entry** unless you want every *new* session to share automatically — the plugin's mode is decided by which halves are installed: both entries → manual (share per session via `/share`), only opencode.json → all-mode (auto-share every new session). An explicit `"shareMode"` in the plugin config overrides either way (see [Share modes](#share-modes)).
+**Don't skip the tui.json entry** unless you want every *new* session to share automatically — the plugin's mode is decided by which halves are installed: both entries → manual (share per session via `/share`), only opencode.json → all-mode (auto-share every new session). An explicit `shareMode` in the plugin config overrides either way ([share modes](#share-modes)).
 
-Restart opencode, then verify: `/share` and `/openshare` appear in the TUI. Project-level `opencode.json`/`tui.json` in a repo work the same way (then the plugin is active only there). opencode fetches npm plugins itself on restart — no manual `npm install` needed.
+Restart opencode, then verify: `/share` and `/openshare` appear in the TUI. Project-level config files in a repo work the same way (then the plugin is active only there). opencode fetches npm plugins itself on restart — no manual `npm install` needed.
 
-**On a v2 host** the CLI does the config for you — the package carries both entrypoints:
+**On a v2 host** the CLI does the config for you:
 
 ```sh
 opencode plugin add @mirrowel/opencode-openshare    # v2: writes the config + installs
@@ -120,32 +104,21 @@ Other shapes, same codebase:
 |---|---|---|
 | `@mirrowel/opencode-openshare` (npm) | default interactive/daemon setup | manual with the TUI entry; all-mode without it |
 | `file:///…/share-plugin` (local checkout) | developing or tracking main | same as npm — it's the same package. Note: a checkout carries the gitignored `openshare.local.json` dev slot (worker URL + dev token) — remove it before sharing the checkout, or sessions run inside it share to that worker |
-| `share-plugin/ci/openshare.js` (committed single file, zero deps) | CI bundles, air-gapped runners | all-mode by default (it declares no TUI entry; explicit `shareMode` still wins) |
+| `share-plugin/ci/openshare.js` (committed single file, zero deps) | CI bundles, air-gapped runners | all-mode by default (no TUI entry; explicit `shareMode` still wins) |
 
 Until a backend is configured the plugin stays dormant — it never blocks a session.
 
 ### 2. Run a backend (pick one)
 
-**A. Cloudflare Worker** (free-tier friendly; idle sockets hibernate):
+**A. Cloudflare Worker** (free-tier friendly; idle sockets hibernate). First deploy needs a KV namespace of your own and a root token — the exact steps and the gotchas are in the [worker README](share-worker/README.md#deploy):
 
 ```sh
 git clone https://github.com/Mirrowel/openshare && cd openshare
-
-# the viewer ships as worker assets — build it once
-cd share-viewer && npm install && npm run build && cd ..
-
-# first run: wrangler login, then create YOUR OWN kv namespace
-# (the id shipped in wrangler.toml is the author's — a deploy to an
-# account that doesn't own it fails)
+cd share-viewer && npm install && npm run build && cd ..   # the viewer ships as worker assets
 cd share-worker
 npx wrangler login
-npx wrangler kv namespace create KV
-#  -> put the printed id into wrangler.toml, in the [[kv_namespaces]]
-#     block, KEEPING binding = "SHARE_INDEX" (the binding name is
-#     load-bearing — the worker reads env.SHARE_INDEX)
-
-# your root admin token (treat like a password — see Security)
-npx wrangler secret put CREATE_TOKEN
+npx wrangler kv namespace create KV    # put YOUR id into wrangler.toml (see worker README)
+npx wrangler secret put CREATE_TOKEN   # root admin token — treat like a password
 npx wrangler deploy
 curl -s https://<your-worker>.workers.dev/health
 #  -> {"ok":true,"service":"openshare","policy":{...},"auth":{"mode":"private"}}
@@ -154,237 +127,131 @@ curl -s https://<your-worker>.workers.dev/health
 **B. Bun server** (any VPS / localhost — one process, one SQLite file):
 
 ```sh
-git clone https://github.com/Mirrowel/openshare && cd openshare
-cd share-viewer && npm install && npm run build && cd ..   # viewer, same as above
 cd share-server
-# PowerShell:  $env:CREATE_TOKEN="root-secret"; bun server.ts
-CREATE_TOKEN=root-secret bun server.ts                    # (sh)
+CREATE_TOKEN=root-secret bun server.ts         # PowerShell: $env:CREATE_TOKEN="root-secret"; bun server.ts
 curl -s http://127.0.0.1:8787/health
-#  -> {"ok":true,"service":"openshare",...}
 ```
 
 **C. Docker** (one image, server + viewer; state in one volume):
 
 ```sh
-git clone https://github.com/Mirrowel/openshare && cd openshare
 docker build -f share-server/Dockerfile -t openshare .
 docker run -e CREATE_TOKEN=root-secret -p 8787:8787 -v oshdata:/data openshare
-curl -s http://127.0.0.1:8787/health
 ```
+
+Both backends serve the built viewer, resolve the same policy vars, and pass the same identity suites — the plugin cannot tell them apart ([self-hosting](#self-hosting)).
 
 ### 3. Decide who gets in
 
-- **Public** (`AUTH_MODE=public`): anyone knowing the hostname can create shares anonymously; enrolling an ACCOUNT needs an access code unless you also enable `CODELESS_ONBOARDING`. Fine for personal deployments behind a URL you keep to yourself. On the worker these are `wrangler.toml` vars (set `AUTH_MODE = "public"`, then redeploy); on the Bun server and Docker they're env vars at launch (`-e AUTH_MODE=public` for Docker). Same names, different mechanisms.
+- **Public** (`AUTH_MODE=public`): anyone knowing the hostname can create shares anonymously; enrolling an ACCOUNT needs an access code unless you also enable `CODELESS_ONBOARDING`. Fine for personal deployments behind a URL you keep to yourself.
 - **Private** (default): mint an invite code with your root token and hand it out. Note the `code` field in the response — that's the invite:
 
 ```sh
-# sh — set the env var once, then use it
-export CREATE_TOKEN=root-secret        # the value you set at deploy
+export CREATE_TOKEN=root-secret        # the value you set at deploy (PowerShell: $env:CREATE_TOKEN)
 curl -X POST https://your-host/api/admin/codes \
-  -H "authorization: Bearer $CREATE_TOKEN" \
-  -H "content-type: application/json" \
+  -H "authorization: Bearer $CREATE_TOKEN" -H "content-type: application/json" \
   -d '{"label":"friends","activations":1}'
 # -> {"ok":true,"code":"osc_…","id":"…","activationsLeft":1,...}
-```
-
-```powershell
-# PowerShell — use the env var directly ($env:CREATE_TOKEN, not $CREATE_TOKEN)
-$env:CREATE_TOKEN = "root-secret"
-Invoke-RestMethod -Method Post https://your-host/api/admin/codes `
-  -Headers @{ authorization = "Bearer $env:CREATE_TOKEN" } `
-  -ContentType "application/json" `
-  -Body '{"label":"friends","activations":1}'
-# Bun on localhost: https://your-host -> http://127.0.0.1:8787
 ```
 
 You are the hoster — the code the plugin asks for is one you mint yourself, right here.
 
 ### 4. Connect the plugin
 
-In opencode: `/share` → **Connect to a server** → paste the server's base URL (the `https://your-host` part — not a `/s/…` share link) and the code, if private → **enrolled, token saved**. That's the one-time setup — no share exists yet. Run `/share` once more: the consent dialog, then the link is copied. Every later share is one keystroke, and the consent question appears every time. One exception by design: **all mode** (no TUI part installed, or `shareMode: "all"`) publishes every NEW session automatically — that is the CI posture, and it is why all-mode installs should only point at servers you want reading everything.
+In opencode: `/share` → **Connect to a server** → paste the server's base URL (the `https://your-host` part — not a `/s/…` share link) and the code, if private → enrolled, token saved. That's the one-time setup — no share exists yet. Run `/share` once more: the consent dialog, then the link is copied. Every later share is one keystroke, and the consent question appears every time. One exception by design: **all mode** (no TUI part installed, or `shareMode: "all"`) publishes every NEW session automatically — that is the CI posture, and it is why all-mode installs should only point at servers you want reading everything.
 
-For CI, bundle `ci/openshare.js` and drop a config next to it:
-
-```jsonc
-// openshare.config.json next to the bundle
-{
-  "servers": { "https://your-host": { "token": "osk_…" } }   // or "code": "osc_…" to enroll
-}
-```
-
-The share URL is appended to `openshare.urls.txt` in the session's working directory and printed to stderr (both switchable). Local rendering of exported sessions (CI artifacts): [`tools/view-export.py`](tools/README.md).
+For CI, the single-file bundle plus a config next to it is the whole setup — [ci/README](share-plugin/ci/README.md) has the shapes (enrollment codes, `OPENSHARE_CONFIG_JSON`, JSON url-file lines, meta labels).
 
 ## Architecture
 
 ```
 opencode (plugin)  --ws-->  Cloudflare Worker  <--ws--  viewers (browser)
-         \                        |
-          `-- session metadata    +-- share pages (vendored viewer, KV index,
-              (binding: id,        |   Durable Objects per share, daily sweeper)
-               secret, rev, url)  `-- /api/share/:id/data (HTTP fallback)
+          \                        |
+           `-- session metadata    +-- share pages (vendored viewer, KV index,
+               (binding: id,        |   Durable Objects per share, daily sweeper)
+                secret, rev, url)  `-- /api/share/:id/data (HTTP fallback)
 ```
 
-- **`share-plugin/`** — `@mirrowel/opencode-openshare`, the opencode plugin (server + optional TUI). Also builds `ci/openshare.js`, a zero-dependency single file for CI bundles. Details: [`share-plugin/README.md`](share-plugin/README.md).
-- **`share-worker/`** — Cloudflare Worker: `ShareDO` per share, `ControlDO` per plugin socket, `AuthDO` for users/tokens/codes, `SweeperDO` daily TTL sweep, KV index. Protocol reference: [`share-worker/README.md`](share-worker/README.md).
-- **`share-server/`** — the portable backend: one Bun process, SQLite, native WebSockets — protocol-identical to the worker. Ops guide: [`share-server/README.md`](share-server/README.md).
-- **`share-viewer/`** — the vendored upstream share page (vite + solid + tailwind, client-only build) with branding and settings bolted on. Viewer docs: [`share-viewer/README.md`](share-viewer/README.md).
-- **`tools/`** — agent-side companion (renders exported sessions locally): [`tools/README.md`](tools/README.md).
+| Piece | What it is | Docs |
+|---|---|---|
+| `share-plugin/` | `@mirrowel/opencode-openshare` — the opencode plugin (server + optional TUI), plus the single-file CI bundle | [plugin README](share-plugin/README.md) |
+| `share-worker/` | Cloudflare Worker: `ShareDO` per share, `ControlDO` per plugin socket, `AuthDO` for users/tokens/codes, `SweeperDO` daily TTL sweep, KV index | [worker README](share-worker/README.md) |
+| `share-server/` | the portable backend: one Bun process, SQLite, native WebSockets — protocol-identical to the worker | [server README](share-server/README.md) |
+| `share-viewer/` | the share page (vendored opencode v2 kit, vite + solid) with branding and settings | [viewer README](share-viewer/README.md) |
+| `tools/` | CLI converters: export/pack/import sessions, view exported sessions locally | [tools README](tools/README.md) |
 
-One session can fan out to **several servers at once** (every `active` entry in the `servers` config group); servers can join mid-session with a full-history backfill, and per-session opt-outs leave a read-only snapshot behind.
+Delivery reliability is structural: every accepted sync bumps a monotonic rev, acked on the socket; unacked frames spool to disk and replay on reconnect; the share binding lives inside opencode session metadata, so recovery never depends on the spool. The binding key is stripped from everything synced, and the worker strips session metadata on all read paths — the write secret never reaches viewers.
 
-Delivery reliability without expensive pulls: every accepted sync bumps a monotonic rev, acked on the socket; unacked frames spool to disk and replay on reconnect; the share binding lives inside opencode session metadata, so recovery never depends on the spool. The binding key (`metadata.openshare`) is stripped from everything synced, and the worker strips session metadata on all read paths — the write secret never reaches viewers.
+## Where everything lives
 
-States (last signal wins, always resumable): `live` (busy) / `completed` (idle) / `error` (idle after errors). The next busy flips live again; open pages wake in place.
+- **Share modes** (all vs manual, how the mode resolves): [plugin README](share-plugin/README.md#share-modes). Short version: explicit `shareMode` wins; otherwise TUI presence decides — manual with the TUI installed, all-mode without.
+- **Identity & enrollment** (users, scoped tokens, codes, freeze, lineage revocation): [worker README — Identity](share-worker/README.md#identity--enrollment).
+- **TUI commands** (`/share`, `/openshare`, the admin console): [plugin README — TUI](share-plugin/README.md#tui).
+- **The viewer** (views, navigation, search, settings, snapshots, export): [viewer README](share-viewer/README.md).
+- **Configuration** — every knob across every package: [CONFIGURATION.md](CONFIGURATION.md). Plugin keys, worker vars, server-side objects, the viewer cookie, and a "where do I set X" router, all in one file. The plugin reads env > plugin options > adjacent config > package-root config > `openshare.local.json` > the settings home (`~/.config/opencode/openshare.config.json`); the TUI writes the settings home.
+- **Read auth & security model**: [worker README — Read auth](share-worker/README.md#read-auth-optional-casual-eyes-resistance).
+- **Internals, tests, vendoring, release workflow**: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Share modes
 
-- **all** — every **new** session shares automatically (CI posture; also what the single file always does). Sessions that predate the plugin's start are **never auto-shared**: attach the plugin to a long-lived server and your session history stays private. Opt one in explicitly with the `enabled` flag (full history backfilled), or share it interactively. A session already carrying a share binding keeps its page across restarts (resume continuity).
-- **manual** — sessions stay dormant until you opt in; sharing backfills the full history and attaches to the same page across restarts (binding in session metadata).
-- **Which one you get**: explicit `shareMode` config wins (`"all"` / `"manual"`; the TUI's `auto` = presence-based default); otherwise **TUI presence decides** — the plugin's server half (not your backend) scans the tui.json layers (global, `OPENCODE_TUI_CONFIG`, project chain) for the openshare TUI entry (bare name, `@version`, or subpath — all recognized). Which halves you install IS the switch — no config needed to flip it. On v2, the package declaring its `tui` entrypoint is the presence signal; the single file has none, so it stays all-mode. The mode resolves **once at plugin load** — changing `shareMode` in a config file takes effect on the next opencode start (or `serve` restart), not mid-session.
-- The **enabled flag** lives in `metadata.openshare = { enabled: true, opts? }` (opts: `ttlHours`, `authLogin`, `authPassword`, `modelLabel` — per-session overrides). In manual mode, removing the flag deletes the share; in all mode the flag is only the opt-in for pre-existing sessions (an active share stops through `/share`, not flag removal). Bindings are `enabled: true` in **both** modes; all-mode opt-ins use the same flag.
+- **all** — every **new** session shares automatically (the CI posture; what the single file always does). Sessions that predate the plugin's start are never auto-shared; opt one in explicitly (full history backfilled).
+- **manual** — sessions stay dormant until you opt in; sharing backfills full history and attaches to the same page across restarts (binding in session metadata).
+- The **enabled flag** (`metadata.openshare`) is the per-session opt-in in both modes; per-session overrides ride as `opts` (`ttlHours`, read auth, `modelLabel`).
+
+Full resolution rules and the v2 presence signal: [plugin README — Share modes](share-plugin/README.md#share-modes).
 
 ## Identity & servers
 
-Two roles, per server:
+Two roles per server: the **admin** (the root `CREATE_TOKEN`) and **users** everyone the hoster lets in, each with full control of their own shares, tokens and settings. Access codes mint users with their first full token; scoped tokens are the CI credential — they create within limits and reach only the shares they created. Losing the last full token freezes everything; freezing a user severs both write paths on all their shares at once. Every detail: [worker README — Identity & enrollment](share-worker/README.md#identity--enrollment).
 
-- **Admin** — the root `CREATE_TOKEN` (env/secret, forever-valid bootstrap). Manages everything: users, tokens, codes, shares, policy. In the TUI: `/openshare → Servers → <server> → Admin panel`.
-- **Users** — everyone the hoster lets in. Full control of their *own* shares, tokens and settings; nothing else.
-
-**Enrollment** (`POST /api/enroll`): an access code (`osc_…`, minted by the admin with an activation budget — 1 for a personal invite, unlimited for a team code) mints a user PLUS their first **full** token. Private servers (default) require one; public servers too unless `CODELESS_ONBOARDING` is on (anonymous creating stays open regardless). Holders of any valid token mint more without a code — including **scoped** tokens (`POST /api/token {kind:"scoped"}`): service credentials (CI) that create within their own limits and reach ONLY the shares they created. Only full tokens keep an account alive; losing the last one freezes everything (scoped included). Codes record lineage: `POST /api/admin/codes/:id/revoke-lineage` kills every token of every user that code onboarded.
-
-**Ownership**: every share created by an enrolled user records its owner. Sync/delete accepts the owner's valid token **or** the per-share secret while the owner is in good standing. Root-bootstrap creates (and anonymous creates on public servers) are **ownerless** — secret-only control, never frozen. **Freezing a user** severs both paths on all their shares at once — the kill switch for leaked identities (viewing is unaffected; unfreeze/reassign are the admin rescue paths).
-
-**Multiple servers**: the `servers` config group holds one membership per URL (token, optional code/label/adminToken, `active` flag). Every **active** entry receives new sessions — fan-out, one socket and one spool per server per session. Switch the active set in `/openshare` at any time; a server added mid-session joins with a **full-history backfill**, and per-session you can stop one server (delete) or leave it as a read-only snapshot. Tokens persist per server in the settings home — onboard once, then it just works (with no token the plugin never silently enrolls: a configured `code` enrolls, otherwise public servers share anonymously and the ask-once TUI flow handles onboarding). A revoked token re-enrolls the same way (public/code available); if enrollment is impossible the plugin says so on stderr and stops — no retry storms.
-
-Full semantics: [share-worker/README — Identity & enrollment](share-worker/README.md#identity--enrollment).
+One session can fan out to several servers at once (the `servers` config group holds one membership per URL); a server added mid-session joins with a full-history backfill.
 
 ## TUI commands
 
-- **`/share`** — shadows the deprecated built-in. Not connected yet → the connect flow (URL + code). Not shared yet → an explicit consent dialog (every creation asks — nothing is published silently), then the URL is copied. Already shared → **the session menu, identical to `/openshare → This session`**:
-  - copy the link (per server when several are bound, or all links at once) / **stop sharing** — with the choice to **delete the page** (links die, final "gone" frame) or **leave it as-is** (a frozen snapshot that stays readable until its TTL); multiple servers additionally offer per-server stop, and sharing to another configured server;
-  - per-session **TTL** and **read auth** overrides;
-  - a credential conflict opens the **collision dialog**: copy debug info (for the hoster / an issue), share on a new share, or don't share.
-- **`/openshare`** — grouped settings (compact root, focused submenus): **This session**, **Servers** (memberships + the admin panel), **Sharing** (mode via selection menu, cadence, TTL), **Read auth**, **Interface** (menu size picker), **Advanced**, **Config files** (write target + per-key source map). Selection menus everywhere — no typed booleans; every row and group carries a live summary, an `[i]` detail pane, red danger rows, green edited rows.
-- **Root holders are users too** — configuring with the legacy `createToken` files the root token as `adminToken`; the server menu then offers **Get a user token**: admin-mints your own user identity and keeps root for the admin panel.
-- **Gone detection** — a binding can outlive its page (purge, TTL, host-side delete). Running `/share` probes every bound server; dead entries are cleared from the session automatically with a **"Share is gone"** modal offering *Share again* (asks consent) / *Close*. The sidebar chip verifies lazily and renders a dim `⊘` state — clicking it runs `/share` instead of copying a dead link. Network errors never count as gone.
-- **Sidebar chip** (v1 hosts — the v2 TUI context has no slot registry yet) — `◉ re:share` next to the session title; click copies the link. `·N` when the session streams to several servers; `⊘` when the page is gone (click to fix).
+- **`/share`** — connect flow when not connected; explicit consent dialog on every creation (nothing is published silently); once shared, the session menu: copy links, stop sharing (delete the page or leave a snapshot), per-server stop, TTL and read-auth overrides.
+- **`/openshare`** — the grouped settings tree: This session, Servers (memberships + the admin console), Sharing, Read auth, Interface, Advanced, Config files.
+- **Gone detection** — a binding can outlive its page (purge, TTL); `/share` probes every bound server, clears dead entries, and offers to share again.
+
+All flows and the sidebar chip: [plugin README — TUI](share-plugin/README.md#tui).
 
 ## The viewer
 
-Each share serves a self-contained page at `<worker>/s/<id>` (and `/s/<id>/<sub>` for a subagent's sub-page — task rows link there, new-tab behavior configurable). The page is static asset hosting that ships with the backend — you build it once at deploy (or use the Docker image, which builds it in).
+Each share serves a self-contained page at `<worker>/s/<id>` (subagent sub-pages at `/s/<id>/<N>`). The page live-updates over WebSocket with smart sync (your scroll and expansion state survive every update), falls back to polling, and never requires a refresh. Twelve views render over one virtualized SDK — a multi-thousand-message share costs the same DOM as a small one. Search matches prompts and responses, focus mode isolates one turn, deep links point at any message, `GET /api/share/:id/snapshot` freezes a share into one offline HTML file, and every view exports the session as an import-ready JSON.
 
-- **Live updates** — the page attaches over WebSocket and merges frames client-side (identity-preserving smart sync: unchanged items keep their rendered components, so expansion state and scroll position survive every update; message tombstones remove undone work the same way opencode does). If the socket drops, it falls back to 5-second polling and re-attaches automatically — a refresh is never required. The WS opens with a `since` rev handshake, so a fresh page load transfers the item set exactly once.
-- **Snapshot freeze** — append `/snapshot` to a share's API path (`/api/share/<id>/snapshot`) and the server returns ONE self-contained HTML file: the viewer, the data, everything inlined. It opens offline in any browser as a point-in-time record that outlives the deployment. Gated shares stay gated — you must be logged in (the reader session cookie) to snapshot them. `?download=1` saves it as a file.
-- **Rich link previews** — pasting a share URL into Discord/Telegram/Slack renders a per-share card (1200x630): session title, status pill, stat line (turns · tools · duration · model), your deployment's wordmark and accent. Private shares get a generic "log in to view" card — previews never leak gated content.
-- **Views** — the reading skin: classic, reader, or one of the nine composed views (terminal, casefile, blueprint, cinema, timeline, letterpress, atlas, teletype, grove). Every view is a skin over the same base ([the view contract](share-viewer/src/views/README.md)).
-- **Big sessions** — the viewer is built on the opencode v2 component kit (vendored) and **every view virtualizes**: continuous mode windows rows as you scroll, paged mode windows inside a giant turn, and the composed skins two-level (sections + entries). A multi-thousand-message share costs the same DOM as a small one.
-- **Prompt nav** — one control, two states: the floating pill or the sidebar (drag its edge to resize; toggle from the pill's popover or the sidebar header; from one turn upward, one of the two is always present — the pill is never fully hidden). Selection jumps to the turn (continuous) or pages (paged-capable skins), and in classic shift+click, the row's reticle, or right-click → "Focus on turn" opens focus mode: that turn as an overlay (prev/next, Esc exits) over the still-mounted transcript. `j`/`k` and `[`/`]` are aliases everywhere. Subagent pages pin a back-to-parent row that returns to the exact turn that spawned the child.
-- **Status badges** — `live`, `completed`, `error`, `interrupted` (plugin vanished without goodbye — finalized server-side after the grace window), `gone` (deleted or TTL-expired; the final frame says so).
-- **Multi-session shares** — a share that carries subagent sessions lists them; each opens its own sub-page with the parent linked back. Folded undone turns stay folded (the revert pointer is honored), diffs render unified or split (auto-split when width allows, per-card override).
-- **Read auth gate** — auth-gated shares answer `401 {authRequired}`: the viewer renders a branded login form, exchanges it for a 7-day cookie, and locks out after repeated failures (429). The gate never grants write access.
-- **Reader settings** (gear or Ctrl+K, persisted in a 1-year cookie): theme (system/light/dark/darker/mirrobot/midnight/sepia/nord), view, **paged mode** (per capable view; classic is continuous + focus), prompt nav, follow-live, text and reading sizes (live sliders), file-card width, reasoning auto-open, tool-call info, **auto-expanded tools** (a checklist of known + this session's tools), prompt style (bubble/flat), smooth scrolling (instant/near/always), tool grouping (off/custom/all lever: custom collapses only the checked tools), content centering, background image (when the deployment ships one). Diff layout (per-card U/A/S) and long-line overflow are card-level toggles, not panel settings. Search matches prompts **and** responses; every view has copy-as-markdown and export (an opencode import-ready JSON download) in its header.
-
-Viewer internals, branding, and the vendored components: [`share-viewer/README.md`](share-viewer/README.md).
-
-## Configuration
-
-The full config surface across every package - worker vars and secrets, branding, server-side objects and token limits, the plugin's file chain, the Bun server, and the viewer cookie - is inventoried in one place: **[CONFIGURATION.md](CONFIGURATION.md)**. This section covers the plugin's own files.
-
-Priority (highest wins, per key): `OPENSHARE_*` env > plugin options (the config's plugin array entry) > adjacent `openshare.config.json` (next to the plugin) > package-root config > `openshare.local.json` (repo walk-up) > `~/.config/opencode/openshare.config.json` (settings home) > defaults. For everyday interactive use, edit the settings home (or just use `/openshare` — that's where it writes); the earlier links in the chain exist for CI bundles and packaging. An empty string means *unset* for `workerUrl`, `createToken`, `urlFile`, and `spoolDir`; for the other string keys an explicit empty value is meaningful (`modelLabel: ""` hides the model; `authLogin`/`authPassword: ""` removes the read gate).
-
-**Where the TUI writes:** `/openshare` saves to the **global settings home** (`~/.config/opencode/openshare.config.json`) by default; any *other* config file in the chain can be chosen as the write target if it already exists on disk (Write target row — the TUI never creates deploy-time override files). Each setting row shows `[source]` when a file or env var higher in the chain overrides it, and *Where values come from* lists every attribution.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `servers` | — | **Multi-server memberships** (URL → `{ token?, code?, label?, active?, adminToken?, anonymous? }`). Every `active` entry (or the first, if none is flagged) receives new sessions — fan-out. With no token the plugin never silently enrolls: a configured `code` enrolls (the CI shape), otherwise public servers share anonymously and the ask-once TUI flow handles onboarding (`anonymous: true` marks a declined server). Enrolled tokens persist to the settings home (field-level merge). `adminToken` is the server's root token for the TUI admin console. |
-| `workerUrl` / `createToken` | — | Legacy single-server shorthand — synthesizes into the `servers` group. New setups should use `servers`. |
-| `shareMode` | presence | `"all"` / `"manual"`; omit for presence-based. Resolved once at load. |
-| `debounceMs` | `10000` | **Sync interval** — the max time between syncs while streaming, anchored at the previous flush. Turn-end batches flush instantly on idle; the first batch flushes as soon as it exists. Clamped into the server's window. |
-| `completedDelayMs` | `5000` | How long a session must stay idle before the share says **completed** (busy cancels; a graceful opencode exit flushes the pending flip). `0` = immediate. |
-| `modelLabel` | `"$Provider/$Model"` | Label template; `""` hides the model. |
-| `ttlHours` | `2160` (90d) | Share lifetime in **hours** (capped at the worker's `MAX_TTL_HOURS` and the token's `maxTtlHours`; the legacy `ttlDays` key/env is accepted and converted x24). |
-| `redact` | built-ins | `{ patterns: string[] }` - extra regexes redacted beside the built-in secret detectors (`ghp_`, `AKIA`, `sk-`, `xoxb-`, Bearer, PEM blocks, `.env` secrets, connection strings) on **ungated** shares. |
-| `authLogin` / `authPassword` | `""` | Default read gate for share pages. |
-| `spoolDir` | XDG data | Unacked-frame buffer (one spool per session per server). |
-| `urlFile` | `openshare.urls.txt` in the session's working directory | Share-URL log (all-mode; appends; manual mode never writes it). **`"none"` disables the file entirely.** |
-| `announceStderr` | `true` | `false` silences the `[openshare] live:` / `url file:` stderr lines. |
-
-Values apply per share creation — the file is read on every activation. `shareMode` is the exception (resolved once at load, see [Share modes](#share-modes)).
-
-**Recipes** — starting points for the three common postures (all keys optional; these are the diffs from defaults):
-
-```jsonc
-// CI: watched runs — near-real-time, everything to the url file
-{ "shareMode": "all", "debounceMs": 5000, "announceStderr": true }
-
-// Default: interactive with TUI — manual sharing, standard cadence
-{ "shareMode": "manual", "debounceMs": 10000 }
-
-// Relaxed: casual "here's a link" sessions — batchier sync, longer TTL
-// (TTL is capped by the server's MAX_TTL_HOURS — 2160 (90d) by default;
-// raise it on your own deployment for this recipe to take full effect)
-{ "shareMode": "manual", "debounceMs": 30000, "ttlHours": 4320 }
-```
-
-**Environment variables** (all optional; every one overrides the config chain):
-
-| Var | Meaning |
-|---|---|
-| `OPENSHARE_WORKER_URL` | target server URL (legacy single-server; superseded by the `servers` group) |
-| `OPENSHARE_CREATE_TOKEN` | its create token (legacy) |
-| `OPENSHARE_SHARE_MODE` | `all` / `manual` — beats every file |
-| `OPENSHARE_DEBOUNCE_MS` / `OPENSHARE_COMPLETED_DELAY_MS` | cadence overrides (clamped into the server window) |
-| `OPENSHARE_TTL_HOURS` | default share TTL in hours (legacy `OPENSHARE_TTL_DAYS` converts x24) |
-| `OPENSHARE_MODEL_LABEL` | model label template |
-| `OPENSHARE_URL_FILE` | url file path, or `none` |
-| `OPENSHARE_SPOOL_DIR` | spool directory |
-| `OPENSHARE_ANNOUNCE_STDERR` | `0`/`false` disables, anything else enables — gates the `live:` and `url file:` lines only (other engine diagnostics unaffected) |
-| `OPENSHARE_AUTH_LOGIN` / `OPENSHARE_AUTH_PASSWORD` | default read gate |
-| `OPENSHARE_DEBUG_FILE` | write a startup snapshot (mode, directory, share-mode resolution) to this path — a support/diagnostic aid, written once at load |
-| `OPENSHARE_DEBUG_EVENTS` | any non-empty value enables verbose engine decision lines on stderr (note: stderr info lines are suppressed in manual/TUI mode; this is an all-mode/CI tool) |
-
-**Stderr policy:** in manual mode (TUI installed) stderr carries **errors only** — the informational `live:` / `url file:` / mode lines are suppressed because the TUI surfaces the URL. All-mode (CI / server-only) keeps the full stderr contract; `announceStderr: false` silences the informational lines there too. Error-class output (worker down, refused init, mismatch recreate, timeouts) always reaches stderr.
-
-**Socket policy is server-owned.** The worker defines how connections behave and the allowed cadence window; the plugin fetches the policy at connect and clamps itself into it. The full var list (`SOCKET_POLICY`, `TURN_GRACE_MS`, `IDLE_DROP_MS`, `FINALIZE_AFTER_MS`, the clamp window) lives in [share-worker/README.md](share-worker/README.md#server-policy).
+The tour, settings, and internals: [viewer README](share-viewer/README.md).
 
 ## How your data is handled
 
-- **What leaves your machine**: the session transcript you chose to share — session info, messages (text, reasoning, tool calls and outputs embedded per message, opencode v2 session shapes), model/prefs items. Built-in secret detectors (GitHub/AWS/Slack/Google keys, `sk-` keys, Bearer tokens, private-key blocks, `.env`-shaped assignments, connection-string passwords) plus your own `redact.patterns` replace matches with stable `[redacted:<kind>]` markers. The consent dialog previews message/tool counts and the first redaction hits BEFORE publishing. The plugin strips its own binding (including the share secret) from everything it syncs; the server strips session metadata on all read paths. The share format is the OpenShare envelope (`v: 2`): item types the viewer renders are `session`, `message` (content-embedded), `model`, `prefs`, and `session_diff`; unknown *message* content degrades to notices in the viewer, unknown top-level item types are ignored.
-- **Oversize safety valve**: any single item whose serialized JSON exceeds ~1.5 MB (a giant tool output embedded in a message) has its largest string fields clipped with a visible `…[openshare: field truncated for share]` marker rather than killing the share; an item that still can't fit becomes an `oversize` stub. In practice this almost never fires.
-- **The share URL is a credential.** Anyone holding it can read the whole conversation unless you enable the read gate (read auth is **off by default** — turn it on for anything sensitive). Write access is separate: it needs the server-side token or per-share secret.
-- **Retention**: shares live for their TTL (default **90 days**, capped by the server), then the sweeper deletes them. Deleting a share (unshare, purge) removes the data; "leave as-is" keeps a frozen snapshot until its TTL.
-- **Machine-local facts stay private**: the session's directory/worktree never ride the public session item. They travel as a `pmeta` item that the server keeps in a separate private block, served ONLY to readers who passed the share's read gate — anonymous (ungated) shares never expose them at all. The info panel shows no session ids.
-- **Redaction caveat**: redaction targets ungated shares; on a gated share the content is already login-private, and neither mode hides data from the server owner until end-to-end encryption lands (roadmap).
+- **What leaves your machine**: the session transcript you chose to share. Built-in secret detectors (GitHub/AWS/Slack/Google keys, `sk-` keys, Bearer tokens, private-key blocks, `.env` assignments, connection-string passwords) plus your own `redact.patterns` replace matches with `[redacted:<kind>]` markers — and the consent dialog previews counts and the first hits BEFORE anything is published.
+- **Machine-local facts stay private**: the session's directory/worktree travel as a private item the server serves only to readers who passed the share's read gate; anonymous shares never expose them.
+- **The share URL is a credential.** Anyone holding it can read the whole conversation unless you enable the read gate (off by default — turn it on for anything sensitive). Write access is separate: it needs the server-side token or per-share secret.
+- **Oversize safety valve**: a single item over ~1.5 MB has its largest fields clipped with a visible marker rather than killing the share.
+- **Retention**: shares live for their TTL (default 90 days, capped per server), then the sweeper deletes them. Unshare deletes; "leave as-is" keeps a frozen snapshot until its TTL.
 - **Where it lives**: your backend — Cloudflare (DO storage + KV) or your own server (one SQLite file). No third party, no analytics, no telemetry from this repo's code.
 
 ## Read auth & security
 
-- **Read gate** (optional): per-share PBKDF2-SHA256 hashes, branded login card, 7-day cookie sessions (5 devices), exponential lockout per IP. Set per deployment (config) or per session (opts).
-- **Write access is identity**: on a private server, creating shares needs a valid token — an enrolled `osk_` user token (with server-side limits: `maxLiveShares`, `maxTtlDays`, `dailyCreates`) or the root `CREATE_TOKEN`. On a **public** server, anonymous ownerless creation is allowed — per-token limits don't apply to anonymous creates, so keep the server private if that matters. Syncing/deleting needs the owner's token **or** the per-share secret held only by the creating plugin — and neither works once the owner is frozen. A URL plus a valid login still cannot write a byte.
-- Revocation is instant and server-side: a revoked token stops working immediately; a frozen user's *secrets* stop working too. Lost both token and secret? The shares stay readable until TTL; re-enrolling starts a new identity — the admin can reassign the old shares.
-- **Root token hygiene**: `CREATE_TOKEN` is a forever-valid admin credential — treat it like a password. Keep it in env/secrets, not in committed files; prefer day-to-day use of enrolled user tokens (they're revocable and limit-capped); rotate by changing the secret if it ever leaks. Note: on a **public** server with default limits, anyone who learns the hostname can create shares — set per-token limits or keep the server private if that matters.
+Per-share PBKDF2 login gates with lockout and 7-day cookie sessions; write access is identity (a valid token or the per-share secret, both server-verified); revocation and freeze are instant and server-side. `CREATE_TOKEN` is a forever-valid admin credential — treat it like a password. The full model: [worker README](share-worker/README.md#read-auth-optional-casual-eyes-resistance).
 
 ## Troubleshooting
 
 | Symptom | Meaning / fix |
 |---|---|
 | `[openshare] disabled: no share server configured` | No `servers`/`workerUrl` anywhere — expected right after install. Connect via `/share` or set config. |
-| `[openshare] enrollment failed: …` | The server refused enrollment — wrong access code (private server), code exhausted, or you're rate-limited. If you're the hoster: check `AUTH_MODE`, that the code still has activations, and that you used the server's base URL; otherwise ask the hoster / try again later. |
+| `[openshare] enrollment failed: …` | Wrong access code, code exhausted, or rate-limited. If you're the hoster: check `AUTH_MODE`, the code's activations, and that you used the server's base URL. |
 | Viewer page `401 authRequired` | That share has the read gate on — log in with the credentials the sharer gave you (not a plugin error). |
-| Share page 404s / blank | The backend's viewer build is missing. Bun: check the startup line (`viewer: not built`); Cloudflare: the deploy must include `share-viewer/dist` (build it first — Quick start step 2); Docker builds it in. |
-| `[openshare] … 404` on create | Server reachable but the endpoint changed — the deployed backend is older/newer than your plugin. Redeploy the backend from the same repo state as your plugin install and restart opencode. |
-| `[openshare] … 429` | Rate limit — enrollment floods or daily create caps; wait or ask the admin to raise limits. |
-| Share page says `gone` | The page was deleted, purged, or TTL-expired. The TUI auto-clears the binding on next `/share`; CI: start a new run or re-share. |
-| Share stuck on `interrupted` | The plugin vanished without goodbye (kill -9, crash, network cut) — the server finalizes it after the grace window. Reopen the session or run `/share` to re-attach. |
-| `share mode: manual` but you expected `all` | A tui.json layer registers the TUI — presence flips the mode. Set `shareMode` explicitly to override. |
-| Old sessions not auto-shared in all mode | By design — all-mode only shares **new** sessions; opt old ones in explicitly (flag or `/share`). |
-| url file not written | Manual mode never writes it; `urlFile: "none"` disables it. CI users have no TUI — check `OPENSHARE_URL_FILE` / the config file instead of `/openshare`. |
-| Scripted client gets HTTP 403 with a Cloudflare 'error 1010' page | Zone-level bot protection (Bot Fight Mode / browser integrity) is blocking the client's user-agent - the worker itself never returns 1010. Fix on the Cloudflare side: add a WAF exception for /api/* and /s/*, or send a browser-like User-Agent. |
+| Share page 404s / blank | The backend's viewer build is missing. Bun: check the startup line (`viewer: not built`); Cloudflare: build `share-viewer/dist` before deploying; Docker builds it in. |
+| `[openshare] … 404` on create | Deployed backend is older/newer than your plugin — redeploy from the same repo state and restart opencode. |
+| Share page says `gone` | Deleted, purged, or TTL-expired. The TUI auto-clears the binding on next `/share`. |
+| Share stuck on `interrupted` | The plugin vanished without goodbye (kill -9, crash) — the server finalizes after the grace window; reopen the session or run `/share` to re-attach. |
+| Scripted client gets HTTP 403 with a Cloudflare 'error 1010' page | Zone-level bot protection — add a WAF exception for `/api/*` and `/s/*`, or send a browser-like User-Agent. |
 | Worker deploy fails on the KV namespace | The shipped namespace id belongs to the author — create your own and put its id in `wrangler.toml`. |
+
+More (url file, stderr policy, mode mismatches): [CONFIGURATION.md](CONFIGURATION.md) and the package READMEs.
 
 ## Self-hosting
 
-Two interchangeable backends — pick by where you want to run it (deploy steps in [Quick start](#quick-start)):
+Two interchangeable backends — pick by where you want to run it:
 
 | | Cloudflare Worker (`share-worker/`) | Bun server (`share-server/`) |
 |---|---|---|
@@ -392,25 +259,24 @@ Two interchangeable backends — pick by where you want to run it (deploy steps 
 | Idle sockets | hibernate (free) — auto policy resolves **persistent** | real fds — auto policy resolves **turn** |
 | Deploy | `npx wrangler deploy` (+ viewer assets) | `bun server.ts` / Docker |
 | Identity | identical (`AuthDO` vs SQLite tables) | identical |
-| Backups | Cloudflare's DO persistence | stop the server and copy `openshare.db` **plus** the `-wal`/`-shm` files (or run `sqlite3 openshare.db ".backup backup.db"` while it's up — copying only the `.db` mid-run can miss recent writes) |
+| Backups | Cloudflare's DO persistence | stop and copy `openshare.db` **plus** `-wal`/`-shm`, or `sqlite3 openshare.db ".backup backup.db"` live |
 
-Both serve the built viewer (`share-viewer/dist`), resolve the same policy vars, and pass the **same identity/enrollment suites** (the plugin cannot tell them apart). Ops notes (restart durability, reverse proxies, TLS, backups) in [share-server/README](share-server/README.md#ops-notes); the worker's API and protocol reference in [share-worker/README](share-worker/README.md).
+Ops notes (restart durability, reverse proxies, TLS, backups): [share-server/README — Ops notes](share-server/README.md#ops-notes).
 
 ## Uninstalling
 
-- **Plugin**: delete the `@mirrowel/opencode-openshare` entries from `opencode.json` and `tui.json` (on v2, `opencode plugin remove @mirrowel/opencode-openshare` does it), restart opencode. Leftover local state: `~/.config/opencode/openshare.config.json` (tokens + settings; on Windows `%USERPROFILE%\.config\opencode\`), the spool dir under the XDG data home (`%LOCALAPPDATA%\opencode\openshare` on Windows, `~/.local/share/opencode/openshare` on Linux), and — for local-checkout installs — the gitignored `openshare.local.json` at the repo root. Delete those to forget the credentials. Note: share bindings (incl. per-share secrets) stay inside each session's metadata in the opencode session DB until those sessions are deleted.
-- **Shares**: unshare from the TUI (delete the pages), or purge everything with the admin console / `POST /api/admin/purge`. TTL handles the rest if you just walk away.
-- **Backend**: Cloudflare — `npx wrangler delete`. Bun — stop the process, delete the directory (the SQLite file is the whole state). Docker — remove the `oshdata` volume too.
+- **Plugin**: delete the package entries from `opencode.json` and `tui.json` (v2: `opencode plugin remove @mirrowel/opencode-openshare`), restart. Leftover local state: `~/.config/opencode/openshare.config.json` (tokens + settings), the spool dir under the XDG data home, and — for local-checkout installs — the gitignored `openshare.local.json` at the repo root. Share bindings stay inside each session's metadata in the opencode session DB until those sessions are deleted.
+- **Shares**: unshare from the TUI (deletes the pages), or `POST /api/admin/purge`. TTL handles the rest if you just walk away.
+- **Backend**: Cloudflare — `npx wrangler delete`. Bun — stop the process, delete the directory. Docker — remove the `oshdata` volume too.
 
 ## Glossary
 
-- **Binding** — the share record stored in opencode session metadata (`metadata.openshare`): per-server share id, secret, rev, url. Survives restarts; never synced.
+- **Binding** — the share record in opencode session metadata (`metadata.openshare`): per-server share id, secret, rev, url. Survives restarts; never synced.
 - **Spool** — on-disk buffer of unacked sync frames, one per session per server; replays on reconnect.
 - **Enrollment** — the plugin obtaining a user token from a server (public, or via an access code). `osk_` = user token, `osc_` = access code.
 - **Fan-out** — one session streaming to several servers at once.
-- **Turn-scoped sockets** — server policy where the plugin's WebSocket drops after a turn settles (+grace) instead of idling forever; reconnect-on-next-event with spool replay.
 - **Rev** — monotonic per-share revision, bumped by every accepted sync; the loss-detection and replay anchor.
-- **Gone** — a share whose page no longer exists (deleted/purged/expired); detected and recovered by the TUI.
+- **Gone** — a share whose page no longer exists (deleted/purged/expired).
 - **Backfill** — syncing a session's full prior history when it starts sharing (or when a server joins mid-session).
 
 ## Development
@@ -418,10 +284,9 @@ Both serve the built viewer (`share-viewer/dist`), resolve the same policy vars,
 ```bash
 cd share-plugin
 npm install
-npm run build          # dist/ + the single-file ci/openshare.js (needs Bun on PATH)
-npm run test           # full matrix — ~4.5 min
-npm run test:quick     # everyday gate — ~90s
+npm run build          # dist/ + the single-file ci/openshare.js
+npm run test           # full matrix
+npm run test:quick     # everyday gate
 ```
 
-The suites run the real production path — real `opencode serve` instances, a mock LLM provider, local `wrangler dev` workers, and the Bun backend parity runs. Architecture, suite layout, the release workflow, and host-integration notes live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
-
+The suites run the real production path — real `opencode serve` instances, a mock LLM provider, local `wrangler dev` workers, and the Bun backend parity runs. Architecture, suite layout, the release workflow, vendoring, and host-integration notes: [DEVELOPMENT.md](DEVELOPMENT.md).
