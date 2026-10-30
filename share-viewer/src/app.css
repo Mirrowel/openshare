@@ -680,6 +680,22 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   min-height: 20px;
   padding-bottom: 2px;
 }
+/* Same slack for the PROMPT footer: the kit gives it a fixed 20px box
+   (scaled by --user-run-meta) holding 13px text, which clipped the line
+   under the prompt the same way. Natural height + 2px always, and the
+   meta/wrap take the 18px line box the assistant footer uses. */
+:root body [data-slot="user-message-copy-wrapper"] {
+  height: auto;
+  min-height: calc(20px * var(--user-run-meta, 1));
+  padding-bottom: 2px;
+}
+:root body [data-slot="user-message-meta-wrap"],
+:root body [data-slot="user-message-meta"] {
+  line-height: 18px;
+}
+:root body [data-component="user-message"]:has([data-slot="user-message-copy-wrapper"]) {
+  padding-bottom: 2px;
+}
 :root body [data-slot="text-part-meta"] {
   line-height: 18px;
 }
