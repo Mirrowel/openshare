@@ -6,6 +6,12 @@ virtualization, settings surface and navigation are the SDK's. "Same
 features, completely different page." Be bold, be distinct - but you
 compose the shared pieces, you don't rebuild them.
 
+Classic, reader and conversation are the built-in surfaces (`reader`
+and `conversation` use this SDK's primitives through the standard
+chrome; a complete skin is still one file registered here). Twelve
+views ship today; this contract is how the nine full-page skins and
+any new one are built.
+
 ## The whole contract
 
 One file: `src/views/<your-id>.tsx`. You export a `Skin` and register
