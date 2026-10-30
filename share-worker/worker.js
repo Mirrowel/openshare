@@ -244,18 +244,26 @@ export default {
       // index.html with og:/twitter: tags injected from the deployment
       // branding. og:title carries the DEPLOYMENT name, never the session
       // title - a link preview must not leak what a share contains.
-      // temporary A/B build: the `master` viewer is served verbatim under
-      // /legacy (the page's own router finds the "s" segment anywhere in the
-      // path, so /legacy/s/<id> and /legacy/s/<id>/<n> work untouched).
-      // The URL alone decides: no cookie, no query flag. In-app navigation
-      // drops the prefix; putting /legacy back restores the legacy page.
+      // version-comparison build (wiring, currently dormant): when a
+      // second viewer build is deployed as dist/legacy.html (via
+      // scripts/build-legacy.mjs in share-viewer), it is served verbatim
+      // under /legacy (the page's own router finds the "s" segment
+      // anywhere in the path, so /legacy/s/<id> etc. work untouched;
+      // in-app navigation drops the prefix). Without that file the
+      // prefix is gone: 404, no SPA fallback.
       if (req.method === "GET" && (path === "/legacy" || path.startsWith("/legacy/"))) {
         const legacyRes = await env.ASSETS.fetch(new Request(url.origin + "/legacy.html", { method: "GET" }))
+        // assets' SPA fallback answers missing HTML paths with index.html
+        // (200), so the file only exists when the etag differs from index
         if (legacyRes.ok) {
-          const headers = new Headers(legacyRes.headers)
-          headers.set("cache-control", "no-store")
-          return new Response(legacyRes.body, { status: 200, headers })
+          const idxRes = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
+          if (legacyRes.headers.get("etag") !== idxRes.headers.get("etag")) {
+            const headers = new Headers(legacyRes.headers)
+            headers.set("cache-control", "no-store")
+            return new Response(legacyRes.body, { status: 200, headers })
+          }
         }
+        return json(404, { error: "no comparison build deployed" })
       }
 
       if (req.method === "GET" && (path === "/" || path === "/index.html" || path.startsWith("/s/"))) {
