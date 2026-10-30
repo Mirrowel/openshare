@@ -12,6 +12,8 @@ preview_urls = false
 # Hard cap for per-share ttlHours overrides (client may request less).
 # Hours-native; the legacy MAX_TTL_DAYS var still works (converted x24).
 MAX_TTL_HOURS = "2160"
+# OG embed card style: aurora (default) | minimap | poster | blueprint | terminal
+# OG_STYLE = "aurora"
 # AUTH_MODE: private (default — enrollment needs an access code) | public
 #            (anyone knowing the hostname may create shares anonymously)
 # AUTH_MODE = "private"

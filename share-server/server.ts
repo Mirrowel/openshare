@@ -719,7 +719,7 @@ async function httpHandler(req: Request): Promise<Response> {
     const cached = ogPngCache.get(id)
     if (cached && cached.rev === meta.rev) return new Response(cached.bytes, { status: 200, headers: { "content-type": "image/png", "cache-control": "public, max-age=300" } })
     try {
-      const bytes = await renderOgPng({ title: meta.gated ? undefined : meta.title, status: meta.status, stats: meta.stats ?? {}, branding: { name: process.env.BRAND_NAME ?? "", accent: process.env.BRAND_ACCENT ?? "" } })
+      const bytes = await renderOgPng({ title: meta.gated ? undefined : meta.title, status: meta.status, stats: meta.stats ?? {}, branding: { name: process.env.BRAND_NAME ?? "", accent: process.env.BRAND_ACCENT ?? "" }, style: process.env.OG_STYLE })
       ogPngCache.set(id, { rev: meta.rev, bytes })
       if (ogPngCache.size > 8) ogPngCache.delete(ogPngCache.keys().next().value as string)
       return new Response(bytes, { status: 200, headers: { "content-type": "image/png", "cache-control": "public, max-age=300" } })

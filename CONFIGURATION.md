@@ -26,6 +26,7 @@ To change anything: edit `share-worker/wrangler.toml`, then from `share-worker/`
 | Var | Default | Meaning |
 |---|---|---|
 | `MAX_TTL_HOURS` | `2160` (90d) | Hard cap for per-share `ttlHours`; clients may request less. The legacy `MAX_TTL_DAYS` var is still accepted (converted x24) |
+| `OG_STYLE` | `aurora` | Link-preview card style: `aurora` (default), `minimap`, `poster`, `blueprint`, or `terminal`. Unknown values fall back to `aurora` |
 | `AUTH_MODE` | `private` | `private` = enrollment requires an `osc_` access code; `public` = anyone knowing the hostname (per-IP rate-limited) |
 | `CODELESS_ONBOARDING` | `false` | Public servers only: allow enrolling an ACCOUNT without an access code (anonymous creating stays open either way — this gate is about minting users). Default OFF; the hoster opts in |
 | `ANON_CREATE_HOURLY` | `100` | Global rolling-hourly cap on anonymous (ownerless) share creations, all visitors combined. Public mode only. Each create costs a Durable Object + one KV write |

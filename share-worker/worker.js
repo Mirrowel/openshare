@@ -507,7 +507,7 @@ export default {
         const cached = ogPngCache.get(id)
         if (cached && cached.rev === ogMeta.rev) return new Response(cached.bytes, { status: 200, headers: ogPngHeaders(String(ogMeta.rev)) })
         try {
-          const bytes = await renderOgPng({ title: ogMeta.gated ? undefined : ogMeta.title, status: ogMeta.status, stats: ogMeta.stats ?? {}, branding: resolveBrandingObj(env) })
+          const bytes = await renderOgPng({ title: ogMeta.gated ? undefined : ogMeta.title, status: ogMeta.status, stats: ogMeta.stats ?? {}, branding: resolveBrandingObj(env), style: env.OG_STYLE })
           ogPngCache.set(id, { rev: ogMeta.rev, bytes })
           if (ogPngCache.size > 8) ogPngCache.delete(ogPngCache.keys().next().value)
           return new Response(bytes, { status: 200, headers: ogPngHeaders(String(ogMeta.rev)) })
