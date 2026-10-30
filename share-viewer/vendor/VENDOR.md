@@ -142,14 +142,13 @@ idempotently or throws "upstream drifted". Files are under
   output-surface behavior (drag-resize, clipped fade) can find it.
 
 ### pierre / rendering engine
-- **Workers unavailable = main thread, never degradation**: offline
-  snapshot files run from `file://`, where `new Worker` cannot start. pierre
-  and the markdown parser then run COPIES of the same worker modules in-page
-  (`pierre/diffs-main{,-none}/worker.ts` + `pierre/worker-shim.ts`,
-  `components/markdown.worker-main.ts`), imported lazily so http pages never
-  ship them: identical output, no parallelism. The pool checks
-  `location.protocol === "file:"`/the snapshot island first and only probes
-  `new Worker` on http. Init failures warn once instead of killing the page.
+- **Markdown parses in-page offline**: snapshot files run from `file://`,
+  where `new Worker` cannot start, so the markdown worker module has a
+  main-thread copy (`components/markdown.worker-main.ts`, generated) driven
+  through a Worker-shaped shim. Prose renders like the live page. pierre is
+  NOT shimmed: its worker modules are large and the main-thread path
+  allocated gigabytes, so snapshot file bodies render as plain numbered
+  text instead (see `src/tool-overrides.tsx`).
 - **Calmer word emphasis inside diffs**: rewritten lines painted as
   saturated bands at 0.4 alpha; ours is 0.3 dark / 0.16 light.
 - **Default theme names are aliases of our palette** (`pierre/index.ts`):
