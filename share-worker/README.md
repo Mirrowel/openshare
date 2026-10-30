@@ -365,10 +365,10 @@ title/version/model.
   attachment disposition. **Off by default**: set `SNAPSHOT_ENDPOINT=1`
   to serve it. The build costs one subrequest per asset (~1500) plus the
   assembly CPU, which the free plan (50 subrequests, 10 ms) cannot pay;
-  prefer the viewer's download button or `tools/osh-snapshot.mjs`, which
-  fetch the same static assets through the CDN and assemble locally -
-  free and unlimited on every plan),
-  `POST /api/share/:id/auth`, `DELETE /api/share/:id`
+  prefer the viewer's download button, `tools/osh-snapshot.mjs` (any share,
+  CI-friendly) or `tools/osh-snapshot-local.mjs` (a plain `opencode
+  export`, no share at all): they fetch the same static assets through the
+  CDN and assemble locally - free and unlimited on every plan),
 - `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
   body `{secret|Bearer owner, authLogin+authPassword (both-or-none),
   ttlHours (legacy ttlDays), meta}`; a credential change rotates viewer tokens; identity-

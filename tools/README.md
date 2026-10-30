@@ -1,6 +1,8 @@
 # Open(code)Share tools
 
-Small standalone utilities around the share ecosystem. Nothing here is needed to run the plugin or the worker — these are local conveniences.
+Small standalone utilities around the share ecosystem. Nothing here is needed to run the plugin or the worker - these are local conveniences.
+
+The two snapshot tools are the important ones: they turn a session into **one portable HTML file** that opens offline in any browser, with no server, no account and no install. `osh-snapshot.mjs` does it for a live share (CI friendly); `osh-snapshot-local.mjs` does it from a plain `opencode export`, with no share and no network at all. `osh-session.mjs` converts between a share, an `opencode export` and `opencode import`.
 
 ## osh-snapshot-local.mjs
 

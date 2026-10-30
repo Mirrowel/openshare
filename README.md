@@ -59,7 +59,8 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share.
 - **Branding + link previews** — your deployment's logo, wordmark, accent, background, and rendered OG cards (five styles) from config alone: [worked example](share-worker/branding-example/).
-- **A serious viewer** — twelve reading views on one SDK, every view virtualized to handle multi-thousand-message shares, live search, focus mode, deep links, offline snapshots, one-click session export: [the viewer](share-viewer/README.md).
+- **A serious viewer** - twelve reading views on one SDK, every view virtualized to handle multi-thousand-message shares, live search, focus mode, deep links, one-click session export: [the viewer](share-viewer/README.md).
+- **Offline snapshots** - download a share as ONE self-contained HTML file (viewer, chunks, fonts and the frozen transcript inside it) and open it on any machine with no server, no network, no install. From the page button, from a script (`tools/osh-snapshot.mjs`), or straight from an `opencode export` with no share at all (`tools/osh-snapshot-local.mjs`) - [details](#take-it-with-you-snapshots).
 
 ## Quick start
 
@@ -218,9 +219,38 @@ All flows and the sidebar chip: [plugin README — TUI](share-plugin/README.md#t
 
 ## The viewer
 
-Each share serves a self-contained page at `<worker>/s/<id>` (subagent sub-pages at `/s/<id>/<N>`). The page live-updates over WebSocket with smart sync (your scroll and expansion state survive every update), falls back to polling, and never requires a refresh. Twelve views render over one virtualized SDK — a multi-thousand-message share costs the same DOM as a small one. Search matches prompts and responses, focus mode isolates one turn, deep links point at any message, `GET /api/share/:id/snapshot` freezes a share into one offline HTML file, and every view exports the session as an import-ready JSON.
+Each share serves a self-contained page at `<worker>/s/<id>` (subagent sub-pages at `/s/<id>/<N>`). The page live-updates over WebSocket with smart sync (your scroll and expansion state survive every update), falls back to polling, and never requires a refresh. Twelve views render over one virtualized SDK — a multi-thousand-message share costs the same DOM as a small one. Search matches prompts and responses, focus mode isolates one turn, deep links point at any message, and every view exports the session as an import-ready JSON. Any share can also be frozen into one offline HTML file - see [Take it with you](#take-it-with-you-snapshots).
 
 The tour, settings, and internals: [viewer README](share-viewer/README.md).
+
+## Take it with you (snapshots)
+
+A share can be frozen into **one HTML file** that carries the whole viewer:
+the transcript, every chunk the page can reach, the fonts, the icons. Double
+click it on any machine - offline, no server, no account, no install - and
+the same reading experience opens, header reading `snapshot`. Expansion,
+search, deep links, subagent pages and the theme all work; only the live
+tail (new messages, download/export actions) is inert.
+
+Three ways to make one:
+
+```bash
+# 1. the page itself: header menu -> Download snapshot
+
+# 2. any share, from a script (works in CI, no browser);
+#    gated shares take --login user:pass or --token <viewer-token>
+node tools/osh-snapshot.mjs https://<host>/s/<id> -o session.html
+
+# 3. no share at all - straight from an opencode export
+node tools/osh-snapshot-local.mjs main.json child.json -o session.html
+```
+
+The third path needs only this repo's built viewer
+(`cd share-viewer && npm run build`), so a session you exported months ago
+becomes a portable page with nothing else involved. The server endpoint
+(`GET /s/<id>/snapshot`) exists too and is off by default: assembling it
+inside the worker costs one subrequest per asset, which the free plan does
+not allow - the button and both scripts assemble from static assets instead.
 
 ## How your data is handled
 

@@ -28,7 +28,7 @@ share-worker/          Cloudflare Worker backend (worker.js, wrangler.toml)
 share-server/          portable Bun backend (server.ts + Dockerfile)
 share-viewer/          vendored upstream share page (vite + solid)
   src/views/           the viewer views SDK + nine skins (see views/README.md)
-tools/                 agent-side export/local-view companion
+tools/                 session interchange + offline snapshots (see tools/README.md)
 ```
 
 `share-worker/worker.js` and `share-server/server.ts` implement the **same
@@ -91,6 +91,16 @@ Visual verification rig (lives outside the repo; rebuild from this description w
 ### Diff review view — removed (2026-10-24), optional future
 
 A diff review panel (per-session changed-files view) existed briefly in classic + all skins and was removed by owner decision. Why: the only reconstructable data is the **per-edit tool-part patches** (`metadata.files[].patch`), so any aggregation is last-write-wins per file — not a true session-cumulative diff. Producing a real cumulative diff requires shipping **full file contents** in the share, which was rejected on privacy grounds. If ever revisited as an optional, opt-in-per-share feature: the v2 host API `session.diff()` (typed, FileDiffInfo[]) is the intended source — v1.18's `client.session.diff` is a hardcoded stub returning `[]` unconditionally (see `upstream-reports/`), and its `session.diff` event only fires on revert/compaction, so v1 hosts can never feed it. The `session_diff` item type remains in the contract and is still folded into the share data — only the dedicated panel was removed.
+
+## Offline snapshots
+
+A snapshot is ONE HTML file holding the built viewer (entry, every chunk it can reach, the CSS, the fonts, the provider sprite) plus the session frozen as a JSON island. `share-worker/og/snapshot.js` is the only builder: the worker endpoint, the Bun server, the viewer's download button and both CLI tools all call it with a different `readAsset` (CDN fetch, dist reads).
+
+- Chunks ship as base64 and boot as Blob URLs through an import map. Never as `data:` module URLs: `import.meta.url` inside one is the whole multi-MB URL and the app's URL math blew a tab to 4.5 GB.
+- Only what the page can ask for is packed: grammars for the languages the session uses, the file icons its paths resolve to, KaTeX fonts only when the text holds math. The real worker bundles are dropped; `markdown.worker-main-*` must stay (the offline shim imports it).
+- Browsers refuse Workers on `file://`, so pierre and the markdown parser run main-thread copies of their worker modules behind vendored shims (`worker-shim.ts`, `markdown.worker-main.ts`). Both are lazy so http pages never load them.
+- The island status is rewritten to `snapshot` by the builder; the header shows that instead of the share's last live status.
+- `GET /s/:id/snapshot` is off unless `SNAPSHOT_ENDPOINT=1`: one subrequest per asset exceeds the free plan's 50-per-invocation cap.
 
 ## Release workflow
 
