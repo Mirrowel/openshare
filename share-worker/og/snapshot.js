@@ -194,7 +194,9 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
     (/^markdown\.worker-[A-Za-z0-9_-]{8}\.js$/.test(name) && !name.startsWith("markdown.worker-main-"))
   // shiki's wasm engine never loads offline (the main-thread renderer uses
   // the pure-JS `highlights` engine) and the viewer registers its own theme;
-  // the bundled shiki themes are dead weight in a snapshot
+  // the bundled shiki themes are dead weight in a snapshot. The tokenizer and
+  // loader chunks themselves stay: worker-shim's main-thread engine imports
+  // them, and a stub here breaks the import graph with a missing named export.
   const isDeadWeight = (name) =>
     /^wasm-[A-Za-z0-9_-]{8}\.js$/.test(name) ||
     /^(everforest|catppuccin|tokyo-night|pierre-(light|dark)-vibrant|one-dark|github-(light|dark)|nord|dracula|solarized|material|vitesse|min-light|min-dark|snazzy|monokai|ayu|kanagawa|rose-pine|gruvbox)-[A-Za-z0-9_-]{8}\.js$/.test(name)
@@ -240,6 +242,14 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
           })
           overrides.set(name, rewritten.replace(/,\s*,/g, ",").replace(/\[,/, "[").replace(/,\s*\]/, "]"))
           for (const file of kept) enqueue(file, next)
+          return
+        }
+        if (/^themes-/.test(name)) {
+          // bundled shiki themes are dead weight: the viewer registers its own
+          // "OpenCode" theme (and pierre-dark/light aliases of it), so nothing
+          // resolves a bundled theme offline. Keep the registry shape (the
+          // loader destructures {themes}) but resolve nothing.
+          overrides.set(name, "export default{themes:{getTheme:()=>null}}")
           return
         }
         for (const re of [STATIC_RE, DYNAMIC_RE]) {
@@ -339,7 +349,9 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
     `<script>window.__MIRROBOT_SNAPSHOT__=${island};</script>`,
     BOOT_SHIM.replace("__OSH_ENTRY__", entryNames[0] ?? ""),
   ].join("\n    ")
-  out = out.replace(/<head>/i, "<head>\n    " + head)
+  // function replacements: the island carries user text full of `$` sequences
+  // ($&, $', $`) that a string replacement would expand against `out`
+  out = out.replace(/<head>/i, () => "<head>\n    " + head)
   // the sprite lives at the END of the body: an <svg> inside <head> is
   // invalid HTML and the parser relocates it, which breaks the render root
   if (spriteMarkup) out = out.replace(/<\/body>/i, `<div hidden>${spriteMarkup}</div>` + "</body>")
