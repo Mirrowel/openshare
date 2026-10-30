@@ -345,6 +345,21 @@ function FileCard(props: {
       const cells = deepQueryAll(root, "[data-column-number]").length
       const tokens = deepQueryAll(root, "[data-line] span[style]").length
       if (cells > 0 && tokens === 0) setAttempt(1)
+      // the cap is a LINE COUNT: size --osh-cap to the distance from the
+      // first gutter row to the 21st, so exactly 20 numbered lines show even
+      // when some of them wrap (a px guess lands at 18 because wrapped rows
+      // consume gutter-less height)
+      if (!document.documentElement.hasAttribute("data-osh-cap-set")) {
+        const cells = deepQueryAll(root, "[data-column-number]")
+        if (cells.length >= 21) {
+          const tops = cells.slice(0, 21).map((el) => el.getBoundingClientRect().top)
+          const h = tops[20] - tops[0] + (tops[1] - tops[0])
+          if (h > 40) {
+            document.documentElement.style.setProperty("--osh-cap", `${Math.round(h)}px`)
+            document.documentElement.setAttribute("data-osh-cap-set", "")
+          }
+        }
+      }
     }, 1200)
   }
   return (
@@ -517,12 +532,18 @@ const EditTool = (props: ToolProps) => {
       .join("\n")
     return `diff --git a/${f} b/${f}\n${body}`
   })
-  const fileDiff = createMemo(() =>
-    patch() != null
-      ? // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
-        (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
-      : undefined,
-  )
+  const fileDiff = createMemo(() => {
+    if (patch() == null) return undefined
+    // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
+    const fd = (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
+    // the plugin stamps the language of the hunk's context (a mid-script
+    // html hunk tokenizes as untyped soup under the html grammar); a diff
+    // whose metadata carries the refined range language needs it forwarded,
+    // the same way the read card forwards FileContents.lang
+    const lang = (props.metadata as any)?.language
+    if (fd && typeof lang === "string") (fd as any).lang = lang
+    return fd
+  })
   // fixed card widths: the split/unified decision rides this card's own
   // column measurement (per instance - see useColumnWidth)
   const [colW, setColW] = createSignal(0)

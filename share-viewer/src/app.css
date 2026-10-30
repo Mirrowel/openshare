@@ -1358,8 +1358,10 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
    tools and file bodies. `--osh-out-h` is the per-card height set by
    dragging the bottom grip; `--osh-cap` is the global cap (~25 lines) that
    the "Cap tall outputs" setting can lift for file bodies. */
-:root { --osh-cap: 32rem; }
-html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
+/* The cap is a line count, not a width: FileCard measures pierre's real
+   line pitch on first paint and sets `--osh-cap` to 20 lines, falling back
+   to 32rem when no measurement lands (reduced motion, no cards). */
+:root { --osh-cap: 32rem; }html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
 .osh-file-scroll {
   max-height: var(--osh-out-h, var(--osh-cap));
   overflow: auto;
