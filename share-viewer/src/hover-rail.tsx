@@ -802,11 +802,14 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
         {/* the capsule pill: 40% visible at rest, full when near (ghost
             mode: 0% at rest - only the proximity strip betrays it, plus the
             one-time pulse). Current position on TOP (accent), count at the
-            BOTTOM */}
+            BOTTOM. Wider numbers shrink and tighten instead of widening the
+            capsule - the count is constant for a session, so the shape is
+            too. */}
         <button
           type="button"
-          class="relative flex flex-col items-center gap-1 rounded-xl border border-border-weak-base bg-background-base/95 backdrop-blur px-1 py-2.5 cursor-pointer shadow-md"
+          class="osh-rail-pill relative flex flex-col items-center gap-1 rounded-xl border border-border-weak-base bg-background-base/95 backdrop-blur px-1 py-2.5 cursor-pointer shadow-md"
           classList={{ "osh-rail-pill-open": open(), "osh-pill-pulse": pulse() }}
+          data-osh-pill-digits={String(props.count).length}
           style={{
             opacity: near() ? 1 : props.pillGhost ? 0 : 0.4,
             transition: "opacity 160ms ease, border-color 140ms ease",
@@ -817,9 +820,9 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
         >
           <Show
             when={props.active !== undefined}
-            fallback={<span class="text-10-mono text-text-weaker leading-none">{props.count}</span>}
+            fallback={<span class="osh-pill-num text-10-mono text-text-weaker leading-none">{props.count}</span>}
           >
-            <span class="text-10-mono leading-none" style={{ color: "var(--openshare-accent, var(--text-base))" }}>
+            <span class="osh-pill-num text-10-mono leading-none tabular-nums" style={{ color: "var(--openshare-accent, var(--text-base))" }}>
               {(props.active ?? 0) + 1}
             </span>
           </Show>
@@ -835,7 +838,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               </span>
             }
           >
-            <span class="relative block w-px h-7 rounded-full bg-text-weaker/40">
+            <span class="osh-pill-track relative block w-px h-7 rounded-full bg-text-weaker/40">
               <span
                 class="absolute -left-[1px] w-[3px] h-[3px] rounded-full"
                 style={{
@@ -854,7 +857,7 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               </Show>
             </span>
           </Show>
-          <span class="text-10-mono text-text-weak leading-none tabular-nums">{props.count}</span>
+          <span class="osh-pill-num text-10-mono text-text-weak leading-none tabular-nums">{props.count}</span>
         </button>
 
         {/* the popover: anchored to the pill's right edge, animated in */}
@@ -989,13 +992,13 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
                 </Show>
               </div>
             </div>
-            <div class="flex items-center justify-between h-7 px-3 border-t border-border-weak-base/60 text-10-mono text-text-weaker">
-              <Show when={props.active !== undefined} fallback={<span>jump</span>}>
-                <span class="tabular-nums">
+            <div class="flex items-center justify-between flex-nowrap gap-1 h-7 px-3 border-t border-border-weak-base/60 text-10-mono text-text-weaker whitespace-nowrap">
+              <Show when={props.active !== undefined} fallback={<span class="shrink-0">jump</span>}>
+                <span class="shrink-0 tabular-nums">
                   {(props.active ?? 0) + 1} / {props.count}
                 </span>
               </Show>
-              <span class="flex items-center gap-1">
+              <span class="flex items-center gap-0.5 min-w-0 overflow-hidden">
                 <Kbd>J</Kbd><Kbd>K</Kbd><span class="px-0.5">turns</span><Kbd>ESC</Kbd><span class="px-0.5">close</span>
               </span>
             </div>

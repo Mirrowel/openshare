@@ -1343,6 +1343,30 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   border-color: var(--border-strong-base) !important;
 }
 
+/* the capsule is ONE box at every count with ONE number size: fixed width
+   and height, numbers in fixed line boxes - crossing turn 10 changes
+   nothing. Three-digit sessions are the rare exception: the glyph alone
+   steps down to fit the same box. */
+.osh-rail-pill {
+  width: 24px;
+  padding-block: 14px;
+}
+.osh-rail-pill .osh-pill-num {
+  font-size: 14px;
+  height: 16px;
+  line-height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.osh-rail-pill .osh-pill-track {
+  height: 42px;
+}
+.osh-rail-pill[data-osh-pill-digits="3"] .osh-pill-num {
+  font-size: 12px;
+  letter-spacing: -0.05em;
+}
+
 /* shell output: the kit's own card (copy control included) at the width we
    want - hugging its command output, capped so a one-word command does not
    stretch a full-row empty surface */
