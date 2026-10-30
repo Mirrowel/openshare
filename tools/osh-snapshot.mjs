@@ -144,7 +144,6 @@ async function main() {
   const priv = payload.private
   const island = JSON.stringify({ items, status, rev, sessionID, ...(priv ? { private: priv } : {}) }).replace(/</g, "\\u003c")
 
-  const html = await readText(`${share.origin}/index.html`)
   const htmlRes = await get(`${share.origin}/index.html`, headers)
   if (!htmlRes.ok) throw new Error(`index.html: ${htmlRes.status}`)
   const baseHtml = await htmlRes.text()
@@ -165,7 +164,7 @@ async function main() {
     return assetCache.get(name)
   }
 
-  const out = await buildSnapshotHtml({ html: baseHtml || html, island, readAsset })
+  const out = await buildSnapshotHtml({ html: baseHtml, island, readAsset })
   const file = opts.out ?? `${share.id}.html`
   writeFileSync(file, out)
 
