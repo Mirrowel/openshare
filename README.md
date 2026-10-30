@@ -35,7 +35,8 @@ Upstream OpenCode discontinued share links (the old opncd.ai service). Open(code
 # 1. plugin — add the package to BOTH config files (see step 1 below)
 #    opencode.json: { "plugin": ["@mirrowel/opencode-openshare"] }
 #    tui.json:      { "plugin": ["@mirrowel/opencode-openshare"] }
-# 2. backend (pick one — needs a clone + a viewer build; full walkthrough below)
+# 2. backend (pick one)
+git clone https://github.com/Mirrowel/openshare && cd openshare
 cd share-viewer && npm install && npm run build && cd ..   # once
 cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/server.ts)
 # 3. restart opencode, then: /share → Connect to a server → paste your URL
@@ -94,7 +95,7 @@ Restart opencode, then verify: `/share` and `/openshare` appear in the TUI. Proj
 **On a v2 host** the CLI does the config for you:
 
 ```sh
-opencode plugin add @mirrowel/opencode-openshare    # v2: writes the config + installs
+opencode plugin add @mirrowel/opencode-openshare    # v2: writes both config entries + installs
 opencode plugin list                                # verify
 ```
 
@@ -188,9 +189,10 @@ Delivery reliability is structural: every accepted sync bumps a monotonic rev, a
 - **Identity & enrollment** (users, scoped tokens, codes, freeze, lineage revocation): [worker README — Identity](share-worker/README.md#identity--enrollment).
 - **TUI commands** (`/share`, `/openshare`, the admin console): [plugin README — TUI](share-plugin/README.md#tui).
 - **The viewer** (views, navigation, search, settings, snapshots, export): [viewer README](share-viewer/README.md).
-- **Configuration** — every knob across every package: [CONFIGURATION.md](CONFIGURATION.md). Plugin keys, worker vars, server-side objects, the viewer cookie, and a "where do I set X" router, all in one file. The plugin reads env > plugin options > adjacent config > package-root config > `openshare.local.json` > the settings home (`~/.config/opencode/openshare.config.json`); the TUI writes the settings home.
+- **Configuration** — every knob across every package: [CONFIGURATION.md](CONFIGURATION.md). Plugin keys, worker vars, server-side objects, the viewer cookie, and a "where do I set X" router, all in one file. The plugin reads env > plugin options > adjacent config > package-root config > `openshare.local.json` > the settings home (`~/.config/opencode/openshare.config.json`), with `OPENSHARE_CONFIG_JSON` carrying a whole config as one env var; the TUI writes the settings home.
 - **Read auth & security model**: [worker README — Read auth](share-worker/README.md#read-auth-optional-casual-eyes-resistance).
 - **Internals, tests, vendoring, release workflow**: [DEVELOPMENT.md](DEVELOPMENT.md).
+- **CLI tools** — export/pack/import sessions, local viewing of exported sessions: [tools README](tools/README.md).
 
 ## Share modes
 
@@ -202,7 +204,7 @@ Full resolution rules and the v2 presence signal: [plugin README — Share modes
 
 ## Identity & servers
 
-Two roles per server: the **admin** (the root `CREATE_TOKEN`) and **users** everyone the hoster lets in, each with full control of their own shares, tokens and settings. Access codes mint users with their first full token; scoped tokens are the CI credential — they create within limits and reach only the shares they created. Losing the last full token freezes everything; freezing a user severs both write paths on all their shares at once. Every detail: [worker README — Identity & enrollment](share-worker/README.md#identity--enrollment).
+Two roles per server: the **admin** (the root `CREATE_TOKEN`) and **users** — everyone the hoster lets in, each with full control of their own shares, tokens and settings. Access codes mint users with their first full token; scoped tokens are the CI credential — they create within limits and reach only the shares they created. Losing the last full token freezes everything; freezing a user severs both write paths on all their shares at once. Every detail: [worker README — Identity & enrollment](share-worker/README.md#identity--enrollment).
 
 One session can fan out to several servers at once (the `servers` config group holds one membership per URL); a server added mid-session joins with a full-history backfill.
 
@@ -278,6 +280,10 @@ Ops notes (restart durability, reverse proxies, TLS, backups): [share-server/REA
 - **Rev** — monotonic per-share revision, bumped by every accepted sync; the loss-detection and replay anchor.
 - **Gone** — a share whose page no longer exists (deleted/purged/expired).
 - **Backfill** — syncing a session's full prior history when it starts sharing (or when a server joins mid-session).
+
+## License
+
+MIT — [LICENSE](LICENSE).
 
 ## Development
 

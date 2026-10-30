@@ -2,7 +2,7 @@
 
 The complete configuration surface across every package — what can be set, where it lives, what order it loads in, and where to put what. This is the single cross-package inventory; package READMEs stay canonical for their own usage detail.
 
-Four independent layers, each with its own storage:
+Four layers (plus one minor), each with its own storage:
 
 | Layer | Storage | Changed via |
 |---|---|---|
@@ -11,7 +11,7 @@ Four independent layers, each with its own storage:
 | Plugin (client) | env > plugin options > JSON config files | env, opencode.json, config files, `/openshare` TUI |
 | Viewer | browser cookie `osh_settings` (1 year) | the settings gear / Ctrl+K in the share page |
 
-A fifth, minor one: TUI menu sizing lives in the opencode host kv (`ui-prefs`), not in any file.
+The minor fifth: TUI menu sizing lives in the opencode host kv (`ui-prefs`), not in any file.
 
 ---
 
@@ -74,7 +74,7 @@ Long-lived user tokens, SHA-256 hashed server-side, minted at enrollment or by t
 - **full** (default) - the account credential. Creates, syncs any of the owner's shares, mints/revokes tokens (`POST /api/token` self-service), edits settings, rotates anything. Only full tokens keep the account alive.
 - **scoped** - a service credential (CI, agents). Carries its own limits; creates within them; syncs/deletes/lists ONLY the shares it created (`creatorTokenId` is stamped on every share); self-rotates (the successor inherits the scope); cannot mint tokens, touch settings, or reach the owner's other shares. Minted by a full token: `POST /api/token {"kind":"scoped", "label", "limits"}`.
 
-**Named config sets (B4)** - one token (key) carries up to 10 named sets; agents pick by name (`configSet` / `OPENSHARE_CONFIG_SET`), unspecified = the first set:
+**Named config sets** - one token (key) carries up to 10 named sets; agents pick by name (`configSet` / `OPENSHARE_CONFIG_SET`), unspecified = the first set:
 - Class A (`authLogin`, `authPassword`, `ttlHours`): applied by the SERVER at create - they never travel to any client response. A set with a credential pair gates every share that token creates, with zero config committed to the repo.
 - Class B (`modelLabel`, `shareMode`): suggestions the plugin fetches ONCE per server per boot (`GET /api/token/sets`) and adopts only when the local config leaves them unspecified - then persists them to the settings home (no repeated fetches).
 - Provisioning: `PUT /api/token/sets` (a full token edits its own; scoped read-only), `PUT /api/admin/tokens/:id/sets` (admin), or inline `sets` on any mint. A self/admin mint without explicit sets inherits the minter's.
@@ -92,13 +92,13 @@ Invite-gated enrollment. Codes mint a user PLUS their first full token (one acti
 Created per shared session (`POST /api/share/<hex-suffix>` or the WS `init create`). Parameters at create:
 - `sessionID` (required)
 - `ttlHours` — resolution: request → the owner's `defaultTtlHours` → 2160; clamped (floor 1h) by the token's `maxTtlHours` and `MAX_TTL_HOURS`. Every legacy days-shaped input (config key, env var, token limit, request field, PATCH body) is accepted and converted x24
-- `authLogin` / `authPassword` — optional read-auth gate on the viewer; changeable later via `POST /api/share/:id/auth`
+- `authLogin` / `authPassword` — optional read-auth gate on the viewer; changeable later via `PATCH /api/share/:id` (the login a READER submits is `POST /api/share/:id/auth`)
 - a per-share `secret` is returned (control alongside the owner token)
 - `status` settles through `live` → `completed` | `error` | `interrupted`
 
 Removing a share: delete (page gone) or disconnect (snapshot stays until TTL).
 
-Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlHours, meta after creation); admin (root or admin token) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
+Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlHours, meta after creation); admin (root `CREATE_TOKEN` only) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
 
 ---
 
@@ -122,7 +122,7 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 |---|---|---|
 | `workerUrl` | `""` | Legacy single-server shorthand (plugin disabled until set). Synthesizes a `servers` entry |
 | `createToken` | `""` | Legacy credential for the above — the root CREATE_TOKEN, filed as both `token` and `adminToken` |
-| `servers` | — | Multi-server memberships: `{ "<url>": { token, code, label, active, adminToken } }`. `token` = enrolled `osk_` token (or root); `code` = one-time enrollment code for private servers; `adminToken` = root token for the admin console (convenience); `active` picks where new sessions share (default: first entry). Fan-out: every session shares to all member servers |
+| `servers` | — | Multi-server memberships: `{ "<url>": { token, code, label, active, adminToken } }`. `token` = enrolled `osk_` token (or root); `code` = enrollment code for private servers; `adminToken` = root token for the admin console (convenience); `active` picks where new sessions share (default: first entry). Fan-out: every session shares to every ACTIVE member server |
 | `debounceMs` | `10000` | Sync flush rate limit (server-clamped 1s–60s). CI ~5000, relaxed ~30000 |
 | `completedDelayMs` | `5000` | Grace before the status flips to `completed` (server-capped). Dispose flushes a pending flip |
 | `modelLabel` | `"$Provider/$Model"` | Template for the model label in share data |
@@ -130,18 +130,18 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `redact.patterns` | built-ins | Extra regexes (strings) applied beside the built-in secret detectors on ungated shares |
 | `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
-| `urlFile` | `""` → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
-| `configSet` | `""` | Which named config set on the server token this client uses (B4; unset = the token's first/default set). Rides every create frame |
+| `urlFile` | unset → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
+| `configSet` | `""` | Which named config set on the server token this client uses (unset = the token's first/default set). Rides every create frame |
 | `urlFileFormat` | `"url"` | Line format: `url` = one bare URL per line; `json` = one JSON object per line (`{"id","url","status","gated"}`) for CI consumers that parse fields instead of URLs |
 | `meta` | - | Free-form string labels (max 20 keys, 64-char names, 500-char values) stamped onto every share at create; shown in the server's admin shares listing. Values may reference env vars as `${NAME}` - resolved when the share is created; unresolved refs stay literal so misconfiguration is visible |
 | `announceStderr` | `true` | `false` silences the `[openshare] live:` and `url file:` stderr lines (errors still print; the TUI carries the URL) |
 | `shareMode` | presence-detected | `all` = every session auto-shares (the CI shape); `manual` = explicit `/share` with per-share consent. Unset → presence detection: an openshare TUI entry in any `tui.json` layer (global, `OPENCODE_TUI_CONFIG`, project chain) = manual, none = all. Detection is read-only; the plugin never writes `tui.json`. Fixed at process start |
 
-Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_DEBOUNCE_MS`, `OPENSHARE_COMPLETED_DELAY_MS`, `OPENSHARE_MODEL_LABEL`, `OPENSHARE_TTL_DAYS`, `OPENSHARE_AUTH_LOGIN`, `OPENSHARE_AUTH_PASSWORD`, `OPENSHARE_URL_FILE`, `OPENSHARE_URL_FILE_FORMAT`, `OPENSHARE_SPOOL_DIR`, `OPENSHARE_ANNOUNCE_STDERR`, `OPENSHARE_SHARE_MODE`.
+Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_DEBOUNCE_MS`, `OPENSHARE_COMPLETED_DELAY_MS`, `OPENSHARE_MODEL_LABEL`, `OPENSHARE_TTL_HOURS` (legacy `OPENSHARE_TTL_DAYS`), `OPENSHARE_CONFIG_SET`, `OPENSHARE_AUTH_LOGIN`, `OPENSHARE_AUTH_PASSWORD`, `OPENSHARE_URL_FILE`, `OPENSHARE_URL_FILE_FORMAT`, `OPENSHARE_SPOOL_DIR`, `OPENSHARE_ANNOUNCE_STDERR`, `OPENSHARE_SHARE_MODE`.
 
 **`OPENSHARE_CONFIG_JSON`** - a complete config object in one env var (same keys as a config file, including `servers` and `meta`), for pipelines that cannot mount files. It sits between the file/options layers and the per-key env vars: a specific `OPENSHARE_*` var still wins over it, and it wins over every file. Malformed JSON logs an error line and is ignored - it never clears lower layers.
 
-**Recipes** — starting points for the three common postures (all keys optional; diffs from defaults):
+**Recipes** — starting points for the three common postures. Paste the one that fits into any config file in the read chain below (most often the settings home, `~/.config/opencode/openshare.config.json`) or `OPENSHARE_CONFIG_JSON`:
 
 ```jsonc
 // CI: watched runs — near-real-time, everything to the url file
@@ -176,7 +176,7 @@ The portable backend (`share-server/`) takes the same policy knobs as environmen
 
 ## 5. The viewer — cookie settings
 
-All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per browser — nothing server-side. Set through the settings gear / Ctrl+K on any share page; read pre-paint (no theme flash). Stored/loaded by `share-viewer/src/settings.ts`; old cookie shapes migrate in place.
+All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per browser — nothing server-side. Set through the settings gear / Ctrl+K on any share page; read pre-paint (no theme flash). Stored/loaded by `share-viewer/src/settings.ts`; old cookie shapes migrate in place. (A separate short-lived cookie `osh_<shareId>` holds a logged-in reader's read-auth session — 7 days, HttpOnly; that one the server sets.)
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -215,8 +215,8 @@ All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per
 
 | I want to change… | Go to |
 |---|---|
-| Server TTL cap, auth mode, socket policy, token defaults | `share-worker/wrangler.toml` `[vars]` + redeploy |
-| Root admin token | `wrangler secret put CREATE_TOKEN` |
+| Server TTL cap, auth mode, socket policy, token defaults | `share-worker/wrangler.toml` `[vars]` + redeploy (Bun/Docker: the same knobs as env vars — §4) |
+| Root admin token | `wrangler secret put CREATE_TOKEN` (Bun: the `CREATE_TOKEN` env var) |
 | Deployment branding / OG embeds | `share-worker/openshare.config.json` + redeploy |
 | A user's limits / a new token / an access code | admin API (`/api/admin/…`) — or the `/openshare` console on the hoster's machine |
 | My default share TTL (as a user) | `PUT /api/me/settings` `defaultTtlHours` |
@@ -224,4 +224,4 @@ All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per
 | Sync timing, URL output, stderr noise, share mode | plugin config keys / `OPENSHARE_*` env (table in §3) |
 | Reading experience (theme, views, widths, grouping) | the viewer settings gear — the `osh_settings` cookie |
 
-Package READMEs: root `README.md` (usage + flows), `share-worker/README.md` (API + policy), `share-plugin/README.md` (plugin install + TUI), `share-server/README.md` (Bun backend), `share-viewer/README.md` (viewer), `DEVELOPMENT.md` (internals, tests, vendoring).
+Package READMEs: root [`README.md`](README.md) (usage + flows), [`share-worker/README.md`](share-worker/README.md) (API + policy), [`share-plugin/README.md`](share-plugin/README.md) (plugin install + TUI), [`share-plugin/ci/README.md`](share-plugin/ci/README.md) (CI bundle), [`share-server/README.md`](share-server/README.md) (Bun backend), [`share-viewer/README.md`](share-viewer/README.md) (viewer), [`tools/README.md`](tools/README.md) (CLI converters), [`DEVELOPMENT.md`](DEVELOPMENT.md) (internals, tests, vendoring).

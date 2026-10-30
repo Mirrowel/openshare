@@ -159,7 +159,8 @@ Two mechanisms, both deployment-branded, both leak-proof for gated shares:
   Slackbot, WhatsApp, Twitterbot, ...) never run the SPA, so the worker
   serves them `index.html` with `og:`/`twitter:` tags injected from the
   branding: `og:title` = `ogTitle` (or `name · Open(code)Share` — the
-  **deployment** identity, never a session title), `og:description` =
+  **deployment** identity; public share pages swap in the session
+  title, gated pages never do), `og:description` =
   `description`, `og:image` = the per-share card below (or `ogImage` /
   `logoUrl`). `/s/*` and `/` are in `run_worker_first` for this; regular
   browsers pass straight through to the static assets, and the viewer
@@ -197,7 +198,8 @@ share-locked 24h). Credentials are sent on create AND attach: resuming
 retroactively applies/updates them; empty-on-resume removes protection
 (intentional owner action — write access is separately keyed).
 
-**Write access is a different lock**: creating shares requires a valid
+**Write access is a different lock**: on a private server, creating
+shares requires a valid
 identity (user token or the root bootstrap), writing (sync/delete)
 requires the owner's token or the per-share secret held only by the
 plugin that created it. A URL plus valid login still cannot write a
@@ -230,13 +232,16 @@ rotate (`POST /api/token/rotate`) without a code, forever — tokens
 are long-lived by design (the OAuth-ish part without the refresh
 churn).
 
-**Ownership**: every share records its owner. Control ops accept the
+**Ownership**: every share created by an enrolled user records its
+owner; root-bootstrap and anonymous public creates are ownerless
+(secret-only control, never frozen). Control ops accept the
 owner's valid token **or** the per-share secret while the owner is in
 good standing. **Freezing a user** severs BOTH paths on all their
 shares at once (a valid secret no longer writes; viewing is unaffected
 until TTL) — the kill switch for leaked identities. Unfreeze and
 reassign-to-another-user are the admin rescue paths. Revoking a single
-token only invalidates that token.
+token only invalidates that token — unless it was the user's last valid
+full token, which triggers the freeze above.
 
 **Token classes** (both stay `osk_:` - the server knows the class):
 - **full** (default) - the account credential: creates, syncs any of
@@ -305,9 +310,9 @@ config keeps working unchanged.
 
 Child sessions (`info.parentID`) route into the parent's share. URLs:
 `/s/<id>` main, `/s/<id>/1`, `/2`, ... subagents ordered by first task
-appearance. Task rows link to the sub-page (new tab by default — a
-sender-side pref; in-page switching preserves scroll). Sub-pages render
-the same view bound to the child session, with their own
+appearance. Task rows link to the sub-page (a plain click switches
+in-page, preserving scroll; ctrl/cmd-click opens a new tab). Sub-pages
+render the same view bound to the child session, with their own
 title/version/model.
 
 ## Worker API
@@ -348,9 +353,8 @@ title/version/model.
   `POST /api/share/:id/sync` (secret or Bearer owner token; bodies over
   8 MB are refused before parsing),
   `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
-  when the rev is unchanged, only the items touched since otherwise —
-  same three-case semantics as the WS handshake minus the delta
-  announcement, since the response is always a fresh set to merge),
+  when `since >= rev` (unchanged, or the server rewound/recreated — the
+  client prunes), only the items touched since when `since < rev`),
   `GET /api/share/:id/snapshot` (ONE self-contained HTML file: the
   viewer bundle inlined + the share frozen as a JSON island + a boot
   shim; opens offline in any browser as a point-in-time record. The
@@ -365,7 +369,7 @@ title/version/model.
   ttlHours (legacy ttlDays), meta}`; a credential change rotates viewer tokens; identity-
   gated exactly like sync (scoped tokens reach only their own shares)
 - `GET|PUT /api/token/sets` and `PUT /api/admin/tokens/:id/sets` — named
-  config sets on a token (B4): Class A (authLogin/authPassword/ttlHours)
+  config sets on a token: Class A (authLogin/authPassword/ttlHours)
   applies server-side at create and never appears in a client response;
   Class B (modelLabel/shareMode) is the fetchable suggestion view. Creates
   carry an optional `set` name; unset = the token's first set. Mints

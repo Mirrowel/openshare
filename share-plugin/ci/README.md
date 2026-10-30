@@ -56,12 +56,15 @@ CI conveniences:
 }
 ```
 
-With no token held, the bundle **enrolls itself** on first contact
-(public servers take anyone; private ones consume the one-time code) and
-persists the token to `~/.config/opencode/openshare.config.json` -
-enroll once, then every run just shares. A revoked token re-enrolls the
-same way; if enrollment is impossible the error lands on stderr and
-sharing stops (no retry storms).
+With no token held the bundle never silently enrolls: a configured
+`code` enrolls with it headlessly (the CI shape — each code use is one
+enrollment); without one, public servers share anonymously (ownerless
+shares under the server's global anonymous caps) and private servers
+refuse with guidance. When enrollment does run, the token persists to
+`~/.config/opencode/openshare.config.json` — enroll once, then every
+run just shares. A revoked token re-enrolls the same way (code
+configured / codeless server); if enrollment is impossible the error
+lands on stderr and sharing stops (no retry storms).
 
 **Ephemeral runners** (GitHub-hosted, containers): do NOT enroll through
 a code - each fresh machine would burn one activation. Ask the hoster
@@ -71,7 +74,7 @@ entirely and never expire on their own. A **scoped** token
 (`POST /api/token {"kind":"scoped"}`, minted by any full token) is the
 right credential here: it creates within its limits, reaches only the
 shares it created, and revoking it never freezes the owner's account.
-Point `OPENSHARE_CONFIG_DIR` (or mount) the settings home at a cached
+Point `OPENCODE_CONFIG_DIR` (or mount) the settings home at a cached
 path only if you want the token persisted; env alone is enough.
 
 The bundle also supports **fan-out**: multiple `active` servers in the

@@ -8,9 +8,11 @@ storage, native WebSockets, the built viewer served statically. For VPS
 deployments, self-hosting, or anything that isn't Cloudflare — same
 protocol, same plugin, same auth model.
 
-Every HTTP route the worker exposes exists here with identical semantics,
-including `GET /api/share/:id/snapshot` (self-contained offline HTML of a
-share, read-gated exactly like `/data`).
+Every HTTP route the worker exposes exists here with identical
+semantics, including `GET /api/share/:id/snapshot` (self-contained
+offline HTML of a share, read-gated exactly like `/data`). The one
+exception is the worker-only `/legacy` viewer route (a dev comparison
+build; it serves no API).
 
 ## Quick start
 
