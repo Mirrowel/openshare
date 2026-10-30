@@ -959,6 +959,50 @@ function mainThreadWorker(): Worker {
   }
 }
 
+// vendor fork: read-of-image attachments reach the renderers. The v1 host
+// stores an image read as state.attachments (data URLs); upstream never
+// forwards state attachments, so the viewer's read renderer can never show
+// the picture. Three edits: ToolProps gains `attachments?: unknown`, and
+// both ToolDisplay call sites (grouped tools in tool-renderer.tsx, lone
+// tools in current-message.tsx) pass tool().state.attachments through.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("attachments?: unknown")) {
+      const before = s
+      s = s.replace(
+        "  status?: string\n  hideDetails?: boolean",
+        "  status?: string\n  /** read-of-image carries the file as v1 attachments (data URLs) */\n  attachments?: unknown\n  hideDetails?: boolean",
+      )
+      s = s.replace(
+        /(\n {40}status=\{tool\(\)\.state\.status\})/,
+        `$1\n                                        attachments={(tool().state as { attachments?: unknown }).attachments}`,
+      )
+      if (!s.includes("attachments?: unknown") || !s.includes(".state as { attachments?: unknown }).attachments")) {
+        throw new Error("vendor-v2: attachments fork anchors missing - upstream drifted")
+      }
+      if (s === before) throw new Error("vendor-v2: attachments fork did not change anything")
+      writeFileSync(p, s)
+    }
+  }
+}
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/message/current-message.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("attachments={(tool().state")) {
+      const before = s
+      s = s.replace(
+        /(\n {12}error=\{currentToolError\(tool\(\)\)\}\n)/,
+        "$1            attachments={(tool().state as { attachments?: unknown }).attachments}\n",
+      )
+      if (s === before) throw new Error("vendor-v2: current-message attachments anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // vendor fork: reads no longer MERGE inside a context group. Upstream
 // collapses consecutive reads into one inner array, rendered as the inline
 // CurrentReadToolGroup subtitle row, but our forks bypass that renderer, so

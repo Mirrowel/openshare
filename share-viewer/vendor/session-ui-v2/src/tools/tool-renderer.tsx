@@ -766,6 +766,7 @@ export function CurrentContextToolGroup(props: {
                                         output={currentToolOutput(tool())}
                                         error={currentToolError(tool())}
                                         status={tool().state.status}
+                                        attachments={(tool().state as { attachments?: unknown }).attachments}
                                         defaultOpen={props.toolDefaultOpen?.(tool()) ?? false}
                                         open={props.toolOpen?.(tool().id) ?? props.toolDefaultOpen?.(tool())}
                                         onOpenChange={(open) => props.onToolOpenChange?.(tool().id, open)}
@@ -1159,6 +1160,8 @@ export interface ToolProps {
   sessionID?: string
   output?: string
   status?: string
+  /** read-of-image carries the file as v1 attachments (data URLs) */
+  attachments?: unknown
   hideDetails?: boolean
   defaultOpen?: boolean
   open?: boolean

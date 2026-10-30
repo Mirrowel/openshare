@@ -104,6 +104,7 @@ export function SessionAssistantContent(props: {
             output={currentToolOutput(tool())}
             status={tool().state.status}
             error={currentToolError(tool())}
+            attachments={(tool().state as { attachments?: unknown }).attachments}
             defaultOpen={props.defaultOpen}
             open={props.toolOpen}
             onOpenChange={props.onToolOpenChange}

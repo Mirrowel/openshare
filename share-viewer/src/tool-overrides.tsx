@@ -312,6 +312,9 @@ function FileCard(props: {
    *  html file's script block is javascript, not html); overrides the
    *  name-derived language, which cannot know the snippet's context */
   lang?: string
+  /** ready-made image payload (a v1 attachment data URL) - wins over the
+   *  text contents, which for an image read is just a status line */
+  mediaUrl?: string
   onRendered?: () => void
 }) {
   const fileComponent = useFileComponent()
@@ -324,6 +327,8 @@ function FileCard(props: {
   const media = () => {
     const kind = mediaKindFromPath(props.path)
     if (!kind || !props.path) return undefined
+    // a ready-made image payload (v1 attachment data URL) renders as-is
+    if (props.mediaUrl && /^data:/.test(props.mediaUrl)) return { path: props.path, current: props.mediaUrl }
     // a payload that is already a data URL passes through as the value
     // itself (FileMedia accepts a plain string); raw base64 needs the
     // record form or the URL gets the prefix twice
@@ -453,6 +458,13 @@ const ReadTool = (props: ToolProps) => {
     const meta = (props.metadata as any) ?? {}
     return str(meta.preview) || str(props.output)
   })
+  // a read of an IMAGE carries the file as a v1 attachment (data URL); the
+  // text output is just "Image read successfully" - render the picture
+  const mediaUrl = createMemo(() => {
+    const list = (props as any).attachments as { mime?: string; url?: string }[] | undefined
+    const hit = (list ?? []).find((a) => typeof a?.url === "string" && a.url.startsWith("data:image/"))
+    return hit?.url
+  })
   const failure = createMemo(() => errorText(props))
   const lines = createMemo(() => countLines(preview()))
   const lineStart = createMemo(() => {
@@ -465,7 +477,7 @@ const ReadTool = (props: ToolProps) => {
       <BasicTool
         {...props}
         icon="glasses"
-        hasContent={!!preview() || !!failure()}
+        hasContent={!!preview() || !!failure() || !!mediaUrl()}
         defer
         trigger={() => (
           <FileHeader
@@ -483,7 +495,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} lang={str((props.metadata as any)?.language)} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} lang={str((props.metadata as any)?.language)} mediaUrl={mediaUrl()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>
