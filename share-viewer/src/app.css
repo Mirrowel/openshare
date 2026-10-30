@@ -1605,6 +1605,19 @@ html[data-osh-preview-hover] .osh-out-grip::after {
 .osh-task-wrap[data-osh-relock] [data-component="task-tool-card"][data-running]::before {
   animation: none;
 }
+/* cadence mode (gallery A/B): one synchronized pass every 4s instead of a
+   continuous loop - identical visuals per pass, GPU idle between passes.
+   subagent-motion phase-locks with the matching 4000ms period. */
+@keyframes osh-sweep-cadence {
+  0% { transform: translateX(-115%); }
+  55% { transform: translateX(235%); }
+  100% { transform: translateX(235%); }
+}
+html[data-osh-sweep="cadence"] .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
+html[data-osh-sweep="cadence"] .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+  animation-name: osh-sweep-cadence;
+  animation-duration: 4s;
+}
 /* offscreen running cards cost frames for nothing: the motion module pauses
    them (IntersectionObserver toggles data-osh-off on the wrap) */
 .osh-task-wrap[data-osh-off] [data-component="task-tool-card"][data-running]::after,

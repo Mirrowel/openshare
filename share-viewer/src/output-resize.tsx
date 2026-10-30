@@ -18,22 +18,44 @@ if (import.meta.env.DEV) (window as any).__oshOutStats = outStats
 
 const scrollerOf = (card: Element | null) => card?.querySelector<HTMLElement>("[data-osh-scroll]") ?? null
 
-function syncCard(card: Element) {
+type CardState = { clipped: boolean; up: boolean; down: boolean }
+
+/** Read-only: one layout read per card, no writes. */
+function measureCard(card: Element): CardState | null {
   const sc = scrollerOf(card)
-  if (!sc) return
+  if (!sc) return null
   const overflowY = sc.scrollHeight - sc.clientHeight > 2
-  card.toggleAttribute("data-osh-clipped", overflowY)
-  const kind = card.getAttribute("data-osh-out")
-  if (kind === "file") {
-    card.toggleAttribute("data-more-up", sc.scrollTop > 2)
-    card.toggleAttribute("data-more-down", overflowY && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 2)
+  return {
+    clipped: overflowY,
+    up: sc.scrollTop > 2,
+    down: overflowY && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 2,
   }
+}
+
+/** Write-only: applies a measured state to the card's attributes. */
+function applyCard(card: Element, m: CardState) {
+  card.toggleAttribute("data-osh-clipped", m.clipped)
+  if (card.getAttribute("data-osh-out") === "file") {
+    card.toggleAttribute("data-more-up", m.up)
+    card.toggleAttribute("data-more-down", m.down)
+  }
+}
+
+function syncCard(card: Element) {
+  const m = measureCard(card)
+  if (m) applyCard(card, m)
 }
 
 /** Sweep mounted cards; cheap and called after data/scroll changes. */
 export function syncOutputCards(root: ParentNode = document) {
   outStats.syncs++
-  root.querySelectorAll("[data-osh-out]").forEach(syncCard)
+  // reads first, then writes: interleaving them forces a reflow per card
+  const cards = [...root.querySelectorAll("[data-osh-out]")]
+  const states = cards.map(measureCard)
+  cards.forEach((c, i) => {
+    const m = states[i]
+    if (m) applyCard(c, m)
+  })
 }
 
 /** Install the delegated drag/resize listeners once per page. */
@@ -123,13 +145,35 @@ export function installOutputResize() {
   const ro = new ResizeObserver((entries) => {
     for (const e of entries) {
       const card = (e.target as Element).closest("[data-osh-out]")
-      if (card) syncCard(card)
+      if (card) markDirty(card)
     }
   })
   const wired = new WeakSet<Element>()
   const cardTargets = new Map<Element, Element[]>()
   const cardObservers = new Map<Element, MutationObserver>()
   const pending = new Set<Element>()
+  // one batched measure pass per frame: observer bursts touch many cards and
+  // measuring each inside the callback interleaves layout reads with the
+  // attribute writes of the previous card (a forced reflow per card)
+  const dirty = new Set<Element>()
+  let flushQueued = false
+  const flush = () => {
+    flushQueued = false
+    const cards = [...dirty]
+    dirty.clear()
+    const states = cards.map(measureCard)
+    cards.forEach((c, i) => {
+      const m = states[i]
+      if (m) applyCard(c, m)
+    })
+    if (cards.length) outStats.syncs++
+  }
+  const markDirty = (card: Element) => {
+    dirty.add(card)
+    if (flushQueued) return
+    flushQueued = true
+    requestAnimationFrame(flush)
+  }
 
   const targetsFor = (card: Element): Element[] => {
     const sc = scrollerOf(card)
@@ -187,7 +231,7 @@ export function installOutputResize() {
       }
     }
     cardTargets.set(card, targets)
-    syncCard(card)
+    markDirty(card)
   }
 
   const unwire = (card: Element) => {

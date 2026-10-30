@@ -1,4 +1,6 @@
 // @refresh reload
+// first import on purpose: wraps window.Worker before any pool exists
+import "./worker-debug"
 import { render } from "solid-js/web"
 import { applySettings, readSettings } from "./settings"
 // pre-paint: apply the settings cookie before anything renders (no theme flash)
@@ -22,8 +24,10 @@ import "./views/skins.css"
 // boot the pierre worker pools now: the kit creates them lazily on first
 // card open, which made the first expanded file card paint plain for a beat
 import { getWorkerPool } from "@opencode/session-ui/pierre/worker"
+import { installPierreGuard } from "./pierre-guard"
 import { installOutputResize } from "./output-resize"
 import { installSubagentMotion } from "./subagent-motion"
+installPierreGuard()
 getWorkerPool()
 installOutputResize()
 installSubagentMotion()

@@ -9,6 +9,7 @@ import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-j
 import { VendoredPart, setVendoredData } from "./views/vendored-part"
 import { GalleryTimeline } from "./gallery-timeline"
 import { SettingsBody } from "./settings-panel"
+import { relockSubagentMotion } from "./subagent-motion"
 import { applySettings, readSettings, writeSettings, type OshSettings } from "./settings"
 import type { ToolEntry } from "./views/session-data"
 import type { ShareData } from "./fold"
@@ -480,16 +481,25 @@ export function Preview() {
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
   const [showSettings, setShowSettings] = createSignal(true)
   const [forceHover, setForceHover] = createSignal(false)
-  // temp A/B (owner round): kill switch for the running-subagent sweeps,
-  // gallery-only, for isolating the FPS cost on real hardware
-  const [sweepOff, setSweepOff] = createSignal<boolean>(new URLSearchParams(location.search).get("oshanim") === "off" || document.documentElement.dataset.oshSweep === "off")
-  const setSweep = (mode: "on" | "off") => {
-    if (mode === "off") document.documentElement.dataset.oshSweep = "off"
-    else delete document.documentElement.dataset.oshSweep
-    setSweepOff(mode === "off")
+  // temp A/B (owner round): sweep-mode switch for the running-subagent
+  // animations, gallery-only, for judging cost and feel on real hardware:
+  // on = continuous loop, cadence = one synchronized pass every 4s, off = none
+  const initialSweep = (): "on" | "cadence" | "off" => {
+    const q = new URLSearchParams(location.search).get("oshanim")
+    if (q === "off") return "off"
+    if (q === "cadence") return "cadence"
+    const d = document.documentElement.dataset.oshSweep
+    return d === "off" || d === "cadence" ? d : "on"
+  }
+  const [sweepMode, setSweepMode] = createSignal<"on" | "cadence" | "off">(initialSweep())
+  const setSweep = (mode: "on" | "cadence" | "off") => {
+    if (mode === "on") delete document.documentElement.dataset.oshSweep
+    else document.documentElement.dataset.oshSweep = mode
+    setSweepMode(mode)
+    relockSubagentMotion()
   }
   // the URL param initializes the signal; the CSS consumes the attribute
-  if (sweepOff()) document.documentElement.dataset.oshSweep = "off"
+  if (sweepMode() !== "on") document.documentElement.dataset.oshSweep = sweepMode()
   const [search, setSearch] = createSignal("")
   const update = (patch: Partial<OshSettings>) => {
     const next = { ...readSettings(), ...patch }
@@ -533,8 +543,12 @@ export function Preview() {
             force hover everywhere
           </label>
           <label class="flex items-center gap-2 text-12-regular text-text-weaker" title="temp A/B: kills the running-subagent sweep animations to isolate the FPS cost">
-            <input type="checkbox" checked={sweepOff()} onChange={(e) => setSweep(e.currentTarget.checked ? "off" : "on")} />
+            <input type="checkbox" checked={sweepMode() === "off"} onChange={(e) => setSweep(e.currentTarget.checked ? "off" : "on")} />
             sweeps off (temp A/B)
+          </label>
+          <label class="flex items-center gap-2 text-12-regular text-text-weaker" title="temp A/B: one synchronized sweep pass every 4s instead of a continuous loop">
+            <input type="checkbox" checked={sweepMode() === "cadence"} onChange={(e) => setSweep(e.currentTarget.checked ? "cadence" : "on")} />
+            cadence (1 pass / 4s)
           </label>
           <Show when={!showSettings()}>
             <button class="text-12-regular text-text-weaker hover:text-text-base" onClick={() => setShowSettings(true)}>settings</button>
