@@ -413,12 +413,11 @@ function Profile(props: { sections: SessionSection[]; query: string }) {
   )
 }
 
-// the margin rail: profile, legend, coordinates. Rendered as the second
-// grid column of the sheet and made sticky for the whole scroll via the
-// skins.css grid-row span, exactly the original right margin
-// the legend + coordinates, rendered INSIDE the global Session info
-// popup (owner round 2026-10-24 night: one info surface, no separate
-// legend button/popup, no permanent right panel)
+// the margin rail: profile, legend, coordinates. Rendered as the second grid
+// column of the sheet and made sticky for the whole scroll via the skins.css
+// grid-row span, exactly the original right margin
+// the legend + coordinates, rendered INSIDE the global Session info popup (one
+// info surface, no separate legend button/popup, no permanent right panel)
 function AtlasInfoExtra() {
   const feed = railFeed
   const worktree = () => {
@@ -596,10 +595,10 @@ function FieldNote(props: ResponseProps) {
 export const atlasSkin: Skin = {
   id: "atlas",
   // the sheet: a single clean column (the margin rail is a real right-side
-  // PANEL via the Rail wrapper - base-view renders it beside the scroller
-  // like the classic info view, in BOTH modes; the old CSS-grid column put
-  // station 1 in the 13rem rail via auto-placement and the legend inline
-  // before the first prompt - live-caught)
+  // PANEL via the Rail wrapper - base-view renders it beside the scroller like
+  // the classic info view, in BOTH modes). A CSS-grid column put station 1 in
+  // the 13rem rail via auto-placement and the legend inline before the first
+  // prompt.
   columnClass: "atlas-sheet w-full max-w-[90rem] mx-auto px-5 py-5",
   wrappers: {
     Header: Masthead,

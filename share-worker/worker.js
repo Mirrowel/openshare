@@ -803,10 +803,10 @@ export class ControlDO {
   }
 
   // Hibernation: workerd evicts this DO between socket messages and
-  // re-creates the class instance — in-memory attachId does NOT survive.
-  // Restore it from storage before handling any frame, or every post-
-  // eviction sync lands in "unknown op" (live-caught: shares stuck on
-  // "live" with data loss mid-session).
+  // re-creates the class instance, so in-memory attachId does not survive.
+  // Restore it from storage before handling any frame; otherwise a
+  // post-eviction sync lands in "unknown op" and the share stalls on
+  // "live" with data loss mid-session.
   async restoreAttach() {
     if (this.attachId !== undefined) return
     try {
@@ -1381,10 +1381,10 @@ export class ShareDO {
 
       // plugin is alive: cancel any pending finalize and note the contact.
       // ORDER MATTERS: persist pluginSeen BEFORE touching the alarm — some
-      // workerd builds throw on setAlarm(null), and a crash before the
-      // put left pluginSeen stale, so the still-armed alarm later marked
-      // healthy shares "interrupted" (live-caught by the auth suite: any
-      // attach-after-drop failed its init entirely).
+      // workerd builds throw on setAlarm(null), and a failure between the
+      // two leaves pluginSeen stale, so the still-armed alarm later marks
+      // healthy shares "interrupted" and every attach-after-drop fails its
+      // init.
       meta.pluginSeen = Date.now()
       // attach = the plugin is actively here; keep TTL from expiring a
       // share out from under a live (if quiet) session
@@ -1874,11 +1874,10 @@ export class ShareDO {
       puts.set(op.shard, op.del ? { d: 1, r: rev, i: op.it } : { r: rev, i: op.it })
       if (op.del && op.it.type === "message" && op.it.data?.id) {
         // cascade ONLY on full-message deletes: opencode's cleanup removes
-        // the message without per-part events, so its legacy v1 part
-        // shards must not linger. Gating on del matters — an unconditional
-        // cascade ran one storage.list per UPSERTED message too (200
-        // sequential lists per backfill chunk, the dominant apply cost;
-        // live-caught in the optimization audit)
+        // the message without per-part events, so its legacy v1 part shards
+        // must not linger. Gating on del matters: an unconditional cascade
+        // also runs one storage.list per upserted message, 200 sequential
+        // lists per backfill chunk, which dominates apply cost.
         cascadePrefixes.push("i:part/" + op.it.data.id + "/")
       }
     }
@@ -2580,11 +2579,11 @@ export class AuthDO {
     return [200, { ok: true, id: t.id, sets: this.setsPublicView(t.sets) }]
   }
 
-  /** Revocation kills control (owner directive): a user whose LAST valid
-   * token is gone loses write access to ALL their shares - user token AND
-   * share secret both - until an admin unfreezes/reassigns. Viewing is
-   * never touched. Rotation never lands here (the replacement is minted
-   * before the old token dies). */
+  /** Revocation kills control: a user whose LAST valid token is gone
+   * loses write access to ALL their shares - user token AND share secret
+   * both - until an admin unfreezes/reassigns. Viewing is never touched.
+   * Rotation never lands here (the replacement is minted before the old
+   * token dies). */
   async freezeIfNoValidTokens(userId) {
     if (!userId) return false
     const tokens = await this.listPrefix("t:")

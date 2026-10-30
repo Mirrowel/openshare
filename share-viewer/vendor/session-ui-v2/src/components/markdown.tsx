@@ -90,12 +90,12 @@ function escape(text: string) {
 }
 
 function fallback(markdown: string) {
-  // openshare fork: paragraph-SHAPED fallback (live-caught "reasoning
-  // snap"): upstream joined everything with <br>, so a paragraph break
-  // (\n\n) rendered as a full blank LINE while the ready markdown uses
-  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready
-  // swap snapped the spacing. Emit real <p> chunks with <br> soft breaks
-  // so the fallback is metrically identical to the parsed result.
+  // openshare fork: paragraph-SHAPED fallback: upstream joined everything
+  // with <br>, so a paragraph break (\n\n) rendered as a full blank LINE
+  // while the ready markdown uses p { margin-bottom: 12px }, visibly tighter,
+  // and the fallback->ready swap snapped the spacing. Emit real <p> chunks
+  // with <br> soft breaks so the fallback is metrically identical to the
+  // parsed result.
   const esc = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
   return esc(markdown)

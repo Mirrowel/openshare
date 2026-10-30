@@ -1,13 +1,10 @@
 // Prompt navigation: ONE keyboard path for next/previous prompt.
 //
-// j/k and [ ] are aliases of the same action (owner round 2026-10-25:
-// "there is j/k and [/] used, yet both don't work properly anyway, and
-// one has smooth when the other does not"). The old state had two
-// independent listeners with different behaviors: [ ] lived in the rail
-// (paged: switch page; continuous: instant virtualizer jump) and j/k
-// lived at App level (smooth scrollIntoView that found no target in
-// classic continuous, whose virtualized rows carry neither
-// [data-message-id] nor a section key).
+// j/k and [ ] are aliases of the same action. Two independent listeners had
+// diverged: [ ] lived in the rail (paged: switch page; continuous: instant
+// virtualizer jump) while j/k lived at App level (smooth scrollIntoView that
+// found no target in classic continuous, whose virtualized rows carry
+// neither [data-message-id] nor a section key).
 //
 // The active view registers its implementation on mount (classic's
 // ClassicBody, or BaseSessionView for skins); the listener dispatches to

@@ -222,8 +222,8 @@ function displayValue(key: string, cfg: ShareConfig): string {
 async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promise<ShareConfig | undefined> {
   const meta = LABELS[key]
   if (!meta) return undefined
-  // selection-backed settings (owner: "setting share mode i need to enter it
-  // manually? No selection?") — fixed vocabularies become menus
+  // selection-backed settings: fixed vocabularies become menus instead of
+  // asking for a typed value
   if (meta.options) {
     const current = String((cfg as unknown as Record<string, unknown>)[key] ?? "")
     const picked = await showSelect(host.ui, {
@@ -267,13 +267,12 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
 
 /** Connect (add + enroll) a server - the /share first-run flow and the
  * settings "Connect to a server" row share it. Prompts the URL, probes
- * the auth mode, then ASKS ONCE (owner directive - no silent
- * auto-enroll): onboard to an account, or stay anonymous (public
- * servers only; anonymous shares sit under the server's global caps).
- * Onboarding detects whether a code is needed and only then prompts for
- * one (a code already in config is used without asking). The outcome is
- * remembered per server: a token means onboarded, an anonymous flag
- * means declined. */
+ * the auth mode, then ASKS ONCE: onboard to an account, or stay anonymous
+ * (public servers only; anonymous shares sit under the server's global
+ * caps). Onboarding detects whether a code is needed and only then prompts
+ * for one (a code already in config is used without asking). The outcome is
+ * remembered per server: a token means onboarded, an anonymous flag means
+ * declined. */
 export async function connectServerFlow(host: ShareHostApi): Promise<{ ok: boolean; message: string; url?: string }> {
   const raw = await showPrompt(host.ui, { title: "Share server URL", placeholder: "https://your-openshare-host" })
   if (raw === undefined || raw === "") return { ok: false, message: "Cancelled." }
@@ -348,9 +347,9 @@ export async function connectServerFlow(host: ShareHostApi): Promise<{ ok: boole
 }
 
 /** Per-server submenu: identity status + membership actions. Root-token
- * holders get "Get a user token" (admin mints their own user identity —
- * root stays as adminToken; being admin and being a user are NOT mutually
- * exclusive, live-caught). */
+ * holders get "Get a user token" (the admin mints their own user identity;
+ * root stays as adminToken, since being admin and being a user are not
+ * mutually exclusive). */
 async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
   while (true) {
     const entries = serverEntries()
@@ -669,9 +668,9 @@ async function withBusy(host: ShareHostApi, title: string, work: Promise<void> |
   doneBusy?.()
 }
 
-/** Server info, the readable version (live-caught: the raw JSON policy line
- * escaped the dialog border): formatted policy lines, auth explained in
- * words, YOUR standing on this server, and follow-up actions. */
+/** Server info, the readable version (the raw JSON policy line escapes
+ * the dialog border): formatted policy lines, auth explained in words,
+ * YOUR standing on this server, and follow-up actions. */
 async function serverInfoScreen(host: ShareHostApi, url: string, client: ReturnType<typeof adminClient>): Promise<void> {
   const h = await client.health()
   if (!h.ok) {
@@ -914,16 +913,15 @@ async function adminSharesMenu(host: ShareHostApi, client: ReturnType<typeof adm
 }
 
 /** The settings dialog: a compact ROOT of group entries (with live
- * summaries) opening focused submenus. Two-level by design — one flat
- * ~25-row dump was unreadable (owner-directed regroup 2026-10-19).
- * Save semantics unchanged: root Exit saves when dirty; submenu Back
- * just returns. */
+ * summaries) opening focused submenus. Two-level by design: one flat ~25-row
+ * dump is unreadable. Save semantics unchanged: root Exit saves when dirty;
+ * submenu Back just returns. */
 export async function settingsDialog(host: ShareHostApi, startAtSession?: string, startGroup?: "session"): Promise<void> {
   let cfg = currentConfig()
   let dirty = false
-  // Write target (owner rule): global settings home by default; any other
-  // existing file in the read chain may be chosen explicitly. The TUI
-  // never creates deploy-time override files.
+  // Write target: global settings home by default; any other existing
+  // file in the read chain may be chosen explicitly. The TUI never
+  // creates deploy-time override files.
   const candidates = writeCandidates(moduleDir())
   let writeTarget: WriteCandidate = candidates[0]
   const sources = configSourceMap(moduleDir())
@@ -1303,9 +1301,9 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
             for (const b of allB) {
               if (!b.server) continue
               // keep id/secret on the opt-out marker: the snapshot stays
-              // deletable later and re-sharing reuses the binding instead
-              // of stalling on a secret-less marker (live-caught as "can
-              // never unshare or re-share after leave-as-is")
+              // deletable later, and re-sharing reuses the binding instead
+              // of stalling on a secret-less marker that can never unshare
+              // or re-share again.
               servers[b.server] = { ...(servers[b.server] as Record<string, unknown> | undefined), id: b.id, secret: b.secret, rev: b.rev, url: b.url, optedOut: true }
             }
           })

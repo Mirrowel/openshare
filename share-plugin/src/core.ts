@@ -230,9 +230,9 @@ export type Engine = {
   config: () => ShareConfig
 }
 
-// Stderr policy (owner directive): in manual mode (TUI present) stderr is
-// for ACTUAL ERRORS only — informational lines (live:/url file:/mode
-// banner, lifecycle traces) are suppressed; the TUI surfaces the URL.
+// Stderr policy: in manual mode (TUI present) stderr is for ACTUAL ERRORS
+// only. Informational lines (live:/url file:/mode banner, lifecycle
+// traces) are suppressed because the TUI surfaces the URL itself.
 // All-mode (CI/server-only) keeps its stderr contract (announce lines,
 // silenceable via announceStderr). Error-class lines always reach stderr.
 let stderrInfoAllowed = true
@@ -395,9 +395,9 @@ export function createEngine(deps: EngineDeps): Engine {
   const resolveTargets = (): ServerTarget[] => {
     const merged: Record<string, ServerEntry> = {}
     const hasServers = !!cfg.servers && Object.keys(cfg.servers).length > 0
-    // layer-aware legacy rule: a FILE workerUrl beside a FILE servers
-    // group would silently dual-home the session (live-caught surprise);
-    // an ENV workerUrl is the highest-priority layer and always joins.
+    // layer-aware legacy rule: a FILE workerUrl beside a FILE servers group
+    // would silently dual-home the session; an ENV workerUrl is the
+    // highest-priority layer and always joins.
     const envWorker = !!process.env.OPENSHARE_WORKER_URL
     if (cfg.workerUrl && (!hasServers || envWorker)) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
     if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers![cfg.workerUrl]) {
@@ -497,11 +497,11 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS) return ""
     c.lastEnrollAt = Date.now()
-    // A configured code IS expressed onboarding intent (headless-safe:
-    // CI carries it precisely to enroll). Without one, NEVER silently
-    // auto-enroll (owner directive): public servers share anonymously
-    // (the ask-once TUI flow offers an account), private ones refuse
-    // until the user connects via /openshare.
+    // A configured code IS expressed onboarding intent (headless-safe: CI
+    // carries it precisely to enroll). Without one, never auto-enroll:
+    // public servers share anonymously (the ask-once TUI flow offers an
+    // account), private ones refuse until the user connects via
+    // /openshare.
     const code = target?.entry.code ?? ""
     if (!code) {
       try {
@@ -898,10 +898,10 @@ export function createEngine(deps: EngineDeps): Engine {
     // is absent from `servers`, and dropping the marker would let the next
     // refreshOptOuts resurrect (and re-create) the opted-out server
     for (const url of st.optOuts) if (!servers[url]) servers[url] = { optedOut: true }
-    // A binding in session metadata means opted-in — enabled: true in BOTH
-    // modes (live-caught: all-mode bindings without `enabled` made the TUI
-    // gate fall through to the consent dialog on an already-shared session;
-    // live is now uniformly "url && enabled !== false").
+    // A binding in session metadata means opted-in, so enabled: true is
+    // written in BOTH modes. All-mode bindings without `enabled` made the
+    // TUI gate fall through to the consent dialog on an already-shared
+    // session; live is uniformly "url && enabled !== false".
     const value: Record<string, unknown> = { v: 2, servers, enabled: true }
     if (mode === "manual" && st.opts) value.opts = st.opts
     if (st.lastError) value.lastError = st.lastError
@@ -954,9 +954,9 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       appendFileSync(queuePath(st, r.url), (f.wire ?? JSON.stringify(f)) + "\n")
     } catch (e) {
-      // the frame lives ONLY in memory now — flag the remote so the next
-      // spoolLoad does NOT replace in-memory pending with the shorter
-      // disk queue (silent loss otherwise; live-caught class in review)
+      // the frame lives ONLY in memory now, so flag the remote: the next
+      // spoolLoad must NOT replace in-memory pending with the shorter disk
+      // queue (silent loss otherwise).
       r.spoolAppendFailed = true
       logError("spool append failed", (e as Error)?.message || e)
     }
@@ -977,10 +977,10 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const spoolLoad = (st: SessionState, r: RemoteState) => {
     // meta first (share binding recovery), in its OWN try: a missing meta
-    // file is normal (it's only written after the first successful
-    // handshake) and must NOT touch pending (live-caught class: the old
-    // blanket catch wiped in-memory pending AND skipped the queue read,
-    // so everything queued before the first successful connect was lost).
+    // file is normal (written only after the first successful handshake)
+    // and must NOT touch pending. A blanket catch here wipes in-memory
+    // pending AND skips the queue read, so everything queued before the
+    // first successful connect is lost.
     try {
       const meta = JSON.parse(readFileSync(metaPath(st, r.url), "utf8"))
       // metadata binding (db) is authoritative when both exist and disagree
@@ -1258,9 +1258,9 @@ export function createEngine(deps: EngineDeps): Engine {
 
   /** Single-flight connect queuing: multiple paths (activation, event
    * reconnect, backfill chain) may want a socket before any connect has
-   * STARTED — the connecting flag alone guards execution, not the queue,
-   * and double connects used to create duplicate shares + init storms
-   * (live-caught in the S11 repro: ws#1 create AND ws#2 create). */
+   * STARTED. The connecting flag alone guards execution, not the queue,
+   * and double connects create duplicate shares and init storms (one
+   * create per socket). */
   const queueConnect = (st: SessionState, r: RemoteState) => {
     if (st.closed || r.connectQueued || r.connecting || r.authBlocked || r.collided) return
     r.connectQueued = true
@@ -1362,12 +1362,12 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const connect = async (st: SessionState, r: RemoteState) => {
     if (st.closed || r.connecting || r.authBlocked || r.collided) return
-    // "connecting" spans the WHOLE handshake: socket open + init ack. It
-    // is only cleared on init-ok, socket death or the init timeout — an
-    // event arriving mid-handshake must NEVER spawn a second socket (the
-    // old connect() returned after merely SENDING init; a second socket
+    // "connecting" spans the WHOLE handshake: socket open plus init ack.
+    // It is cleared only on init-ok, socket death or the init timeout. An
+    // event arriving mid-handshake must NEVER spawn a second socket: the
+    // old connect() returned after merely SENDING init, a second socket
     // raced it, and the loser's late init-ok poisoned the winner's state
-    // — live-caught: duplicate shares, mismatch storms, empty pages).
+    // (duplicate shares, mismatch storms, empty pages).
     r.connecting = true
     r.socketSeq += 1
     const seq = r.socketSeq
@@ -1383,9 +1383,9 @@ export function createEngine(deps: EngineDeps): Engine {
       spoolLoad(st, r)
       askPolicy(r.url)
       // was this socket's init an ATTACH (resume) or a CREATE? A create
-      // ack legitimately starts at rev 0 — the mismatch guard is for
-      // attaches only (live-caught: create-ack rev 0 tripped it and
-      // spawned a fresh husk share with the content dropped).
+      // ack legitimately starts at rev 0, so the mismatch guard is for
+      // attaches only. Applying it to a create spawns a fresh husk share
+      // with the content dropped.
       r.initWasAttach = !!(r.shareId && r.secret)
       if (debugEvents) log(`ws ${r.url.slice(0, 24)} #${seq} opening (${r.initWasAttach ? `attach ${r.shareId}` : "create"})`)
       // creates need a credential (enrolls on demand — first contact with
@@ -1648,9 +1648,9 @@ export function createEngine(deps: EngineDeps): Engine {
           return
         }
         // share swept / removed / revoked: start fresh, never merge into a
-        // bad base (mismatch protocol). Content REPLAYS to the new share —
-        // pending is never dropped on a reset (live-caught: the recreate
-        // husk had the title but zero messages).
+        // bad base (mismatch protocol). Content REPLAYS to the new share,
+        // and pending is never dropped on a reset: dropping it leaves the
+        // recreate as a husk with the title and zero messages.
         if (/limit|too many|rate/i.test(err)) {
           // quota/429 ("max shares reached", "daily create limit", the
           // anonymous caps): an immediate re-init on the same socket is a
@@ -1677,9 +1677,9 @@ export function createEngine(deps: EngineDeps): Engine {
         return
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
-        // worker lost data behind our back (ATTACH only — a create ack
-        // legitimately starts at rev 0; the old guard misread that as
-        // data loss and spawned a fresh husk, live-caught)
+        // worker lost data behind our back (ATTACH only: a create ack
+        // legitimately starts at rev 0, and misreading that as data loss
+        // spawns a fresh husk)
         logError(`${r.url}: mismatch: worker rev ${frame.rev} < acked ${r.ackedRev} - recreating`)
         deleteAbandoned(r)
         r.shareId = null
@@ -1705,11 +1705,10 @@ export function createEngine(deps: EngineDeps): Engine {
         clearTimeout(r.initTimer)
         r.initTimer = null
       }
-      // backoff reset is DEFERRED until the socket proves stable: a
-      // server that accepts init then immediately drops would otherwise
-      // reconnect once per second forever (~1 cycle/s per session-server
-      // pair, live-caught in the optimization audit). 30s alive (socket
-      // still ready, no reconnect pending) or a second acked sync.
+      // backoff reset is DEFERRED until the socket proves stable: a server
+      // that accepts init then immediately drops would otherwise reconnect
+      // once per second per session-server pair. Stability means 30s alive
+      // (socket still ready, no reconnect pending) or a second acked sync.
       if (r.backoffResetTimer) clearTimeout(r.backoffResetTimer)
       r.backoffResetTimer = setTimeout(() => {
         r.backoffResetTimer = null
@@ -1781,12 +1780,12 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       if (wasFanoutCreate) {
         // a server joined an ALREADY-live session (fan-out add, or a
-        // post-mismatch recreate): its fresh share needs the full history —
-        // backfill is keyed-idempotent, other servers just re-upsert.
-        // The enqueue dedupe must step aside: those hashes say "already
-        // entered the machinery", but the NEW remote never received any
-        // of it (live-caught by F3: the join's backfill was fully
-        // deduped away and the joined share stayed empty).
+        // post-mismatch recreate): its fresh share needs the full history,
+        // and backfill is keyed-idempotent while other servers simply
+        // re-upsert. The enqueue dedupe must step aside here: those hashes
+        // say "already entered the machinery", but the NEW remote received
+        // none of it, so a deduped join backfills nothing and the joined
+        // share stays empty.
         st.sentHash.clear()
         chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", (e as Error)?.message || e))
       }
@@ -1891,8 +1890,8 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   // returns a promise when the frame goes out via HTTP (the dispose path
-  // awaits it - an unawaited fetch dies with the exiting process and the
-  // final status never lands, live-caught as shares stuck on "live")
+  // awaits it: an unawaited fetch dies with the exiting process and the
+  // final status never lands, leaving the share stuck on "live")
   const flush = (st: SessionState): Promise<unknown> | undefined => {
     if (st.closed) return
     const f = frameFrom(st)
@@ -1900,8 +1899,8 @@ export function createEngine(deps: EngineDeps): Engine {
     // fan out to every remote; each carries its own pending copy and acks
     // independently. Remotes mid-handshake or auth-blocked just buffer.
     // PENDING IS CHUNK-SHAPED (seq-tagged): one logical frame becomes N
-    // chunk-frames so a partial-ack can never erase unsent chunks
-    // (live-caught class: chunk-1 ack + socket death erased chunks 2..N).
+    // chunk-frames, so a partial ack can never erase unsent chunks (a
+    // chunk-1 ack followed by socket death used to drop chunks 2..N).
     const chunks: Array<{ items: unknown[]; json: string }> = f.items.length ? chunkedFrames(f.items, 200, 512 * 1024) : []
     let httpWork: Promise<unknown> | undefined
     for (const r of st.remotes.values()) {
@@ -1925,8 +1924,8 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       // never send syncs before the init ack: the worker's per-socket
       // ControlDO has no attach until OUR init completes, and a racing
-      // sync dies as "unknown op" (live-caught: post-drop reconnects
-      // lost whole turns). The init-ok handler flushes pending itself.
+      // sync dies as "unknown op", losing whole turns on post-drop
+      // reconnects. The init-ok handler flushes pending itself.
       if (r.ws && !r.wsReady) continue
       if (r.wsReady) {
         for (const cf of fresh) sendSync(r, cf)
@@ -1961,13 +1960,12 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const flushViaHttp = async (st: SessionState, r: RemoteState) => {
     if (!r.shareId || !r.pending.length) return
-    // ALL pending frames, merged (keyed upserts — later wins). Sending
-    // only the last frame dropped every earlier batch's items whenever
-    // the HTTP fallback carried more than one (live-caught class:
-    // content loss on reconnect paths). DEDUPE BY KEY before chunking:
-    // a streaming message appearing in k pending frames shipped k
-    // copies (up to 25x on a replay burst) — every duplicate was also a
-    // server row-write + a rebroadcast frame.
+    // ALL pending frames, merged (keyed upserts, later wins). Sending only
+    // the last frame dropped every earlier batch's items whenever the HTTP
+    // fallback carried more than one, losing content on reconnect paths.
+    // DEDUPE BY KEY before chunking: a streaming message appearing in k
+    // pending frames shipped k copies (up to 25x on a replay burst), and
+    // every duplicate cost a server row-write plus a rebroadcast frame.
     const byKey = new Map<string, unknown>()
     const unkeyed: unknown[] = []
     let status: string | undefined
@@ -2041,12 +2039,12 @@ export function createEngine(deps: EngineDeps): Engine {
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
     // content dedupe at the machinery boundary: an identical re-feed has
-    // either entered the queue already or been flushed into every
-    // remote's pending/spool (the per-remote delivery machinery owns it
-    // from there) — re-sending it bumps rev, rewrites storage and
-    // re-folds every viewer for nothing. This is the engine-side home
-    // the v2-adapter dedupe lacked (an adapter-side cache poisoned while
-    // dormant and skipped the flag-time content — live-caught).
+    // either entered the queue already or been flushed into every remote's
+    // pending/spool, and the per-remote delivery machinery owns it from
+    // there. Re-sending it bumps rev, rewrites storage and re-folds every
+    // viewer for nothing. This is the engine-side home dedupe belongs in:
+    // an adapter-side cache can be poisoned while the session is still
+    // dormant, and then the flag-time content is skipped.
     let h: string
     try {
       h = createHash("sha256").update(JSON.stringify(entry.item)).digest("hex")
@@ -2117,10 +2115,9 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const msgIndex = new Map<string, IndexedMessage>() // `${sid}:${messageID}`
   /** message ids tombstoned this run: stampsPass must never re-upsert an
-   * undone message (live-caught class: dropMergedMessage removed the
-   * merged entry but msgIndex kept the corpse; a neighboring-segment
-   * change recomputed its stamps and reEnqueueMessage resurrected the
-   * deleted turn server-side). */
+   * undone message. dropMergedMessage removes the merged entry but msgIndex
+   * keeps the corpse, so a neighboring-segment change recomputes its
+   * stamps and reEnqueueMessage resurrects the deleted turn server-side. */
   const tombstoned = new Set<string>()
 
   const indexMessage = (entry: ItemEntry) => {
@@ -2183,11 +2180,11 @@ export function createEngine(deps: EngineDeps): Engine {
         const agent = segmentAgent(list, users[k])
         const d = list[users[k]].data as Record<string, any>
         const want = k > 0 && agent && prev && agent !== prev ? agent : undefined
-        // only touch metadata when the stamp actually CHANGES — a blanket
-        // `d.metadata ??= {}` polluted every user message (including the
+        // only touch metadata when the stamp actually CHANGES: a blanket
+        // `d.metadata ??= {}` pollutes every user message (including the
         // host's live objects on v2 pass-through) with an empty metadata
-        // object, which re-emitted the message once per refresh (rev churn
-        // per feed — live-caught by the enqueue-dedupe rev check)
+        // object, which re-emits the message once per refresh and churns
+        // rev per feed.
         if (want !== (d.metadata?.agentSwitch as string | undefined)) {
           if (want) {
             const meta = (d.metadata ??= {}) as Record<string, unknown>
@@ -2251,8 +2248,8 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   /** file tools get metadata.language (shiki lang id, from the path the
-   * call touched) - the viewer highlights from the stamp and never guesses
-   * (owner directive; the viewer's extension map is an old-share fallback) */
+   * call touched). The viewer highlights from this stamp and never
+   * guesses; its extension map only covers old shares without one. */
   const LANG_BY_EXT: Record<string, string> = {
     ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
     js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
@@ -2442,9 +2439,9 @@ export function createEngine(deps: EngineDeps): Engine {
         r.idleDropTimer = null
       }
       // wsReady delete only when THIS remote still owns a share: a stray
-      // child teardown clears shareId after adopting into the parent —
-      // the ControlDO's server-side attach would otherwise delete the
-      // very share the parent just inherited (live-caught adoption churn)
+      // child teardown clears shareId after adopting into the parent, and
+      // the ControlDO's server-side attach would then delete the very
+      // share the parent just inherited.
       if (r.wsReady && r.shareId) {
         wsSend(r, { op: "delete" })
         // backstop: the WS delete is fire-and-forget on the wire — a
@@ -2553,9 +2550,9 @@ export function createEngine(deps: EngineDeps): Engine {
       const lastInfo = (last?.info ?? last) as Record<string, unknown> | undefined
       const lastID = typeof lastInfo?.id === "string" ? lastInfo.id : undefined
       // `before` is an OPAQUE cursor: base64url({id, time}) of the page
-      // tail (message-v2.ts codec). A bare message id 400s on hosts with
-      // cursor pagination — every v1 backfill silently truncated to one
-      // 100-message page (live-caught).
+      // tail (message-v2.ts codec). Hosts with cursor pagination 400 on a
+      // bare message id, which truncates a v1 backfill to its first
+      // 100-message page.
       const lastTime = (lastInfo?.time as Record<string, unknown> | undefined)?.created
       if (!lastID || typeof lastTime !== "number") break
       const nextBefore = cursorFor(lastID, lastTime)
@@ -2812,12 +2809,12 @@ export function createEngine(deps: EngineDeps): Engine {
           touch(st)
           if (type === "busy") {
             // work resumed: a pending completed flip is cancelled (opencode
-            // idles between sequential automation prompts — that is NOT
-            // "done"), a recovered retry is forgiven, share is live again.
-            // The busy epoch is the completed-flip guard: only WORK
-            // invalidates a pending settle (v1.18 republishes the
-            // status/idle pair on failure paths — a repeated idle must
-            // NOT void it, live-caught as a share stuck on live forever)
+            // idles between sequential automation prompts, which is NOT
+            // "done"), a recovered retry is forgiven, and the share is live
+            // again. The busy epoch is the completed-flip guard: only WORK
+            // invalidates a pending settle. v1.18 republishes the status/idle
+            // pair on failure paths, and a repeated idle must NOT void it or
+            // the share stays on live forever.
             st.statusEpoch++
             if (st.completedTimer) {
               clearTimeout(st.completedTimer)
@@ -2830,8 +2827,8 @@ export function createEngine(deps: EngineDeps): Engine {
           } else if (type === "idle") {
             // opencode's idle is authoritative turn end (v1 holds busy
             // through steps, tool runs and permission waits). CONTENT
-            // flushes now — turn-end batches must not ride the sync
-            // interval (live-caught: subagent finals lagged one interval).
+            // flushes now, because turn-end batches must not ride the sync
+            // interval (subagent finals lagged one interval otherwise).
             // Only the completed flip waits out completedDelayMs, guarded
             // by the busy epoch: work resuming voids it, repeated idle
             // publications do not. Dispose flushes a pending flip, so CI
@@ -2963,11 +2960,11 @@ export function createEngine(deps: EngineDeps): Engine {
             const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, info.model)
             enqueue(st, itemFor("model", [{ id: info.model.modelID, providerID: info.model.providerID, name: label }], sid))
           }
-          // an assistant message that DIED (finish:"error") — e.g. all
-          // retries exhausted — surfaces as a 200 response with an errored
-          // message, NOT as session.error (live-caught in the suite); the
-          // share must still say error. Works for v2-native messages too
-          // (finish lives on the message itself).
+          // an assistant message that DIED (finish:"error"), e.g. all
+          // retries exhausted, surfaces as a 200 response with an errored
+          // message rather than session.error. The share must still say
+          // error. Works for v2-native messages too (finish lives on the
+          // message itself).
           if ((info as { finish?: string; role?: string })?.finish === "error") {
             st.badSignal = true
           }

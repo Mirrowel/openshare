@@ -21,9 +21,9 @@
 export const CONTRACT_VERSION = 2
 
 /** Message tombstone item. sessionID MUST ride along: viewers key
- * messages as message/<sessionID>/<id> — an unstamped del misses the
- * key and undone turns resurrect on the live page (live-caught
- * 2026-10-21, refresh-correct because the worker keys differently). */
+ * messages as message/<sessionID>/<id>, so an unstamped del misses the key
+ * and undone turns resurrect on the live page (a refresh hides them because
+ * the worker keys items differently). */
 export function messageTombstone(sessionID: string, messageID: string) {
   return { type: "message", del: true, sessionID, data: { id: messageID } } as const
 }
@@ -313,8 +313,8 @@ export function normalizeV1Diff(diff: unknown): unknown {
 
 /** v1 hosts paginate messages with an opaque cursor: base64url of
  * {id, time} where time = the page tail's time_created (message-v2.ts
- * cursor codec). A bare message id is rejected with 400 — that silently
- * truncated every v1 backfill to one page (live-caught). */
+ * cursor codec). A bare message id is rejected with 400, which silently
+ * truncates a v1 backfill to one page. */
 export function cursorFor(id: string, time: number): string {
   return Buffer.from(JSON.stringify({ id, time })).toString("base64url")
 }

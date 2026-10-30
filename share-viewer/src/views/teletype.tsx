@@ -435,8 +435,8 @@ function Copy(props: { children: JSX.Element }) {
 // ----------------------------------------------------------------- skin ----
 export const teletypeSkin: Skin = {
   id: "teletype",
-  // the wire headline + lede ARE the prompt - the raw body would
-  // duplicate them (live-caught, same class as cinema's slugline)
+  // the wire headline + lede ARE the prompt - the raw body would duplicate
+  // them (same class as cinema's slugline)
   promptInBody: false,
   columnClass: "max-w-[54rem] mx-auto px-4 sm:px-6 py-6 osh-content flex flex-col",
   wrappers: {

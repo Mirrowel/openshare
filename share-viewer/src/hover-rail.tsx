@@ -1,25 +1,23 @@
-// PromptNav (owner round 2026-10-25): ONE turn navigation control, two
-// states - a sidebar column (default 192px, drag the edge to resize,
-// content shifts right for it) or the floating pill at the left edge
-// (vertically centered, 40% visible at rest). The setting `promptNav`
-// picks the state; the toggle lives IN the control (sidebar header
-// collapse button / pill popover expand button) - the pill is never
-// removable, one of the two states is always present while a session
-// has more than one turn.
+// PromptNav: ONE turn navigation control, two states - a sidebar column
+// (default 192px, drag the edge to resize, content shifts right for it) or the
+// floating pill at the left edge (vertically centered, 40% visible at rest).
+// The setting `promptNav` picks the state; the toggle lives IN the control
+// (sidebar header collapse button / pill popover expand button) - the pill is
+// never removable, one of the two states is always present while a session has
+// more than one turn.
 //
-// Vocabulary: everything user-facing says "turn(s)" - one word for the
-// nav, the focus overlay ("Turn N of M") and the context menu.
+// Vocabulary: everything user-facing says "turn(s)" - one word for the nav,
+// the focus overlay ("Turn N of M") and the context menu.
 //
-// Focus mode affordances (classic): the reticle glyph on a row is
-// CLICKABLE (span, not button - a button inside a button is invalid
-// HTML; click handler + stopPropagation), right-click opens a
-// "Focus on turn" menu, and ctrl+click works anywhere on the row. The
-// reticle renders FILLED and always-visible on the turn currently in
-// the focus overlay, following focus switches.
+// Focus mode affordances (classic): the reticle glyph on a row is CLICKABLE
+// (span, not button - a button inside a button is invalid HTML; click handler
+// + stopPropagation), right-click opens a "Focus on turn" menu, and ctrl+click
+// works anywhere on the row. The reticle renders FILLED and always visible on
+// the turn currently in the focus overlay, following focus switches.
 //
-// Hover previews: each row previews its response in a card anchored
-// past the list's right edge, rendered at the panel level so it never
-// clips in the scrolling list.
+// Hover previews: each row previews its response in a card anchored past the
+// list's right edge, rendered at the panel level so it never clips in the
+// scrolling list.
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from "solid-js"
 import { Portal } from "solid-js/web"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -35,14 +33,14 @@ const IconPanel = (props: { class?: string }) => (
     <line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.25" />
   </svg>
 )
-/** the settings glyph on both nav config triggers (owner round: the old
- * panel glyph read as a light bulb; the kit's settings-gear is the
- * settings affordance everywhere else in the viewer) */
+/** the settings glyph on both nav config triggers: the older panel glyph read
+ * as a light bulb, and the kit's settings gear is the settings affordance
+ * everywhere else in the viewer */
 const IconGear = (props: { class?: string }) => (
   <Icon name="settings-gear" size="small" class={props.class} />
 )
-// collapse (sidebar open): the chevron points LEFT, the direction the
-// panel collapses toward - pointing right read as "expand" (owner-caught)
+// collapse (sidebar open): the chevron points LEFT, the direction the panel
+// collapses toward; pointing right reads as "expand"
 const IconCollapse = (props: { class?: string }) => (
   <svg viewBox="0 0 16 16" class={props.class} width="14" height="14" aria-hidden="true" fill="none">
     <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" stroke-width="1.25" />
@@ -61,17 +59,15 @@ function Kbd(props: { children: JSX.Element }) {
   )
 }
 
-/** the right-click "Focus on turn" card - hand-rolled: fixed at the
- *  cursor, closed by any outside pointerdown or Escape. The kit's
- *  Menu (a Kobalte dropdown) never renders its content when opened
- *  programmatically without a Trigger (probe-verified twice), and a
- *  one-item menu does not need the machinery.
- *  PORTALED to document.body: inside the pill popover the card was
- *  trapped in a transformed z-40 stacking context (the wrapper's entry
- *  animation keeps a transform forever) alongside the hover preview,
- *  and painted lost beneath it - right-click on a popover row looked
- *  dead while the sidebar's copy worked (owner-caught). At body level
- *  no ancestor can clip, stack, or contain it. */
+/** the right-click "Focus on turn" card - hand-rolled: fixed at the cursor,
+ *  closed by any outside pointerdown or Escape. The kit's Menu (a Kobalte
+ *  dropdown) never renders its content when opened programmatically without a
+ *  Trigger, and a one-item menu does not need the machinery.
+ *  PORTALED to document.body: inside the pill popover the card was trapped in
+ *  a transformed z-40 stacking context (the wrapper's entry animation keeps a
+ *  transform forever) alongside the hover preview, so it painted beneath it
+ *  and right-click on a popover row looked dead while the sidebar's copy
+ *  worked. At body level no ancestor can clip, stack, or contain it. */
 export function TurnContextMenu(props: { x: number; y: number; onClose: () => void; onFocus: () => void }) {
   let card: HTMLDivElement | undefined
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") props.onClose() }
@@ -154,10 +150,9 @@ export function PromptNav(props: {
   pillGhost?: boolean
   onSetPillGhost?: (v: boolean) => void
 }) {
-  // the sidebar state only applies on desktop widths; below 900px the
-  // control is the compact "Turn N of M" top bar (the conversation view's
-  // narrow pattern - owner round 2026-10-25: trigger sooner than md,
-  // 768px needed absurd zoom levels)
+  // the sidebar state only applies on desktop widths; below 900px the control
+  // is the compact "Turn N of M" top bar (the conversation view's narrow
+  // pattern, triggered well before md: 768px needs absurd zoom levels)
   const desktop = createMediaQuery("(min-width: 900px)")
   const showDesktopSide = () => desktop() && props.only !== "narrow"
   const showNarrow = () => !desktop() && props.only !== "desktop"
@@ -174,15 +169,14 @@ export function PromptNav(props: {
   )
 }
 
-/** the narrow-viewport state: a full-width "Turn N of M" bar at the top
- *  of the transcript opening a dropdown of the turn rows - the
- *  conversation view's own narrow pattern (owner round 2026-10-25:
- *  classic should behave the same when zoomed in / on phones). */
+/** the narrow-viewport state: a full-width "Turn N of M" bar at the top of
+ *  the transcript opening a dropdown of the turn rows - the conversation
+ *  view's own narrow pattern, which classic matches when zoomed in or on a
+ *  phone. */
 function NarrowBar(props: Parameters<typeof PromptNav>[0]) {
   const [open, setOpen] = createSignal(false)
   // the popover anchors to the LABEL, not the full-width trigger button:
-  // bottom-start on a w-full trigger opened the list at the viewport's
-  // far left (owner-caught)
+  // bottom-start on a w-full trigger opens the list at the viewport's far left
   let labelEl: HTMLSpanElement | undefined
   const current = () => props.active ?? props.focusedIndex ?? 0
   return (
@@ -245,11 +239,11 @@ function consumeSinglePulse() {
   return v
 }
 
-/** one turn row - shared by the sidebar and the pill popover so both
- *  states read as the same control. plain number in a fixed 2ch column
- *  (no leading zero; no staircase at 10+, 100+ may widen), tight gap,
- *  12px text - matched to the conversation view's nav (owner-caught:
- *  our rows read oversized and amateurish next to it). */
+/** one turn row - shared by the sidebar and the pill popover so both states
+ *  read as the same control. plain number in a fixed 2ch column (no leading
+ *  zero; no staircase at 10+, 100+ may widen), tight gap, 12px text - matched
+ *  to the conversation view's nav so the rows do not read oversized next to
+ *  it. */
 function NavRow(props: {
   i: number
   active: boolean
@@ -436,23 +430,21 @@ export function LineStepper(props: { label: string; value: number; onSet: (n: nu
   )
 }
 
-/** the nav's OWN config popover (not the shared settings panel) - the
- *  knobs that shape the prompt views: hover-preview sizes, row content
- *  (prompt/response line counts), the search bar, and ghost mode.
- *  Anchored beside its trigger (sidebar: to the right; pill: FIXED past
- *  the POPOVER's right edge - the pill's own wrapper is pill-wide and
- *  put the panel straight over the rows, live-caught). Closed by outside
- *  pointerdown/Escape - EXCEPT pointerdowns on the gear itself, which
- *  the gear's click handler turns into a clean toggle (the capture-close
- *  fired first and the click re-opened it: close-then-open on every
- *  second click, live-caught). */
-/** the nav settings CONTROLS - shared by the sidebar's side popover and
- *  the pill pop-open (where they REPLACE the turn list). Every dynamic
- *  value reads its signal INLINE in JSX: reading a signal in the
- *  component body is a one-time snapshot - nothing subscribes, the
- *  controls display mount-time values forever and steppers compute from
- *  the stale original (live-caught: "click twice still only subtracts
- *  one"). */
+/** the nav's OWN config popover (not the shared settings panel): the knobs
+ *  that shape the prompt views - hover-preview sizes, row content
+ *  (prompt/response line counts), the search bar, and ghost mode. Anchored
+ *  beside its trigger (sidebar: to the right; pill: FIXED past the POPOVER's
+ *  right edge, because the pill's own wrapper is pill-wide and puts the panel
+ *  straight over the rows). Closed by outside pointerdown/Escape, EXCEPT
+ *  pointerdowns on the gear itself, which the gear's click handler turns into
+ *  a clean toggle (the capture-close fires first and the click re-opens it,
+ *  so every second click closes and reopens). */
+/** the nav settings CONTROLS - shared by the sidebar's side popover and the
+ *  pill pop-open (where they REPLACE the turn list). Every dynamic value
+ *  reads its signal INLINE in JSX: reading a signal in the component body is
+ *  a one-time snapshot, nothing subscribes, and the controls display
+ *  mount-time values forever while steppers compute from the stale original
+ *  (a second click still only subtracts one). */
 function NavSettingsBody(props: {
   previewLines: { prompt: number; response: number }
   onSet: (v: { prompt: number; response: number }) => void
@@ -718,10 +710,9 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
   let popEl: HTMLDivElement | undefined
 
   onMount(() => {
-    // ghost mode pings on EVERY page load while enabled (owner round
-    // 2026-10-26): a double pulse - ping, short pause, ping. A pill that
-    // mounts mid-session (sidebar collapsed to pill) pings ONCE (the
-    // toggle sets the one-shot flag below)
+    // ghost mode pings on EVERY page load while enabled: a double pulse,
+    // ping, short pause, ping. A pill that mounts mid-session (sidebar
+    // collapsed to pill) pings ONCE (the toggle sets the one-shot flag below)
     if (props.pillGhost) {
       const single = consumeSinglePulse()
       setPulse(true)
@@ -780,10 +771,9 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
     setPreview({ i, top: er.top - wr.top, left: popRect.right - wr.left + 8 })
   }
 
-  // the search field (nav config toggle) filters the rows in both
-  // states - PROMPTS ONLY (owner round 2026-10-26: the simple filter
-  // hides non-matching turns; rich multi-scope search is the header
-  // palette's job)
+  // the search field (nav config toggle) filters the rows in both states,
+  // PROMPTS ONLY: the simple filter hides non-matching turns, while rich
+  // multi-scope search is the header palette's job
   const filtered = () => {
     const q = filter().trim().toLowerCase()
     if (!q) return Array.from({ length: props.count }, (_, i) => i)
@@ -793,8 +783,8 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
   return (
     <>
       {/* invisible proximity strip: NEAR raises opacity only, never
-          expands. Narrow (8px) and BELOW the pill in stacking - a wide
-          strip covered the pill and swallowed its hover (gate-caught) */}
+          expands. Narrow (8px) and BELOW the pill in stacking, because a wide
+          strip covers the pill and swallows its hover */}
       <div
         class="fixed left-0 top-0 bottom-0 z-30 w-2"
         onMouseEnter={stripEnter}
@@ -810,9 +800,9 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
         class="fixed left-2 top-1/2 -translate-y-1/2 z-40"
       >
         {/* the capsule pill: 40% visible at rest, full when near (ghost
-            mode: 0% at rest - only the proximity strip betrays it, plus
-            the one-time pulse). Current position on TOP (accent), count
-            at the BOTTOM (owner round 2026-10-26) */}
+            mode: 0% at rest - only the proximity strip betrays it, plus the
+            one-time pulse). Current position on TOP (accent), count at the
+            BOTTOM */}
         <button
           type="button"
           class="relative flex flex-col items-center gap-1 rounded-xl border border-border-weak-base bg-background-base/95 backdrop-blur px-1 py-2.5 cursor-pointer shadow-md"
@@ -910,10 +900,10 @@ function Pill(props: Parameters<typeof PromptNav>[0]) {
               </span>
             </div>
 
-            {/* the settings REPLACE the list (owner round 2026-10-26): the
-                gear swaps the pop-open's body - no stacked panel, no
-                anchoring, nothing to travel the mouse to; the gear swaps
-                back, and closing the pop-open resets to the list */}
+            {/* the settings REPLACE the list: the gear swaps the pop-open's
+                body, so there is no stacked panel, no anchoring and nothing to
+                travel the mouse to; the gear swaps back, and closing the
+                pop-open resets to the list */}
             <Show
               when={!configOpen()}
               fallback={

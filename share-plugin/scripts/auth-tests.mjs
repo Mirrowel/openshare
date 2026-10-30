@@ -500,7 +500,7 @@ try {
   // T27 - live settings sync: a re-attach over an OPEN control socket
   // retroactively applies read auth (rotating viewer tokens) and REMOVES
   // it when the pair goes empty - settings changes must not wait for a
-  // reconnect (owner rule: every connection heals all staleness)
+  // reconnect, since every connection heals staleness
   {
     const c = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_liveauth" } })
     const SID = c.json?.id ?? ""
@@ -559,9 +559,9 @@ try {
     await req(W1, "DELETE", `/api/share/${init29b.id}`, { body: { secret: init29b.secret } })
   }
 
-  // T28 - revocation freezes control (owner rule): a user whose LAST valid
-  // token is revoked loses control of ALL their shares - user token AND
-  // share secret both - while viewing continues; rotation keeps control
+  // T28 - revocation freezes control: a user whose LAST valid token is
+  // revoked loses control of ALL their shares - user token AND share secret
+  // both - while viewing continues; rotation keeps control
   {
     const u4 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "revokeme" } })
     const U4 = u4.json?.userId ?? ""

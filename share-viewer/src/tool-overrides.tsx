@@ -24,10 +24,10 @@ import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOve
 import { deepQueryAll, onDeepChange } from "./shadow-dom"
 import { syncOutputCards } from "./output-resize"
 
-/** Per-card overflow toggle (owner directive): on the EXPANDED card body -
- *  never the collapsed trigger row. Wraps vs hidden-scrollbar scroll for
- *  long lines. FILE cards carry a tool prop and write their own tool's
- *  entry (read/write/edit can differ); other surfaces write the global. */
+/** Per-card overflow toggle: on the EXPANDED card body, never the collapsed
+ *  trigger row. Wraps vs hidden-scrollbar scroll for long lines. FILE cards
+ *  carry a tool prop and write their own tool's entry (read/write/edit can
+ *  differ); other surfaces write the global. */
 function OverflowToggle(props: { tool?: "read" | "write" | "edit" }) {
   const wrapping = () => (props.tool ? (fileOverflowSignal()[props.tool] ?? "wrap") === "wrap" : overflowSignal() === "wrap")
   return (
@@ -87,10 +87,10 @@ function CopyButton(props: { text: string }) {
   )
 }
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
-/** a display path: relativized against the session directory when under
- *  it, else the last two segments (live-caught: full absolute paths
- *  stretched rows even for same-folder searches). The session directory
- *  comes from the DataProvider - set by app.tsx from the session item. */
+/** a display path: relativized against the session directory when under it,
+ *  else the last two segments, so full absolute paths do not stretch rows even
+ *  for same-folder searches. The session directory comes from the
+ *  DataProvider (set by app.tsx from the session item). */
 function displayPath(path: string): string {
   let directory: string | undefined
   try {
@@ -132,8 +132,8 @@ function displayPathDir(path: string): string {
   if (!base) return norm(dir)
   if (nd === base) return "."
   if (nd.startsWith(base + "/")) return nd.slice(base.length + 1)
-  // full directory otherwise: the row ellipsizes only when it truly
-  // cannot fit (owner directive 2026-10-26 - no segment collapsing)
+  // full directory otherwise: the row ellipsizes only when it truly cannot
+  // fit (no segment collapsing)
   return norm(dir)
 }
 const countLines = (text: string) => (text ? text.replace(/\n$/, "").split("\n").length : 0)
@@ -173,17 +173,16 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** File-card sizing (owner round 2026-10-25): one fixed card width for the
- * whole file family — read, write and unified edit all render at
- * `--osh-card` (30rem); a split diff renders at exactly 2x that, so the
- * first column NEVER changes size when toggling U/S — split only adds the
- * second pane. Widths live in CSS (app.css); JS keeps a single shared
- * measurement of the transcript column for the auto split decision and
- * the "forced split but no room" indicator. The old per-card measurement
+/** File-card sizing: one fixed card width for the whole file family — read,
+ * write and unified edit all render at `--osh-card` (30rem); a split diff
+ * renders at exactly 2x that, so the first column NEVER changes size when
+ * toggling U/S and split only adds the second pane. Widths live in CSS
+ * (app.css); JS keeps a single shared measurement of the transcript column
+ * for the auto split decision and the "forced split but no room" indicator.
+ * Fixed width by construction replaces the old per-card measurement
  * machinery (spring re-checks, per-card ResizeObservers, mono-char canvas
- * math) is gone: card width is stable by construction, so the class of
- * hug-poisons-measurement bugs (a 264px collapsed scroller refusing the
- * split forever) cannot exist. */
+ * math), so the class of hug-poisons-measurement bugs (a 264px collapsed
+ * scroller refusing the split forever) cannot exist. */
 const CARD_W = 480 // px — mirrors --osh-card: 30rem in app.css
 const splitFits = (colWidth: () => number) => colWidth() >= CARD_W * 2 + 24
 
@@ -298,11 +297,10 @@ function GutterOffset(props: { start: number; children: JSX.Element }) {
   return <div ref={attach}>{props.children}</div>
 }
 
-/** One cold-pool guard: pierre renders PLAIN text if the worker pool has
- * not finished booting when the card mounts, and never re-renders when it
- * does (live-caught intermittency). After the first render settles, if the
- * file has gutter cells but zero colored token spans, remount the File
- * ONCE - the pool is warm by then. */
+/** One cold-pool guard: pierre renders PLAIN text if the worker pool has not
+ * finished booting when the card mounts, and never re-renders when it does.
+ * After the first render settles, if the file has gutter cells but zero
+ * colored token spans, remount the File ONCE - the pool is warm by then. */
 function FileCard(props: {
   path?: string
   contents: string
@@ -361,9 +359,9 @@ function FileCard(props: {
       >
         <GutterOffset start={props.lineStart ?? 1}>
           {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
-              prop is just passed through) - a distinct <Show keyed> branch
+              prop is just passed through), so a distinct <Show keyed> branch
               is what actually re-creates the File when the cold-pool guard
-              fires (live-caught: the guard never worked before) */}
+              fires. */}
           <Show when={attempt() === 0} keyed>
             <Dynamic
               component={fileComponent as any}
@@ -494,12 +492,12 @@ const EditTool = (props: ToolProps) => {
     return typeof p2 === "string" && p2 ? p2 : undefined
   })
   // v1 hosts emit node-diff's `Index:`-flavoured unified patch; the current
-  // kit parser only accepts `diff --git` headers and renders nothing for
-  // the Index form (live-caught: every v1 share's edit cards went blank).
-  // Normalize: synthetic git header, drop the Index/=== preamble lines.
-  // The header path comes from the patch's own `--- a/` line when present:
-  // the tool's filePath can be absolute, and `a//abs/path` is a malformed
-  // git header that parses empty (live-caught in the gallery).
+  // kit parser only accepts `diff --git` headers and renders nothing for the
+  // Index form (every v1 share's edit cards go blank). Normalize: synthetic
+  // git header, drop the Index/=== preamble lines. The header path comes from
+  // the patch's own `--- a/` line when present, because the tool's filePath
+  // can be absolute and `a//abs/path` is a malformed git header that parses
+  // empty.
   const patch = createMemo(() => {
     const raw = rawPatch()
     if (raw == null) return undefined
@@ -518,9 +516,8 @@ const EditTool = (props: ToolProps) => {
         (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
       : undefined,
   )
-  // fixed card widths (owner round 2026-10-25): the split/unified decision
-  // rides this card's own column measurement (per instance - see
-  // useColumnWidth)
+  // fixed card widths: the split/unified decision rides this card's own
+  // column measurement (per instance - see useColumnWidth)
   const [colW, setColW] = createSignal(0)
   const bindColumn = (el: HTMLDivElement) => {
     const host =
@@ -576,9 +573,9 @@ const EditTool = (props: ToolProps) => {
             title={path()}
             tool="edit"
             controls={
-              /* per-card diff mode toggle (writes the global setting) —
+              /* per-card diff mode toggle (writes the global setting);
                  right edge of the card, directly above the wrap/scroll
-                 selector (owner round 2026-10-25) */
+                 selector */
               <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
                 <button
                   type="button"
@@ -606,10 +603,10 @@ const EditTool = (props: ToolProps) => {
           >
             <div data-component="edit-content">
               {/* keyed branch pair: Solid's Dynamic has NO remount API (a
-                  `key` prop is passed through, does nothing - live-caught:
-                  the first card of a batch rendered split, the rest stayed
-                  unified forever). Distinct <Show keyed> branches actually
-                  re-create the File when the mode flips. */}
+                  `key` prop is passed through and does nothing: the first card
+                  of a batch rendered split and the rest stayed unified
+                  forever). Distinct <Show keyed> branches actually re-create
+                  the File when the mode flips. */}
               <Show when={effMode() === "split"} keyed>
                 <Dynamic
                   component={fileComponent as any}
@@ -675,11 +672,11 @@ const WriteTool = (props: ToolProps) => {
     </div>
   )
 }
-/** Text-result tools: raw output in a preformatted surface, never
- *  markdown (markdown turned each result line into a paragraph, which is
- *  where the blank-line inflation came from). Subtitle = the search path
- *  RELATIVIZED against the session directory (live-caught: the full
- *  absolute path stretched the row even for files in the same folder). */
+/** Text-result tools: raw output in a preformatted surface, never markdown
+ *  (markdown turns each result line into a paragraph, which is where the
+ *  blank-line inflation comes from). Subtitle = the search path RELATIVIZED
+ *  against the session directory, so a file in the same folder does not
+ *  stretch the row with its full absolute path. */
 const TextResultTool =
   (label: string, icon: string) => (props: ToolProps) => {
     const searchPath = createMemo(() => {
@@ -738,9 +735,9 @@ const TextResultTool =
   }
 
 /** Unknown tools (ctx_* helpers, MCP servers, anything the kit never
- *  registered): the kit's GenericTool prints the raw input and output with
- *  no card, no copy, no wrap control. Give them the same output surface as
- *  grep/glob/list so every result reads the same way (owner directive). */
+ *  registered): the kit's GenericTool prints the raw input and output with no
+ *  card, no copy and no wrap control. Give them the same output surface as
+ *  grep/glob/list so every result reads the same way. */
 const GenericOutputTool = (props: ToolProps) => {
   const input = createMemo<Record<string, unknown>>(() => (props.input as any) ?? {})
   const argsSummary = createMemo(() =>

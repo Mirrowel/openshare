@@ -165,13 +165,12 @@ export function VirtualTimeline(props: {
         if (!open) releaseDisclosure(key)
         setToolOpen(key, open)
         writeDisclosure(props.sessionKey, toolOpen)
-        // NO JS scroll compensation here, ever (owner round 2026-10-24):
-        // tanstack's shouldAdjustScrollPositionOnItemSizeChange owns the
-        // virtualized path (its predicate never scrolls for growth below
-        // the fold). The JS settle pinned the trigger against a TRANSIENT
-        // spring-bounce delta and scrolled by it - live-caught as "opening
-        // the 3-edit cluster pushes the title up out of reach" (headless
-        // runs skip the spring, so automation never saw it).
+        // NO JS scroll compensation here, ever: tanstack's
+        // shouldAdjustScrollPositionOnItemSizeChange owns the virtualized path
+        // (its predicate never scrolls for growth below the fold). A JS settle
+        // pins the trigger against a TRANSIENT spring-bounce delta and scrolls
+        // by it, so opening a tall cluster near the top pushes the title up out
+        // of reach (headless runs skip the spring and never show it).
       },
     },
     // drives per-row default-open (Tool outputs / Expanded reasoning)
@@ -188,8 +187,8 @@ export function VirtualTimeline(props: {
   const rowKeys = createMemo(() => (rows() ?? []).map(TimelineRow.key))
 
   // a deep link owns the initial position: replaying the last session offset
-  // would snap the reader back before/after the jump (live-caught: the jump
-  // landed, then the restored offset overwrote scrollTop)
+  // would snap the reader back before/after the jump (the jump lands, then the
+  // restored offset overwrites scrollTop)
   const deepAtMount = !!rowKeyFromHash(location.hash)
   const restored = deepAtMount ? undefined : readSnapshot(props.sessionKey)
   const initialMeasurementsCache = restored?.items.map((item) => ({
@@ -213,18 +212,17 @@ export function VirtualTimeline(props: {
   })
   // keep the reader's anchor when a row above the viewport is re-measured
   // (the option is a Virtualizer field, not an option in this version).
-  // NEVER compensate the row the user just toggled: its growth should
-  // extend downward from its own trigger (the anchor the user cares
-  // about), not push the trigger up out of view - live-caught as the
-  // near-the-top expansion bug.
+  // NEVER compensate the row the user just toggled: its growth should extend
+  // downward from its own trigger (the anchor the user cares about), not push
+  // the trigger up out of view.
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
     item.key !== getLastToggledRowKey() && item.start < (instance.scrollOffset ?? 0)
 
   // measure through tanstack's own measureElement (it owns the resize
-  // observer and writes real heights back per index). The old hand-rolled
-  // rAF/ResizeObserver + measure() path left rows placed by the estimate,
-  // which showed up as a uniform ~46px gap between rows in continuous mode
-  // only (classic boxes are adjacent) — live-caught 2026-10-21.
+  // observer and writes real heights back per index). A hand-rolled
+  // rAF/ResizeObserver + measure() path leaves rows placed by the estimate,
+  // which shows up as a uniform ~46px gap between rows in continuous mode
+  // only (classic boxes are adjacent).
   onCleanup(() => {
     if (measurementCache.size > 4000) measurementCache.clear()
   })
@@ -366,13 +364,13 @@ export function VirtualTimeline(props: {
   })
 
   // deep-link affordance: ctrl+click a message copies its link. No floating
-  // button - a fixed chip pinned to the scroller edge flickered between
-  // clickable and not while the pointer crossed it (owner-caught), and it
-  // covered content. Holding Ctrl outlines message bodies so it is findable.
-  // Ctrl+click a MESSAGE -> copy a link to where it starts. Rows are finer
-  // than messages (an assistant message is many part rows), and gap/spacer
-  // rows carry no content at all, so both the outline and the copy resolve
-  // through the message: the first content row of that message.
+  // button: a fixed chip pinned to the scroller edge flickers between
+  // clickable and not while the pointer crosses it, and it covers content.
+  // Holding Ctrl outlines message bodies so it is findable. Ctrl+click a
+  // MESSAGE copies a link to where it starts: rows are finer than messages
+  // (an assistant message is many part rows) and gap/spacer rows carry no
+  // content, so both the outline and the copy resolve through the message's
+  // first content row.
   const messageStartKey = (row: HTMLElement): string | undefined => {
     const key = row.dataset.rowKey ?? ""
     if (!key || !row.innerText.trim()) return undefined
@@ -604,10 +602,9 @@ export function VirtualTimeline(props: {
                   deletion and the prune effect. A row whose key has not
                   landed in rowByKey yet (session swap: the virtualizer's
                   items can carry a new key before the projection memo
-                  publishes) renders a zero-impact TurnGap for that tick —
-                  a NULL row would throw inside the renderer's
-                  TimelineRow.key Match ("exhaustive: absurd") and kill
-                  the page (live-caught on subagent pages). */}
+                  publishes) renders a zero-impact TurnGap for that tick; a NULL
+                  row throws inside the renderer's TimelineRow.key Match
+                  ("exhaustive: absurd") and kills the page on subagent pages. */}
               {(() => {
                 let last: unknown = null
                 return <renderer.Row row={() => ((last = projection.rowByKey().get(key) ?? last) ?? new TimelineRow.TurnGap({ userMessageID: key })) as never} />

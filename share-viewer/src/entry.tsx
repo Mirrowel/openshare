@@ -43,10 +43,9 @@ function resolveTemplate(text: string, params?: UiI18nParams) {
   })
 }
 
-// merged dictionary: the vendored kit calls at least one key upstream's
-// own en.ts never defines (ui.tool.todos - upstream bug, report filed;
-// live-caught rendering the raw key). Merging here keeps the vendor tree
-// pristine - no i18n fork needed.
+// merged dictionary: the vendored kit calls one key upstream's own en.ts
+// never defines (ui.tool.todos), so the raw key renders on the page. Merging
+// here keeps the vendor tree pristine: no i18n fork needed.
 const dict: Record<string, string> = { ...uiEn, "ui.tool.todos": "Todos" }
 
 const t = (key: keyof typeof uiEn | (string & {}), params?: UiI18nParams) => {

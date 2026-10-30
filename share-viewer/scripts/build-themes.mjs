@@ -13,8 +13,8 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-// fileURLToPath decodes %20 etc. — the repo path contains a space, and a
-// raw .pathname keeps the encoding (live-caught: build died on scandir)
+// fileURLToPath decodes %20 etc.: the repo path contains a space, and a raw
+// .pathname keeps the encoding, which kills the build on scandir
 const dist = fileURLToPath(new URL("../dist", import.meta.url))
 const assets = join(dist, "assets")
 const cssFile = readdirSync(assets).find((f) => f.endsWith(".css"))
@@ -56,12 +56,12 @@ if (!light || !dark) {
   process.exit(1)
 }
 
-// light-mode readability floor (owner-caught): the kit's light tier ships
-// --text-weak #8f8f8f (3.5:1) and --text-weaker #c7c7c7 (1.6:1 - meta text
-// nearly invisible on white). Darken both in the EXTRACTED copy so the
-// forced-light block and light-based premades inherit the fix; premades
-// with explicit overrides keep theirs. Throw when upstream changes the
-// values so this never silently stops applying.
+// light-mode readability floor: the kit's light tier ships --text-weak
+// #8f8f8f (3.5:1) and --text-weaker #c7c7c7 (1.6:1, meta text nearly
+// invisible on white). Darken both in the EXTRACTED copy so the forced-light
+// block and light-based premades inherit the fix; premades with explicit
+// overrides keep theirs. Throw when upstream changes the values so this
+// never silently stops applying.
 const patchLight = (s, prop, from, to) => {
   const re = new RegExp(`${prop}:\\s*${from}`)
   if (!re.test(s)) throw new Error(`build-themes: light token drift - ${prop} is no longer ${from}`)
@@ -136,8 +136,8 @@ const PREMADES = {
     },
   },
   // darker: the dark theme one step down - the page tone conversation
-  // paints (bg-background-stronger) as an explicit second dark theme,
-  // not a remap (owner directive 2026-10-26; NOT the default)
+  // paints (bg-background-stronger) as an explicit second dark theme, not a
+  // remap, and NOT the default
   darker: {
     base: "dark",
     overrides: {

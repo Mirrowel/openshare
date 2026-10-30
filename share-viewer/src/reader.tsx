@@ -39,10 +39,9 @@ function HoverToc(props: Parameters<NonNullable<SkinWrappers["Nav"]>>[0]) {
   )
 }
 
-// reader owns the FULL header (the classic chrome bar is hidden for
-// reader - it duplicated this row, live-caught): branding mark, title,
-// version/model/status, copy, GitHub and the settings trigger all ride
-// SkinHeader once
+// reader owns the FULL header (the classic chrome bar is hidden for reader,
+// which duplicates this row): branding mark, title, version/model/status,
+// copy, GitHub and the settings trigger all ride SkinHeader once
 function ReaderHeader(props: Parameters<NonNullable<SkinWrappers["Header"]>>[0]) {
   const view = useView()
   const b = () => view.source.branding()

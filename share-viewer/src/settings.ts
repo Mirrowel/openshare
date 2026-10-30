@@ -13,8 +13,8 @@ export type OshSettings = {
     *  ...). Absent key = continuous (default). */
    pagedByView?: Record<string, boolean>
    /** prompt navigation state: the floating pill (default) or the sidebar
-    *  column; one of the two is ALWAYS present with >1 prompt - the pill
-    *  is never fully removable (owner round 2026-10-25) */
+    *  column; one of the two is ALWAYS present with more than one prompt, so
+    *  the pill is never fully removable */
    promptNav: "pill" | "sidebar"
   /** sidebar width in px (drag-resized; clamped 160-400) */
   turnNavWidth?: number
@@ -51,10 +51,10 @@ export type OshSettings = {
    * outputs (shell, grep, glob, list); the file tools carry their own
    * per-tool choice in fileOverflow. */
   outputOverflow: "wrap" | "scroll"
-  /** per-tool overflow for the FILE tools (read/write/edit+patch), each
-   * wrap or scroll independently - e.g. diffs can pan while reads wrap
-   * (owner round 2026-10-26). Defaults wrap; a cookie with an explicit
-   * outputOverflow: "scroll" migrates all three to scroll. */
+  /** per-tool overflow for the FILE tools (read/write/edit+patch), each wrap
+   * or scroll independently, so diffs can pan while reads wrap. Defaults
+   * wrap; a cookie with an explicit outputOverflow: "scroll" migrates all
+   * three to scroll. */
   fileOverflow: { read: "wrap" | "scroll"; write: "wrap" | "scroll"; edit: "wrap" | "scroll" }
   /** how user prompts render everywhere: right-aligned bubble (default)
    * or flat text like the reader skin */
@@ -104,8 +104,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   toolGrouping: "off",
   groupTools: ["read", "glob", "grep", "list"],
   groveThinking: "left",
-  // wrap is the default (owner round 2026-10-25); saved cookies keep
-  // their explicit choice
+  // wrap is the default; saved cookies keep their explicit choice
   outputOverflow: "wrap",
   fileOverflow: { read: "wrap", write: "wrap", edit: "wrap" },
   promptStyle: "bubble",
@@ -187,11 +186,11 @@ export function writeSettings(s: OshSettings) {
   document.cookie = `${COOKIE}=${encodeURIComponent(JSON.stringify(s))}; Path=/; Max-Age=31536000; SameSite=Lax`
 }
 
-/** the paged/continuous choice FOR A VIEW, in PAGED terms (owner round
- *  2026-10-24: the toggle is now "Paged mode", ON = paged; default OFF =
- *  continuous). Migrates the old continuousByView storage; views that do
- *  not support paging (ViewEntry.paged === false) are always continuous
- *  regardless of any stored choice. */
+/** the paged/continuous choice FOR A VIEW, in PAGED terms: the toggle is
+ *  "Paged mode", ON = paged, default OFF = continuous. Migrates the old
+ *  continuousByView storage; views that do not support paging
+ *  (ViewEntry.paged === false) are always continuous regardless of any
+ *  stored choice. */
 export function pagedFor(s: OshSettings, view: string, supportsPaged = true): boolean {
   if (!supportsPaged) return false
   const paged = s.pagedByView?.[view]

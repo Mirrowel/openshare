@@ -1,8 +1,8 @@
 // Shadow-DOM aware DOM helpers. The updated pierre renderer paints its file
 // and diff bodies inside a shadow root, so a plain document.querySelector
 // finds nothing: line numbers, token spans and content height all live one
-// tree deeper (live-caught: read offsets stopped renumbering, the cold-pool
-// guard never fired, chevrons never appeared).
+// tree deeper (read offsets stop renumbering, the cold-pool guard never
+// fires, chevrons never appear).
 const SHOW_ALL = NodeFilter.SHOW_ELEMENT
 
 /** Every element matching `selector` inside `root`, descending into any

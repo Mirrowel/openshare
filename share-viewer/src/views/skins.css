@@ -708,8 +708,8 @@
 }
 
 /* ------------------------------------------------------------ atlas */
-/* atlas: tool bodies stay INSIDE the stylized housing (live-caught: the
-   pre/bash body clipped outside the rounded card and was obscured) */
+/* atlas: tool bodies stay INSIDE the stylized housing (the pre/bash body
+   otherwise clips outside the rounded card and is obscured) */
 [data-view="atlas"] [data-slot="collapsible-content"] {
   max-width: 100%;
   overflow-x: auto;

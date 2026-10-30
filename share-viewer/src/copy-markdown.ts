@@ -1,6 +1,6 @@
-// Copy the session as markdown (owner round 2026-10-25, views-SDK phase 4:
-// moved out of app.tsx so the ViewContext and every skin header can offer
-// it - classic used to be the only surface with the affordance).
+// Copy the session as markdown. Lives here rather than in app.tsx so the
+// ViewContext and every skin header can offer it; classic used to be the
+// only surface with the affordance.
 import type { ShareData } from "./fold"
 import { visibleMessages } from "./fold"
 

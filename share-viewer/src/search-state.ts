@@ -1,19 +1,19 @@
-// The persistent search state + the live highlight/expand engine
-// (owner round 2026-10-26). The palette writes here; the engine reads it
-// and keeps the PAGE in sync for as long as a query is active - marks
-// stay after the palette closes, and any collapsed row that scrolls
-// into view with a hit inside expands so the hit can be found.
+// The persistent search state + the live highlight/expand engine. The
+// palette writes here; the engine reads it and keeps the PAGE in sync for as
+// long as a query is active: marks stay after the palette closes, and any
+// collapsed row that scrolls into view with a hit inside expands so the hit
+// can be found.
 //
 // Marking uses the CSS Custom Highlight API: ranges are painted by the
-// browser with ::highlight, so nothing in the DOM is rewritten, layout
-// never shifts (no padding/mark elements feeding the virtualizer's
-// measurements), renderer-owned text (Solid <pre>, SVG/markdown blocks)
-// is never detached, and a common-word query cannot create thousands of
-// elements. A DOM <mark> fallback remains for browsers without it.
+// browser with ::highlight, so nothing in the DOM is rewritten, layout never
+// shifts (no padding/mark elements feeding the virtualizer's measurements),
+// renderer-owned text (Solid <pre>, SVG/markdown blocks) is never detached,
+// and a common-word query cannot create thousands of elements. A DOM <mark>
+// fallback remains for browsers without it.
 //
-// Expansion is data-driven: collapsed rows unmount their content, so
-// DOM text can never reveal a body-only hit. The palette publishes the
-// matched PART ids (never prompt ids - prompt text is always visible).
+// Expansion is data-driven: collapsed rows unmount their content, so DOM text
+// can never reveal a body-only hit. The palette publishes the matched PART
+// ids (never prompt ids, whose text is always visible).
 import { createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 
@@ -393,7 +393,7 @@ function collapsibleChain(row: HTMLElement, sc: HTMLElement): HTMLElement[] {
 }
 
 /** click a collapsible's trigger unless it is a link (task cards render
- *  their trigger as <a href>; clicking navigates - owner-caught). */
+ *  their trigger as <a href>, so clicking navigates). */
 function toggleOpen(col: HTMLElement): boolean {
   const trigger = col.querySelector<HTMLElement>('[data-slot="collapsible-trigger"]')
   if (!trigger || trigger.tagName === "A" || trigger.closest("a")) return false

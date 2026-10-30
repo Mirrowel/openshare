@@ -263,9 +263,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQU
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS rate (ip TEXT PRIMARY KEY, n INTEGER NOT NULL, resetAt INTEGER NOT NULL)`)
 db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT NULL)`)
-// pre-existing databases: the 2a columns (after ALL creates - an ALTER
-// before its CREATE is swallowed by the catch on fresh DBs, leaving the
-// column missing; live-caught by the tui-flow F15 codeless enroll)
+// the 2a columns are ALTERed after ALL creates: an ALTER before its
+// CREATE is swallowed on a fresh DB, leaving the column missing.
 try { db.exec("ALTER TABLE shares ADD COLUMN creatorTokenId TEXT") } catch {}
 try { db.exec("ALTER TABLE tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'") } catch {}
 try { db.exec("ALTER TABLE users ADD COLUMN createdByCode TEXT") } catch {}
@@ -1134,10 +1133,10 @@ async function tokenDeleteRoute(token: string): Promise<Response> {
   return json(200, { ok: true, frozen })
 }
 
-/** Revocation kills control (owner directive, worker parity): a user whose
- * LAST valid token is gone loses write access to ALL their shares - user
- * token AND share secret - until an admin unfreezes/reassigns. Viewing is
- * never touched. Rotation never lands here (replacement minted first). */
+/** Revocation kills control (worker parity): a user whose LAST valid
+ * token is gone loses write access to ALL their shares - user token AND
+ * share secret - until an admin unfreezes/reassigns. Viewing is never
+ * touched. Rotation never lands here (replacement minted first). */
 function freezeIfNoValidTokens(userId: string): boolean {
   const now = Date.now()
   // only FULL tokens keep the account alive (worker parity)

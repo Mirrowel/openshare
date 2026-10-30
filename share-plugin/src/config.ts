@@ -164,9 +164,8 @@ export type WriteCandidate = { path: string; label: string; always?: boolean }
 
 /** Write-target candidates for the TUI picker: the global settings home
  * (always writable) plus every OTHER file in the read chain that already
- * exists on disk (deploy-time overrides are never created from the TUI —
- * owner rule). Order: global first (default), then the rest by read
- * precedence (highest first). */
+ * exists on disk, since the TUI never creates deploy-time overrides. Order:
+ * global first (default), then the rest by read precedence (highest first). */
 export function writeCandidates(pluginDir: string, env: NodeJS.ProcessEnv = process.env): WriteCandidate[] {
   const candidates: WriteCandidate[] = [{ path: configHomePath(env), label: "global settings (~/.config/opencode)", always: true }]
   const labels: Array<[string, string]> = [
@@ -288,9 +287,8 @@ export function normalizeServers(raw: unknown): Record<string, ServerEntry> | un
 
 /** Field-level merge of servers groups: entries only carry present fields
  * (normalizeServers), so a static `code` in plugin options and a persisted
- * `token` in the settings home combine instead of shadowing — per-URL
- * wholesale replacement would re-enroll on every boot (live-caught in
- * suite design review). */
+ * `token` in the settings home combine instead of shadowing. Per-URL
+ * wholesale replacement would re-enroll on every boot. */
 export function mergeServerGroups(base: Record<string, ServerEntry> | undefined, add: Record<string, ServerEntry>): Record<string, ServerEntry> {
   const merged: Record<string, ServerEntry> = { ...(base ?? {}) }
   for (const [url, entry] of Object.entries(add)) merged[url] = { ...(merged[url] ?? {}), ...entry }
@@ -298,10 +296,10 @@ export function mergeServerGroups(base: Record<string, ServerEntry> | undefined,
 }
 
 /** The server new sessions share to: the `active` entry (or the first).
- * Legacy workerUrl/createToken merge in as the implicit first entry — with
- * the root token ALSO filed as adminToken (the createToken IS root; filing
- * it only as `token` made the TUI offer user-actions like rotate to a root
- * holder — live-caught "can either be admin or user but not both"). */
+ * Legacy workerUrl/createToken merge in as the implicit first entry, with
+ * the root token ALSO filed as adminToken: the createToken IS root, and
+ * filing it only as `token` offers user-actions like rotate to a root
+ * holder, while an identity is either admin or user, not both. */
 export function resolveServer(cfg: ShareConfig): { url: string; token: string; entry: ServerEntry } | undefined {
   const servers: Record<string, ServerEntry> = {}
   if (cfg.workerUrl) servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true }
@@ -514,9 +512,9 @@ function specPath(spec: string): string | undefined {
 
 /** Does this plugin spec (tui.json entry) point at the openshare package?
  * Accepts the bare npm name, name@version, and the /tui (or any) subpath
- * form — older docs shipped the subpath spec and presence detection must
- * never silently miss it (all-mode would keep auto-sharing while the user
- * believes they installed manual mode — live-caught in review). */
+ * form. Older docs shipped the subpath spec, and presence detection must
+ * never silently miss it: all-mode would keep auto-sharing while the user
+ * believes they installed manual mode. */
 export function isOpenShareSpec(spec: unknown): spec is string {
   if (typeof spec !== "string" || spec.length === 0) return false
   if (spec === NPM_NAME) return true

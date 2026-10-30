@@ -1,14 +1,13 @@
 // Link the vendored @opencode packages into node_modules as
 // symlinks/junctions instead of bun-managed file: dependency copies.
 //
-// WHY (live-caught 2026-10-28): bun installs file: dependencies as
-// ISOLATED copies with their own nested node_modules — shared deps
-// (effect, katex, @pierre/diffs) end up duplicated between the root tree
-// and the copy's nested tree. Two module instances of the same package
-// split identity: a theme registered through one @pierre/diffs copy is
-// invisible to the other ("No valid theme loader registered"), and
-// effect's Match across two copies throws "exhaustive: absurd". Every
-// file-card body died on the live deploy from exactly this.
+// WHY: bun installs file: dependencies as ISOLATED copies with their own
+// nested node_modules, so shared deps (effect, katex, @pierre/diffs) end up
+// duplicated between the root tree and the copy's nested tree. Two module
+// instances of the same package split identity: a theme registered through
+// one @pierre/diffs copy is invisible to the other ("No valid theme loader
+// registered"), and effect's Match across two copies throws "exhaustive:
+// absurd". Every file-card body dies on such a deploy.
 //
 // A symlink/junction resolves to the REAL vendor/ path (vite and tsc
 // realpath-resolve), every bare import of a shared dep walks up to the

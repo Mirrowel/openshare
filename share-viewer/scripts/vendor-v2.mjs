@@ -158,11 +158,11 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       s = next
     }
 
-    // openshare fork: row rhythm between messages. ONE guarded unit - the
-    // old two-guard encoding silently skipped the whole fork when the module
-    // var insert ran first (live-caught: spacing "fixed" repeatedly while
-    // the built bundle ran upstream spacing; regen restored the var but not
-    // the fork). All anchors throw, so upstream drift is loud.
+    // openshare fork: row rhythm between messages. ONE guarded unit: a
+    // two-guard encoding silently skips the whole fork when the module var
+    // insert runs first, leaving the built bundle on upstream spacing while
+    // regen restores the var and not the fork. All anchors throw, so upstream
+    // drift is loud.
     if (!s.includes("openshare fork: each segment call starts")) {
       patch(
         /(^import \{ TimelineRow[^\r\n]*\r?\n)/m,
@@ -840,7 +840,7 @@ function mainThreadWorker(): Worker {
 // vendor fork: calmer word emphasis inside diffs. On a rewritten line every
 // word counts as changed, so the 0.4 (dark) / 0.2 (light) fill painted the
 // whole line as a saturated band; 0.3 / 0.16 keeps the changed words
-// distinct without turning the card into a colour block (owner A/B).
+// distinct without turning the card into a colour block.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
   if (existsSync(p)) {
@@ -894,10 +894,10 @@ function mainThreadWorker(): Worker {
 }
 
 // vendor fork: file-change tools never merge with each other inside a
-// context group (owner directive 2026-10-24: grouping groups individual
-// tools; edit/write/patch each render as their own expandable card - the
-// merged CurrentFileToolGroup showed one aggregate row for N edits with
-// broken expansion). Literal anchors; throws on upstream drift.
+// context group. Grouping groups individual tools, so edit/write/patch each
+// render as their own expandable card; the merged CurrentFileToolGroup
+// showed one aggregate row for N edits with broken expansion. Literal
+// anchors; throws on upstream drift.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
@@ -905,7 +905,7 @@ function mainThreadWorker(): Worker {
     if (!s.includes("openshare fork: file-change tools NEVER merge")) {
       const nl = "\n"
       const A = ["      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {", "        previous.push(tool)", "", "        return groups", "      }"].join(nl)
-      const B = ["      // openshare fork: file-change tools NEVER merge with each other -", "      // each edit/write/patch renders as its own expandable card inside", "      // the group, exactly like every other tool (owner directive)", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
+      const B = ["      // openshare fork: file-change tools NEVER merge with each other -", "      // each edit/write/patch renders as its own expandable card inside", "      // the group, exactly like every other tool", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: file-tools-merge anchor missing - upstream drifted")
       s = s.replace(A, B)
       writeFileSync(p, s)
@@ -914,23 +914,22 @@ function mainThreadWorker(): Worker {
 }
 
 // vendor fork: grouped rows all EXPAND. Upstream renders glob/grep/list
-// inside a context group as a STATIC trigger row (no Collapsible at all -
-// live-caught: grouped searches could never expand) and file-change tools
-// as an aggregate CurrentFileToolGroup accordion. Both branches now fall
-// through to ToolDisplay + our registry renderers: real expandable bodies,
-// patch diffs, per-card toggles (owner directive: grouping groups
-// individual tools, each one expands like its ungrouped self).
+// inside a context group as a STATIC trigger row (no Collapsible at all, so
+// grouped searches cannot expand) and file-change tools as an aggregate
+// CurrentFileToolGroup accordion. Both branches now fall through to
+// ToolDisplay + our registry renderers: real expandable bodies, patch
+// diffs, per-card toggles, and each tool expands like its ungrouped self.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: glob/grep/list expand like every other grouped tool")) {
       const A = 'when={tool().state.status !== "error" && ["glob", "grep", "list"].includes(tool().name)}'
-      const B = 'when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches could never expand (live-caught). ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}'
+      const B = 'when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches can never expand. ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}'
       if (!s.includes(A)) throw new Error("vendor-v2: glob/grep static-row anchor missing - upstream drifted")
       s = s.replace(A, B)
       const C = "when={isFileChangeTool(tool())}"
-      const D = 'when={false /* openshare fork: file-change tools render as their own ToolDisplay cards (owner directive: grouping groups individual tools) - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}'
+      const D = 'when={false /* openshare fork: file-change tools render as their own ToolDisplay cards - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}'
       if (!s.includes(C)) throw new Error("vendor-v2: file group render anchor missing - upstream drifted")
       s = s.replace(C, D)
       writeFileSync(p, s)
@@ -962,11 +961,11 @@ function mainThreadWorker(): Worker {
 
 // vendor fork: reads no longer MERGE inside a context group. Upstream
 // collapses consecutive reads into one inner array, rendered as the inline
-// CurrentReadToolGroup subtitle row - but our forks bypass that renderer,
-// so the merged array flows into a single ToolDisplay row that shows only
-// group()[0] (live-caught: "Used 4 Read" expanded to one row, three reads
-// invisible). Reads render as individual expandable rows, like every other
-// grouped tool (owner directive: grouping groups individual tools).
+// CurrentReadToolGroup subtitle row, but our forks bypass that renderer, so
+// the merged array flows into a single ToolDisplay row that shows only
+// group()[0] ("Used 4 Read" expands to one row, three reads invisible).
+// Reads render as individual expandable rows, like every other grouped
+// tool.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
@@ -988,9 +987,9 @@ function mainThreadWorker(): Worker {
       const B = [
         "      // openshare fork: reads no longer merge inside a context group -",
         "      // the merged array rendered through one ToolDisplay row showing",
-        "      // only the first tool (live-caught: \"Used 4 Read\" expanded to a",
+        "      // only the first tool (\"Used 4 Read\" expands to a",
         "      // single row). Reads stay individual expandable rows, like every",
-        "      // other grouped tool (owner directive). CurrentReadToolGroup is",
+        "      // other grouped tool. CurrentReadToolGroup is",
         "      // bypassed below either way.",
       ].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: read-merge anchor missing - upstream drifted")
@@ -1290,9 +1289,9 @@ $2`,
   // vendor fork (markdown.tsx): paragraph-SHAPED fallback. Upstream's
   // fallback() joined the whole text with <br>, so a paragraph break
   // rendered as a full blank LINE while ready markdown uses
-  // p { margin-bottom: 12px } - the fallback->ready swap visibly snapped
-  // spacing (live-caught "reasoning snap"). The fork emits real <p> chunks
-  // with <br> soft breaks: metrically identical to the parsed result.
+  // p { margin-bottom: 12px } and the fallback->ready swap visibly snapped
+  // the spacing. The fork emits real <p> chunks with <br> soft breaks:
+  // metrically identical to the parsed result.
   {
     const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
     if (existsSync(p)) {
@@ -1302,7 +1301,7 @@ $2`,
         const A = ["function fallback(markdown: string) {", '  return escape(markdown).replace(/\\r\\n?/g, "\\n").replace(/\\n/g, "<br>")', "}"].join(nl)
         const B = [
           "function fallback(markdown: string) {",
-          "  // openshare fork: paragraph-SHAPED fallback (live-caught \"reasoning",
+          "  // openshare fork: paragraph-SHAPED fallback: upstream joined everything",
           "  // snap\"): upstream joined everything with <br>, so a paragraph break",
           "  // (\\n\\n) rendered as a full blank LINE while the ready markdown uses",
           "  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready",
@@ -1325,13 +1324,12 @@ $2`,
   }
 
   // vendor fork (message-content): reasoning bodies mount ON EXPAND, and
-  // Markdown deferUntilReady shows NOTHING until the markdown worker
-  // parses the whole blob (live-caught: visible blank beat on a 12s
-  // thought; minutes-long reasoning would be a long empty wait). The
-  // fork adds a `defer` prop to PacedMarkdown (default true = unchanged
-  // for load-time text) and passes defer={false} from the reasoning
-  // call site only: instant plain fallback, rich markdown swaps in when
-  // the worker completes.
+  // Markdown deferUntilReady shows NOTHING until the markdown worker parses
+  // the whole blob, so a long thought opens to a blank beat (minutes-long
+  // reasoning would be a long empty wait). The fork adds a `defer` prop to
+  // PacedMarkdown (default true = unchanged for load-time text) and passes
+  // defer={false} from the reasoning call site only: instant plain fallback,
+  // rich markdown swaps in when the worker completes.
   {
     const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
     if (existsSync(p)) {
@@ -1483,10 +1481,10 @@ copyTree(join(SRC, "packages/ui/src"), join(ROOT, "vendor/ui-v2/src"))
 // vendor fork (MUST live AFTER the ui copyTree above): keep the token
 // colours the previous (shiki) engine produced. The kit's Zed palette maps
 // three token classes differently from the old TextMate scopes, so code
-// cards changed hue after the engine swap - punctuation went body-text to
-// dim grey, JSON/property keys primitive to variable, markdown headings
-// info to keyword (live-caught in the A/B compare). Forks placed BEFORE the
-// copy edit a stale file and get overwritten - exactly what happened once.
+// cards change hue after the engine swap: punctuation goes body-text to dim
+// grey, JSON/property keys primitive to variable, markdown headings info to
+// keyword. A fork placed BEFORE the copy edits a stale file and is then
+// overwritten.
 {
   const p = join(ROOT, "vendor/ui-v2/src/context/highlight-theme.tsx")
   if (existsSync(p)) {
@@ -1504,12 +1502,10 @@ copyTree(join(SRC, "packages/ui/src"), join(ROOT, "vendor/ui-v2/src"))
 }
 
 // (en locale: the kit's group label reads ui.tool.todos for todowrite
-// rows, but upstream en.ts ships without the key. The key is merged in
-// the viewer's OWN dictionary at src/entry.tsx - a vendor fork is not
-// needed for an i18n key, the provider's t() resolves it. Report filed
-// for the upstream bug: raw key on the page, live-caught as
-// "Used 3 ui.tool.todos, Shell, Glob".)
-// styles live under src/styles in the beta (no separate styles dir)
+// rows, but upstream en.ts ships without the key. The key is merged in the
+// viewer's OWN dictionary at src/entry.tsx: a vendor fork is not needed for
+// an i18n key, the provider's t() resolves it. Upstream bug report filed:
+// the raw key renders on the page as "Used 3 ui.tool.todos, Shell, Glob".)
 {
   // exports map copied verbatim from the beta package — per-component
   // explicit paths across src subdirectories, no guessing
@@ -1628,9 +1624,9 @@ writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), [
 
 // root-dep parity: vendored packages resolve peers from the ROOT tree (they
 // are junctioned into node_modules), so a root pin that lags the vendored
-// catalog silently changes kit behavior. Live-caught 2026-10-28: root
-// @pierre/diffs 1.5.1 vs a kit that tokenizes via @pierre/highlights - every
-// code card rendered with zero colored spans, no error anywhere. This check
+// catalog silently changes kit behavior. A stale root
+// @pierre/diffs against a kit that tokenizes via @pierre/highlights makes every
+// code card render with zero colored spans and no error anywhere. This check
 // makes that class a hard failure naming the exact packages to bump.
 {
   const root = JSON.parse(readFileSync(join(REAL_ROOT, "package.json"), "utf8"))

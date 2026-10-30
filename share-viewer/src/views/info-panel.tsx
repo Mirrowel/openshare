@@ -116,7 +116,7 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; source?: 
               </Show>
             </Group>
             {/* view-scoped extras (atlas registers legend + coordinates
-                here - one info surface, owner round 2026-10-24 night) */}
+                here, one info surface) */}
             <Show when={getInfoExtra()}>
               {(extra) => <Dynamic component={extra()} />}
             </Show>

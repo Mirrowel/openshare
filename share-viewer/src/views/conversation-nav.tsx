@@ -30,8 +30,8 @@ export function TurnNav(props: {
   const desktop = createMediaQuery("(min-width: 900px)")
   const [open, setOpen] = createSignal(false)
   // the narrow popover anchors to the trigger's LABEL span, not the
-  // full-width trigger (bottom-start on a w-full trigger opened the
-  // list at the viewport's far left - owner-caught)
+  // full-width trigger (bottom-start on a w-full trigger opens the list at the
+  // viewport's far left)
   let labelEl: HTMLSpanElement | undefined
   const compact = () => desktop() && props.collapsed
   const currentIndex = () => props.messages.findIndex((m) => m.id === props.current)

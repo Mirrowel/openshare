@@ -42,13 +42,12 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
     hostVersion: 1,
     app: { version: api.app?.version },
     // 1.19.x hands plugins the v2 SDK client — a LAZY PROXY (methods
-    // materialize on property access; spreading it destroys them, which
-    // broke session.update: live-caught "no client.session.update" after
-    // the adapter was added). Wrap with passthrough Proxies instead:
-    //  - path args are translated id -> sessionID (the v2 SDK's URL
-    //    builder left "{sessionID}" literally in the URL for {path:{id}}
-    //    calls — server log: "Expected a string starting with ses, got
-    //    %7BsessionID%7D" — so every session.get/update failed silently),
+    // materialize on property access, and spreading it destroys them, which
+    // breaks session.update). Wrap with passthrough Proxies instead:
+    //  - path args are translated id -> sessionID (the v2 SDK's URL builder
+    //    left "{sessionID}" literally in the URL for {path:{id}} calls, so
+    //    every session.get/update failed silently with
+    //    "Expected a string starting with ses, got %7BsessionID%7D"),
     //  - session.get fills metadata from the state store when the v2
     //    response lacks it,
     //  - everything else reaches the original proxy untouched.
@@ -139,10 +138,10 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
     theme: api.theme,
     ui: {
       toast: (input) => api.ui.toast(input),
-      // dialog.clear() THROWS on an already-empty stack on 1.19.x — and
-      // flows legitimately clear after my components already settled+cleared
-      // (the throw killed confirmShare before it started, live-caught via
-      // the debug log). Idempotent wrapper for every call site.
+      // dialog.clear() THROWS on an already-empty stack on 1.19.x, and flows
+      // legitimately clear after the components already settled and cleared;
+      // the throw kills confirmShare before it starts. Idempotent wrapper for
+      // every call site.
       dialog: new Proxy({} as ShareHostApi["ui"]["dialog"], {
         get: (_t, key: string) => {
           if (key === "clear")
@@ -185,14 +184,13 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       },
       // CUSTOM interactive dialogs (family MenuDialog pattern: own
       // priority-10000 key layer + mode push + input shield). The host's
-      // ui.DialogX components under plugin dialog.replace render but
-      // receive no keys on opencode 1.19.x (live-caught + pty-reproduced).
-      // These are component functions: flows invoke them inside their own
-      // dialog.replace(() => ...) render thunk (the host renders the thunk
-      // in a proper Solid root, so the hooks inside run with an owner).
-      // DialogX bridge shims (v2 adapter / legacy call sites): route to the
-      // ported promise menus. Nothing on v1 renders these through
-      // dialog.replace anymore — flows use showMenu/showConfirm directly.
+      // ui.DialogX components under plugin dialog.replace render but receive
+      // no keys on opencode 1.19.x. These are component functions: flows
+      // invoke them inside their own dialog.replace(() => ...) render thunk,
+      // and the host renders the thunk in a proper Solid root so the hooks
+      // inside run with an owner. DialogX bridge shims (v2 adapter / legacy
+      // call sites) route to the ported promise menus; no v1 flow renders
+      // through dialog.replace anymore, flows use showMenu/showConfirm.
       DialogSelect: (props) => {
         void showMenuOnce(api, { title: props.title, options: toMenuOptions(props.options), current: props.current, hint: props.placeholder }).then((value) => {
           if (value === undefined) (props as { onCancel?: () => void }).onCancel?.()
@@ -251,11 +249,11 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
       return route.name === "session" ? (route.params?.sessionID as string | undefined) : undefined
     },
     clipboard: {
-      // navigator.clipboard.writeText resolves as a silent no-op in the
-      // TUI runtime (live-caught: the menu copy said "copied" but nothing
-      // landed; the sidebar chip worked because it falls back to OSC52).
-      // Belt-and-braces: try navigator, then ALWAYS emit the OSC52 escape
-      // — harmless when the terminal ignores it, correct when it honors it.
+      // navigator.clipboard.writeText resolves as a silent no-op in the TUI
+      // runtime: the menu reports "copied" and nothing lands (the sidebar chip
+      // works because it falls back to OSC52). Belt-and-braces: try navigator,
+      // then ALWAYS emit the OSC52 escape, which is harmless when the terminal
+      // ignores it and correct when it honors it.
       async write(text) {
         let ok = false
         try {

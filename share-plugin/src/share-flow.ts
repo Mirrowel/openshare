@@ -44,11 +44,10 @@ export function currentConfig(baseDir: string = moduleDir()): ShareConfig {
   return loadConfig(baseDir)
 }
 
-/** Writes the config file. Target rule (owner-directed): the global
- * settings home by default, or an explicit existing file chosen in the
- * TUI — NEVER "first existing in the read chain" (that wrote TUI edits
- * into the tracked adjacent template, live-caught). $comment and foreign
- * keys preserved. */
+/** Writes the config file. Target rule: the global settings home by
+ * default, or an explicit existing file chosen in the TUI, never "first
+ * existing in the read chain" (that writes TUI edits into the tracked
+ * adjacent template). $comment and foreign keys preserved. */
 export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = moduleDir()): { path: string } | undefined {
   const path = target ?? configHomePath()
   if (!path) return undefined
@@ -678,9 +677,9 @@ export async function confirmShare(host: ShareHostApi, rootSessionID: string): P
   const binding = await waitForBinding(host.client, rootSessionID)
   dbgLog(`confirmShare: waitForBinding -> ${binding?.url ? binding.url : "timeout"}`)
   if (!binding?.url) {
-    // a failed create must NOT leave the flag armed - the engine would
-    // publish LATER with no further consent (live-caught). Disarm now;
-    // re-running /share re-consents.
+    // a failed create must NOT leave the flag armed: the engine would
+    // publish LATER with no further consent. Disarm now; re-running
+    // /share re-consents.
     await clearShareFlag(host.client, rootSessionID)
     const fresh = await readBinding(host.client, rootSessionID)
     const why = fresh?.lastError ? `\nReason: ${fresh.lastError}` : ""

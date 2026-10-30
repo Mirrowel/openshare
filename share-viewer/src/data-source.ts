@@ -73,7 +73,7 @@ async function fetchBranding(): Promise<Branding> {
   if (brandingCache) return brandingCache
   try {
     // no force-cache: a stale /branding can point at assets the new deploy
-    // deleted (live-caught — the logo 404'd invisibly for a whole session)
+    // deleted, which 404s the logo invisibly
     const r = await fetch("/branding", { cache: "no-store" })
     if (r.ok) brandingCache = (await r.json()) as Branding
   } catch {}
@@ -109,11 +109,10 @@ export function useShareSource(): Source {
     setItems((prev) => {
       // SMART SYNC: a no-op update (identical poll, empty since-frame,
       // re-delivery of the same item objects) must NOT produce a new Map
-      // identity - the whole render chain keys off items() and a fresh
-      // identity refolds + rebuilds every visible row (live-caught as
-      // "tools close on their own, like on a timer" while the 5s poll
-      // fallback ran). Only a real change (new/different item, or a
-      // tombstone that actually deletes) creates the next container.
+      // identity, because the whole render chain keys off items() and a fresh
+      // identity refolds and rebuilds every visible row (tools close on their
+      // own, on the poll interval). Only a real change (new or different item,
+      // or a tombstone that actually deletes) creates the next container.
       if (!incoming || incoming.length === 0) return prev
       let changed = false
       const next = new Map(prev)
@@ -140,12 +139,11 @@ export function useShareSource(): Source {
   }
 
   // FULL-SET replace: /data responses and a WS socket's first frame carry
-  // the COMPLETE live item set - they must prune keys the server no
-  // longer has. A merge-only consumer keeps items deleted while its
-  // socket was down, so an undone turn resurrected on every reconnect
-  // until a hard reload (live-caught). Deltas (WS delta frames, poll
-  // since-responses) keep using merge() - they carry tombstone markers
-  // for what was deleted.
+  // the COMPLETE live item set, so they must prune keys the server no longer
+  // has. A merge-only consumer keeps items deleted while its socket was
+  // down, and an undone turn resurrects on every reconnect until a hard
+  // reload. Deltas (WS delta frames, poll since-responses) keep using
+  // merge(): they carry tombstone markers for what was deleted.
   const replaceFull = (incoming: any[]) => {
     setItems((prev) => {
       const next = new Map<string, any>()
@@ -328,8 +326,8 @@ function liveSource(ctx: any): Source {
       setStatus(body.status ?? "live")
     } catch (e) {
       // a swallowed flush exception leaves the page half-updated forever
-      // (live-caught: status stuck at its initial value while items
-      // rendered) - always visible
+      // (status stuck at its initial value while items render), so the catch
+      // is always visible
       console.warn("[openshare] data tick failed:", e)
       // transient; WS or the next tick recovers
     }

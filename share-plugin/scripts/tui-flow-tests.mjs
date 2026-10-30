@@ -187,8 +187,8 @@ try {
   mkdirSync(projectDir, { recursive: true })
   // In-process flow calls (saveConfig default target = configHomePath)
   // must NEVER write the real settings home — redirect XDG for the whole
-  // suite process (live-caught: F4 once overwrote the owner's real
-  // openshare.config.json with sandbox values).
+  // suite process, or a flow writes the user's own openshare.config.json
+  // with sandbox values.
   const homeDir = join(sandbox, "xdghome")
   mkdirSync(join(homeDir, "opencode"), { recursive: true })
   process.env.XDG_CONFIG_HOME = homeDir
@@ -356,7 +356,7 @@ try {
     check("F4: $comment preserved", raw.$comment === "keep me")
     check("F4: values written", raw.workerUrl === "https://new.example" && raw.createToken === "tok")
 
-    // F5: write-target rules (owner-directed): default is ALWAYS the
+    // F5: write-target rules: default is ALWAYS the
     // global settings home — never the first existing file in the read
     // chain (the adjacent template must not absorb TUI edits) — and an
     // explicit target is honored. XDG_CONFIG_HOME is suite-redirected
@@ -413,9 +413,9 @@ try {
     check("F6: serverEntries lists it active", entries.some((s) => s.url === WORKER_URL && s.active))
     const rotated = await flows.rotateAtServer(WORKER_URL, savedTok)
     check("F6: rotate issues a new token", rotated.ok === true && rotated.token?.startsWith("osk_") && rotated.token !== savedTok, JSON.stringify(rotated))
-    // persist the rotated token like the real serverMenu rotate handler —
+    // persist the rotated token like the real serverMenu rotate handler;
     // otherwise the engine's credential stays the now-REVOKED token and
-    // every later create is refused (live-caught by F8)
+    // every later create is refused
     flows.saveServerEntry(WORKER_URL, { token: rotated.token })
     const oldMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${savedTok}` } })
     const newMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${rotated.token}` } })

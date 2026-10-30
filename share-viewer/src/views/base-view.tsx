@@ -46,8 +46,7 @@ export type Skin = {
   id: string
   /** false when the skin renders the prompt itself (cinema's slugline,
    *  teletype's wire headline): base-view then renders ONLY the meta line
-   *  inside PromptWrap - without this the prompt text appears twice
-   *  (live-caught on cinema/teletype) */
+   *  inside PromptWrap, or the prompt text appears twice */
   promptInBody?: boolean
   wrappers: SkinWrappers
   // content column class (layout identity)
@@ -347,10 +346,9 @@ export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: n
           {/* PromptNav: ALWAYS present with >1 prompt - the sidebar column
               or the floating pill, never neither (the pill is not
               removable). Rendered INSIDE the flex row so the sidebar
-              variant sits beside the scroller; the pill variant is fixed
-              and ignores flow. children MUST be undefined for Nav-less
-              skins (a <Show> element is always truthy - the empty-popover
-              bug, live-caught twice). */}
+              a text root with text children is not hostable through the slot
+              machinery (the host throws while embedding the payload). Every
+              proven consumer returns a box-rooted tree. */}
           <Show when={visible().length >= (props.navMinTurns ?? 2)}>
             <PromptNav
               only="desktop"

@@ -236,9 +236,9 @@ function StatusLine(props: { status: string }) {
 }
 
 // A subagent page or the main session — same rendering, bound to one session.
-// NOTE: created ONCE by App (never inside a reactive expression that re-runs
-// on data/settings changes — a re-created subtree remounts the settings
-// panel and resets its open state, live-caught).
+// NOTE: created ONCE by App, never inside a reactive expression that re-runs
+// on data/settings changes: a re-created subtree remounts the settings panel
+// and resets its open state.
 function SessionView(props: {
   data: ShareData
   source: ReturnType<typeof useShareSource>
@@ -307,9 +307,9 @@ function SessionView(props: {
               }
               // timezone conversion for the whole session (title toggle)
               const [localTime, setLocalTime] = createSignal(useLocalTime())
-              // focus mode (owner round 2026-10-25): ctrl+click a prompt ->
-              // one turn as an overlay over the still-mounted transcript.
-              // Replaces paged-vs-continuous as the "read one turn" surface.
+              // focus mode: ctrl+click a prompt opens one turn as an overlay
+              // over the still-mounted transcript, the "read one turn" surface
+              // that replaces paged-vs-continuous.
               const [focused, setFocused] = createSignal(false)
               // the parent turn that spawned this child (subagent pages):
               // resolves via the plugin's metadata.sessionID stamp on task
@@ -417,11 +417,11 @@ function SessionView(props: {
               })
 
               // display title: opencode creates child titles as
-              // "description (@agent subagent)" - the suffix carries the
+              // "description (@agent subagent)", and the suffix carries the
               // agent variant which can change mid-session, so it never
-              // belongs in the header. Subagent pages get a plain
-              // "subagent" label instead (owner directive); the title
-              // itself is live from the folded data, so renames propagate.
+              // belongs in the header. Subagent pages get a plain "subagent"
+              // label instead; the title itself is live from the folded data,
+              // so renames propagate.
               const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
               const displayTitle = () => stripSubagentSuffix(info().title ?? "")
               const title = () => (
@@ -483,10 +483,9 @@ function SessionView(props: {
                 </div>
               )
 
-              // search: prompts AND responses (owner decision 2026-10-25 -
-              // unified with the skins' semantics; a turn matches when its
-              // prompt text or any of its responses' text/reasoning/tool
-              // titles contain the query)
+              // search: prompts AND responses, unified with the skins'
+              // semantics; a turn matches when its prompt text or any of its
+              // responses' text/reasoning/tool titles contain the query
               const filtered = createMemo(() => {
                 const q = props.search.trim().toLowerCase()
                 if (!q) return userTurns()
@@ -530,12 +529,10 @@ function SessionView(props: {
               const timelineDoc = () => (searching() ? { ...document(), messages: messages().filter((m) => (m?.type === "user" ? filtered().some((u) => u.id === m.id) : true)) } : document())
 
               // mobile (narrow) layout: paged timeline under the title.
-              // Virtualized like every path — rows outside the viewport
-              // never enter the DOM. GATED on a real media query: a
-              // CSS-hidden duplicate still mounts its own virtualizer and
-              // disclosure store, and rows in the hidden copy swallow
-              // DOM-first queries (live-caught: 6 instances, dead toggles
-              // in automated probes).
+              // Virtualized like every path, so rows outside the viewport
+              // never enter the DOM. GATED on a real media query: a CSS-hidden
+              // duplicate still mounts its own virtualizer and disclosure
+              // store, and rows in the hidden copy swallow DOM-first queries.
               const narrow = createMediaQuery("(max-width: 767px)")
               const turns = () => (
                 <Show when={narrow()}>
@@ -573,14 +570,13 @@ function SessionView(props: {
                   </Show>
                   {/* the chrome bar is hidden for reader: reader's own
                       SkinHeader carries the full row once (branding,
-                      title, version/model/status, copy, GitHub, settings)
-                      - both bars rendered duplicated (live-caught) */}
+                      title, version/model/status, copy, GitHub, settings),
+                      and both bars render duplicated */}
                   <Show when={props.settings.view !== "reader"}>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
                     {/* the brand frame renders ONLY when there is a logo:
-                        with no branding an empty bordered chip showed as a
-                        tiny circle (live-caught) - nothing to show, nothing
-                        rendered */}
+                        with no branding an empty bordered chip shows as a tiny
+                        circle with nothing inside */}
                     <Show when={props.source.branding().logoUrl}>
                       <Show
                         when={props.source.branding().linkUrl}
@@ -598,9 +594,9 @@ function SessionView(props: {
                       </Show>
                     </Show>
                     {/* status sits dead-center of the bar regardless of
-                        siblings (brand chip may or may not exist) - the
-                        flex flow put it far left with no branding, then
-                        far right with ml-auto (live-caught both ways) */}
+                        siblings (the brand chip may or may not exist); in the
+                        flex flow it sat far left without branding and far right
+                        with ml-auto */}
                     <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
                       <StatusLine status={props.source.status()} />
                     </div>
@@ -632,12 +628,11 @@ function SessionView(props: {
                   </header>
                   </Show>
                   {/* NO select-text here: the whole-column rule made padding
-                      and edges selectable, so a press at the far right
-                      (under Edge's floating overlay thumb) started a text
-                      selection UNDER the scrollbar drag. Selection stays
-                      enabled on the content itself - the kit's markdown
-                      rules re-enable it per block, exactly like the
-                      conversation view (owner round 2026-10-25). */}
+                      and edges selectable, so a press at the far right (under a
+                      floating overlay scrollbar thumb) started a text selection
+                      UNDER the scrollbar drag. Selection stays enabled on the
+                      content itself: the kit's markdown rules re-enable it per
+                      block, exactly like the conversation view. */}
                   <div class="osh-content flex flex-col flex-1 min-h-0 relative z-10">
                     <Show when={props.settings.view !== "reader"}>
                     <div
@@ -732,10 +727,10 @@ function SessionView(props: {
                                   focused: the HIDDEN main timeline still
                                   reports its active message when followLive
                                   flips at focus open, stomping the focused
-                                  turn with the bottom-rest message
-                                  (live-caught: next disabled at overlay
-                                  open, the last turn unreachable). The
-                                  overlay owns the selection while up. */}
+                                  turn with the bottom-rest message (next
+                                  disabled at overlay open, the last turn
+                                  unreachable). The overlay owns the selection
+                                  while up. */}
                               <VirtualTimeline
                                 doc={timelineDoc() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID()}
@@ -891,11 +886,11 @@ function SessionView(props: {
             }}
           >
             {/* a REAL component boundary: this body was an IIFE child of
-                DataProvider - any children-slot re-evaluation re-ran the
-                whole body, recreating its createStore (live-caught: the
-                paged rail's selection reset on every click; the view body
-                ran 3x at load). ClassicBody closes over SessionView memos
-                and owns its reactive scope. */}
+                DataProvider, so any children-slot re-evaluation re-ran the
+                whole body and recreated its createStore (the paged rail's
+                selection reset on every click; the view body ran 3x at load).
+                ClassicBody closes over SessionView memos and owns its reactive
+                scope. */}
             <ClassicBody />
           </DataProvider>
           </DialogProvider>
@@ -1030,12 +1025,11 @@ export function App() {
   })
 
   // SMART-SYNC scroll continuity: a real data update (rev bump) rebuilds
-  // the projection; even with in-place row updates the page height can
-  // shift under the reader mid-rebuild and the browser clamps scroll
-  // toward the top (live-caught as "pushed to the top when it finished").
-  // Same capture/reapply as settings changes, driven by data instead:
-  // restore the transcript offset AND the window position unless the
-  // reader is following live at the bottom (the effect above owns that).
+  // the projection; even with in-place row updates the page height can shift
+  // under the reader mid-rebuild and the browser clamps scroll toward the
+  // top. Same capture/reapply as settings changes, driven by data instead:
+  // restore the transcript offset AND the window position unless the reader
+  // is following live at the bottom (the effect above owns that).
   createEffect(() => {
     source.rev()
     const restore = () => {

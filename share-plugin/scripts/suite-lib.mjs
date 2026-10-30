@@ -33,7 +33,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const httpGet = async (url, init = {}) => {
   // 30s default: a fresh sandbox's first request spins the instance,
-  // including provider-npm resolution — 8s aborted mid-init (live-caught)
+  // including provider-npm resolution, and 8s aborts mid-init
   return fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 30000) })
 }
 
@@ -263,9 +263,9 @@ async function startWorker(suiteDir, opts = {}) {
       "npx",
       ["wrangler", "dev", "--config", configPath, "--port", String(port), "--ip", "127.0.0.1",
         // isolated local state: two suite workers (e.g. private + public
-        // auth modes) sharing the default .wrangler/state are literally
-        // the same store — KV + DOs collide across ports (live-caught in
-        // S14: the "public" worker answered with the private one's users)
+        // auth modes) sharing the default .wrangler/state are literally the
+        // same store, so KV + DOs collide across ports (the "public" worker
+        // answers with the private one's users)
         "--persist-to", join(suiteDir, `wrangler-state-${opts.configSuffix ?? "main"}`),
         "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
         // suite-tuned server policy: TURN mode forced (wrangler dev runs
@@ -493,9 +493,9 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}, servePort
   await waitFor(async () => {
     try {
       // /health (NOT /config): 1.18.31 requires the workspace routing
-      // query on /config — bare /config stopped answering ok after an
-      // opencode auto-update (live-caught: every serve spawn "timed out"
-      // while the server was up and fine)
+      // query on /config, and bare /config stops answering ok after an
+      // opencode auto-update (every serve spawn then "times out" while the
+      // server is up and fine)
       return (await httpGet(`${base}/health`)).ok
     } catch {
       return false

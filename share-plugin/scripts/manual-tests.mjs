@@ -343,8 +343,8 @@ try {
     }, "S6: override share completes")
     const osession = await (await httpGet(`${serve3.base}/session/${osid}`)).json()
     const ob = osession?.metadata?.openshare
-    // Since the live-caught consent-on-shared-session fix, bindings are
-    // enabled:true in BOTH modes (live <=> url && enabled !== false).
+    // Bindings are enabled:true in BOTH modes (live <=> url && enabled !==
+    // false), so a shared session never re-consents.
     check("S6: all-mode binding carries enabled:true", !!bindingUrlOf(ob) && ob.enabled === true, JSON.stringify(ob))
   } finally {
     await stopServe(serve3);
@@ -460,8 +460,7 @@ try {
   // S9: undo tombstones — revert marks (viewer hides), the NEXT prompt
   // hard-deletes the reverted range (message.removed / part.removed).
   // The share must PHYSICALLY drop those items: without tombstones the
-  // upsert-only worker keeps them and they reappear when the marker
-  // clears (live-caught in production 2026-10-18).
+  // upsert-only worker keeps them and they reappear when the marker clears.
   {
     const s9Sandbox = join(suiteDir, "undo")
     const s9Project = join(s9Sandbox, "project")
@@ -658,8 +657,8 @@ try {
 
       // terminal error path: mock LLM hard-fails every request; opencode
       // retries with backoff (~68s for 5 attempts) and the turn dies as
-      // an assistant message with finish:"error" (a 200, not session.error
-      // — live-caught); the share must still say error
+      // an assistant message with finish:"error" (a 200, not session.error);
+      // the share must still say error
       const linesBeforeFail = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
       {
         const created = await httpGet(`${stServe.base}/session`, {

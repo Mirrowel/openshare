@@ -142,10 +142,10 @@ export function SkinHeader(props: {
 }) {
   const view = useView()
   return (
-    // the flex layout is ALWAYS applied (a skin forgetting `flex
-    // items-center justify-between` in its class once stacked the
-    // clusters as plain divs - live-caught on casefile); skin classes
-    // only carry height/padding/border/background/font identity
+    // the flex layout is ALWAYS applied (a skin that forgets `flex
+    // items-center justify-between` in its class stacks the clusters as plain
+    // divs); skin classes only carry height/padding/border/background/font
+    // identity
     <header class={`${props.class ?? "h-9 px-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30"} flex items-center justify-between gap-3`}>
       <div class={props.leadClass ?? "flex items-center gap-2 min-w-0"}>
         <Show when={view.isSub()}>

@@ -163,11 +163,11 @@ function estimatedVisualRows(message: string, width: number) {
   return message.split(/\r?\n/).reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / Math.max(1, width))), 0)
 }
 
-/** Deterministic character-level pre-wrap (parity lesson: opentui's
- * word wrap cannot break unbreakable tokens like a JSON policy blob, so
- * "wrapped" text still escaped the dialog border — live-caught). Both the
- * [i] pane and InfoDialog render THESE lines; the row estimate uses the
- * same output, so heights match what renders. */
+/** Deterministic character-level pre-wrap: opentui's word wrap cannot
+ * break unbreakable tokens like a JSON policy blob, so "wrapped" text still
+ * escapes the dialog border. Both the [i] pane and InfoDialog render THESE
+ * lines; the row estimate uses the same output, so heights match what
+ * renders. */
 export function preWrap(text: string, width: number): string[] {
   const out: string[] = []
   for (const raw of text.split(/\r?\n/)) {
@@ -229,10 +229,9 @@ function InfoLines(props: { api: TuiPluginApi; lines: string[] }): JSX.Element {
   )
 }
 
-/** title column cap (family menuTitleWidth, live-caught need: a server URL
- * as a row title stretched the column toward half the dialog — the owner
- * capped it further: full URLs belong in the [i] pane, not the row).
- * Capped + ellipsized. */
+/** Title column cap (family menuTitleWidth): a server URL as a row title
+ * would otherwise stretch the column toward half the dialog. Full URLs
+ * belong in the [i] pane, not the row. Capped and ellipsized. */
 function menuTitleWidth(width: DialogWidth, options: readonly { title: string }[]) {
   const longest = Math.max(0, ...options.map((option) => option.title.length)) + 2
   if (width === "xlarge") return Math.min(Math.max(20, longest), 28)
@@ -246,13 +245,12 @@ function ellipsize(text: string, width: number) {
 
 /** OpenShare visual frame: rounded accent border + accent title row. The
  * logic inside the menus stays the ported family pattern; this wrapper is
- * purely presentation (owner-preferred styling). Natural width — the host
- * dialog panel provides the container; the border hugs the content. */
-// Frame note (live-caught): the HOST dialog panel renders plugin content
-// with paddingTop=1 (opencode dialog.tsx), so a BORDERED frame always
-// showed a dead panel strip above its top border. Borderless family
-// shape + a solid accent rule under the title: zero dead space, accent
-// identity kept.
+ * purely presentation. Natural width: the host dialog panel provides the
+ * container and the border hugs the content. */
+// Frame note: the HOST dialog panel renders plugin content with
+// paddingTop=1 (opencode dialog.tsx), so a BORDERED frame always shows a
+// dead panel strip above its top border. Borderless family shape plus a
+// solid accent rule under the title: zero dead space, accent identity kept.
 function DialogFrame(props: { api: TuiPluginApi; title: string; children: JSX.Element }): JSX.Element {
   const theme = () => props.api.theme.current
   return (
@@ -323,8 +321,8 @@ export function MenuDialog<Value>(props: {
   const dimensions = useTerminalDimensions()
   const listHeight = createMemo(() => cappedHeight(props.options.length, maxRows(props.api, dimensions().height, 12, 4), 4))
   // fixed title column shared by every row (family menuTitleWidth): flex
-  // columns stagger per-row because flex splits by content — a computed
-  // width is what makes the value/description column align (live-caught).
+  // columns stagger per row because flex splits by content, so a computed
+  // width is what makes the value/description column align.
   const width = dialogWidthOf(props.api)
   const titleWidth = createMemo(() => menuTitleWidth(width, props.options))
   const hasHelp = createMemo(() => props.options.some((option) => option.help))
@@ -352,8 +350,8 @@ export function MenuDialog<Value>(props: {
     })
   // [i] pane sections: "## Header" lines in help split sections; the pane
   // height comes from the CONTENT (pre-wrapped rows), capped by the same
-  // dialog metrics — no longer bound to the spawning menu's list height
-  // (live-caught: a 3-row menu gave a 3-row info pane).
+  // dialog metrics rather than the spawning menu's list height (which gave
+  // a 3-row menu a 3-row info pane).
   const helpSections = createMemo(() => {
     const raw = current()?.help ?? ""
     const sections: Array<{ title: string; lines: string[] }> = [{ title: "", lines: [] }]
@@ -602,11 +600,10 @@ function claimDialog(api: TuiPluginApi): () => void {
   pendingDialog = release
   return release
 }
-/** showMenuOnce, family discipline with the flicker fix (2026-10-19):
- * done() does NOT clear the host stack — the next dialog's replace() is an
- * atomic swap, so clearing first paints one empty frame (the esc-to-parent
- * flicker, live-caught). Chain ends clear explicitly (command exits,
- * settings exit). */
+/** showMenuOnce, family discipline: done() does NOT clear the host stack,
+ * because the next dialog's replace() is an atomic swap and clearing first
+ * paints one empty frame (the esc-to-parent flicker). Chain ends clear
+ * explicitly (command exits, settings exit). */
 export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; options: MenuOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined> {
   return new Promise((resolve) => {
     let settled = false
@@ -627,11 +624,11 @@ export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; o
 }
 
 // --- InfoDialog (config-studio port): a real message body ----------------------
-// Content-derived height, pre-wrapped (char-level — word wrap cannot break
+// Content-derived height, pre-wrapped (char-level: word wrap cannot break
 // JSON blobs), semantically styled lines, page/home/end keys, and an action
-// footer with buttons + key shortcuts. Replaces the hint-as-message menus
-// for confirm/alert (whose single overflow-hidden line clipped destructive
-// prompts mid-URL — live-caught).
+// footer with buttons + key shortcuts. Replaces the hint-as-message menus for
+// confirm/alert, whose single overflow-hidden line clipped destructive
+// prompts mid-URL.
 
 export type DialogAction = { title: string; value: string; key?: string; danger?: boolean }
 
@@ -772,9 +769,9 @@ export function showAlertMenu(api: TuiPluginApi, props: { title: string; message
 
 // --- prompt (text entry — the one custom piece) -------------------------------
 
-// Full printable ASCII (parity fix, live-caught class: the lowercase-only
-// set made uppercase CREATE_TOKENs and codes UNTYPEABLE). Space is bound
-// separately below; escape is the back binding, so it's excluded.
+// Full printable ASCII: a lowercase-only set makes uppercase
+// CREATE_TOKENs and codes UNTYPEABLE. Space is bound separately below;
+// escape is the back binding, so it is excluded.
 const PROMPT_CHARS = [
   ..."abcdefghijklmnopqrstuvwxyz",
   ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ",

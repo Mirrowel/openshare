@@ -187,9 +187,8 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   line-height: var(--line-height-large, 1.5);
 }
 
-/* task/subagent cards: NO outline (owner round 2026-10-26 - the
-   rectangle goes, the rounded background stays; see .osh-task-wrap
-   block for the full hint treatment) */
+/* task/subagent cards: NO outline (the rectangle goes, the rounded
+   background stays; see .osh-task-wrap block for the full hint treatment) */
 
 /* tool output blocks keep v1 breathing room below */
 [data-component="tool-output"] {
@@ -229,21 +228,20 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 [data-row-key] [data-component="tool-output"] {
   content-visibility: visible;
 }
-/* Scroll containment: NONE by default (owner rule) - the browser default
-   captures the wheel only when a surface actually scrolls in that
-   direction and chains to the page otherwise. Horizontal-only scrollers
-   (the split diff) contain their X axis so trackpad sideways never nudges
-   the page, while vertical wheel always chains. Live-caught: blanket
-   `overscroll-behavior: contain` on tool surfaces locked page scroll even
-   when nothing could scroll (read/edit/shell locked, write - never in the
-   list - worked). */
+/* Scroll containment: NONE by default - the browser default captures the
+   wheel only when a surface actually scrolls in that direction and chains
+   to the page otherwise. Horizontal-only scrollers (the split diff) contain
+   their X axis so trackpad sideways never nudges the page, while vertical
+   wheel always chains. Blanket `overscroll-behavior: contain` on tool
+   surfaces locks page scroll even when nothing can scroll: read, edit and
+   shell bodies locked it, while write (never in that list) worked. */
 /* --- reading rhythm ---------------------------------------------------
    Row spacing lives HERE, keyed by the data-timeline-spacing attribute the
    kit's Frame already emits. Never via tailwind classes forked into the
    vendor tree: arbitrary classes there are never generated (kit CSS is
-   prebuilt upstream; the viewer's tailwind does not scan vendor/) -
-   live-caught when every spacing fork silently did nothing AND removed
-   upstream's pt-2/pt-4, collapsing the transcript into soup.
+   prebuilt upstream; the viewer's tailwind does not scan vendor/), so a
+   spacing fork silently does nothing while also removing upstream's
+   pt-2/pt-4 and collapsing the transcript into soup.
    Upstream emits BOTH its pt-2/pt-4 classes and the data-timeline-spacing
    attribute; these UNLAYERED rules win the cascade over tailwind's
    @layer utilities regardless of specificity (app.css @source-scans the
@@ -325,9 +323,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 
 /* Rails live on the ROW WRAPPER (tool-part-wrapper), never on the inner
    trigger: the kit renders reasoning through a nested BasicTool, so a
-   trigger-level rule indented thoughts TWICE and leaked into group
-   children (the "Used N" slide, live-caught). 1px hairline, not a colored
-   stripe. Tool rows step in 14px; thought rows sit at 6px with no rail. */
+   trigger-level rule indents thoughts TWICE and leaks into group children
+   (the "Used N" slide). 1px hairline, not a colored stripe. Tool rows step
+   in 14px; thought rows sit at 6px with no rail. */
 [data-timeline-row] [data-component="tool-part-wrapper"],
 [data-row-key] [data-component="tool-part-wrapper"],
 .osh-entries [data-component="tool-part-wrapper"] {
@@ -384,12 +382,11 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   overflow-wrap: anywhere;
   max-height: 32rem;
   overflow: auto;
-  /* NO overscroll-behavior here, ever: `contain` on a box that is a
-     scroll container in Y (overflow:auto) blocks vertical wheel chaining
-     EVEN WHEN NOTHING CAN SCROLL (live-caught: grep bodies locked page
-     scroll in both overflow modes). The browser default chains exactly
-     per the owner rule - capture only when the surface actually scrolls
-     vertically. The split diff keeps its X-only contain. */
+  /* NO overscroll-behavior here, ever: `contain` on a box that is a scroll
+     container in Y (overflow:auto) blocks vertical wheel chaining EVEN WHEN
+     NOTHING CAN SCROLL. The browser default already chains correctly, so
+     containment belongs only on surfaces that actually scroll vertically.
+     The split diff keeps its X-only contain. */
 }
 .osh-pre-error {
   color: var(--syntax-diff-delete);
@@ -479,10 +476,10 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
      stretched to a fixed box */
   min-width: 15rem;
   padding-right: 0;
-  /* outputs HUG their content (owner directive): a plain block fills the
-     row width - the toggle floated to the far-right edge of the page and
-     short outputs showed a wide empty surface (live-caught on grep; the
-     kit's bash-output width:100% did the same to shell). Cap applies. */
+  /* outputs HUG their content: a plain block fills the row width, which
+     floats the toggle to the far-right edge of the page and leaves short
+     outputs as a wide empty surface (the kit's bash-output width:100% does
+     the same to shell). The cap applies. */
   width: fit-content;
   max-width: min(100%, 75vw);
 }
@@ -558,7 +555,7 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   flex: none;
   color: var(--text-weaker);
 }
-/* --- file-card sizing (owner round 2026-10-25) --------------------------
+/* --- file-card sizing --------------------------------------------------
    ONE fixed card width for the whole file family: read, write and
    unified edit all render at --osh-card (30rem); a split diff renders at
    exactly 2x, so the first column NEVER changes size when toggling
@@ -568,8 +565,8 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
    pierre scroller used to poison the measurement and refuse the split
    forever). */
 :root {
-  /* +20% (owner round 2026-10-26): unified/text file cards render wider;
-     split = 2x the same token, still viewport-capped */
+  /* unified/text file cards render wider; split = 2x the same token, still
+     viewport-capped */
   /* file-card width; applySettings overrides live from the cardWidth
      setting (rem) - this is the pre-paint default */
   --osh-card: 40rem;
@@ -656,8 +653,8 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 /* --- prompt bubble + meta row (parity with the pre-update viewer) --------
    The kit update moved the bubble one surface up (layer-02) and shrank the
    metadata line to 12px faint with the whole footer fading in on hover.
-   Keep both as the older viewer rendered them: the darker bubble surface,
-   a 13px body-coloured meta line, always visible (owner verified A/B). */
+   Keep both as the older viewer rendered them: the darker bubble surface and
+   a 13px body-coloured meta line, always visible. */
 :root body [data-timeline-row] [data-component="user-message"] [data-slot="user-message-text"],
 :root body [data-timeline-row] .osh-content [data-component="user-message"] [data-slot="user-message-text"] {
   background: var(--v2-background-bg-layer-01);
@@ -671,10 +668,10 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   color: var(--text-weak);
 }
 /* The hover footer is a 20px box (kit) holding 13px text; at 13/16 the
-   descenders sat hard against the box edge and the last line read as cut
-   off. Give the box its natural height and a hair of slack, and reserve
-   2px under any text part that owns a footer so the hover line never
-   touches the next row (owner: "the prompt and last msg need 1px more"). */
+   descenders sit hard against the box edge and the last line reads as cut
+   off. Give the box its natural height and a hair of slack, and reserve 2px
+   under any text part that owns a footer so the hover line never touches
+   the next row. */
 :root body [data-slot="text-part-copy-wrapper"] {
   height: auto;
   min-height: 20px;
@@ -718,7 +715,7 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 
 /* The shell command was monospace after the kit update, which widened every
    row by roughly a quarter and read heavier than the rest of the trigger
-   line. Keep it on the sans face like the other tool titles (owner A/B). */
+   line. Keep it on the sans face like the other tool titles. */
 :root body [data-timeline-row] [data-slot="shell-submessage-value"],
 :root body [data-row-key] [data-slot="shell-submessage-value"] {
   font-family: var(--font-family-sans);
@@ -727,12 +724,12 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
 /* --- prompt style: bubble (default) or flat ------------------------------
    Flat unhooks the kit's right-aligned chat bubble at the ROW level:
    every user message renders full-width at the left with an accent
-   chevron marker and medium weight. Row+body both forced (the kit has
-   two user-message variants and a body-only override left half of them
-   right-bound, owner-caught); !important because the kit's own rules
-   are :root[data-color-scheme] body [attr] [attr] (4 attributes).
-   No background band: the marker alone distinguishes a prompt
-   (owner round 2026-10-25). Unlayered so it beats the kit's @layer. */
+   chevron marker and medium weight. Row and body both forced (the kit has
+   two user-message variants, and a body-only override leaves half of them
+   right-bound); !important because the kit's own rules are
+   :root[data-color-scheme] body [attr] [attr] (4 attributes). No background
+   band: the marker alone distinguishes a prompt. Unlayered so it beats the
+   kit's @layer. */
 html[data-osh-prompts="flat"] body [data-component="user-message"] {
   justify-content: flex-start !important;
   align-items: flex-start !important;
@@ -887,9 +884,9 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="u
 }
 
 /* --- light-mode readability floor ----------------------------------------
-   The kit's light tokens ship --text-weaker at 1.6:1 on white (meta text
-   nearly invisible - owner-caught). Forced themes carry the fix from
-   build-themes.mjs; this rule covers SYSTEM-light (no forced block). */
+   The kit's light tokens ship --text-weaker at 1.6:1 on white, so meta text
+   is nearly invisible. Forced themes carry the fix from build-themes.mjs;
+   this rule covers SYSTEM-light (no forced block). */
 html[data-color-scheme="light"] {
   --text-weak: #767676;
   --text-weaker: #9e9e9e;
@@ -987,10 +984,10 @@ html[data-color-scheme="light"] {
   color: var(--openshare-accent, var(--accent, var(--text-strong)));
 }
 /* entry slots are transparent under skins that need direct grid children
-   (grove's 2-column turn body; atlas's sheet grid - without this the
-   wrapper divs become the grid's direct children, auto-placement
-   alternates them across columns and the rail lands inline before the
-   first station - live-caught); everywhere else they are plain blocks */
+   (grove's 2-column turn body; atlas's sheet grid: without this the wrapper
+   divs become the grid's direct children, auto-placement alternates them
+   across columns and the rail lands inline before the first station);
+   everywhere else they are plain blocks */
 [data-view="grove"] .osh-entry-slot,
 [data-view="atlas"] .osh-entry-slot {
   display: contents;
@@ -1013,8 +1010,8 @@ html[data-color-scheme="light"] {
 /* The kit's expanded tool-group header is position:sticky (its own scroll
    flow). Inside our absolutely-positioned virtualized rows the sticky
    context is the group wrapper, so the header floats with the viewport
-   until the group ends and pins over the last tool call (live-caught).
-   Neutralize - the virtualizer already keeps geometry correct. */
+   until the group ends and pins over the last tool call. Neutralize: the
+   virtualizer already keeps geometry correct. */
 [data-timeline-row] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"],
 [data-row-key] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"] {
   position: static;
@@ -1264,17 +1261,16 @@ mark.osh-search-hit.osh-search-hit-active {
 
 
 /* glob/grep/list rows inside a context group render through the kit's
-   special compact branch (a bare tool-trigger, no BasicTool wrapper) -
-   every other group child gets BasicTool's padding, these rendered flush
-   left (live-caught: Glob missing the group indent). Match the indent. */
+   special compact branch (a bare tool-trigger, no BasicTool wrapper), while
+   every other group child gets BasicTool's padding; without this they
+   render flush left and lose the group indent. Match the indent. */
 [data-slot="context-tool-group-item"] > [data-component="tool-trigger"] {
   margin-left: 12px;
 }
 
 /* reasoning fallback (defer=false renders plain text instantly, rich
    markdown swaps in when the worker finishes): match the markdown's
-   typography so the swap is invisible instead of a visible "snap"
-   (live-caught: line spacing changed on arrival) */
+   typography so the swap is invisible instead of a visible spacing snap */
 [data-component="reasoning-part"] [data-slot="collapsible-content"] > pre,
 .osh-reasoning-fallback {
   font-size: 14px;
@@ -1284,10 +1280,10 @@ mark.osh-search-hit.osh-search-hit-active {
 }
 
 /* Toggle anchoring: the browser may not pick scroll anchors INSIDE
-   collapsible bodies - growing content (a diff accordion opening near the
-   top) then pushed its own title up out of view (live-caught). With no
-   anchor inside the growing subtree, growth extends downward and the
-   viewport stays. Close-side compensation lives in toggle-anchor.ts. */
+   collapsible bodies, so growing content (a diff accordion opening near the
+   top) can push its own title up out of view. With no anchor inside the
+   growing subtree, growth extends downward and the viewport stays.
+   Close-side compensation lives in toggle-anchor.ts. */
 [data-slot="collapsible-content"],
 [data-slot="collapsible-content"] * {
   overflow-anchor: none;
@@ -1300,13 +1296,13 @@ mark.osh-search-hit.osh-search-hit-active {
   white-space: nowrap;
 }
 
-/* the prompt-rail margin (owner round 2026-10-25, classic view only):
-   content text starts at indent + the row's own 24px padding; the pill
-   spans 8-38px at the viewport edge. 0.75x = 18px puts the first text at
-   42px - pill right (38) + 4px clearance, no free space beyond it */
+/* the prompt-rail margin (classic view only): content text starts at
+   indent + the row's own 24px padding; the pill spans 8-38px at the
+   viewport edge. 0.75x = 18px puts the first text at 42px - pill right
+   (38) + 4px clearance, no free space beyond it */
 .osh-indent {
-  /* pill mode: the capsule clears the floating pill (measured: text at
-     35px, pill right 28 -> 7px gap; owner round 2026-10-27) */
+  /* pill mode: the capsule clears the floating pill (text at 35px, pill
+     right edge 28px, so a 7px gap) */
   padding-left: 11px !important;
 }
 /* sidebar mode: the sidebar-to-content gap is HALVED to 14px (owner
@@ -1326,9 +1322,9 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 /* HoverRail v4: floating pill (no gutter column). Popover opens only
    from the pill, scale+slide in from it, 150ms. Rest opacity is inline
    (0.4 rest / 1 near). */
-/* the popover is vertically CENTERED on the pill (owner round 2026-10-25:
-   bottom-aligned read as detached); the translateY lives INSIDE the
-   keyframes so the entry animation never fights the centering */
+/* the popover is vertically CENTERED on the pill (bottom-aligned reads as
+   detached); the translateY lives INSIDE the keyframes so the entry
+   animation never fights the centering */
 @keyframes osh-rail-pop-in {
   from {
     opacity: 0;
@@ -1463,8 +1459,8 @@ html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
   user-select: none;
 }
 /* the clipped fade belongs to shell and text cards only: a file card marks
-   clipping with chevrons, and the fade painted a dark band over its last
-   lines (live-caught) */
+   clipping with chevrons, and the fade paints a dark band over its last
+   lines */
 [data-osh-out]:not([data-osh-out="file"])[data-osh-clipped]::after {
   content: "";
   position: absolute;
@@ -1579,7 +1575,7 @@ html[data-osh-preview-hover] .osh-out-grip::after {
   background: var(--openshare-accent, var(--icon-strong-base));
 }
 
-/* --- subagent "running" animation (owner round 2026-10-29) ---------------
+/* --- subagent "running" animation -------------------------------------
    A soft sweep crosses the card while a thin glow rides the bottom edge.
    Both pseudos travel the same distance over the same duration with the
    same easing, so they move as one; the sweep starts fully outside the card

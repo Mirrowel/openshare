@@ -237,9 +237,9 @@ try {
 
   if (RUN_PUBLIC) {
     // ---- P5: public server — zero-config shares ANONYMOUSLY ----------------
-    // (no silent auto-enroll, owner directive: a public server with no
-    // configured code/token shares without an account; the ask-once TUI
-    // flow is where onboarding happens)
+    // (no silent auto-enroll: a public server with no configured code/token
+    // shares without an account; the ask-once TUI flow is where onboarding
+    // happens)
     console.log("starting public-mode worker…")
     worker2 = await startBackend(suiteDir, { port: W2_PORT, configSuffix: "enroll-pub", name: "enroll-b2", authMode: "public", vars: { AUTH_MODE: "public" } })
     let s = await startServe(variant("enroll5", opts(W2_URL)), suiteDir, projectDir, { OPENSHARE_W1_URL: W2_URL, ...NEUTRAL_ROOT, OPENSHARE_URL_FILE: urlFile })

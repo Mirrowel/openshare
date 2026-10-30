@@ -34,8 +34,8 @@ export function setVendoredData(d: ShareData | undefined, nav?: VendoredNav) {
 
 // per-entry open state for composed views. MUST be a reactive STORE, not a
 // Map: Solid cannot track plain Map reads inside JSX, so onOpenChange(false)
-// never re-rendered and rows could not be collapsed again (live-caught on
-// every composed view after the controlled-open change).
+// never re-rendered and rows could not be collapsed again, on every composed
+// view after the controlled-open change.
 const [partOpen, setPartOpen] = createStore<Record<string, boolean | undefined>>({})
 armToggleAnchor()
 
@@ -73,8 +73,8 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
               status={props.entry.status}
               // failed calls must read as failures in every view: ToolDisplay
               // swaps in the error card when status="error" AND error is set
-              // (classic passes the same via currentToolError - live-caught:
-              // reader showed failed reads as ordinary ones)
+              // (classic passes the same via currentToolError, or reader shows
+              // failed reads as ordinary ones)
               error={
                 props.entry.state?.status === "error"
                   ? typeof props.entry.state?.error === "string"

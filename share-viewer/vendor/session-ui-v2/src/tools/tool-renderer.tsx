@@ -553,21 +553,20 @@ export function CurrentContextToolGroup(props: {
 
       const previous = groups.at(-1)
 
-      // openshare fork: file-change tools NEVER merge with each other -
-      // each edit/write/patch renders as its own expandable card inside
-      // the group, exactly like every other tool (owner directive)
+      // openshare fork: file-change tools NEVER merge with each other - each
+      // edit/write/patch renders as its own expandable card inside the group,
+      // exactly like every other tool
       if (isFileChangeTool(tool)) {
         groups.push([tool])
 
         return groups
       }
 
-      // openshare fork: reads no longer merge inside a context group -
-      // the merged array rendered through one ToolDisplay row showing
-      // only the first tool (live-caught: "Used 4 Read" expanded to a
-      // single row). Reads stay individual expandable rows, like every
-      // other grouped tool (owner directive). CurrentReadToolGroup is
-      // bypassed below either way.
+      // openshare fork: reads no longer merge inside a context group - the
+      // merged array rendered through one ToolDisplay row showing only the
+      // first tool ("Used 4 Read" expands to a single row). Reads stay
+      // individual expandable rows, like every other grouped tool;
+      // CurrentReadToolGroup is bypassed below either way.
 
       if (
         tool.name === "skill" &&
@@ -749,7 +748,7 @@ export function CurrentContextToolGroup(props: {
                           }
                         >
                           <Show
-                            when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches could never expand (live-caught). ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}
+                            when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches can never expand. ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}
                             fallback={
                               <Show
                                 when={
@@ -757,7 +756,7 @@ export function CurrentContextToolGroup(props: {
                                 }
                                 fallback={
                                   <Show
-                                    when={false /* openshare fork: file-change tools render as their own ToolDisplay cards (owner directive: grouping groups individual tools) - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}
+                                    when={false /* openshare fork: file-change tools render as their own ToolDisplay cards - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}
                                     fallback={
                                       <ToolDisplay
                                         id={tool().id}
