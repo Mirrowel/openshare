@@ -355,21 +355,48 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: the markdown projection resource must not reject when the
-// worker is unavailable (offline snapshot files on file://) — the fetcher
-// falls back to the escaped-text projection instead of erroring the
-// resource into the render boundary.
+// vendor fork: NO silent degradation. A markdown block that fails is an
+// error, not a quiet plain-text swap: the reason is logged with its stack
+// and the failure reaches the render boundary, which shows the trace.
+// (The projection fetcher is left upstream-exact for the same reason.)
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes("openshare fork: a worker-less environment")) {
+    if (!s.includes("openshare fork: a failed block is an error")) {
       const before = s
-      s = s.replace(
-        /    \(src\) => projectMarkdown\(src\.key, src\.text, src\.live\),/,
-        `    (src) =>\n      // openshare fork: a worker-less environment (offline snapshot file\n      // on file://) rejects — render the escaped-text projection instead\n      // of letting the resource error reach the boundary\n      projectMarkdown(src.key, src.text, src.live).catch(() => completedProjection(src.text)),`,
-      )
-      if (s === before) throw new Error("vendor-v2: markdown.tsx projection fetcher anchor missing - upstream drifted")
+      const anchor = [
+        "        .catch(",
+        "          () =>",
+        "            (lifetime.signal.aborted",
+        "              ? { text: src.text, blocks: [], ready: false }",
+        "              : {",
+        "                  text: src.text,",
+        "                  ready: true,",
+        "                  blocks: [",
+        "                    {",
+        '                      key: base ?? "fallback",',
+        '                      mode: "full" as const,',
+        "                      raw: src.text,",
+        '                      hash: checksum(src.text) ?? "",',
+        "                      html: fallback(src.text),",
+        "                    },",
+        "                  ],",
+        "                }) satisfies RenderResult,",
+        "        )",
+      ].join("\n")
+      const replacement = [
+        "        // openshare fork: a failed block is an error, not a silent",
+        "        // plain-text fallback - keep only the aborted case (row unmounted)",
+        "        .catch((error: unknown) => {",
+        "          if (lifetime.signal.aborted) return { text: src.text, blocks: [], ready: false } satisfies RenderResult",
+        '          console.error("[openshare] markdown block failed:", error)',
+        "          throw error",
+        "        })",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: markdown.tsx settled-block fallback anchor missing - upstream drifted")
+      s = s.replace(anchor, replacement)
+      if (s === before) throw new Error("vendor-v2: markdown.tsx error-for-fallback fork failed")
       writeFileSync(p, s)
     }
   }
@@ -469,13 +496,26 @@ function mainThreadWorker(): Worker {
 `
       s = s.replace("export function parseMarkdown(text: string, signal: AbortSignal) {\n", helper + "export function parseMarkdown(text: string, signal: AbortSignal) {\n")
       // workers unavailable -> main-thread instead of unavailable errors
+      // workers unavailable -> main-thread instead of unavailable errors.
+      // The shim MUST get the same onmessage handler as a real worker: the
+      // handler is attached after this block, so the shim path has to fall
+      // through instead of returning early (it never received a single reply).
       const workerTry = `  try {\n    worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })\n  } catch (error) {`
-      const snapshotTry = '  // offline snapshot files and data: module pages cannot run workers\n  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) return mainThreadWorker()\n' + workerTry
+      const snapshotTry =
+        '  // offline snapshot files and data: module pages cannot run workers\n' +
+        '  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) {\n' +
+        '    worker = mainThreadWorker()\n' +
+        '  } else {\n' +
+        '    try {\n' +
+        '      worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })\n' +
+        '    } catch {\n' +
+        '      worker = mainThreadWorker()\n' +
+        '    }\n' +
+        '  }\n' +
+        '  if (!worker) throw new MarkdownWorkerUnavailableError("markdown worker unavailable")\n'
       if (s.includes(workerTry)) s = s.replace(workerTry, snapshotTry)
-      const catchAnchor = `  } catch (error) {\n    disabled = error instanceof Error ? error : new Error(String(error))\n    throw new MarkdownWorkerUnavailableError(disabled.message)\n  }`
-      if (s.includes(catchAnchor)) {
-        s = s.replace(catchAnchor, `  } catch {\n    // openshare fork: no workers offline (file:// snapshots) - run in-page\n    return mainThreadWorker()\n  }`)
-      }
+      const catchAnchor = `    disabled = error instanceof Error ? error : new Error(String(error))\n    throw new MarkdownWorkerUnavailableError(disabled.message)\n  }`
+      if (s.includes(catchAnchor)) s = s.replace(catchAnchor, "")
       const guard = `// openshare fork: getWorker() THROWS synchronously once the worker is\n// known-unavailable (offline snapshot files run from file://, where\n// Worker construction throws SecurityError). The exports below turn\n// that throw into a normal promise rejection so consumers take their\n// fallback paths instead of the render boundary dying mid-effect.\nfunction workerOrNull(): Worker | null {\n  try {\n    return getWorker()\n  } catch {\n    return null\n  }\n}\n\n`
       s = s.replace("export function parseMarkdown(text: string, signal: AbortSignal) {\n", guard + "export function parseMarkdown(text: string, signal: AbortSignal) {\n")
       s = s.replace(

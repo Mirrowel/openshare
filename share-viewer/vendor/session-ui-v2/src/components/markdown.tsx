@@ -666,11 +666,7 @@ export function Markdown(
 
       return { key: owner, text: local.text, live }
     },
-    (src) =>
-      // openshare fork: a worker-less environment (offline snapshot file
-      // on file://) rejects — render the escaped-text projection instead
-      // of letting the resource error reach the boundary
-      projectMarkdown(src.key, src.text, src.live).catch(() => completedProjection(src.text)),
+    (src) => projectMarkdown(src.key, src.text, src.live),
     { initialValue: pendingProjection("") },
   )
 
@@ -795,24 +791,13 @@ export function Markdown(
         }),
       )
         .then((blocks) => ({ text: src.text, blocks, ready: true }) satisfies RenderResult)
-        .catch(
-          () =>
-            (lifetime.signal.aborted
-              ? { text: src.text, blocks: [], ready: false }
-              : {
-                  text: src.text,
-                  ready: true,
-                  blocks: [
-                    {
-                      key: base ?? "fallback",
-                      mode: "full" as const,
-                      raw: src.text,
-                      hash: checksum(src.text) ?? "",
-                      html: fallback(src.text),
-                    },
-                  ],
-                }) satisfies RenderResult,
-        )
+        // openshare fork: a failed block is an error, not a silent
+        // plain-text fallback - keep only the aborted case (row unmounted)
+        .catch((error: unknown) => {
+          if (lifetime.signal.aborted) return { text: src.text, blocks: [], ready: false } satisfies RenderResult
+          console.error("[openshare] markdown block failed:", error)
+          throw error
+        })
     },
     { initialValue: initial },
   )

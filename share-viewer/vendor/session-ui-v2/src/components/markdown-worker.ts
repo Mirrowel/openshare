@@ -217,13 +217,18 @@ function getWorker() {
   if (disabled) throw new MarkdownWorkerUnavailableError(disabled.message)
 
   // offline snapshot files and data: module pages cannot run workers
-  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) return mainThreadWorker()
-  try {
-    worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })
-  } catch {
-    // openshare fork: no workers offline (file:// snapshots) - run in-page
-    return mainThreadWorker()
+  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) {
+    worker = mainThreadWorker()
+  } else {
+    try {
+      worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })
+    } catch {
+      worker = mainThreadWorker()
+    }
   }
+  if (!worker) throw new MarkdownWorkerUnavailableError("markdown worker unavailable")
+
+
 
   worker.onmessage = (event: MessageEvent<MarkdownWorkerResponse>) => {
     if (event.data.type === "parse") {

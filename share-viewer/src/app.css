@@ -670,6 +670,22 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   font-size: 13px;
   color: var(--text-weak);
 }
+/* The hover footer is a 20px box (kit) holding 13px text; at 13/16 the
+   descenders sat hard against the box edge and the last line read as cut
+   off. Give the box its natural height and a hair of slack, and reserve
+   2px under any text part that owns a footer so the hover line never
+   touches the next row (owner: "the prompt and last msg need 1px more"). */
+:root body [data-slot="text-part-copy-wrapper"] {
+  height: auto;
+  min-height: 20px;
+  padding-bottom: 2px;
+}
+:root body [data-slot="text-part-meta"] {
+  line-height: 18px;
+}
+:root body [data-component="text-part"]:has([data-slot="text-part-copy-wrapper"]) {
+  padding-bottom: 2px;
+}
 :root body [data-slot="text-part-meta"] :where(span, time) {
   font-size: 13px;
   color: var(--text-weak);

@@ -1,5 +1,5 @@
 vendored from github.com/anomalyco/opencode (downloaded at the PIN in scripts/vendor-v2.mjs)
 git: c1b5f1b416c2bff799a4be6a75d640e9ba28d42f (anomalyco/opencode@c1b5f1b416)
-date: 2026-10-30T13:08:10.658Z
+date: 2026-10-30T14:34:06.038Z
 regenerate: npm run vendor  (downloads the pin; OPENSHARE_BETA_SRC=<checkout> overrides)
 patches + ritual: VENDOR.md

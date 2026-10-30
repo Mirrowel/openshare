@@ -137,11 +137,14 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
   const iconChunk = new Map()
   const iconNameOf = new Map()
   const entryText = (await readOnce(entryNames[0])) ?? ""
-  for (const m of entryText.matchAll(/"\.\.\/assets\/icons\/file-types\/([a-z0-9_.+-]+)\.svg":\(\)=>[a-zA-Z_$]+\(\(\)=>import\("\.\/([A-Za-z0-9_.+-]+-[A-Za-z0-9_-]{8}\.js)"\)/g)) {
+  // the glob compiles to `"<name>.svg":()=>PRELOAD(()=>import("./<name>-<hash>.js"),[...])`
+  // with a Vite-version-specific preload wrapper; match the import, not the wrapper
+  for (const m of entryText.matchAll(/"\.\.\/assets\/icons\/file-types\/([^"]+)\.svg":\(\)=>[^;]{0,200}?import\("\.\/([A-Za-z0-9_.+-]+-[A-Za-z0-9_-]{8}\.js)"/g)) {
     iconChunk.set(m[2], m[1])
     iconNameOf.set(m[1], m[2])
   }
-  const neededIcons = new Set(["file", "folder", "folder-open"])
+  // the kit's generic icons are named Document / Folder / FolderOpen
+  const neededIcons = new Set(["document", "folder", "folder-open"])
   // every filename-ish string in the share can ask for an icon: tool paths,
   // patch headers, display paths. Take the extension + basename of each.
   const islandPaths = [...String(island).matchAll(/"([^"]*[\\/][^"]*|[^"\s]+\.\w{1,8})"/g)].map((m) => m[1].replace(/\\\\/g, "/"))
@@ -174,7 +177,11 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
 
   // the REAL worker bundles never run offline (main-thread copies do); the
   // shim and the diffs-main copies must stay
-  const isWorkerBundle = (name) => /^worker-[A-Za-z0-9_-]{8}\.js$/.test(name) || /^markdown\.worker-/.test(name)
+  // NOTE: `markdown.worker-main-*` IS the main-thread copy the shim imports -
+  // only the real `markdown.worker-<hash>` worker is dead weight
+  const isWorkerBundle = (name) =>
+    /^worker-[A-Za-z0-9_-]{8}\.js$/.test(name) ||
+    (/^markdown\.worker-[A-Za-z0-9_-]{8}\.js$/.test(name) && !name.startsWith("markdown.worker-main-"))
   // shiki's wasm engine never loads offline (the main-thread renderer uses
   // the pure-JS `highlights` engine) and the viewer registers its own theme;
   // the bundled shiki themes are dead weight in a snapshot
