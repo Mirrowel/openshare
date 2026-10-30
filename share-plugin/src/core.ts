@@ -2284,6 +2284,20 @@ export function createEngine(deps: EngineDeps): Engine {
     return true
   }
 
+  /** Sniff the CODE CONTENT of a unified patch: drop everything before the
+   *  first hunk header and strip each line's diff marker, so the same
+   *  tag/shape checks as reads run over clean source lines. */
+  const refinePatchLanguage = (meta: { language?: unknown }, patchText: string): boolean => {
+    const at = patchText.indexOf("@@")
+    if (at < 0) return false
+    const body = patchText
+      .slice(at)
+      .split("\n")
+      .map((l) => (/^[ +\\]/.test(l) ? l.slice(1) : l.startsWith("-") ? l.slice(1) : ""))
+      .join("\n")
+    return refineEmbeddedLanguage(meta, body)
+  }
+
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant") continue
@@ -2313,6 +2327,12 @@ export function createEngine(deps: EngineDeps): Engine {
         // range refinement: html-stamped reads inside script/style blocks
         if (part.name === "read" && typeof state.output === "string" && state.output.length > 0) {
           if (refineEmbeddedLanguage(meta, state.output)) mutated = true
+        }
+        // same refinement for edit hunks: a mid-script html diff tokenizes
+        // untyped without the range language
+        if ((part.name === "edit" || part.name === "patch") && typeof meta.language === "string") {
+          const pt = typeof (meta as any).diff === "string" ? (meta as any).diff : typeof (meta as any).filediff?.patch === "string" ? (meta as any).filediff.patch : undefined
+          if (pt && refinePatchLanguage(meta, pt)) mutated = true
         }
         // lineStart stamp: reads sliced from an offset keep REAL file line
         // numbers in the viewer's unified file card (pierre numbers from 1;
