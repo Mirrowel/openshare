@@ -62,6 +62,7 @@ then the code — you're both hoster and first user).
 | `TURN_GRACE_MS` / `IDLE_DROP_MS` / `FINALIZE_AFTER_MS` / `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` / `COMPLETED_DELAY_MAX_MS` | same as the worker | server policy (delivered in the WS init ack + `/health`) |
 | `DEFAULT_MAX_LIVE_SHARES` / `DEFAULT_MAX_TTL_HOURS` / `DEFAULT_DAILY_CREATES` | `0` (unlimited) | per-token default limits for newly enrolled users (legacy `DEFAULT_MAX_TTL_DAYS` accepted) |
 | `BRAND_*` | *(unset)* | viewer skin overrides incl. `BRAND_DESCRIPTION` / `BRAND_OG_TITLE` / `BRAND_OG_IMAGE` (same fields as the worker's `openshare.config.json`, same og/link-preview crawler rewrite — see the worker README) |
+| `OG_STYLE` | `aurora` | link-preview card style (`aurora` / `minimap` / `poster` / `blueprint` / `terminal`) — same renderer as the worker |
 
 ## Identity model
 
@@ -91,7 +92,7 @@ The plugin suites run the SAME checks against both backends:
 
 ```sh
 cd ../share-plugin
-npm run test:server-auth     # the 48-check auth suite against bun
+npm run test:server-auth     # the auth suite against bun
 npm run test:server-enroll   # the engine enrollment lifecycle against bun
 ```
 

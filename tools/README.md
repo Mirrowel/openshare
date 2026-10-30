@@ -36,6 +36,11 @@ Requires Python 3.10+ (stdlib only) and a built viewer (`cd ../share-viewer && n
 Session interchange: convert between a share, an `opencode export` file, and
 the local viewer. Everything runs locally; nothing is uploaded.
 
+**Status: experimental.** The roundtrip is proven by the self-check below,
+but the converters have not been exercised across the full range of real
+sessions — expect rough edges, and prefer the viewer's export button when
+it suffices.
+
 ```bash
 # share (or a saved envelope JSON) -> one `opencode import`-ready file per session
 node tools/osh-session.mjs export https://your-host/s/<id> -o ./out

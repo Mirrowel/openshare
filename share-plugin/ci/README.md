@@ -65,13 +65,14 @@ sharing stops (no retry storms).
 
 **Ephemeral runners** (GitHub-hosted, containers): do NOT enroll through
 a code - each fresh machine would burn one activation. Ask the hoster
-for a pre-minted registered token (`osk_…`) and pass it via
-`OPENSHARE_CREATE_TOKEN` (or the config's token field) - registered
-tokens skip enrollment entirely and never expire on their own. Point
-`OPENSHARE_CONFIG_DIR` (or mount) the settings home at a cached path
-only if you want the token persisted; env alone is enough. Note:
-revoking that token (when it is the user's last) freezes control of all
-its shares server-side, even ones holding the share secret.
+for a pre-registered token and pass it via `OPENSHARE_CREATE_TOKEN`
+(or the config's token field); registered tokens skip enrollment
+entirely and never expire on their own. A **scoped** token
+(`POST /api/token {"kind":"scoped"}`, minted by any full token) is the
+right credential here: it creates within its limits, reaches only the
+shares it created, and revoking it never freezes the owner's account.
+Point `OPENSHARE_CONFIG_DIR` (or mount) the settings home at a cached
+path only if you want the token persisted; env alone is enough.
 
 The bundle also supports **fan-out**: multiple `active` servers in the
 `servers` group each get the session (one urlFile line per server).
