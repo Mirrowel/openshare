@@ -1,9 +1,10 @@
 // Build the offline snapshot ENTIRELY in the browser: fetch the live
 // envelope, then fetch the page's own assets and inline them (the same
 // bundling rules as the server endpoint - see share-worker/og/snapshot.js).
-// Browser-side generation exists because a free Cloudflare isolate caps at
-// ~50 subrequests per invocation, far below the ~1300 files a snapshot
-// needs; the browser has no such cap and already holds every asset.
+// Browser-side generation exists because a Cloudflare isolate allows 50
+// subrequests per invocation on the free plan (10,000 paid), far below the
+// ~1500 files a snapshot needs; the browser has no such cap. The CLI
+// (tools/osh-snapshot.mjs) does the same from CI over static assets.
 import type { ShareData } from "./fold"
 
 /** the JSON island the offline page boots from */

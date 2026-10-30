@@ -218,14 +218,18 @@ export default {
       // prefix is gone: 404, no SPA fallback.
       if (req.method === "GET" && (path === "/legacy" || path.startsWith("/legacy/"))) {
         const legacyRes = await env.ASSETS.fetch(new Request(url.origin + "/legacy.html", { method: "GET" }))
-        // assets' SPA fallback answers missing HTML paths with index.html
-        // (200), so the file only exists when the etag differs from index
+        // assets' SPA fallback answers a missing HTML path with index.html
+        // (200) and workerd surfaces no etag, so compare the BODIES: equal
+        // text means no comparison build is deployed
         if (legacyRes.ok) {
+          const legacyBody = await legacyRes.clone().text()
           const idxRes = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
-          if (legacyRes.headers.get("etag") !== idxRes.headers.get("etag")) {
-            const headers = new Headers(legacyRes.headers)
-            headers.set("cache-control", "no-store")
-            return new Response(legacyRes.body, { status: 200, headers })
+          const idxBody = idxRes.ok ? await idxRes.text() : ""
+          if (legacyBody !== idxBody) {
+            return new Response(legacyBody, {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+            })
           }
         }
         return json(404, { error: "no comparison build deployed" })
