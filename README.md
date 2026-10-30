@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@mirrowel/opencode-openshare"><img alt="npm" src="https://img.shields.io/npm/v/@mirrowel/opencode-openshare?color=cb3837&label=%40mirrowel%2Fopencode-openshare"></a>
+  <a href="https://mirrowel.github.io/openshare/"><img alt="website" src="https://img.shields.io/badge/website-mirrowel.github.io%2Fopenshare-f5b648"></a>
   <a href="#license"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
