@@ -14,8 +14,9 @@ Every plugin config key, its file chain, and the cross-package config surface ar
 | `ci/openshare.js` | single-file, zero-dependency bundle of the same engine (committed; rebuilt by `npm run build`) | all-mode **by default** — it declares no TUI entry, but an explicit `shareMode` in config/env still wins |
 
 All three are behavior-identical where they overlap — `npm run
-test:regression` proves the single file and the package match the frozen
-original (`reference/openshare.legacy.js`) on the full share lifecycle.
+test:regression` drives the single file and the package entry through
+the same real lifecycle (a local worker, a mock provider, a real
+`opencode serve`) and diffs the resulting share data.
 
 ## Install
 
@@ -163,20 +164,11 @@ watchdogged, port-swept, and drives real `opencode serve` instances with
 a mock OpenAI-compatible provider — except where noted). The canonical
 suite table — what each covers, including the big/backends scale suites —
 lives in [`../DEVELOPMENT.md`](../DEVELOPMENT.md#test-suites); the
-commands:
+everyday commands:
 
-- `test:regression` — parity of legacy / single-file / package across the
-  full lifecycle.
-- `test:manual` — the engine scenarios (dormancy, backfill, tombstones,
-  timers, turn sockets, all-mode gating).
-- `test:tui-flow` — share/manager flows, config write targets, enrollment,
-  admin console, gone detection.
-- `test:v2` — the v2 adapter against a scripted mock v2 host.
-- `test:auth` / `test:server-auth` — the identity contract (52 checks)
-  against the Cloudflare worker and the Bun backend.
-- `test:enroll` / `test:server-enroll`, `test:fanout`, `test:big` /
-  `test:server-big` — enrollment lifecycle, multi-server fan-out,
-  big-session scale (both backends).
+- `test:quick` — the everyday gate: parity + manual core + TUI + v2 + auth.
+- `test:auth` / `test:server-auth` — the identity contract against the
+  Cloudflare worker and the Bun backend.
 - `test:cli`, `node scripts/npm-e2e.mjs` — real `opencode run` / the
   published npm package — on demand only.
 
