@@ -14,6 +14,7 @@ import { createReactiveTimelineProjection, TimelineRow } from "@opencode/session
 import { armToggleAnchor, getLastToggledRowKey } from "./toggle-anchor"
 import { copyRowLink, rowKeyFromHash } from "./deep-link"
 import { claimDisclosure, disclosureOwned, dismissSearchKey, engineClicking, releaseDisclosure, searchKeyDismissed, searchOwnsDisclosure } from "./search-state"
+import { isEmbeddedShare } from "./data-source"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
 import type { TimelineDetail } from "@opencode/session-ui/timeline/detail"
 import { createSessionTimelineRowRenderer, type SessionUserPresentation } from "@opencode/session-ui/timeline/row"
@@ -142,10 +143,12 @@ export function VirtualTimeline(props: {
       // manual collapse during that search wins for that search; then the
       // user's (and engine's) stored state
       value: (key) =>
-        searchKeyDismissed(key)
-          ? undefined
-          : searchOwnsDisclosure(key)
-            ? true
+        isEmbeddedShare()
+          ? true
+          : searchKeyDismissed(key)
+            ? undefined
+            : searchOwnsDisclosure(key)
+              ? true
             : (toolOpen[key] ?? (disclosureOwned(key) ? true : undefined)),
       set: (key, open) => {
         if (engineClicking()) {

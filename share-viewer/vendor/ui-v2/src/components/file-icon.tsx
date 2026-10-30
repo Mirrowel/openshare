@@ -53,9 +53,19 @@ function loadSymbol(name: IconName) {
       import.meta.glob<string>("../assets/icons/file-types/*.svg", { query: "?raw", import: "default" }),
     ).map(([path, load]) => [toIconName(path), load]),
   )
-  sources[name]?.()
+  // openshare fork: generic-icon fallback - a snapshot ships only the
+  // icons its share can ask for; anything else renders the generic file
+  // icon rather than a blank slot
+  const load = sources[name] ?? sources[ICON_MAPS.defaults.file]
+  load?.()
     .then((text) => insertSymbol(name, text))
-    .catch(() => requested.delete(name))
+    .catch(() => {
+      requested.delete(name)
+      if (name === ICON_MAPS.defaults.file) return
+      sources[ICON_MAPS.defaults.file]?.()
+        .then((text) => insertSymbol(name, text))
+        .catch(() => {})
+    })
 }
 
 // Mirrors the file name to icon name rule of the spritesheet generator that writes `file-icons/types.ts`.

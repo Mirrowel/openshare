@@ -1622,3 +1622,40 @@ html[data-osh-preview-hover] .osh-out-grip::after {
     animation: none;
   }
 }
+
+/* --- offline snapshot file bodies (file:// cannot start pierre's workers) */
+.osh-offline-body {
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 20px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.osh-offline-line {
+  display: flex;
+  gap: 10px;
+  white-space: pre;
+  min-width: max-content;
+}
+.osh-offline-num {
+  flex: none;
+  width: 3.5ch;
+  text-align: right;
+  color: var(--text-weaker);
+  user-select: none;
+}
+.osh-offline-text {
+  flex: 1;
+  color: var(--text-base);
+}
+.osh-offline-add .osh-offline-text {
+  color: var(--syntax-diff-add, #7fd88f);
+}
+.osh-offline-del .osh-offline-text {
+  color: var(--syntax-diff-delete, #e06c75);
+}
+.osh-offline-hunk .osh-offline-text {
+  color: var(--text-weaker);
+}

@@ -274,7 +274,8 @@ function SessionView(props: {
               const searchSections = useSessionSections(props.data, sessionID())
   const isSub = () => target().isSub
   const info = createMemo(() => props.data.session[match().index])
-  // classic's prompt-nav gate: shows from ONE prompt (owner-settled
+
+  // classic's prompt-nav gate: shows from ONE prompt (owner-settled
   // 2026-10-27; registry views can still override via navMinTurns)
   const NAV_MIN_TURNS = 1
 
@@ -296,7 +297,10 @@ function SessionView(props: {
               ])
               // the auto-expand checkbox list drives default-open per tool
               // name (renderer input; consulted before the categories)
-              const autoExpandOpen = (tool: { name: string }) => props.settings.autoExpand.includes(tool.name)
+              // offline snapshots cannot rely on clicking through the whole
+              // transcript: everything starts open so the record reads as one
+              const autoExpandOpen = (tool: { name: string }) =>
+                isEmbeddedShare() ? true : props.settings.autoExpand.includes(tool.name)
               const firstUserMessage = createMemo(() => userTurns().at(0))
               const activeMessage = createMemo(() => userTurns().find((m: any) => m.id === store.messageId) ?? firstUserMessage())
               function setActiveMessage(message: any) {
@@ -540,8 +544,8 @@ function SessionView(props: {
                   doc={pagedDocument() as any}
                   sessionKey={props.source.shareID + ":" + sessionID() + ":paged-m:" + (activeMessage()?.id ?? "")}
                   reasoningMode={reasoningMode() as any}
-                  shellToolDefaultOpen={false}
-                  editToolDefaultOpen={false}
+                  shellToolDefaultOpen={isEmbeddedShare()}
+                  editToolDefaultOpen={isEmbeddedShare()}
                   toolDefaultOpen={autoExpandOpen}
 
                   timelineDetail={timelineDetail() as any}
@@ -740,8 +744,8 @@ function SessionView(props: {
                                 followLive={props.settings.followLive && !focused()}
                                 onActiveMessageChange={focused() ? undefined : (id) => setActiveMessage(userTurns().find((m: any) => m.id === id))}
                                 reasoningMode={reasoningMode() as any}
-                                shellToolDefaultOpen={false}
-                  editToolDefaultOpen={false}
+                                shellToolDefaultOpen={isEmbeddedShare()}
+                  editToolDefaultOpen={isEmbeddedShare()}
                   toolDefaultOpen={autoExpandOpen}
               
                                 timelineDetail={timelineDetail() as any}
@@ -800,8 +804,8 @@ function SessionView(props: {
                                  doc={pagedDocument() as any}
                                  sessionKey={props.source.shareID + ":" + sessionID() + ":focus:" + (activeMessage()?.id ?? "")}
                                  reasoningMode={reasoningMode() as any}
-                                 shellToolDefaultOpen={false}
-                                 editToolDefaultOpen={false}
+                                 shellToolDefaultOpen={isEmbeddedShare()}
+                                 editToolDefaultOpen={isEmbeddedShare()}
                                  toolDefaultOpen={autoExpandOpen}
                                  timelineDetail={timelineDetail() as any}
                                  anchor="start"

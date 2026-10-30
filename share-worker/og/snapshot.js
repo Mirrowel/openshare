@@ -110,7 +110,6 @@ const dataUrl = (file, text) => `data:${mimeOf(file)};base64,${base64(text)}`
  * @returns {Promise<string>} the complete offline HTML
  */
 export async function buildSnapshotHtml({ html, island, readAsset }) {
-  const wanted = snapshotLanguages(island)
   // no caching: workerd gives a 128MB isolate and every text is used once
   const readOnce = (name) => readAsset(name)
 
@@ -120,13 +119,72 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
   const entryNames = [...base.matchAll(entryRe)].map((m) => m[1])
   const cssNames = [...base.matchAll(cssRe)].map((m) => m[1])
 
+  // --- what the share actually needs ------------------------------------
+  // Icons: the entry's file-icon map names one chunk per icon. Only icons a
+  // path in this share can ask for are inlined (plus the generic fallbacks);
+  // anything else resolves through the vendored fallback to the generic file
+  // icon instead of a blank.
+  const ICON_ALIAS = {
+    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+    py: "python", rb: "ruby", md: "markdown", mdx: "markdown", yml: "yaml", yaml: "yaml", json: "json", jsonc: "json",
+    sh: "shell", bash: "shell", zsh: "shell", ps1: "powershell", h: "c", cpp: "cpp", "c++": "cpp", hpp: "cpp",
+    cs: "csharp", "c#": "csharp", rs: "rust", kt: "kotlin", kts: "kotlin", go: "go", java: "java", php: "php",
+    swift: "swift", lua: "lua", sql: "sql", toml: "toml", xml: "xml", html: "html", htm: "html", css: "css",
+    scss: "scss", sass: "sass", less: "less", vue: "vue", svelte: "svelte", png: "image", jpg: "image", jpeg: "image",
+    gif: "image", webp: "image", svg: "svg", ico: "image", lock: "lock", txt: "text", log: "text", env: "env",
+    dockerfile: "docker", gitignore: "git", license: "license", readme: "readme",
+  }
+  const iconChunk = new Map()
+  const iconNameOf = new Map()
+  const entryText = (await readOnce(entryNames[0])) ?? ""
+  for (const m of entryText.matchAll(/"\.\.\/assets\/icons\/file-types\/([a-z0-9_.+-]+)\.svg":\(\)=>[a-zA-Z_$]+\(\(\)=>import\("\.\/([A-Za-z0-9_.+-]+-[A-Za-z0-9_-]{8}\.js)"\)/g)) {
+    iconChunk.set(m[2], m[1])
+    iconNameOf.set(m[1], m[2])
+  }
+  const neededIcons = new Set(["file", "folder", "folder-open"])
+  // every filename-ish string in the share can ask for an icon: tool paths,
+  // patch headers, display paths. Take the extension + basename of each.
+  const islandPaths = [...String(island).matchAll(/"([^"]*[\\/][^"]*|[^"\s]+\.\w{1,8})"/g)].map((m) => m[1].replace(/\\\\/g, "/"))
+  for (const p of islandPaths) {
+    const base = p.split("/").pop() ?? ""
+    const ext = base.includes(".") ? base.split(".").pop().toLowerCase() : ""
+    const name = base.toLowerCase()
+    if (ext && ICON_ALIAS[ext]) neededIcons.add(ICON_ALIAS[ext])
+    if (ICON_ALIAS[name]) neededIcons.add(ICON_ALIAS[name])
+    if (iconNameOf.has(name)) neededIcons.add(name)
+    if (iconNameOf.has(ext)) neededIcons.add(ext)
+  }
+  // the kit's own defaults plus the common languages, so a share never
+  // renders a blank slot for an ordinary file
+  for (const name of ["markdown", "json", "python", "typescript", "javascript", "shell", "text", "yaml", "toml", "xml", "html", "css", "readme", "config", "lock", "license", "git", "docker", "image", "svg", "diff"]) {
+    if (iconNameOf.has(name)) neededIcons.add(name)
+  }
+
+  // Grammars: each langs-*.js manifest lists every language pack. Read the
+  // manifest, keep only the languages this share uses, and inline the
+  // REWRITTEN manifest so a missing language falls back to plain text.
+  const wanted = snapshotLanguages(island)
+  const GRAMMAR_ENTRY = /\{id:"([^"]+)",name:"[^"]*"(?:,aliases:\[([^\]]*)\])?,import:\(\(\)=>import\("\.\/([A-Za-z0-9_.+-]+-[A-Za-z0-9_-]{8}\.js)"\)\)\}/g
+  const grammarWanted = (id, aliases) => {
+    if (wanted.has(id)) return true
+    for (const a of aliases ?? []) if (wanted.has(a.trim().replace(/^"|"$/g, ""))) return true
+    return false
+  }
+  const overrides = new Map()
+
+  // the REAL worker bundles never run offline (main-thread copies do); the
+  // shim and the diffs-main copies must stay
+  const isWorkerBundle = (name) => /^worker-[A-Za-z0-9_-]{8}\.js$/.test(name) || /^markdown\.worker-/.test(name)
+  const includeIcon = (name) => {
+    const icon = iconChunk.get(name)
+    return icon === undefined || neededIcons.has(icon)
+  }
+
   // --- walk the module graph -------------------------------------------
   // Static imports (`from"./x.js"`) and real dynamic imports
   // (`import("./x.js")`) pull chunks in. Bare "assets/x.js" strings are
   // Vite's preload dependency arrays - an optimization list that also names
   // every lazy chunk, so they never count as inclusion by themselves.
-  // Discovery runs in concurrent waves: a snapshot reaches ~1300 files and
-  // sequential round trips took literal minutes.
   const STATIC_RE = /from\s*["'](?:\.\/|\/assets\/)([A-Za-z0-9_\-.]+\.js)["']/g
   const DYNAMIC_RE = /import\(["'](?:\.\/|\/assets\/)([A-Za-z0-9_\-.]+\.js)["']\)/g
   const ASSET_STR_RE =
@@ -134,32 +192,51 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
 
   const included = new Set()
   const assetNames = new Set()
-  let wave = entryNames.slice()
-  for (const name of wave) included.add(name)
+  const enqueue = (name, next) => {
+    if (included.has(name)) return
+    if (isWorkerBundle(name)) return
+    if (!includeIcon(name)) return
+    included.add(name)
+    next.push(name)
+  }
+  let wave = []
+  for (const name of entryNames) enqueue(name, wave)
   while (wave.length) {
     const next = []
     await Promise.all(
       wave.map(async (name) => {
         const text = await readOnce(name)
         if (text == null) return
+        if (/^langs-/.test(name)) {
+          // keep only the languages this share uses
+          const kept = []
+          const rewritten = text.replace(GRAMMAR_ENTRY, (whole, id, aliases, file) => {
+            if (!grammarWanted(id, aliases ? aliases.split(",") : [])) return ""
+            kept.push(file)
+            return whole
+          })
+          overrides.set(name, rewritten.replace(/,\s*,/g, ",").replace(/\[,/, "[").replace(/,\s*\]/, "]"))
+          for (const file of kept) enqueue(file, next)
+          return
+        }
         for (const re of [STATIC_RE, DYNAMIC_RE]) {
-          for (const m of text.matchAll(re)) {
-            if (included.has(m[1])) continue
-            included.add(m[1])
-            next.push(m[1])
-          }
+          for (const m of text.matchAll(re)) enqueue(m[1], next)
         }
         for (const m of text.matchAll(ASSET_STR_RE)) assetNames.add(m[1])
       }),
     )
     wave = next
   }
-
   // --- read CSS, collecting the fonts/images it references --------------
   let cssOut = ""
+  // math fonts only when the share actually renders math: a `$` in shell
+  const hasMath = /\$\$|\\\(|\\\[/.test(String(island))
   for (const name of cssNames) {
     const css = (await readOnce(name)) ?? ""
-    for (const m of css.matchAll(/url\(\/assets\/([^)]+)\)/g)) assetNames.add(m[1])
+    for (const m of css.matchAll(/url\(\/assets\/([^)]+)\)/g)) {
+      if (!hasMath && /^KaTeX_/.test(m[1])) continue
+      assetNames.add(m[1])
+    }
     cssOut += css + "\n"
   }
 
@@ -175,15 +252,19 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
 
   // --- modules: bare keys + inline asset URLs ---------------------------
   const imports = {}
+  const referenced = new Set()
   await Promise.all(
     [...included].map(async (name) => {
-      const text = await readOnce(name)
+      const text = overrides.get(name) ?? (await readOnce(name))
       if (text == null) return
       let code = text
         // CSS is already inlined as <style>; Vite's preload helper would
         // still inject <link> tags for the mapped CSS - point them at an
         // empty data: URL so the fetch never leaves the document
         .replace(/(["'`])(?:assets\/|\/assets\/)([A-Za-z0-9_\-.]+\-[A-Za-z0-9_-]{8}\.css)\1/g, "$1data:text/css,$1")
+        // `?worker&url` becomes a plain asset URL string; offline it must not
+        // be resolved as a module specifier (new Worker("@osh/...") threw)
+        .replace(/(["'`])(?:assets\/|\/assets\/)(worker-[A-Za-z0-9_-]{8}\.js)\1/g, "$1data:text/javascript,$1")
         .replace(/(["'`])\.\/([A-Za-z0-9_\-.]+\.js)\1/g, "$1@osh/$2$1")
         .replace(/(["'`])\/assets\/([A-Za-z0-9_\-.]+\.js)\1/g, "$1@osh/$2$1")
         .replace(/(["'])assets\/([A-Za-z0-9_\-.]+\.js)\1/g, "$1@osh/$2$1")
@@ -191,21 +272,39 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
         /(["'`])(?:assets\/|\/assets\/)([A-Za-z0-9_\-.]+-[A-Za-z0-9_-]{8}\.(?:png|svg|jpe?g|webp|gif|woff2))\1/g,
         (m, q, file) => (assetUrls[file] ? q + assetUrls[file] + q : m),
       )
+      for (const m of code.matchAll(/@osh\/([A-Za-z0-9_.+-]+)/g)) referenced.add(m[1])
       imports[`@osh/${name}`] = dataUrl(name, code)
     }),
   )
+  // any specifier we deliberately left out (the real worker bundles) must
+  // still RESOLVE: point it at an empty module instead of a missing key
+  for (const name of referenced) {
+    if (!imports[`@osh/${name}`]) imports[`@osh/${name}`] = "data:text/javascript,export{}"
+  }
+
   // --- assemble ---------------------------------------------------------
-  let out = base.replace(entryRe, (whole, src) =>
-    imports[`@osh/${src}`] ? `<script type="module" src="${imports[`@osh/${src}`]}"></script>` : whole,
-  )
+  // Chunks ship as base64 in a JSON island; a classic boot script turns each
+  // into a Blob URL and installs the import map before the entry loads.
+  // data: modules were pathological here: `import.meta.url` inside one is
+  // the whole (multi-MB) data URL, and the app's URL math blew the tab to
+  // 4.5 GB RSS. Blob URLs are short and behave like normal module URLs.
+  // entry: replaced by the boot script's module tag (see BOOT_SHIM)
+  let out = base.replace(entryRe, () => '<!--osh-entry-->')
   out = out.replace(cssRe, () => `<style>\n${cssOut}\n</style>`)
+  const chunks = {}
+  for (const [key, url] of Object.entries(imports)) {
+    const name = key.slice('@osh/'.length)
+    chunks[name] = url
+  }
   const head = [
-    `<script type="importmap">${JSON.stringify({ imports }).replace(/</g, "\\u003c")}</script>`,
+    // charset FIRST: the island carries UTF-8 (em dashes, quotes) and the
+    // document must decode as UTF-8 before any of it is parsed
+    `<meta charset="utf-8">`,
+    `<script id="osh-chunks" type="application/json">${JSON.stringify(chunks).replace(/</g, "\\u003c")}</script>`,
     `<script>window.__MIRROBOT_SNAPSHOT__=${island};</script>`,
-    BOOT_SHIM,
+    BOOT_SHIM.replace("__OSH_ENTRY__", entryNames[0] ?? ""),
   ].join("\n    ")
-  out = out.replace(/<head>/i, "<head>\n    " + head)
-  return out
+  return out.replace(/<head>/i, "<head>\n    " + head)
 }
 
 const BOOT_SHIM = `<script>(function(){
@@ -214,6 +313,35 @@ const BOOT_SHIM = `<script>(function(){
   // URLs translate to same-path hashes: subagent page n becomes #n<n>,
   // message anchors keep their hash.
   if (!window.__MIRROBOT_SNAPSHOT__) return
+  // chunks: base64 -> Blob URLs -> import map -> entry module. Blob URLs
+  // keep import.meta.url short; data: module URLs made the app's own URL
+  // math allocate gigabytes.
+  try {
+    var data = JSON.parse(document.getElementById("osh-chunks").textContent)
+    var imports = {}
+    for (var k in data) {
+      var v = data[k]
+      var cut = v.indexOf(";base64,")
+      if (cut < 0) {
+        imports["@osh/" + k] = v
+        continue
+      }
+      var bin = atob(v.slice(cut + 8))
+      var bytes = new Uint8Array(bin.length)
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      imports["@osh/" + k] = URL.createObjectURL(new Blob([bytes], { type: "text/javascript" }))
+    }
+    var map = document.createElement("script")
+    map.type = "importmap"
+    map.textContent = JSON.stringify({ imports: imports })
+    document.head.appendChild(map)
+    var entry = document.createElement("script")
+    entry.type = "module"
+    entry.src = imports["@osh/__OSH_ENTRY__"]
+    document.head.appendChild(entry)
+  } catch (e) {
+    console.error("[openshare] snapshot boot failed", e)
+  }
   var orig = history.pushState.bind(history)
   history.pushState = function(st, title, url) {
     if (typeof url === "string" && url.charAt(0) === "/") {
