@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenShare: show the work</title>
+<meta name="description" content="OpenShare turns any opencode session into a live, readable web page. One command in the terminal, one URL for everyone else.">
+<meta property="og:title" content="OpenShare: show the work">
+<meta property="og:description" content="Turn any opencode session into a live, readable web page. One command, one URL, your own worker.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#221d18">
+<link rel="canonical" href="https://mirrowel.github.io/OpenShare/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23221d18'/%3E%3Cpath d='M20 18l14 14-14 14' fill='none' stroke='%23f5b648' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Schibsted+Grotesk:wght@400;500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./styles.css">
+<noscript><style>
+  .rv { opacity: 1; transform: none; }
+  .tool-body { grid-template-rows: 1fr; }
+  .tool-chev { display: none; }
+</style></noscript>
+</head>
+<body>
+
+<header class="bar">
+  <a class="mark" href="#top">
+    <span class="mark-caret" aria-hidden="true">❯</span>openshare
+  </a>
+  <nav class="bar-nav" aria-label="sections">
+    <a href="#how">how</a>
+    <a href="#features">features</a>
+    <a href="#live">live</a>
+    <a href="#privacy">privacy</a>
+    <a href="#selfhost">self-host</a>
+    <a href="https://github.com/Mirrowel/openshare#readme" target="_blank" rel="noopener">docs</a>
+  </nav>
+  <a class="gh" href="https://github.com/Mirrowel/openshare" target="_blank" rel="noopener">
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+    GitHub
+  </a>
+</header>
+
+<main id="top">
+
+  <!-- turn 1: the ask, and the answer -->
+  <section class="hero">
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> share this session with the team</p>
+    <h1 class="rv" style="--d:.08s">Show the work.</h1>
+    <p class="lede rv" style="--d:.16s">OpenShare turns any opencode session into a live, readable web page.
+      One command in the terminal, one URL for everyone else.</p>
+    <p class="hero-cmd rv" style="--d:.24s">
+      <span class="cmd">/share</span>
+      <span class="arrow" aria-hidden="true">→</span>
+      <span class="link">https://your-worker.dev/s/a1b2…</span>
+    </p>
+    <div class="cta rv" style="--d:.32s">
+      <a class="btn solid" href="https://github.com/Mirrowel/openshare" target="_blank" rel="noopener">Get the plugin</a>
+      <a class="btn ghost" href="https://github.com/Mirrowel/openshare#readme" target="_blank" rel="noopener">Read the docs</a>
+    </div>
+
+    <figure class="shot rv" style="--d:.4s">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot" aria-hidden="true"></span><span class="dot" aria-hidden="true"></span><span class="dot" aria-hidden="true"></span>
+          <span class="frame-url">openshare-worker.mirrowel-zz.workers.dev/s/e317…</span>
+        </div>
+        <img src="./assets/hero-classic.png" alt="A shared agent session in the classic view: a numbered prompt on the left rail, the response with reasoning, read and edit tool cards below it, syntax-highlighted file bodies." width="1600" height="1000" fetchpriority="high">
+      </div>
+      <figcaption>A real session, shared live: five turns, twenty-four tool calls, one subagent. What you see is what the agent did.</figcaption>
+    </figure>
+  </section>
+
+  <!-- turn 2: how -->
+  <section class="turn" id="how">
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> how does it work?</p>
+    <h2 class="rv">One command. Then it's a URL.</h2>
+    <p class="body rv" style="--d:.08s">Type <code>/share</code> in the opencode TUI. The session streams to your worker
+      over a live socket: every tool call, every thought, every file edit, in order.
+      Readers get a page that updates while the agent works. No account, no install, nothing to explain.</p>
+    <ul class="facts rv" style="--d:.16s">
+      <li>readers need no account</li>
+      <li>live while the agent works</li>
+      <li>expires on your timer</li>
+    </ul>
+  </section>
+
+  <!-- turn 3: features as the product's own tool rows -->
+  <section class="turn" id="features">
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> what can it do?</p>
+    <h2 class="rv">The transcript is the artifact.</h2>
+
+    <div class="tools">
+
+      <div class="tool rv">
+        <button class="tool-head" aria-expanded="false" aria-controls="t-read">
+          <span class="tool-name">read</span>
+          <span class="tool-sum">Twelve ways to read one session</span>
+          <span class="tool-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="tool-body" id="t-read">
+          <div class="tool-inner">
+            <p>The same transcript, twelve skins: the dense classic timeline, a conversation view,
+              reader mode, a field atlas, a screenplay, more. Virtualized rendering keeps a
+              10,000-message session scrolling at full speed, and every view shares the same
+              search, deep links and keyboard navigation.</p>
+            <div class="views">
+              <div class="view-main">
+                <img src="./assets/hero-classic.png" alt="Classic view: the full session timeline with the prompt rail on the left." data-view="classic">
+                <img src="./assets/v-conversation.png" alt="Conversation view: a chat-like reading surface." data-view="conversation" hidden>
+                <img src="./assets/v-reader.png" alt="Reader view: the session set as comfortable long-form text." data-view="reader" hidden>
+                <img src="./assets/v-atlas.png" alt="Atlas view: stations and readings, the session as a survey map." data-view="atlas" hidden>
+                <img src="./assets/v-cinema.png" alt="Cinema view: the session styled as a screenplay." data-view="cinema" hidden>
+                <img src="./assets/v-grove.png" alt="Grove view: turns as a branching grid." data-view="grove" hidden>
+              </div>
+              <div class="view-thumbs" role="group" aria-label="pick a view">
+                <button aria-pressed="true" data-view="classic"><span>classic</span></button>
+                <button aria-pressed="false" data-view="conversation"><span>conversation</span></button>
+                <button aria-pressed="false" data-view="reader"><span>reader</span></button>
+                <button aria-pressed="false" data-view="atlas"><span>atlas</span></button>
+                <button aria-pressed="false" data-view="cinema"><span>cinema</span></button>
+                <button aria-pressed="false" data-view="grove"><span>grove</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tool rv">
+        <button class="tool-head" aria-expanded="false" aria-controls="t-write">
+          <span class="tool-name">write</span>
+          <span class="tool-sum">Freeze it to one file</span>
+          <span class="tool-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="tool-body" id="t-write">
+          <div class="tool-inner">
+            <p>A snapshot is a single HTML file with everything inside: the transcript, the viewer,
+              highlighting, the fonts. Put it on a USB stick, mail it to a reviewer, open it from disk
+              with no server and no internet. The header even says <code>snapshot</code>, so nobody
+              mistakes a frozen copy for the live page.</p>
+            <div class="snap">
+              <div class="snap-card" aria-hidden="true">
+                <span class="snap-icon">⌁</span>
+                <span class="snap-name">session-e317….html</span>
+                <span class="snap-meta">7.3 MB · opens offline · file://</span>
+              </div>
+              <pre class="term"><code># attach the agent's session to a failing CI run
+- name: attach agent session
+  run: node tools/osh-snapshot.mjs "$SHARE_URL" --token "$OSK" -o session.html</code></pre>
+            </div>
+            <p class="fine">Reviewers of the red build open one file and watch what the agent actually tried,
+              in order, with the file edits highlighted.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="tool rv">
+        <button class="tool-head" aria-expanded="false" aria-controls="t-grep">
+          <span class="tool-name">grep</span>
+          <span class="tool-sum">Search that screenshots can't match</span>
+          <span class="tool-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="tool-body" id="t-grep">
+          <div class="tool-inner">
+            <p>Full-text search across prompts, responses, thinking and tool output. Marks persist
+              while you scroll, collapsed rows expand as hits come into view, and every hit deep-links
+              to the exact row. Because the transcript is the artifact, not a picture of it.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="tool rv" id="privacy">
+        <button class="tool-head" aria-expanded="false" aria-controls="t-patch">
+          <span class="tool-name">patch</span>
+          <span class="tool-sum">Private by construction</span>
+          <span class="tool-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="tool-body" id="t-patch">
+          <div class="tool-inner">
+            <p>Secrets are redacted before anything leaves your machine: API keys, tokens, PEM
+              blocks, .env pairs, connection strings. File paths relativize to the project.
+              Gate any share behind a login and password, set an expiry in hours, and hand CI a
+              scoped token that can only touch its own shares. Server operators are a chain you
+              choose, not a platform you trust.</p>
+            <p class="redline" aria-label="an example redacted tool call">curl -H "Authorization: Bearer
+              <mark>[redacted:api-key]</mark>" https://api.example.com/v1/<mark>[redacted:secret]</mark></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="tool rv">
+        <button class="tool-head" aria-expanded="false" aria-controls="t-webfetch">
+          <span class="tool-name">webfetch</span>
+          <span class="tool-sum">Previews where you paste it</span>
+          <span class="tool-chev" aria-hidden="true">▾</span>
+        </button>
+        <div class="tool-body" id="t-webfetch">
+          <div class="tool-inner">
+            <p>Paste the link into Discord, Slack, or anything that reads OpenGraph: a real card
+              with the session's title, status, turns, tools and duration, rendered by your own
+              worker. Private shares show a lock and nothing else, so crawlers learn nothing.</p>
+            <div class="chat" aria-label="a chat message previewing the link">
+              <div class="chat-row">
+                <span class="chat-ava" aria-hidden="true">M</span>
+                <span class="chat-bub">look what the agent did overnight
+                  <span class="chat-link" dir="ltr">openshare-worker…/s/e317…</span>
+                  <img src="./assets/og-card.png" alt="Link preview card: the session title, '5 turns · 24 tools · 4m', and a Completed badge on a dark card with an amber aurora." width="1200" height="630" loading="lazy">
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- turn 4: live -->
+  <section class="band" id="live">
+    <div class="band-in">
+      <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> is it fresh?</p>
+      <h2 class="rv">Alive while it works.</h2>
+      <p class="body rv" style="--d:.08s">Shares stream over a live socket. A reader watching mid-run sees the
+        turn you're in: tools opening, reasoning unfolding, the revision counter ticking.
+        Finished, interrupted, live: the page tells the truth about the run.</p>
+      <div class="run rv" style="--d:.16s" aria-hidden="true">
+        <div class="run-row">
+          <span class="run-name">task</span>
+          <span class="run-desc">explore · mapping the repo layout</span>
+          <span class="run-rev">rev <b data-rev>41</b></span>
+        </div>
+        <div class="run-sweep"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- turn 5: self-host -->
+  <section class="turn" id="selfhost">
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> who holds the data?</p>
+    <h2 class="rv">You do. It's your worker.</h2>
+    <p class="body rv" style="--d:.08s">OpenShare is a Cloudflare Worker you deploy in three commands, or a single
+      Bun binary you run anywhere. Both speak the same protocol. The free tier is enough for a team;
+      there is no OpenShare cloud, no telemetry home, no vendor.</p>
+    <pre class="term wide rv" style="--d:.16s"><code>git clone https://github.com/Mirrowel/openshare && cd openshare
+cd share-viewer && npm install && npm run build && cd ..
+cd share-worker && npx wrangler deploy      # or: bun share-server/server.ts
+curl -s https://your-worker.workers.dev/health</code></pre>
+  </section>
+
+  <!-- closing prompt -->
+  <section class="close">
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> ship it</p>
+    <h2 class="rv">The session is the artifact.</h2>
+    <div class="cta rv" style="--d:.1s">
+      <a class="btn solid" href="https://github.com/Mirrowel/openshare" target="_blank" rel="noopener">Get the plugin</a>
+      <button class="btn ghost cmd-copy" data-copy="opencode plugin add @mirrowel/opencode-openshare">
+        <code>opencode plugin add @mirrowel/opencode-openshare</code>
+        <span class="copy-hint">copy</span>
+      </button>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="foot">
+    <p class="foot-line"><span class="mark-caret" aria-hidden="true">❯</span>openshare ·
+      <a href="https://github.com/Mirrowel/openshare" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="https://www.npmjs.com/package/@mirrowel/opencode-openshare" target="_blank" rel="noopener">npm</a> ·
+      <a href="https://github.com/Mirrowel/openshare#readme" target="_blank" rel="noopener">docs</a> ·
+      <a href="https://github.com/Mirrowel/openshare/blob/master/CONFIGURATION.md" target="_blank" rel="noopener">configuration</a> ·
+      <a href="https://ko-fi.com/C0C0UZS4P" target="_blank" rel="noopener">Ko-fi</a> ·
+      MIT</p>
+    <p class="foot-fine">Screenshots and the preview card are from a real shared session. Built by Mirrowel.</p>
+  </div>
+</footer>
+
+<script src="./main.js" defer></script>
+</body>
+</html>
