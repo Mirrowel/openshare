@@ -551,11 +551,115 @@ h2 {
 .chat-bub img {
   display: block;
   width: 100%;
+  height: auto;
   max-width: 30rem;
   border-radius: 8px;
   margin-top: 0.45rem;
   border: 1px solid var(--hair-soft);
 }
+
+/* turn markers: the viewer's own t-N margin labels, echoed on the left */
+.turnmark {
+  position: absolute;
+  left: calc(var(--pad) * -0.55);
+  top: clamp(3.6rem, 9vw, 7.7rem);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--faint);
+  opacity: 0.7;
+}
+
+.turn, .hero, .close, .band { position: relative; }
+
+@media (max-width: 1100px) { .turnmark { display: none; } }
+
+/* hero chips: real counts, mono, hairline-separated */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 1.7rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.chips span + span::before {
+  content: "·";
+  color: var(--faint);
+  margin: 0 0.8rem;
+}
+
+/* states gallery: one wide + one pair, varied on purpose */
+.gal-wide { margin-top: 2.2rem; }
+
+.gal-wide img, .gal-pair img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--bg-2);
+}
+
+.gal-wide figcaption, .gal-pair figcaption {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--faint);
+  margin-top: 0.7rem;
+}
+
+.gal-wide figcaption b, .gal-pair figcaption b {
+  color: var(--amber-dim);
+  font-weight: 600;
+}
+
+.gal-pair {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 1.4rem;
+  margin-top: 1.6rem;
+  align-items: start;
+}
+
+.gal-pair figure:nth-child(2) { margin-top: 2.5rem; }
+
+@media (max-width: 860px) {
+  .gal-pair { grid-template-columns: 1fr; }
+  .gal-pair figure:nth-child(2) { margin-top: 0; }
+}
+
+/* interactive demo */
+.demo-frame {
+  margin-top: 1.8rem;
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-2);
+  box-shadow: 0 40px 90px -30px oklch(0 0 0 / 0.6);
+}
+
+.demo-frame iframe {
+  display: block;
+  width: 100%;
+  height: clamp(560px, 82vh, 900px);
+  border: none;
+  background: var(--bg);
+}
+
+.demo-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1rem;
+  margin-top: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.demo-links a { color: var(--amber-dim); text-decoration: none; }
+.demo-links a:hover { color: var(--amber); }
+
+.demo-links span { color: var(--faint); }
 
 /* ---------- live band ---------- */
 
