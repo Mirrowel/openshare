@@ -30,8 +30,9 @@
   <nav class="bar-nav" aria-label="sections">
     <a href="#how">how</a>
     <a href="#features">features</a>
+    <a href="#states">states</a>
+    <a href="#demo">demo</a>
     <a href="#live">live</a>
-    <a href="#privacy">privacy</a>
     <a href="#selfhost">self-host</a>
     <a href="https://github.com/Mirrowel/openshare#readme" target="_blank" rel="noopener">docs</a>
   </nav>
@@ -46,7 +47,7 @@
   <!-- turn 1: the ask, and the answer -->
   <section class="hero">
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> share this session with the team</p>
-    <h1 class="rv" style="--d:.08s">Show the work.</h1>
+    <h1 class="rv" style="--d:.08s">Show the work<span class="amber-dot">.</span></h1>
     <p class="lede rv" style="--d:.16s">OpenShare turns any opencode session into a live, readable web page.
       One command in the terminal, one URL for everyone else.</p>
     <p class="hero-cmd rv" style="--d:.24s">
@@ -54,7 +55,10 @@
       <span class="arrow" aria-hidden="true">→</span>
       <span class="link">https://your-worker.dev/s/a1b2…</span>
     </p>
-    <div class="cta rv" style="--d:.32s">
+    <div class="chips rv" style="--d:.32s">
+      <span>3 prompts</span><span>21 tool calls</span><span>1 snake game</span><span>0 accounts required</span>
+    </div>
+    <div class="cta rv" style="--d:.36s">
       <a class="btn solid" href="https://github.com/Mirrowel/openshare" target="_blank" rel="noopener">Get the plugin</a>
       <a class="btn ghost" href="https://github.com/Mirrowel/openshare#readme" target="_blank" rel="noopener">Read the docs</a>
     </div>
@@ -63,16 +67,17 @@
       <div class="frame">
         <div class="frame-bar">
           <span class="dot" aria-hidden="true"></span><span class="dot" aria-hidden="true"></span><span class="dot" aria-hidden="true"></span>
-          <span class="frame-url">openshare-worker.mirrowel-zz.workers.dev/s/e317…</span>
+          <span class="frame-url">your-worker.workers.dev/s/7f3a…</span>
         </div>
-        <img src="./assets/hero-classic.png" alt="A shared agent session in the classic view: a numbered prompt on the left rail, the response with reasoning, read and edit tool cards below it, syntax-highlighted file bodies." width="1600" height="1000" fetchpriority="high">
+        <img src="./assets/hero-classic.png" alt="A shared agent session in the classic view: the turns sidebar on the left, a prompt bubble on the right, and below it the response with reasoning, shell, write, read and edit tool rows carrying real diff counts." width="1600" height="1000" fetchpriority="high">
       </div>
-      <figcaption>A real session, shared live: five turns, twenty-four tool calls, one subagent. What you see is what the agent did.</figcaption>
+      <figcaption>A real session, curated for this page: build a Snake game, fix two bugs, add polish. What you see is what the agent did.</figcaption>
     </figure>
   </section>
 
   <!-- turn 2: how -->
   <section class="turn" id="how">
+    <span class="turnmark" aria-hidden="true">t-02</span>
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> how does it work?</p>
     <h2 class="rv">One command. Then it's a URL.</h2>
     <p class="body rv" style="--d:.08s">Type <code>/share</code> in the opencode TUI. The session streams to your worker
@@ -87,6 +92,7 @@
 
   <!-- turn 3: features as the product's own tool rows -->
   <section class="turn" id="features">
+    <span class="turnmark" aria-hidden="true">t-03</span>
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> what can it do?</p>
     <h2 class="rv">The transcript is the artifact.</h2>
 
@@ -203,8 +209,8 @@
               <div class="chat-row">
                 <span class="chat-ava" aria-hidden="true">M</span>
                 <span class="chat-bub">look what the agent did overnight
-                  <span class="chat-link" dir="ltr">openshare-worker…/s/e317…</span>
-                  <img src="./assets/og-card.png" alt="Link preview card: the session title, '5 turns · 24 tools · 4m', and a Completed badge on a dark card with an amber aurora." width="1200" height="630" loading="lazy">
+                  <span class="chat-link" dir="ltr">your-worker.workers.dev/s/7f3a…</span>
+                  <img src="./assets/og-card.png" alt="Link preview card: the session title, a turns, tools and duration stat line, and a Completed badge on a dark card with an amber aurora." width="1200" height="630" loading="lazy">
                 </span>
               </div>
             </div>
@@ -215,9 +221,36 @@
     </div>
   </section>
 
-  <!-- turn 4: live -->
+  <!-- turn 4: states gallery -->
+  <section class="turn" id="states">
+    <span class="turnmark" aria-hidden="true">t-04</span>
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> what does it look like?</p>
+    <h2 class="rv">Every state, on the record.</h2>
+    <p class="body rv" style="--d:.08s">All of this is the same transcript, the same session. Collapse the sidebar to a
+      12px pill. Split a diff into panes with real line numbers. Search everything and watch the marks
+      hold while you scroll.</p>
+
+    <figure class="gal-wide rv" style="--d:.14s">
+      <img src="./assets/feat-diff.png" alt="An edit tool expanded into a split diff: red-tinted removed lines and green-tinted added lines with real line numbers and syntax highlighting, the unified/split toggle in the card header." loading="lazy">
+      <figcaption><b>edit, split</b>: real line numbers from the file, red/green by hunk, unified on narrow screens</figcaption>
+    </figure>
+
+    <div class="gal-pair">
+      <figure class="rv" style="--d:.1s">
+        <img src="./assets/feat-search.png" alt="The search palette open over the transcript: the query 'snake', ten results grouped by scope chips, yellow marks painted on every hit, and the highlighted file body behind it." loading="lazy">
+        <figcaption><b>search</b>: prompts, responses, thinking, tools; marks persist while you scroll</figcaption>
+      </figure>
+      <figure class="rv" style="--d:.18s">
+        <img src="./assets/feat-pill.png" alt="The same session with the sidebar collapsed: the transcript takes the full width and a slim pill on the left edge marks the current turn." loading="lazy">
+        <figcaption><b>collapsed</b>: the sidebar folds into a pill that takes 12px and never leaves</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- turn 5: live -->
   <section class="band" id="live">
     <div class="band-in">
+      <span class="turnmark" aria-hidden="true">t-05</span>
       <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> is it fresh?</p>
       <h2 class="rv">Alive while it works.</h2>
       <p class="body rv" style="--d:.08s">Shares stream over a live socket. A reader watching mid-run sees the
@@ -234,8 +267,26 @@
     </div>
   </section>
 
-  <!-- turn 5: self-host -->
+  <!-- turn 6: the interactive demo -->
+  <section class="turn" id="demo">
+    <span class="turnmark" aria-hidden="true">t-06</span>
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> can i touch it?</p>
+    <h2 class="rv">Don't take our word for it. Click around.</h2>
+    <p class="body rv" style="--d:.08s">This is the real viewer with the real session from above, frozen into a single
+      HTML file by the snapshot button. Expand the tools, run a search, switch views in the header,
+      resize the output panes. It is the whole product, offline, in this page.</p>
+    <div class="demo-frame rv" style="--d:.14s">
+      <iframe src="./demo.html" title="Interactive OpenShare demo: the full viewer running a real curated agent session" loading="lazy"></iframe>
+    </div>
+    <p class="demo-links rv" style="--d:.2s">
+      <a href="./demo.html" target="_blank" rel="noopener">open it fullscreen ↗</a>
+      <span>7.5 MB, works from a USB stick, no server involved</span>
+    </p>
+  </section>
+
+  <!-- turn 7: self-host -->
   <section class="turn" id="selfhost">
+    <span class="turnmark" aria-hidden="true">t-07</span>
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> who holds the data?</p>
     <h2 class="rv">You do. It's your worker.</h2>
     <p class="body rv" style="--d:.08s">OpenShare is a Cloudflare Worker you deploy in three commands, or a single
@@ -249,6 +300,7 @@ curl -s https://your-worker.workers.dev/health</code></pre>
 
   <!-- closing prompt -->
   <section class="close">
+    <span class="turnmark" aria-hidden="true">t-08</span>
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> ship it</p>
     <h2 class="rv">The session is the artifact.</h2>
     <div class="cta rv" style="--d:.1s">
