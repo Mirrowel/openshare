@@ -15,7 +15,6 @@ import { createEffect, createMemo, createSignal, onCleanup, For, Show, type JSX 
 import { Dynamic } from "solid-js/web"
 import { BasicTool } from "@opencode/session-ui/basic-tool"
 import { useData } from "@opencode/session-ui/context"
-import { isEmbeddedShare } from "./data-source"
 import { useFileComponent } from "@opencode/ui/context"
 import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
@@ -299,35 +298,6 @@ function GutterOffset(props: { start: number; children: JSX.Element }) {
   return <div ref={attach}>{props.children}</div>
 }
 
-/** Offline snapshots cannot start pierre's worker pool (browsers block
- *  workers on file://), so file bodies render here as plain numbered lines:
- *  the content is complete, only the syntax colors are absent. Diff bodies
- *  colorize their own +/- lines from the patch text. */
-function OfflineLines(props: { text: string; start?: number; diff?: boolean }) {
-  const lines = () => {
-    const all = props.text.replace(/\n$/, "").split("\n")
-    return props.diff ? all.filter((l) => !/^(diff --git |index |--- |\+\+\+ |new file|deleted file|similarity )/.test(l)) : all
-  }
-  return (
-    <pre class="osh-offline-body">
-      <For each={lines()}>
-        {(line, i) => (
-          <div
-            class="osh-offline-line"
-            classList={{
-              "osh-offline-add": !!props.diff && line.startsWith("+"),
-              "osh-offline-del": !!props.diff && line.startsWith("-"),
-              "osh-offline-hunk": !!props.diff && line.startsWith("@@"),
-            }}
-          >
-            <span class="osh-offline-num">{props.diff ? "" : (props.start ?? 1) + i()}</span>
-            <span class="osh-offline-text">{line || " "}</span>
-          </div>
-        )}
-      </For>
-    </pre>
-  )
-}
 /** One cold-pool guard: pierre renders PLAIN text if the worker pool has
  * not finished booting when the card mounts, and never re-renders when it
  * does (live-caught intermittency). After the first render settles, if the
@@ -389,7 +359,6 @@ function FileCard(props: {
         }}
         style={{ display: "contents" }}
       >
-        <Show when={isEmbeddedShare()} fallback={
         <GutterOffset start={props.lineStart ?? 1}>
           {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
               prop is just passed through) - a distinct <Show keyed> branch
@@ -425,9 +394,6 @@ function FileCard(props: {
             />
           </Show>
         </GutterOffset>
-        }>
-          <OfflineLines text={props.contents} start={props.lineStart} />
-        </Show>
       </div>
     </FileBody>
   )
@@ -639,9 +605,6 @@ const EditTool = (props: ToolProps) => {
             }
           >
             <div data-component="edit-content">
-              <Show when={isEmbeddedShare()}>
-                <OfflineLines diff text={fileDiff()?.patch ?? ""} />
-              </Show>
               {/* keyed branch pair: Solid's Dynamic has NO remount API (a
                   `key` prop is passed through, does nothing - live-caught:
                   the first card of a batch rendered split, the rest stayed

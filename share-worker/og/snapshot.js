@@ -175,6 +175,12 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
   // the REAL worker bundles never run offline (main-thread copies do); the
   // shim and the diffs-main copies must stay
   const isWorkerBundle = (name) => /^worker-[A-Za-z0-9_-]{8}\.js$/.test(name) || /^markdown\.worker-/.test(name)
+  // shiki's wasm engine never loads offline (the main-thread renderer uses
+  // the pure-JS `highlights` engine) and the viewer registers its own theme;
+  // the bundled shiki themes are dead weight in a snapshot
+  const isDeadWeight = (name) =>
+    /^wasm-[A-Za-z0-9_-]{8}\.js$/.test(name) ||
+    /^(everforest|catppuccin|tokyo-night|pierre-(light|dark)-vibrant|one-dark|github-(light|dark)|nord|dracula|solarized|material|vitesse|min-light|min-dark|snazzy|monokai|ayu|kanagawa|rose-pine|gruvbox)-[A-Za-z0-9_-]{8}\.js$/.test(name)
   const includeIcon = (name) => {
     const icon = iconChunk.get(name)
     return icon === undefined || neededIcons.has(icon)
@@ -194,7 +200,7 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
   const assetNames = new Set()
   const enqueue = (name, next) => {
     if (included.has(name)) return
-    if (isWorkerBundle(name)) return
+    if (isWorkerBundle(name) || isDeadWeight(name)) return
     if (!includeIcon(name)) return
     included.add(name)
     next.push(name)
@@ -241,11 +247,20 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
   }
 
   // --- non-JS assets as data: URLs --------------------------------------
+  // the provider sprite is special: <use href="data:...#icon"> does not
+  // resolve reliably, so its symbols are injected into the document and the
+  // module's sprite URL becomes "" (href="#icon" then hits the document)
   const assetUrls = {}
+  let spriteMarkup = ""
   await Promise.all(
     [...assetNames].map(async (file) => {
       const text = await readOnce(file)
-      if (text != null) assetUrls[file] = dataUrl(file, text)
+      if (text == null) return
+      if (/^sprite-[A-Za-z0-9_-]{8}\.svg$/.test(file)) {
+        spriteMarkup = text.replace(/^<\?xml[^>]*\?>\s*/, "")
+        return
+      }
+      assetUrls[file] = dataUrl(file, text)
     }),
   )
   cssOut = cssOut.replace(/url\(\/assets\/([^)]+)\)/g, (m, file) => assetUrls[file] ?? m)
@@ -268,10 +283,12 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
         .replace(/(["'`])\.\/([A-Za-z0-9_\-.]+\.js)\1/g, "$1@osh/$2$1")
         .replace(/(["'`])\/assets\/([A-Za-z0-9_\-.]+\.js)\1/g, "$1@osh/$2$1")
         .replace(/(["'])assets\/([A-Za-z0-9_\-.]+\.js)\1/g, "$1@osh/$2$1")
-      code = code.replace(
-        /(["'`])(?:assets\/|\/assets\/)([A-Za-z0-9_\-.]+-[A-Za-z0-9_-]{8}\.(?:png|svg|jpe?g|webp|gif|woff2))\1/g,
-        (m, q, file) => (assetUrls[file] ? q + assetUrls[file] + q : m),
-      )
+      code = code
+        .replace(/(["'`])(?:assets\/|\/assets\/)sprite-[A-Za-z0-9_-]{8}\.svg\1/g, "$1$1")
+        .replace(
+          /(["'`])(?:assets\/|\/assets\/)([A-Za-z0-9_\-.]+-[A-Za-z0-9_-]{8}\.(?:png|svg|jpe?g|webp|gif|woff2))\1/g,
+          (m, q, file) => (assetUrls[file] ? q + assetUrls[file] + q : m),
+        )
       for (const m of code.matchAll(/@osh\/([A-Za-z0-9_.+-]+)/g)) referenced.add(m[1])
       imports[`@osh/${name}`] = dataUrl(name, code)
     }),
@@ -300,11 +317,16 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
     // charset FIRST: the island carries UTF-8 (em dashes, quotes) and the
     // document must decode as UTF-8 before any of it is parsed
     `<meta charset="utf-8">`,
+    "",
     `<script id="osh-chunks" type="application/json">${JSON.stringify(chunks).replace(/</g, "\\u003c")}</script>`,
     `<script>window.__MIRROBOT_SNAPSHOT__=${island};</script>`,
     BOOT_SHIM.replace("__OSH_ENTRY__", entryNames[0] ?? ""),
   ].join("\n    ")
-  return out.replace(/<head>/i, "<head>\n    " + head)
+  out = out.replace(/<head>/i, "<head>\n    " + head)
+  // the sprite lives at the END of the body: an <svg> inside <head> is
+  // invalid HTML and the parser relocates it, which breaks the render root
+  if (spriteMarkup) out = out.replace(/<\/body>/i, `<div hidden>${spriteMarkup}</div>` + "</body>")
+  return out
 }
 
 const BOOT_SHIM = `<script>(function(){
