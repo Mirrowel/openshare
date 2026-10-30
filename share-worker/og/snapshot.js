@@ -113,6 +113,16 @@ export async function buildSnapshotHtml({ html, island, readAsset }) {
   // no caching: workerd gives a 128MB isolate and every text is used once
   const readOnce = (name) => readAsset(name)
 
+  // a snapshot is a frozen record, not a live share: the header says so
+  // instead of repeating whatever the share's status was when it was taken
+  try {
+    const envelope = JSON.parse(island)
+    envelope.status = "snapshot"
+    island = JSON.stringify(envelope).replace(/</g, "\\u003c")
+  } catch {
+    // an unparseable island fails later with its own error; never mask it here
+  }
+
   const base = html.replace(/[ \t]*<link[^>]*rel="modulepreload"[^>]*>\r?\n?/g, "")
   const entryRe = /<script[^>]*src="\/assets\/([^"]+\.js)"[^>]*>\s*<\/script>/g
   const cssRe = /<link[^>]*href="\/assets\/([^"]+\.css)"[^>]*>/g

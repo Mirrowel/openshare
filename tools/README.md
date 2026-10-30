@@ -2,6 +2,23 @@
 
 Small standalone utilities around the share ecosystem. Nothing here is needed to run the plugin or the worker — these are local conveniences.
 
+## osh-snapshot-local.mjs
+
+The same offline snapshot, built from a local session export instead of a
+live share: no network, no server, no share at all.
+
+```bash
+# one export file (or the whole family: main plus its subagents)
+node tools/osh-snapshot-local.mjs example/export/main.json -o session.html
+
+# main + subagent, explicit viewer build
+node tools/osh-snapshot-local.mjs main.json child.json --viewer share-viewer/dist -o family.html
+```
+
+Requires a built viewer (`cd share-viewer && npm run build`) because it packs
+that build into the file. The conversion is the interchange tool's, so the
+page renders exactly like a share of the same session; the header reads
+`snapshot` instead of the share status.
 ## osh-snapshot.mjs
 
 Download a share as ONE self-contained offline HTML file, without a browser.
