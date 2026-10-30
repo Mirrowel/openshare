@@ -1140,7 +1140,7 @@ export function App() {
           </Show>
         </Show>
       </ErrorBoundary>
-      <InfoPanel data={source.data()} sessionID={source.data().sessionID} source={source} />
+      <InfoPanel data={source.data()} sessionID={source.data().sessionID} view={settings().view} source={source} />
       </Show>
     </Show>
   )

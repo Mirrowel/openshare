@@ -458,7 +458,7 @@ function AtlasInfoExtra() {
     </>
   )
 }
-setInfoExtra(() => <AtlasInfoExtra />)
+setInfoExtra("atlas", () => <AtlasInfoExtra />)
 
 // station: the chain-line gutter (index over total, datum diamond) beside
 // the station body; the article is the jump target for the profile bars.

@@ -43,7 +43,7 @@ function clock(at?: number): string {
   })
 }
 
-export function InfoPanel(props: { data: ShareData; sessionID: string; source?: { status(): string; shareID: string; rev(): number } }) {
+export function InfoPanel(props: { data: ShareData; sessionID: string; view: string; source?: { status(): string; shareID: string; rev(): number } }) {
   const status = () => { try { return props.source?.status() ?? "?" } catch { return "?" } }
   const shareId = () => { try { return props.source?.shareID ?? "?" } catch { return "?" } }
   const rev = () => { try { return String(props.source?.rev?.() ?? 0) } catch { return "0" } }
@@ -115,9 +115,10 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; source?: 
                 <Row label="duration" value={dur()} />
               </Show>
             </Group>
-            {/* view-scoped extras (atlas registers legend + coordinates
-                here, one info surface) */}
-            <Show when={getInfoExtra()}>
+            {/* view-scoped extras: only the ACTIVE view's registration
+                renders (atlas's legend + coordinates), never a leak from a
+                statically imported view module */}
+            <Show when={getInfoExtra(props.view)}>
               {(extra) => <Dynamic component={extra()} />}
             </Show>
           </div>
