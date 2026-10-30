@@ -141,6 +141,21 @@ Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_
 
 **`OPENSHARE_CONFIG_JSON`** - a complete config object in one env var (same keys as a config file, including `servers` and `meta`), for pipelines that cannot mount files. It sits between the file/options layers and the per-key env vars: a specific `OPENSHARE_*` var still wins over it, and it wins over every file. Malformed JSON logs an error line and is ignored - it never clears lower layers.
 
+**Recipes** — starting points for the three common postures (all keys optional; diffs from defaults):
+
+```jsonc
+// CI: watched runs — near-real-time, everything to the url file
+{ "shareMode": "all", "debounceMs": 5000, "announceStderr": true }
+
+// Default: interactive with TUI — manual sharing, standard cadence
+{ "shareMode": "manual", "debounceMs": 10000 }
+
+// Relaxed: casual "here's a link" sessions — batchier sync, longer TTL
+// (TTL is capped by the server's MAX_TTL_HOURS — 2160 (90d) by default;
+// raise it on your own deployment for this recipe to take full effect)
+{ "shareMode": "manual", "debounceMs": 30000, "ttlHours": 4320 }
+```
+
 ### Where the plugin WRITES
 
 The `/openshare` TUI writes only to the settings home (`~/.config/opencode/openshare.config.json`) by default, or to any *already existing* file in the read chain via its write-target picker — it never creates override files and never dirties shipped templates. Enrollment tokens persist as surgical `servers` entry patches into the same home.
@@ -192,6 +207,7 @@ All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per
 | `navSearchBar` | `false` | Filter field in the prompt views |
 | `rowPromptLines` / `rowResponseLines` | `1` / `0` | Prompt-row content lines (1–5 / 0–5) |
 | `cardWidth` | `40` | File-tool card width in rem (split diffs = 2×, viewport-capped); live as `--osh-card` |
+| `outHeight` | `"capped"` | Tall tool outputs: `capped` (file cards stop at ~25 lines with chevrons, `full` = uncapped) |
 
 ---
 
@@ -203,7 +219,7 @@ All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per
 | Root admin token | `wrangler secret put CREATE_TOKEN` |
 | Deployment branding / OG embeds | `share-worker/openshare.config.json` + redeploy |
 | A user's limits / a new token / an access code | admin API (`/api/admin/…`) — or the `/openshare` console on the hoster's machine |
-| My default share TTL (as a user) | `PUT /api/me/settings` `defaultTtlDays` |
+| My default share TTL (as a user) | `PUT /api/me/settings` `defaultTtlHours` |
 | Which server(s) my sessions share to, credentials | plugin config: `servers` group (TUI writes it to the settings home) |
 | Sync timing, URL output, stderr noise, share mode | plugin config keys / `OPENSHARE_*` env (table in §3) |
 | Reading experience (theme, views, widths, grouping) | the viewer settings gear — the `osh_settings` cookie |

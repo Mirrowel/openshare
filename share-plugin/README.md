@@ -155,7 +155,7 @@ queue, spool or wire:
 npm install
 npm run build         # tsc -> dist/ + bun bundle -> ci/openshare.js (Bun on PATH)
 npm run typecheck
-npm run test          # full matrix via the parallel driver (~4.5 min)
+npm run test          # full matrix via the parallel driver (~2.5 min)
 npm run test:quick     # everyday gate (~90s): parity + manual core + TUI + v2 + auth
 ```
 

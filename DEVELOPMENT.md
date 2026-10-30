@@ -1,7 +1,5 @@
 # OpenShare — development notes
 
-Working on the repo? This is the map. User-facing docs: [README](README.md).
-
 Working on the repo? This is the map. User-facing docs: [README](README.md). The complete configuration surface across all packages: [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Repo layout
@@ -39,7 +37,7 @@ enforce it: the same auth/enroll suites run against both backends).
 
 ## Test suites
 
-`npm test` (matrix driver, ~4.5 min) / `npm run test:quick` (~90s).
+`npm test` (matrix driver, bounded-scheduler parallel, ~2.5 min) / `npm run test:quick` (~90s).
 
 | Suite | Covers |
 |---|---|
@@ -47,7 +45,7 @@ enforce it: the same auth/enroll suites run against both backends).
 | manual (core/allmode/engine shards) | dormancy, flag/backfill, unshare, re-share, read-auth opts, all-mode gating, undo tombstones, completed debounce, turn sockets, finalize, queued-prompt ordering (S13) |
 | tui-flow | share/manager flows, config write targets, enrollment, admin console, gone detection, size prefs |
 | v2-mock | the v2 adapter against a scripted mock v2 host (incl. inbox queue semantics: held until `session.inbox.delivered`, cancelled never surfaces) |
-| auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign, request caps, the since/delta handshake — 80 checks, CF + Bun |
+| auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign, request caps, the since/delta handshake — CF + Bun |
 | enroll | plugin enrollment lifecycle vs a real worker (private + public) |
 | fanout | dual workers, mid-session join backfill, opt-outs, collisions |
 | big (×backends) | scale: ~3k items incl. MB-size parts through sharded storage — full `/data`, zero stuck revs |
@@ -72,9 +70,9 @@ The per-fork catalogue lives in `vendor/VENDOR.md` (kept in step with the script
 
 **Why solid-js is vendored**: Solid's `cleanNode` walks `node.owned`/`node.cleanups` with live loops; a re-entrant disposal nulls the arrays mid-walk and the next iteration throws `null[i]`, killing the whole reactive flush (a half-updated page with a stuck status, live-caught; opencode itself patches the same defect in its own dependency). `vendor-solid.mjs` patches `cleanNode`/`dispose` to snapshot-loop — 6 lines — and writes TWO variants: `vendor/solid/solid.js` (build) and `vendor/solid/dev.js` (dev server: unminified, dev warnings, readable stack traces); `vite.config.ts` picks by command and pins the exact-match alias `/^solid-js$/` so the bundle uses the patched copy and `node_modules` stays pristine.
 
-**Gallery**: `npm run preview:tools` (vite dev) opens `/?preview` with every tool in every state beside the real settings panel; hover affordances can be force-revealed. Message-level features (prompts, agent switch, reasoning, markdown, math, images, compaction/retry/error, grouping) render as whole-message docs through `src/gallery-timeline.tsx` — the production projection + row renderer without the virtualizer. It holds no share data and is dev-only (`import.meta.env.DEV`). A load benchmark is built into the page (corner panel + `window.__oshBench`, with mutation-burst/card-sync counters from `window.__oshOutStats`) — "settle" is the moment every tall card is measured and chevroned without interaction, so load regressions in the card-sync layer show up there. In dev the pierre worker can evaluate its module graph twice (vite serves the entry and a plain copy under different URLs); the theme-alias fork in `vendor/VENDOR.md` makes both copies resolve, so the `Theme "pierre-dark" has not been resolved` flood cannot recur. Two viewer behaviors are wired outside the component tree, at the entry: the shell card's drag-to-resize and clipped fade (`src/shell-resize.tsx`, delegated listeners writing a per-card `--osh-shell-h`) and Alt+click link copying in the timeline.
+**Gallery**: `npm run preview:tools` (vite dev) opens `/?preview` with every tool in every state beside the real settings panel; hover affordances can be force-revealed. Message-level features (prompts, agent switch, reasoning, markdown, math, images, compaction/retry/error, grouping) render as whole-message docs through `src/gallery-timeline.tsx` — the production projection + row renderer without the virtualizer. It holds no share data and is dev-only (`import.meta.env.DEV`). A load benchmark is built into the page (corner panel + `window.__oshBench`, with mutation-burst/card-sync counters from `window.__oshOutStats`) — "settle" is the moment every tall card is measured and chevroned without interaction, so load regressions in the card-sync layer show up there. In dev the pierre worker can evaluate its module graph twice (vite serves the entry and a plain copy under different URLs); the theme-alias fork in `vendor/VENDOR.md` makes both copies resolve, so the `Theme "pierre-dark" has not been resolved` flood cannot recur. Two viewer behaviors are wired outside the component tree, at the entry: the shell card's drag-to-resize and clipped fade (`src/shell-resize.tsx`, delegated listeners writing a per-card `--osh-shell-h`) and ctrl+click link copying in the timeline.
 
-**Viewer dev/probe workflow**: `npm run dev` + `?demo` on any `/s/<id>` path renders the built-in fixture share (`src/demo.ts`) — no worker, no auth, no live data needed. `vite.config.ts` excludes the vendored `@opencode/*` packages from esbuild's dep scanner (it cannot parse their `?worker&url` imports) while force-including `@pierre/diffs` and `lru_map` for CJS interop. For headless verification against the REAL production bundle, serve `dist/` from an in-process http server and inject the demo fixture as `window.__MIRROBOT_SNAPSHOT__` through an HTML wrapper (the local-mode contract) — no child processes, no vite, no stray windows. `PRODUCT.md`/`DESIGN.md` at the repo root carry the product design context (register: product).
+**Viewer dev/probe workflow**: `npm run dev` + `?demo` on any `/s/<id>` path renders the built-in fixture share (`src/demo.ts`) — no worker, no auth, no live data needed. `vite.config.ts` excludes the vendored `@opencode/*` packages from esbuild's dep scanner (it cannot parse their `?worker&url` imports) while force-including `@pierre/diffs` and `lru_map` for CJS interop. For headless verification against the REAL production bundle, serve `dist/` from an in-process http server and inject the demo fixture as `window.__MIRROBOT_SNAPSHOT__` through an HTML wrapper (the local-mode contract) — no child processes, no vite, no stray windows.
 
 Two more hard rules learned live:
 
