@@ -143,17 +143,33 @@ export function envelopeFromExports(exports) {
         } else if (p?.type === "tool") {
           const st = p.state ?? {}
           const tt = st.time ?? {}
-          const stOut = { ...st, input: inputV1toV2(String(p.tool ?? ""), st.input) }
-          // range language stamps (see refineRangeLanguage above)
+          // range language stamps (see refineRangeLanguage above); applied to
+          // the metadata object that the normalized state carries below
+          const meta = { ...(st.metadata ?? {}) }
           {
-            const meta = (stOut.metadata = st.metadata ?? {})
             const rawPath = String(st.input?.filePath ?? st.input?.path ?? "")
-            if (String(p.tool ?? "") === "read" && stOut.status === "completed") {
+            if (String(p.tool ?? "") === "read" && st.status === "completed") {
               refineRangeLanguage(meta, extOf(rawPath), readCleanText(meta, st.output))
             } else if ((String(p.tool ?? "") === "edit" || String(p.tool ?? "") === "patch")) {
               const pt = typeof meta.diff === "string" ? meta.diff : typeof meta.filediff?.patch === "string" ? meta.filediff.patch : ""
               refineRangeLanguage(meta, extOf(rawPath), patchBody(pt))
             }
+          }
+          // v2 state shape, mirroring the plugin's normalizeToolState
+          // (share-plugin/src/contract.ts): the kit reads state.content, not
+          // the v1 state.output string, and state.error as {type,message}
+          const status = String(st.status ?? "pending")
+          const input = inputV1toV2(String(p.tool ?? ""), st.input) ?? {}
+          let stOut
+          if (status === "completed") {
+            const out = typeof st.output === "string" && st.output ? st.output : " "
+            stOut = { status: "completed", input, content: [{ type: "text", text: out }], metadata: meta, ...(Array.isArray(st.attachments) && st.attachments.length ? { attachments: st.attachments } : {}) }
+          } else if (status === "error") {
+            stOut = { status: "error", input, error: { type: "unknown", message: typeof st.error === "string" ? st.error : String(st.error?.message ?? "tool failed") }, metadata: meta }
+          } else if (status === "running") {
+            stOut = { status: "running", input, metadata: meta }
+          } else {
+            stOut = { status: "streaming", input: typeof st.raw === "string" ? st.raw : JSON.stringify(input) }
           }
           content.push({
             type: "tool",
