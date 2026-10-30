@@ -99,6 +99,11 @@ function resolveBrandingObj(env) {
   }
 }
 
+/** Server-built snapshots are opt-in (SNAPSHOT_ENDPOINT=1): one subrequest
+ *  per asset, far beyond the free plan's 50-per-invocation cap. */
+function envSnapshots(env) {
+  return String(env?.SNAPSHOT_ENDPOINT ?? "") === "1"
+}
 // GET /api/share/:id/snapshot - ONE self-contained HTML file: the viewer
 // bundle and every chunk it can reach inlined (see og/snapshot.js), the
 // share frozen as a JSON island. Opens offline in any browser; a
@@ -229,7 +234,17 @@ export default {
       // /s/<id>/snapshot - the human spelling of the download: same file,
       // attachment disposition (the menu links /api/...; this handles a
       // hand-typed URL)
-      const pageSnapshot = path.match(/^\/s\/([0-9a-f]+)\/snapshot\/?$/)
+      // OFF BY DEFAULT: building it here costs one subrequest per asset
+      // (~1500), far past the free plan's 50-per-invocation cap, and needs
+      // the assembly CPU. Deployments that want the server-side build set
+      // SNAPSHOT_ENDPOINT=1; everyone else uses the viewer's download button
+      // or tools/osh-snapshot.mjs, which fetch static assets (free).
+      const pageSnapshot = envSnapshots(env) ? path.match(/^\/s\/([0-9a-f]+)\/snapshot\/?$/) : null
+      // a disabled endpoint must SAY so: falling through reaches the SPA
+      // fallback and answers 200 with the viewer instead of a 404
+      if (req.method === "GET" && !envSnapshots(env) && /^\/s\/[0-9a-f]+\/snapshot\/?$/.test(path)) {
+        return json(404, { error: "snapshots are disabled on this deployment (set SNAPSHOT_ENDPOINT=1)" })
+      }
       if (req.method === "GET" && pageSnapshot) {
         const id = pageSnapshot[1]
         const token = bearer(req) || cookieToken(req, id)
@@ -476,7 +491,7 @@ export default {
         })
       }
 
-      if (req.method === "GET" && op === "/snapshot") {
+      if (req.method === "GET" && op === "/snapshot" && envSnapshots(env)) {
         // frozen self-contained HTML of the share as it stands RIGHT NOW;
         // the read gate applies exactly as /data (cookie or bearer viewer
         // token for gated shares — no bypass through the snapshot)

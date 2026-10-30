@@ -2,6 +2,34 @@
 
 Small standalone utilities around the share ecosystem. Nothing here is needed to run the plugin or the worker — these are local conveniences.
 
+## osh-snapshot.mjs
+
+Download a share as ONE self-contained offline HTML file, without a browser.
+CI-friendly: it walks the deployment's static assets (free and unlimited on
+Cloudflare) and assembles locally with the same builder the worker and the
+viewer's download button use, so no worker CPU, no subrequest cap, and no
+browser needed.
+
+```bash
+# public share -> ./<id>.html
+node tools/osh-snapshot.mjs https://openshare.example.com/s/<id>
+
+# choose the file, gated share via login (or --token <viewer token>)
+node tools/osh-snapshot.mjs https://openshare.example.com/s/<id> -o run.html --login user:pass
+
+# machine-readable result for a CI step
+node tools/osh-snapshot.mjs "$SHARE_URL" --token "$VIEWER_TOKEN" --json
+```
+
+Exits `2` when the share is gated and no credentials were given; `--json`
+prints `{ok,file,bytes,rev,status,items,sessionID}` on one line. A GitHub
+Actions job only needs Node 20+ and network access to the deployment:
+
+```yaml
+- run: node tools/osh-snapshot.mjs "${{ env.SHARE_URL }}" -o share.html
+- uses: actions/upload-artifact@v4
+  with: { name: share-snapshot, path: share.html }
+```
 ## view-export.py
 
 View any exported opencode session locally, exactly like a live share page: it serves the real viewer (`../share-viewer/dist`) on localhost with the session(s) injected — same rendering, same views, subagent pages included when the exports cover the family. The conversion is plugin-parity: every item carries its `sessionID` (main and child sessions stay separate), and task calls are stamped with the child's resolved agent via the same rank-join the plugin uses, so subagent rows and labels render exactly as online. No crypto, no network beyond localhost; nothing is uploaded anywhere.

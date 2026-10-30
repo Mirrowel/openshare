@@ -357,17 +357,17 @@ title/version/model.
   client prunes), only the items touched since when `since < rev`),
   `GET /api/share/:id/snapshot` and `GET /s/:id/snapshot` (ONE
   self-contained HTML file: the viewer, every chunk it can reach and the
-  fonts inlined, the share frozen as a JSON island, a boot shim; opens
-  offline in any browser as a point-in-time record. The read gate applies
-  exactly as `/data` - a gated share demands a satisfied viewer session
-  (login cookie or bearer viewer token), no bypass. `?download=1` adds
-  an attachment disposition. Offline the page runs pierre and the
-  markdown parser on the main thread (browsers block workers on
-  `file://`) through vendored forks, so file cards and highlighting are
-  complete. Assembling it in the worker costs one subrequest per asset
-  (~1300), above the free plan's 50-per-invocation cap - the viewer's
-  own download button builds the same file in the browser),
-  — every other surface is identical),
+  provider sprite inlined, the share frozen as a JSON island, a boot
+  script that turns the chunks into Blob modules; opens offline in any
+  browser as a point-in-time record. The read gate applies exactly as
+  `/data` - a gated share demands a satisfied viewer session (login
+  cookie or bearer viewer token), no bypass. `?download=1` adds an
+  attachment disposition. **Off by default**: set `SNAPSHOT_ENDPOINT=1`
+  to serve it. The build costs one subrequest per asset (~1500) plus the
+  assembly CPU, which the free plan (50 subrequests, 10 ms) cannot pay;
+  prefer the viewer's download button or `tools/osh-snapshot.mjs`, which
+  fetch the same static assets through the CDN and assemble locally -
+  free and unlimited on every plan),
   `POST /api/share/:id/auth`, `DELETE /api/share/:id`
 - `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
   body `{secret|Bearer owner, authLogin+authPassword (both-or-none),

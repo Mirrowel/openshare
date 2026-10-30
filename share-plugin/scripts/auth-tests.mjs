@@ -109,7 +109,7 @@ let worker3
 
 try {
   console.log(`[${SUITE}] starting private-mode worker…`)
-  worker1 = await startBackend(suiteDir, { configSuffix: "priv", name: "b1" })
+  worker1 = await startBackend(suiteDir, { configSuffix: "priv", name: "b1", vars: { SNAPSHOT_ENDPOINT: "1" } })
   const W1 = worker1.url
 
   // T01 — health advertises auth mode
@@ -825,7 +825,7 @@ try {
   // T20 — public mode worker: codeless onboarding is OFF by default, so
   // enrollment needs a code even on public; anonymous creates stay open
   console.log(`[${SUITE}] starting public-mode worker…`)
-  worker2 = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public" }, authMode: "public" })
+  worker2 = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1" }, authMode: "public" })
   const W2 = worker2.url
   const h2 = await req(W2, "GET", "/health")
   ok("T20 health auth.mode=public", h2.json?.auth?.mode === "public")
@@ -840,7 +840,7 @@ try {
 
   // T20e — codeless onboarding explicitly enabled: enroll without a code
   // is allowed, on a separate instance (flag is per-deployment)
-  worker3 = await startBackend(suiteDir, { port: B3_PORT, configSuffix: "pub2", name: "b3", vars: { AUTH_MODE: "public", CODELESS_ONBOARDING: "1" }, authMode: "public" })
+  worker3 = await startBackend(suiteDir, { port: B3_PORT, configSuffix: "pub2", name: "b3", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1", CODELESS_ONBOARDING: "1" }, authMode: "public" })
   const W3 = worker3.url
   const clEnroll = await req(W3, "POST", "/api/enroll", { body: { label: "codeless-one" } })
   ok("T20e codeless onboarding when enabled", clEnroll.json?.ok === true && typeof clEnroll.json?.token === "string", JSON.stringify(clEnroll.json))

@@ -14,6 +14,8 @@ preview_urls = false
 MAX_TTL_HOURS = "2160"
 # OG embed card style: aurora (default) | minimap | poster | blueprint | terminal
 # OG_STYLE = "aurora"
+# Server-built snapshots (one subrequest per asset; free plan cannot pay it)
+# SNAPSHOT_ENDPOINT = "1"
 # AUTH_MODE: private (default — enrollment needs an access code) | public
 #            (anyone knowing the hostname may create shares anonymously)
 # AUTH_MODE = "private"

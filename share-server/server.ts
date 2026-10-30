@@ -596,6 +596,10 @@ function shareData(share: ShareRow) {
  * worker parity (ShareDO.validToken). NOT the password hash: comparing
  * pbkdf2(cookieToken) against passHash could never match a minted token,
  * which made every read-gated share on Bun permanently unviewable. */
+/** Server-built snapshots are opt-in (SNAPSHOT_ENDPOINT=1). */
+function snapshotsEnabled(): boolean {
+  return process.env.SNAPSHOT_ENDPOINT === "1"
+}
 async function validViewerToken(share: ShareRow, token: string): Promise<boolean> {
   if (!token || !share.auth) return false
   let tokens: Array<{ token: string; expires: number }> = []
@@ -735,8 +739,11 @@ async function httpHandler(req: Request): Promise<Response> {
     return new Response(null, { status: 200 }) // upgraded in fetch() below
   }
 
-  // /s/<id>/snapshot - the human spelling of the snapshot download
-  const ps = path.match(/^\/s\/([0-9a-f]{32})\/snapshot\/?$/)
+  // /s/<id>/snapshot - the human spelling of the snapshot download.
+  // OFF BY DEFAULT (SNAPSHOT_ENDPOINT=1): the build costs one internal read
+  // per asset plus the assembly CPU, and every other consumer uses the
+  // viewer's download button or tools/osh-snapshot.mjs instead.
+  const ps = snapshotsEnabled() ? path.match(/^\/s\/([0-9a-f]{32})\/snapshot\/?$/) : null
   if (ps && req.method === "GET") {
     const share = q.share(ps[1])
     if (!share) return json(404, { error: "gone" })
@@ -816,7 +823,7 @@ async function httpHandler(req: Request): Promise<Response> {
   // frozen self-contained HTML of the share (worker parity): viewer bundle
   // inlined + share data as a JSON island. Read gate applies exactly as
   // /data — no bypass through the snapshot.
-  if (req.method === "GET" && op === "/snapshot") {
+  if (req.method === "GET" && op === "/snapshot" && snapshotsEnabled()) {
     const share = q.share(id)
     if (!share) return json(404, { error: "gone" })
     if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, id)))) {
