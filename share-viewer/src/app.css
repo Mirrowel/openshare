@@ -1361,7 +1361,7 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 :root { --osh-cap: 32rem; }
 html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
 .osh-file-scroll {
-  max-height: var(--osh-cap);
+  max-height: var(--osh-out-h, var(--osh-cap));
   overflow: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;

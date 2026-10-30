@@ -308,6 +308,10 @@ function FileCard(props: {
   lineStart?: number
   /** which file tool this card is - drives the PER-TOOL overflow setting */
   tool: "read" | "write"
+  /** plugin-stamped language of the RETURNED RANGE (a read from inside an
+   *  html file's script block is javascript, not html); overrides the
+   *  name-derived language, which cannot know the snippet's context */
+  lang?: string
   onRendered?: () => void
 }) {
   const fileComponent = useFileComponent()
@@ -366,7 +370,7 @@ function FileCard(props: {
             <Dynamic
               component={fileComponent as any}
               mode="text"
-              file={{ name: props.path, contents: props.contents }}
+              file={{ name: props.path, contents: props.contents, lang: (props.lang || undefined) as any }}
               overflow={ov()}
               media={media() as any}
               onRendered={() => {
@@ -382,7 +386,7 @@ function FileCard(props: {
             <Dynamic
               component={fileComponent as any}
               mode="text"
-              file={{ name: props.path, contents: props.contents }}
+              file={{ name: props.path, contents: props.contents, lang: (props.lang || undefined) as any }}
               overflow={ov()}
               media={media() as any}
               onRendered={() => {
@@ -419,6 +423,9 @@ function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; con
       </div>
       <span class="osh-file-arrow" data-osh-arrow="up" aria-hidden="true" />
       <span class="osh-file-arrow" data-osh-arrow="down" aria-hidden="true" />
+      {/* same per-card drag the output surfaces have: temporary height,
+          dblclick resets; chevrons keep marking anything still clipped */}
+      <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
     </div>
   )
 }
@@ -461,7 +468,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} lang={str((props.metadata as any)?.language)} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>
