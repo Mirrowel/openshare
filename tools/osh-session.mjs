@@ -35,6 +35,47 @@ import { fileURLToPath } from "node:url"
 // ---- rewrote grep's real `path` into `filePath` (roundtrip test caught it).
 const TO_V2_NAME = { bash: "shell", task: "subagent" }
 const TO_V1_NAME = { shell: "bash", subagent: "task" }
+
+// Range language: a snippet or diff hunk from inside an html file's
+// script/style block tokenizes as untyped soup under the html grammar when
+// it carries no tag context. The stamp carries the language of the RANGE
+// (viewer forwards it to pierre as an explicit language override). Sniffs
+// clean source text only: for reads the preview/display content, never the
+// raw v1 output whose <path> header reads as an html tag; for edits the
+// hunk body with its diff markers stripped.
+function refineRangeLanguage(meta, ext, clean) {
+  if (!clean || (meta.language && meta.language !== "html")) return false
+  if (ext !== "html" && ext !== "htm") return false
+  const head = String(clean).slice(0, 4000)
+  if (/<[a-zA-Z][^>\n]*>/.test(head)) return false
+  if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) {
+    meta.language = "css"
+  } else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) {
+    meta.language = "javascript"
+  } else {
+    return false
+  }
+  return true
+}
+
+function extOf(p) {
+  const s = String(p ?? "")
+  return s.includes(".") ? s.split(".").pop().toLowerCase() : ""
+}
+
+function readCleanText(meta, output) {
+  return (typeof meta.preview === "string" && meta.preview) || (typeof meta.display?.text === "string" && meta.display.text) || String(output ?? "").replace(/^<path>[^]*?<\/path>\s*/i, "")
+}
+
+function patchBody(patchText) {
+  const at = String(patchText ?? "").indexOf("@@")
+  if (at < 0) return ""
+  return String(patchText)
+    .slice(at)
+    .split("\n")
+    .map((l) => (/^[ +\\]/.test(l) ? l.slice(1) : l.startsWith("-") ? l.slice(1) : ""))
+    .join("\n")
+}
 const FILEPATH_TOOLS = new Set(["read", "write", "edit", "multiedit", "patch"])
 const inputV1toV2 = (tool, input) => {
   if (!input || typeof input !== "object") return input
@@ -103,22 +144,15 @@ export function envelopeFromExports(exports) {
           const st = p.state ?? {}
           const tt = st.time ?? {}
           const stOut = { ...st, input: inputV1toV2(String(p.tool ?? ""), st.input) }
-          // range language: a read inside an html file's script/style block
-          // tokenizes as untyped soup under the html grammar when the snippet
-          // has no tag context; the stamp carries the language of the RANGE.
-          // Sniff the clean content (preview/display), never the raw v1 output
-          // whose <path> header reads as an html tag.
-          if (String(p.tool ?? "") === "read" && stOut.status === "completed") {
+          // range language stamps (see refineRangeLanguage above)
+          {
             const meta = (stOut.metadata = st.metadata ?? {})
             const rawPath = String(st.input?.filePath ?? st.input?.path ?? "")
-            const ext = rawPath.includes(".") ? rawPath.split(".").pop().toLowerCase() : ""
-            if ((!meta.language || meta.language === "html") && (ext === "html" || ext === "htm")) {
-              const clean = (typeof meta.preview === "string" && meta.preview) || (typeof meta.display?.text === "string" && meta.display.text) || String(st.output ?? "").replace(/^<path>[^]*?<\/path>\s*/i, "")
-              const head = clean.slice(0, 4000)
-              if (!/<[a-zA-Z][^>\n]*>/.test(head)) {
-                if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) meta.language = "css"
-                else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) meta.language = "javascript"
-              }
+            if (String(p.tool ?? "") === "read" && stOut.status === "completed") {
+              refineRangeLanguage(meta, extOf(rawPath), readCleanText(meta, st.output))
+            } else if ((String(p.tool ?? "") === "edit" || String(p.tool ?? "") === "patch")) {
+              const pt = typeof meta.diff === "string" ? meta.diff : typeof meta.filediff?.patch === "string" ? meta.filediff.patch : ""
+              refineRangeLanguage(meta, extOf(rawPath), patchBody(pt))
             }
           }
           content.push({
@@ -232,23 +266,17 @@ export function exportFromItems(items, sessionID) {
               : status === "running"
                 ? { status, input: inputV2toV1(String(c.name ?? ""), st.input) ?? {}, title: String(st.title ?? ""), metadata: st.metadata ?? {}, time: { start } }
                 : { status, input: inputV2toV1(String(c.name ?? ""), st.input) ?? {}, raw: String(st.raw ?? "") }
-        // range language: a read inside an html file's script/style block
-        // tokenizes as untyped soup under the html grammar when the snippet
-        // has no tag context; the stamp carries the language of the RANGE
-        if (String(c.name ?? "") === "read" && status === "completed" && outputText) {
+        // range language stamps (see refineRangeLanguage above); the v1
+        // export highlights meta.preview, so sniff the clean content, never
+        // the raw v1-shaped output whose <path> header reads as an html tag
+        {
           const meta = toolState.metadata
           const p = String(toolState.input?.filePath ?? toolState.input?.path ?? "")
-          const ext = p.includes(".") ? p.split(".").pop().toLowerCase() : ""
-          if ((!meta.language || meta.language === "html") && (ext === "html" || ext === "htm")) {
-            // the viewer highlights meta.preview when stamped, so sniff the
-            // clean content, never the raw v1-shaped output (its <path>
-            // header would read as an html tag)
-            const clean = (typeof meta.preview === "string" && meta.preview) || (typeof meta.display?.text === "string" && meta.display.text) || outputText.replace(/^<path>[^]*?<\/path>\s*/i, "")
-            const head = clean.slice(0, 4000)
-            if (!/<[a-zA-Z][^>\n]*>/.test(head)) {
-              if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) meta.language = "css"
-              else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) meta.language = "javascript"
-            }
+          if (String(c.name ?? "") === "read" && status === "completed" && outputText) {
+            refineRangeLanguage(meta, extOf(p), readCleanText(meta, outputText))
+          } else if (String(c.name ?? "") === "edit" || String(c.name ?? "") === "patch") {
+            const pt = typeof meta.diff === "string" ? meta.diff : typeof meta.filediff?.patch === "string" ? meta.filediff.patch : ""
+            refineRangeLanguage(meta, extOf(p), patchBody(pt))
           }
         }
         parts.push({
