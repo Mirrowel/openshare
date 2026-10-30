@@ -121,8 +121,107 @@ function itemKey(item: unknown): string | undefined {
   return
 }
 
-function redactItems(items: unknown[]): unknown[] {
+// Machine paths never leave absolute: tool paths and patch headers are
+// rewritten against the session's working folder (inside -> relative,
+// inside the sharer's home -> "~/...", anything else stays absolute). Same
+// transform as the worker's wireItems.
+const PATH_TOOLS = new Set(["read", "write", "edit", "patch", "glob", "grep", "list"])
+const normPath = (s: string) => String(s).replace(/\\/g, "/").replace(/\/+$/, "")
+function wirePath(value: unknown, dir?: string, home?: string): unknown {
+  if (typeof value !== "string" || !value) return value
+  const v = normPath(value)
+  if (dir) {
+    if (v === dir) return "."
+    if (v.startsWith(dir + "/")) return v.slice(dir.length + 1)
+  }
+  if (home) {
+    if (v === home) return "~"
+    if (v.startsWith(home + "/")) return "~/" + v.slice(home.length + 1)
+  }
+  return value
+}
+function wirePatch(patch: string, dir?: string, home?: string): string {
+  return patch
+    .split("\n")
+    .map((line) => {
+      if (!(line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git "))) return line
+      let out = line
+      if (dir) out = out.split(dir + "/").join("").split(dir.replace(/\//g, "\\") + "\\").join("")
+      if (home) out = out.split(home + "/").join("~/").split(home.replace(/\//g, "\\") + "\\").join("~\\")
+      return out.replace(/([ab]\/)\/+/, "$1")
+    })
+    .join("\n")
+}
+function wireItems(items: unknown[], facts?: Record<string, unknown>): unknown[] {
+  const dirs = new Map<string, string>()
+  for (const it of items) {
+    const item = it as { type?: string; data?: { id?: string; directory?: string } }
+    if (item?.type === "session" && item.data?.id && typeof item.data.directory === "string") {
+      dirs.set(item.data.id, normPath(item.data.directory))
+    }
+  }
+  const fallbackDir = typeof facts?.directory === "string" ? normPath(facts.directory) : undefined
+  const home = typeof facts?.home === "string" ? normPath(facts.home) : undefined
   return items.map((it) => {
+    const item = it as { type?: string; sessionID?: string; data?: any }
+    if (item?.type !== "message" || !item.data) return it
+    const dir = dirs.get(item.sessionID ?? "") ?? dirs.get(item.data.sessionID ?? "") ?? fallbackDir
+    const content = item.data.content
+    if (!Array.isArray(content)) return it
+    let changed = false
+    const next = content.map((part: any) => {
+      if (!part || part.type !== "tool" || !PATH_TOOLS.has(part.name)) return part
+      const state = part.state
+      if (!state) return part
+      let input = state.input
+      let meta = state.metadata
+      if (input && (typeof input.path === "string" || typeof input.filePath === "string")) {
+        const path = wirePath(input.path, dir, home)
+        const filePath = wirePath(input.filePath, dir, home)
+        if (path !== input.path || filePath !== input.filePath) {
+          input = { ...input, ...(path !== input.path ? { path } : {}), ...(filePath !== input.filePath ? { filePath } : {}) }
+          changed = true
+        }
+      }
+      if (meta) {
+        const patches: any[] = []
+        if (meta.filediff && typeof meta.filediff === "object") patches.push(meta.filediff)
+        if (Array.isArray(meta.files)) for (const f of meta.files) if (f && typeof f === "object") patches.push(f)
+        let nextMeta: any
+        for (const target of patches) {
+          if (typeof target.patch !== "string" || !target.patch) continue
+          const rewritten = wirePatch(target.patch, dir, home)
+          if (rewritten === target.patch) continue
+          nextMeta ??= { ...meta }
+          if (target === meta.filediff) nextMeta.filediff = { ...target, patch: rewritten }
+          else nextMeta.files = meta.files.map((f: any) => (f === target ? { ...f, patch: rewritten } : f))
+          changed = true
+        }
+        if (nextMeta) meta = nextMeta
+      }
+      if (!changed) return part
+      return {
+        ...part,
+        state: { ...state, ...(input !== state.input ? { input } : {}), ...(meta !== state.metadata ? { metadata: meta } : {}) },
+      }
+    })
+    if (!changed) return it
+    return { ...item, data: { ...item.data, content: next } }
+  })
+}
+
+function privateFacts(share: { private?: string }): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(share.private || "{}") as Record<string, unknown>
+    const first = Object.values(parsed)[0] as Record<string, unknown> | undefined
+    return first && typeof first === "object" ? first : {}
+  } catch {
+    return {}
+  }
+}
+
+function redactItems(items: unknown[], facts?: Record<string, unknown>): unknown[] {
+  return wireItems(items, facts).map((it) => {
     const item = it as { type?: string; data?: Record<string, unknown> }
     if (item?.type !== "session" || !item.data) return it
     const d = item.data
@@ -481,7 +580,7 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
   })
   tx()
   const updated = q.share(shareId)!
-  broadcast(shareId, { op: "frame", status: updated.status, rev, items: redactItems(batch) })
+  broadcast(shareId, { op: "frame", status: updated.status, rev, items: redactItems(batch, privateFacts(share)) })
   return { status: 200, body: { ok: true, rev, status: updated.status } }
 }
 
@@ -556,7 +655,7 @@ function renderData(share: ShareRow): string {
     dataCache.set(share.id, hit)
     return hit.dataJson
   }
-  const body = JSON.stringify(redactItems(shareData(share)))
+  const body = JSON.stringify(redactItems(shareData(share), privateFacts(share)))
   const dataJson = `{"v":2,"data":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev}}`
   const frameJson = `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${body}}`
   if (dataJson.length <= 25_000_000) dataCacheSet(share, dataJson, frameJson)
@@ -644,7 +743,7 @@ async function httpHandler(req: Request): Promise<Response> {
     if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, ps[1])))) {
       return json(401, { authRequired: true })
     }
-    const items = redactItems(shareData(share))
+    const items = redactItems(shareData(share), privateFacts(share))
     const body = JSON.stringify(items).replace(/</g, "\\u003c")
     let sessionID = ""
     for (const it of items as Array<{ type: string; data?: { id?: string; parentID?: string } }>) {
@@ -723,7 +822,7 @@ async function httpHandler(req: Request): Promise<Response> {
     if (share.auth && !(await validViewerToken(share, bearer(req) || cookieToken(req, id)))) {
       return json(401, { authRequired: true })
     }
-    const items = redactItems(shareData(share))
+    const items = redactItems(shareData(share), privateFacts(share))
     const body = JSON.stringify(items).replace(/</g, "\\u003c")
     let sessionID = ""
     for (const it of items as Array<{ type: string; data?: { id?: string; parentID?: string } }>) {
@@ -1254,7 +1353,7 @@ const ogPngCache = new Map<string, { rev: number; bytes: Uint8Array }>()
 /** Share stats for crawler tags (worker ShareDO /og parity). */
 function ogMetaOf(share: ShareRow) {
   if (share.auth) return { ok: true as const, gated: true, status: share.status, rev: share.rev }
-  const items = redactItems(shareData(share)) as Array<{ type: string; sessionID?: string; data?: any }>
+  const items = redactItems(shareData(share), privateFacts(share)) as Array<{ type: string; sessionID?: string; data?: any }>
   let rootId = ""
   for (const it of items) if (it.type === "session" && it.data && !it.data.parentID) { rootId = it.data.id ?? ""; break }
   let title = ""

@@ -1228,10 +1228,10 @@ export class ShareDO {
   async renderCache(meta) {
     const rev = meta.rev ?? 0
     if (this._cache && this._cache.rev === rev && this._cache.status === meta.status) return this._cache
-    const items = redactItems(await this.loadItems())
-    // serialize the items ONCE and build both envelopes by concatenation —
+    // serialize the items ONCE and build both envelopes by concatenation -
     // two full serializations held two copies of the same body in isolate
     // memory (up to 2×25MB per ShareDO) and doubled the rebuild CPU
+    const items = redactItems(await this.loadItems(), meta.private)
     const body = JSON.stringify(items)
     const frameStr = `{"v":2,"op":"frame","status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
     const dataStr = `{"v":2,"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
@@ -1291,7 +1291,7 @@ export class ShareDO {
         if (Number.isFinite(since) && since === rev) {
           pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: [] }))
         } else if (wantsDelta && Number.isFinite(since) && since >= 0 && since < rev) {
-          const delta = redactItems(await this.itemsSince(since))
+          const delta = redactItems(await this.itemsSince(since), meta.private)
           pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: delta, kind: "delta" }))
         } else {
           // the upgrade 401s unauthenticated viewers on gated shares, so a
@@ -1563,7 +1563,7 @@ export class ShareDO {
           if (since === (meta.rev ?? 0)) {
             return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0 })
           }
-          return json(200, { v: 2, data: redactItems(await this.itemsSince(since)), status: meta.status, rev: meta.rev ?? 0 })
+          return json(200, { v: 2, data: redactItems(await this.itemsSince(since), meta.private), status: meta.status, rev: meta.rev ?? 0 })
         }
       }
       // a gated share 401s unauthenticated readers above, so reaching here
@@ -1603,9 +1603,7 @@ export class ShareDO {
       // contains — those answer gated:true and the card stays generic)
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { ok: false })
-      const rev = meta.rev ?? 0
-      if (meta.auth) return json(200, { ok: true, gated: true, status: meta.status, rev })
-      const items = redactItems(await this.loadItems())
+      const items = redactItems(await this.loadItems(), meta.private)
       let rootId = ""
       for (const it of items) if (it.type === "session" && it.data && !it.data.parentID) { rootId = it.data.id ?? ""; break }
       let title = ""
@@ -1629,8 +1627,10 @@ export class ShareDO {
           for (const part of d.content) if (part?.type === "tool") tools++
         }
       }
-      return json(200, { ok: true, gated: false, title: title || "shared session", status: meta.status, rev, stats: { turns, tools, durationMs: first && last ? last - first : 0, model } })
+      const gated = !!meta.auth
+      return json(200, { ok: true, gated, title: gated ? "" : title || "shared session", status: meta.status, rev: meta.rev ?? 0, stats: gated ? {} : { turns, tools, durationMs: first && last ? last - first : 0, model } })
     }
+
 
     if (path === "/meta" && req.method === "GET") {
       const meta = await this.state.storage.get("meta")
@@ -1880,7 +1880,7 @@ export class ShareDO {
     this._cache = null // rev advanced: render cache is stale
     await this.state.storage.put("meta", meta)
     const batch = [...ops.values()].map((op) => op.it)
-    await this.broadcast({ op: "frame", status: meta.status, rev, items: redactItems(batch) })
+    await this.broadcast({ op: "frame", status: meta.status, rev, items: redactItems(batch, meta.private) })
     return [200, { ok: true, rev, status: meta.status }]
   }
 
@@ -1948,10 +1948,98 @@ function itemKey(item) {
   return
 }
 
-// Session items never leave with their metadata (the plugin stores its
-// share binding — incl. the write secret — in session metadata).
-function redactItems(items) {
+// Machine paths never leave absolute. Every tool path and patch header is
+// rewritten against the session's working folder: inside it -> relative,
+// inside the sharer's home -> "~/...", anything else stays absolute. The
+// folder itself is a private fact (pmeta, or the legacy inline directory)
+// and is stripped from the session item afterwards.
+const PATH_TOOLS = new Set(["read", "write", "edit", "patch", "glob", "grep", "list"])
+const normPath = (s) => String(s).replace(/\\/g, "/").replace(/\/+$/, "")
+function wirePath(value, dir, home) {
+  if (typeof value !== "string" || !value) return value
+  const v = normPath(value)
+  if (dir) {
+    if (v === dir) return "."
+    if (v.startsWith(dir + "/")) return v.slice(dir.length + 1)
+  }
+  if (home) {
+    if (v === home) return "~"
+    if (v.startsWith(home + "/")) return "~/" + v.slice(home.length + 1)
+  }
+  return value
+}
+function wirePatch(patch, dir, home) {
+  if (typeof patch !== "string" || !patch) return patch
+  return patch
+    .split("\n")
+    .map((line) => {
+      if (!(line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git "))) return line
+      let out = line
+      if (dir) out = out.split(dir + "/").join("").split(dir.replace(/\//g, "\\") + "\\").join("")
+      if (home) out = out.split(home + "/").join("~/").split(home.replace(/\//g, "\\") + "\\").join("~\\")
+      // a stripped prefix leaves `a//x` / `b//x` - collapse the seam
+      return out.replace(/([ab]\/)\/+/, "$1")
+    })
+    .join("\n")
+}
+function wireItems(items, facts) {
+  const dirs = new Map()
+  for (const it of items) {
+    if (it?.type === "session" && it.data?.id && typeof it.data.directory === "string") dirs.set(it.data.id, normPath(it.data.directory))
+  }
+  const fallbackDir = facts?.directory ? normPath(facts.directory) : undefined
+  const home = facts?.home ? normPath(facts.home) : undefined
   return items.map((it) => {
+    if (it?.type !== "message" || !it.data) return it
+    const dir = dirs.get(it.sessionID) ?? dirs.get(it.data.sessionID) ?? fallbackDir
+    const content = it.data.content
+    if (!Array.isArray(content)) return it
+    let changed = false
+    const next = content.map((part) => {
+      if (!part || part.type !== "tool" || !PATH_TOOLS.has(part.name)) return part
+      const state = part.state
+      if (!state) return part
+      let input = state.input
+      let meta = state.metadata
+      if (input && (typeof input.path === "string" || typeof input.filePath === "string")) {
+        const path = wirePath(input.path, dir, home)
+        const filePath = wirePath(input.filePath, dir, home)
+        if (path !== input.path || filePath !== input.filePath) {
+          input = { ...input, ...(path !== input.path ? { path } : {}), ...(filePath !== input.filePath ? { filePath } : {}) }
+          changed = true
+        }
+      }
+      if (meta) {
+        const patches = []
+        if (meta.filediff && typeof meta.filediff === "object") patches.push(meta.filediff)
+        if (Array.isArray(meta.files)) for (const f of meta.files) if (f && typeof f === "object") patches.push(f)
+        let nextMeta
+        for (const target of patches) {
+          if (typeof target.patch !== "string" || !target.patch) continue
+          const rewritten = wirePatch(target.patch, dir, home)
+          if (rewritten === target.patch) continue
+          nextMeta ??= { ...meta }
+          if (target === meta.filediff) nextMeta.filediff = { ...target, patch: rewritten }
+          else nextMeta.files = meta.files.map((f) => (f === target ? { ...f, patch: rewritten } : f))
+          changed = true
+        }
+        if (nextMeta) meta = nextMeta
+      }
+      if (!changed) return part
+      return {
+        ...part,
+        state: { ...state, ...(input !== state.input ? { input } : {}), ...(meta !== state.metadata ? { metadata: meta } : {}) },
+      }
+    })
+    if (!changed) return it
+    return { ...it, data: { ...it.data, content: next } }
+  })
+}
+
+// Session items never leave with their metadata (the plugin stores its
+// share binding - incl. the write secret - in session metadata).
+function redactItems(items, facts) {
+  return wireItems(items, facts).map((it) => {
     if (it?.type !== "session" || !it.data) return it
     const d = it.data
     if (!d.metadata && d.directory === undefined && d.worktree === undefined) return it

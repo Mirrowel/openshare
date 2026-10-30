@@ -1756,6 +1756,10 @@ export function createEngine(deps: EngineDeps): Engine {
         const dir = (deps.directory ?? "") as string
         if (dir) priv.directory = dir
         if (deps.worktree) priv.worktree = String(deps.worktree)
+        // the sharer's home lets the server mask absolute paths as ~/...
+        try {
+          priv.home = homedir()
+        } catch {}
         if (Object.keys(priv).length) {
           const seq = ++nextSeq
           wsSend(r, { op: "sync", items: [{ type: "pmeta", sessionID: st.sid, data: priv }], status: undefined, seq })
@@ -2259,50 +2263,8 @@ export function createEngine(deps: EngineDeps): Engine {
     sql: "sql", c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp",
     swift: "swift", kt: "kotlin", php: "php", lua: "lua", vue: "vue", svelte: "svelte",
   }
-  const FILE_TOOLS = new Set(["read", "write", "edit", "patch"])
 
-  /** Machine paths are a private fact: tool paths and patch headers travel
-   * relative to the session directory (and home-relative otherwise), so an
-   * anonymous share never carries the sharer's absolute paths. The absolute
-   * directory itself rides pmeta, to gated readers only. */
-  const relativizePath = (p: string | undefined): string | undefined => {
-    if (typeof p !== "string" || !p) return undefined
-    const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "")
-    const v = norm(p)
-    const dir = deps.directory ? norm(deps.directory) : undefined
-    if (dir && v === dir) return "."
-    if (dir && v.startsWith(dir + "/")) return v.slice(dir.length + 1)
-    const home = (() => {
-      try {
-        return norm(homedir())
-      } catch {
-        return undefined
-      }
-    })()
-    if (home && v === home) return "~"
-    if (home && v.startsWith(home + "/")) return "~/" + v.slice(home.length + 1)
-    return undefined // absolute path outside both: caller keeps the raw value
-  }
-  /** rewrite the file paths inside a unified patch's header lines */
-  const relativizePatch = (patch: string): string => {
-    const dir = deps.directory ? deps.directory.replace(/\\/g, "/").replace(/\/+$/, "") : undefined
-    const dirAlt = dir ? dir.replace(/\//g, "\\\\") : undefined
-    let home: string | undefined
-    try {
-      home = homedir().replace(/\\/g, "/").replace(/\/+$/, "")
-    } catch {}
-    return patch
-      .split("\n")
-      .map((line) => {
-        if (!(line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git "))) return line
-        let out = line
-        if (dir) out = out.split(dir).join("").split(dirAlt!).join("")
-        if (home) out = out.split(home).join("~")
-        // a stripped prefix leaves `a//x` / `b//x` - collapse the seam
-        return out.replace(/([ab]\/)\/+/, "$1").replace(/~\/+/g, "~/")
-      })
-      .join("\n")
-  }
+  const FILE_TOOLS = new Set(["read", "write", "edit", "patch"])
 
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
@@ -2316,28 +2278,10 @@ export function createEngine(deps: EngineDeps): Engine {
         const state = part.state
         const meta = state?.metadata
         if (!meta) continue
-        // relative paths on the wire (see relativizePath)
-        for (const key of ["path", "filePath"] as const) {
-          const raw = state.input?.[key]
-          if (typeof raw !== "string") continue
-          const rel = relativizePath(raw)
-          if (rel && rel !== raw) {
-            state.input[key] = rel
-            mutated = true
-          }
-        }
-        // patch headers carry the same absolute paths
-        const patches: Array<{ patch?: unknown }> = []
-        if (meta.filediff && typeof meta.filediff === "object") patches.push(meta.filediff)
-        if (Array.isArray(meta.files)) for (const f of meta.files) if (f && typeof f === "object") patches.push(f)
-        for (const p of patches) {
-          if (typeof p.patch !== "string" || !p.patch) continue
-          const next = relativizePatch(p.patch)
-          if (next !== p.patch) {
-            p.patch = next
-            mutated = true
-          }
-        }
+        // paths stay absolute here: the server rewrites them against the
+        // session's working folder on read (wireItems), so old shares get
+        // the same treatment and the host's message objects are never
+        // mutated
         const raw = state.input?.path ?? state.input?.filePath
         // language stamp (shiki id from the path)
         if (typeof meta.language !== "string" && typeof raw === "string") {

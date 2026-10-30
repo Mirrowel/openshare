@@ -318,12 +318,13 @@ try {
     ok("T38a island present with items+status", html38.includes("__MIRROBOT_SNAPSHOT__") && html38.includes('"items":') && html38.includes('"sessionID":"ses_t38"'), html38.slice(0, 120))
         ok(
       "T38b bundle inlined (no external assets)",
-      // the entry is a data: module and every chunk rides an import map,
-      // so nothing loads from /assets/ after the download
+      // chunks ride a base64 JSON island and the boot script turns them into
+      // Blob URLs + an import map, so nothing loads from /assets/ after the
+      // download (data: module URLs blew the tab up to 5 GB RSS)
       !/src="\/assets\//.test(html38) &&
         !/href="\/assets\/[^"]+\.css"/.test(html38) &&
-        /<script type="module" src="data:text\/javascript/.test(html38) &&
-        html38.includes('type="importmap"'),
+        html38.includes('id="osh-chunks"') &&
+        html38.includes("createObjectURL"),
     )
     ok("T38c data frozen in island", html38.includes("frozen hello") && html38.includes("snapshot test"))
     ok("T38d download disposition", (await req(W1, "GET", `/api/share/${g38.json.id}/snapshot?download=1`)).res?.headers?.get?.("content-disposition")?.includes("attachment"))
