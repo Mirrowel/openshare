@@ -171,6 +171,10 @@ queue, spool or wire:
   value + source, full URLs/ids); Interface rows set menu width/height
   (host preference store).
 
+## Versioning
+
+Releases are automatic (conventional commits). The plugin reports its version in the `/openshare` title; the system version ships in every part and the worker's `/health` carries it in full (`version · date · commit`). Designating a version by hand: `bash .github/scripts/release-kit.sh next <1.2.3|major|minor|patch>` in the repo (see DEVELOPMENT.md).
+
 ## Development
 
 ```bash
