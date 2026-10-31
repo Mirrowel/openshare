@@ -71,7 +71,21 @@ function checkPathSync(label, repo) {
   return 0
 }
 
+// retired files must not reappear anywhere, openshare included
+function checkRetired(label, repo) {
+  let failures = 0
+  for (const rel of MUST_NOT_EXIST) {
+    try {
+      readFileSync(join(repo, rel))
+      console.log(`DRIFT ${label}: ${rel} exists but the kit retired it`)
+      failures++
+    } catch {}
+  }
+  return failures
+}
+
 let failures = checkPathSync("openshare", OSH)
+failures += checkRetired("openshare", OSH)
 for (const repo of repos) {
   const name = repo.replaceAll("\\", "/").split("/").pop()
   for (const rel of IDENTICAL) {
@@ -89,13 +103,7 @@ for (const repo of repos) {
       failures++
     }
   }
-  for (const rel of MUST_NOT_EXIST) {
-    try {
-      readFileSync(join(repo, rel))
-      console.log(`DRIFT ${name}: ${rel} exists but the kit retired it`)
-      failures++
-    } catch {}
-  }
+  failures += checkRetired(name, repo)
   failures += checkPathSync(name, repo)
 }
 console.log(failures === 0 ? `kit-check: ${repos.length + 1} repo(s) clean` : `kit-check: ${failures} drift(s)`)

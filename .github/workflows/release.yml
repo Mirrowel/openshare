@@ -92,7 +92,10 @@ permissions:
   id-token: write
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.channel || github.ref_name }}
+  # key on the BRANCH: same-branch dispatches with different channel inputs
+  # would otherwise publish in parallel and then both write back onto the
+  # same branch - a guaranteed rebase conflict after publish
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 defaults:

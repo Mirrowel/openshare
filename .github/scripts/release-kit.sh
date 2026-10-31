@@ -37,11 +37,13 @@ manifests_list() {
 }
 
 compute_dry() {
-  # compute contract: runs from the package dir; returns key=value lines
+  # compute contract: runs from the package dir; returns key=value lines.
+  # stderr flows through so an unsupported channel or a broken compute
+  # surfaces its reason instead of a bare exit code.
   local branch="$1"
   (
     cd "$REPO"
-    RELEASE_BRANCH="$branch" DRY_RUN=1 GITHUB_OUTPUT=/dev/null bash "$DIR/compute-version.sh" 2>/dev/null
+    RELEASE_BRANCH="$branch" GITHUB_OUTPUT=/dev/null bash "$DIR/compute-version.sh"
   )
 }
 
@@ -134,10 +136,22 @@ stage)
     fi
   fi
   node "$DIR/release-stamp.mjs" "$version"
-  git -C "$REPO" add VERSION $(manifests_list | tr '\n' ' ')
-  git -C "$REPO" commit -m "release: $version"
+  # refresh tracked build artifacts that embed the version (openshare's ci
+  # bundle); without this a staged release ships a tarball whose bundle
+  # diverges from the branch, because a staged tip makes the CI write-back
+  # (which normally commits the rebuilt bundle) a no-op
+  if [ -f "$REPO/share-plugin/ci/openshare.js" ] && [ -d "$REPO/share-plugin/node_modules" ]; then
+    (cd "$REPO/share-plugin" && npm run build >/dev/null 2>&1) || echo "note: package build failed - tracked artifacts may lag the stamp" >&2
+  fi
+  git -C "$REPO" add VERSION $(manifests_list | tr '\n' ' ') share-plugin/ci/openshare.js 2>/dev/null || git -C "$REPO" add VERSION $(manifests_list | tr '\n' ' ')
+  if ! git -C "$REPO" commit -m "release: $version"; then
+    # roll the stamp back: an aborted staging must not leave a dirty tree
+    git -C "$REPO" checkout -- VERSION $(manifests_list | tr '\n' ' ') 2>/dev/null || true
+    echo "stage failed: could not create the release commit (user.name/email set?)" >&2
+    exit 1
+  fi
   # leave a clean worktree (line-ending filters can report residuals)
-  git -C "$REPO" checkout -- VERSION $(manifests_list | tr '\n' ' ') 2>/dev/null || true
+  git -C "$REPO" checkout -- . 2>/dev/null || true
   echo "staged release $version on the tip - push to ship it"
   ;;
 

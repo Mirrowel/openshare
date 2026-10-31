@@ -149,11 +149,16 @@ kit_path_matches() {
   printf '%s\n' "$1" | grep -qE "^($2)$"
 }
 
-# True when any stdin line (a file list) matches. One process total.
-#   git diff --name-only A..B | kit_any_match "$NPM_RE"
+# True when any stdin line (a file list) matches. Implemented with a
+# full-read awk, never grep -q: grep -q exits on first match and SIGPIPEs
+# every upstream writer, and under `set -o pipefail` a large file list
+# (a real diff can exceed the pipe buffer) would flip a match into a
+# pipeline failure - silently suppressing the match. The pattern travels
+# via ENVIRON, not -v: -v unescapes backslashes and would corrupt the
+# compiled ERE's escaped dots.
 kit_any_match() {
   [ -n "$1" ] || return 1
-  grep -qE "^($1)$"
+  KIT_RE="$1" awk '$0 ~ "^(" ENVIRON["KIT_RE"] ")$" { found = 1 } END { exit found ? 0 : 1 }'
 }
 
 # Print which part a file belongs to; empty for root-level files (docs,

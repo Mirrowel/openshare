@@ -110,6 +110,8 @@ next_prerelease_number() {
   local channel="$3"
   local npm_latest
   local git_latest
+  # a registry failure degrades to git-tag counting (|| true on the pipe),
+  # never crashes the compute
   npm_latest="$(npm view "$package_name" versions --json 2>/dev/null | node -e '
     const fs = require("node:fs")
     const versions = JSON.parse(fs.readFileSync(0, "utf8") || "[]")
@@ -124,7 +126,7 @@ next_prerelease_number() {
       .sort((a, b) => a - b)
       .at(-1)
     console.log(latest ?? 0)
-  ' "$base_version" "$channel")"
+  ' "$base_version" "$channel" || true)"
   git_latest="$(git tag --merged HEAD --list "v$base_version-$channel.*" \
     | sed -E "s/^v${base_version//./\.}-$channel\.([0-9]+)$/\1/" \
     | grep -E '^[0-9]+$' \
