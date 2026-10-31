@@ -29,7 +29,7 @@ fi
 # stamp never touches.
 manifest_filter=""
 for m in $MANIFESTS; do
-  manifest_filter="${manifest_filter:+$manifest_filter\\|}^$m$"
+  manifest_filter="${manifest_filter:+$manifest_filter|}^$m$"
 done
 
 changed=false

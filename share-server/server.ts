@@ -25,8 +25,7 @@
 // Run: bun server.ts   |   Docker: oven/bun (see Dockerfile)
 
 import { Database } from "bun:sqlite"
-import { execSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -43,13 +42,14 @@ function authMode(): "public" | "private" {
   return String(process.env.AUTH_MODE ?? "private").toLowerCase() === "public" ? "public" : "private"
 }
 
-// exact source the server runs from (release tags -> `git describe`);
-// "dev" outside a git checkout, e.g. a bare Docker context
+// exact source the server runs from, read from the files it ships with:
+// the package manifest (stamped by the release kit at every release) is
+// the source of truth; no git at runtime
 const SERVER_VERSION = (() => {
   try {
-    return execSync("git describe --tags --always --dirty", { cwd: dirname(fileURLToPath(import.meta.url)), stdio: ["ignore", "pipe", "ignore"] }).toString().trim()
+    return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")).version ?? "unknown"
   } catch {
-    return "dev"
+    return "unknown"
   }
 })()
 

@@ -3,23 +3,29 @@ import solid from "vite-plugin-solid"
 import tailwindcss from "@tailwindcss/vite"
 import path from "node:path"
 import { execSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 
 // Client-only build of the upstream share page. Two data modes at runtime
 // (see src/data-source.ts): live worker (polls /api/share/:id/data) and
 // embedded (window.__MIRROBOT_SNAPSHOT__ set by the local server).
 
-// build identity from the release tags (same source as the worker deploy):
-// VERSION = nearest release, FULL = exact `git describe`. "dev" outside a
-// git checkout so the build never fails on this.
-function gitVersion() {
+// build identity from the files the build ships with: the package manifest
+// (stamped by the release kit at every release) is the source of truth;
+// git only contributes the commit sha and is never required.
+function buildVersion() {
+  let version = "unknown"
   try {
-    const full = execSync("git describe --tags --always --dirty", { cwd: __dirname, stdio: ["ignore", "pipe", "ignore"] }).toString().trim()
-    return { version: full.replace(/-\d+-g[0-9a-f]+(-dirty)?$/, ""), full }
-  } catch {
-    return { version: "dev", full: "dev" }
-  }
+    version = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8")).version ?? "unknown"
+  } catch {}
+  const date = new Date().toISOString().slice(0, 10)
+  let rev = ""
+  try {
+    rev = execSync("git rev-parse --short HEAD", { cwd: __dirname, stdio: ["ignore", "pipe", "ignore"] }).toString().trim()
+  } catch {}
+  const full = [version, date, rev].filter(Boolean).join(" · ") || "unknown"
+  return { version, full }
 }
-const ver = gitVersion()
+const ver = buildVersion()
 export default defineConfig(({ command }) => ({
   plugins: [solid(), tailwindcss()],
   define: {
