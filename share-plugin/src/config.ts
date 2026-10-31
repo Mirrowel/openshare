@@ -115,9 +115,19 @@ export function moduleDir(): string {
   return dirname(fileURLToPath((import.meta as { pathname?: string }).pathname ?? import.meta.url))
 }
 
+/** Version of the running plugin, from the package it was loaded from.
+ *  "?" outside a package (single-file CI bundle with no sibling manifest). */
+export function pluginVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(packageRoot(moduleDir()), "package.json"), "utf8")) as { version?: string }
+    return pkg.version ?? "?"
+  } catch {
+    return "?"
+  }
+}
+
 /** Nearest ancestor (starting at `start`) containing package.json. */
-export function packageRoot(start: string): string {
-  let current = start
+export function packageRoot(start: string): string {  let current = start
   for (let guard = 0; guard < 16; guard++) {
     if (existsSync(join(current, "package.json"))) return current
     const parent = dirname(current)

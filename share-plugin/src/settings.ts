@@ -5,7 +5,7 @@
 //
 // Sections: Connection, Sharing, Read auth, Advanced, This session.
 
-import { configSourceMap, moduleDir, writeCandidates, type ShareConfig, type WriteCandidate } from "./config.js"
+import { configSourceMap, moduleDir, pluginVersion, writeCandidates, type ShareConfig, type WriteCandidate } from "./config.js"
 import {
   adminClient,
   adminTokenFor,
@@ -1462,7 +1462,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     }))
     options.push({ title: dirty ? "Save & exit" : "Exit", value: "action:exit", description: dirty ? `Write ${writeTarget.path}` : "No changes" })
 
-    const choice = await showSelect(host.ui, { title: "OpenShare settings", options })
+    const choice = await showSelect(host.ui, { title: `OpenShare v${pluginVersion()} · settings`, options })
     if (choice === undefined || choice === "action:exit") {
       if (dirty) {
         const saved = saveConfig(cfg, writeTarget.path)

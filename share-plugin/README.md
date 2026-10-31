@@ -37,7 +37,9 @@ itself):
 opencode plugin add @mirrowel/opencode-openshare
 ```
 
-Restart opencode; `/share` and `/openshare` appear in the TUI.
+Restart opencode; `/share` and `/openshare` appear in the TUI. The
+settings dialog's title carries the running plugin's version (read from
+its own package manifest at runtime).
 
 Then configure. For an npm install the durable config file is the
 **settings home** (`~/.config/opencode/openshare.config.json` — also
