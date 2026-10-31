@@ -248,7 +248,7 @@ jobs:
         id: npm-changed
         env:
           NPM_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_npm || 'false' }}
-        run: bash ../../.github/scripts/npm-changed.sh
+        run: bash ../.github/scripts/npm-changed.sh
 
       - name: Publish to npm
         if: inputs.dry_run != true && steps.npm-version.outputs.exists != 'true' && steps.npm-changed.outputs.changed == 'true'
@@ -264,11 +264,12 @@ jobs:
           name="$(node -p "require('./package.json').name")"
           version="${{ needs.version.outputs.version }}"
           npm_tag="${{ needs.version.outputs.npm_tag }}"
-          for attempt in 1 2 3 4 5; do
+          # npm's read index can lag the publish by minutes; poll patiently
+          for attempt in $(seq 1 12); do
             if npm view "$name@$version" version >/dev/null 2>&1; then
               published=yes; break
             fi
-            published=no; sleep 10
+            sleep 15
           done
           if [ "$published" != "yes" ]; then
             echo "::error::npm does not list $name@$version after publish."
@@ -286,8 +287,10 @@ jobs:
 
       - name: Record npm publish point
         # npm-latest marks the newest published commit; the next release
-        # compares plugin paths against it to decide publishing again.
-        if: inputs.dry_run != true && steps.npm-changed.outputs.changed == 'true' && steps.npm-version.outputs.exists != 'true'
+        # compares plugin paths against it to decide publishing again. Fires
+        # whenever this release published (or found its version already
+        # published with no tag recorded - e.g. a resumed run).
+        if: inputs.dry_run != true && steps.npm-changed.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -13,13 +13,13 @@ cd "$(dirname "$0")/../.."
 . .github/scripts/kit-paths.sh
 
 if [ "${NPM_FORCE:-false}" = "true" ] || [ "$NPM_GATE" != "on" ]; then
-  echo "changed=true"
+  echo "changed=true" | tee -a "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
 ref="$(git rev-parse -q --verify refs/tags/npm-latest || true)"
 if [ -z "$ref" ]; then
-  echo "changed=true" # first release: nothing published yet
+  echo "changed=true" | tee -a "${GITHUB_OUTPUT:-/dev/null}" # first release: nothing published yet
   exit 0
 fi
 
@@ -37,4 +37,4 @@ if git diff --name-only "$ref..HEAD" | grep -vE "$manifest_filter" | kit_any_mat
   changed=true
 fi
 
-echo "changed=$changed"
+echo "changed=$changed" | tee -a "${GITHUB_OUTPUT:-/dev/null}"
