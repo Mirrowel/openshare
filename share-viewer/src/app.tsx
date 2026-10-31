@@ -136,6 +136,7 @@ export function PageFooter(props: { branding: Branding; class?: string }) {
             <span>code</span>
             <span class="text-text-weaker">)</span>
             <span>Share</span>
+            <span class="text-text-weaker"> · {__OSH_VERSION__}</span>
           </div>
         }
       >

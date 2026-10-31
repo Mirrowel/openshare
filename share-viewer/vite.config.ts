@@ -2,12 +2,30 @@ import { defineConfig } from "vite"
 import solid from "vite-plugin-solid"
 import tailwindcss from "@tailwindcss/vite"
 import path from "node:path"
+import { execSync } from "node:child_process"
 
 // Client-only build of the upstream share page. Two data modes at runtime
 // (see src/data-source.ts): live worker (polls /api/share/:id/data) and
 // embedded (window.__MIRROBOT_SNAPSHOT__ set by the local server).
+
+// build identity from the release tags (same source as the worker deploy):
+// VERSION = nearest release, FULL = exact `git describe`. "dev" outside a
+// git checkout so the build never fails on this.
+function gitVersion() {
+  try {
+    const full = execSync("git describe --tags --always --dirty", { cwd: __dirname, stdio: ["ignore", "pipe", "ignore"] }).toString().trim()
+    return { version: full.replace(/-\d+-g[0-9a-f]+(-dirty)?$/, ""), full }
+  } catch {
+    return { version: "dev", full: "dev" }
+  }
+}
+const ver = gitVersion()
 export default defineConfig(({ command }) => ({
   plugins: [solid(), tailwindcss()],
+  define: {
+    __OSH_VERSION__: JSON.stringify(ver.version),
+    __OSH_FULL__: JSON.stringify(ver.full),
+  },
   // solid-js resolves to the VENDORED copy carrying the cleanNode
   // re-entrant-disposal hardening (scripts/vendor-solid.mjs); node_modules
   // stays pristine and the patch is reproducible from `npm run vendor`.

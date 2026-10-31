@@ -90,6 +90,7 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; view: str
               </Show>
               <Row label="share" value={shareId()} />
               <Row label="sync rev" value={rev()} />
+              <Row label="viewer" value={__OSH_FULL__} />
             </Group>
             <Group label="counts">
               <Row label="prompts" value={fmt(usage().prompts)} />
