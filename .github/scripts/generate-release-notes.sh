@@ -11,9 +11,14 @@ tag="${RELEASE_TAG:?RELEASE_TAG is required}"
 previous_tag="${PREVIOUS_TAG:-}"
 channel="${RELEASE_CHANNEL:?RELEASE_CHANNEL is required}"
 npm_tag="${NPM_TAG:?NPM_TAG is required}"
+npm_published="${NPM_PUBLISHED:-false}"
 prerelease="${PRERELEASE:-false}"
 commit_sha="${GITHUB_SHA:?GITHUB_SHA is required}"
 workspace="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
+# Manual release notes (dispatch input): when set, they REPLACE the
+# generated commit list; the header (package table, install) and the
+# footer (links) stay.
+release_notes="${RELEASE_NOTES:-}"
 
 range="HEAD"
 if [ -n "$previous_tag" ]; then
@@ -201,15 +206,46 @@ generate_community_section() {
   } > community.md
 }
 
-generate_changelog
-normalize_changelog
-resolve_author_placeholders
-generate_community_section
+if [ -n "$release_notes" ]; then
+  printf '%s\n' "$release_notes" > changes.md
+else
+  generate_changelog
+  normalize_changelog
+  resolve_author_placeholders
+  generate_community_section
+fi
 
 package_name="$(node -p "require('./package.json').name")"
 install="opencode plugin ${package_name}@latest --global"
 if [ "$npm_tag" != "latest" ]; then
   install="opencode plugin ${package_name}@$npm_tag --global"
+fi
+
+# Parts changed since the previous tag: the release covers the whole system,
+# so the notes name which parts moved instead of implying npm-only changes.
+# Resolved from the script's own location / the git toplevel so it works from
+# any cwd (package subdir or repo root).
+notes_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(git rev-parse --show-toplevel)"
+# shellcheck source=kit-paths.sh
+. "$notes_dir/kit-paths.sh"
+parts_changed=""
+if [ -n "$previous_tag" ] && git -C "$repo_root" rev-parse -q --verify "refs/tags/$previous_tag" >/dev/null 2>&1; then
+  range_files="$(git -C "$repo_root" diff --name-only "$previous_tag..HEAD")"
+else
+  range_files="$(git -C "$repo_root" ls-tree -r --name-only HEAD)"
+fi
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  part="$(kit_part_of "$f")"
+  [ -z "$part" ] && continue
+  case " $parts_changed " in *" $part "*) ;; *) parts_changed="$parts_changed $part" ;; esac
+done <<< "$range_files"
+parts_changed="${parts_changed# }"
+[ -z "$parts_changed" ] && parts_changed="none (docs or tooling only)"
+npm_line="npm: not published (no plugin changes since the last published version)"
+if [ "$npm_published" = "true" ]; then
+  npm_line="npm: published as $package_name@$version"
 fi
 
 experimental_note=""
@@ -250,13 +286,18 @@ cat >> release-notes.md <<EOF
 $install
 \`\`\`
 
+## Scope
+
+**Parts changed:** $parts_changed
+**$npm_line**
+
 ## What's Changed
 
 $(cat changes.md)
 
 EOF
 
-if [ -s community.md ]; then
+if [ -z "$release_notes" ] && [ -s community.md ]; then
   cat community.md >> release-notes.md
 fi
 

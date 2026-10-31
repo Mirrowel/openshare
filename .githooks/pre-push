@@ -1,0 +1,9 @@
+#!/bin/sh
+# pre-push chain link: release stamp for stable-branch pushes.
+# Logic lives in the repo (node) so this file stays a thin trampoline
+# installable into .git/hooks/ by install-hooks.mjs.
+DIR="$(git rev-parse --show-toplevel)"
+# a worktree on a branch that predates the kit has no hook script to run;
+# nothing to enforce there
+[ -f "$DIR/.github/scripts/hook-pre-push.mjs" ] || exit 0
+exec node "$DIR/.github/scripts/hook-pre-push.mjs" "$@"
