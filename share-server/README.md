@@ -85,7 +85,7 @@ reassign, purge) — drive it with curl or the plugin's TUI admin console
 docker build -f share-server/Dockerfile -t openshare .
 
 docker run -e CREATE_TOKEN=root-secret -p 8787:8787 -v oshdata:/data openshare
-# health: curl -s http://127.0.0.1:8787/health
+# health: curl -s http://127.0.0.1:8787/health   # version = git describe of the running source
 ```
 
 ## Parity

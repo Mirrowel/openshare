@@ -27,7 +27,7 @@ cd share-worker
 npx wrangler kv namespace create KV                        # YOUR namespace — replace the id in wrangler.toml
 npx wrangler secret put CREATE_TOKEN                       # root admin token (treat like a password)
 npx wrangler deploy
-curl -s https://<your-worker>.workers.dev/health           # {"ok":true,"service":"openshare","policy":{...},"auth":{"mode":"private"}}
+curl -s https://<your-worker>.workers.dev/health           # {"ok":true,"service":"openshare","version":"v0.2.1-59-gb82360b","policy":{...},"auth":{"mode":"private"}}
 ```
 
 Vars (`AUTH_MODE`, `SOCKET_POLICY`, TTL caps, branding…) are `[vars]` in
@@ -299,8 +299,11 @@ Admin API (Bearer `CREATE_TOKEN`):
 - `POST /api/admin/purge` — removes EVERY share; details in
   [Worker API](#worker-api) below
 
-`GET /health` reports `auth.mode` (`public`/`private`) next to the
-socket policy so clients adapt without config.
+`version` in `/health` is the exact `git describe` of the source the worker
+was deployed from (`npm run deploy` writes it from the release tags; a
+local `wrangler dev` reads the committed `dev` placeholder).
+
+`GET /health` reports `auth.mode` (`public`/`private`) next to thesocket policy so clients adapt without config.
 
 Migration: shares created with the bare `CREATE_TOKEN` bearer are
 ownerless (secret-only control, never frozen) — the legacy plugin

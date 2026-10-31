@@ -1,4 +1,9 @@
 {
+  "name": "openshare-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "node ../tools/write-version.mjs share-worker && npx wrangler deploy && git restore version.json"
+  },
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2"
   }

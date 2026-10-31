@@ -25,6 +25,7 @@
 // Run: bun server.ts   |   Docker: oven/bun (see Dockerfile)
 
 import { Database } from "bun:sqlite"
+import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -41,6 +42,16 @@ const VIEWER_DIR = process.env.VIEWER_DIR ?? join(here, "..", "share-viewer", "d
 function authMode(): "public" | "private" {
   return String(process.env.AUTH_MODE ?? "private").toLowerCase() === "public" ? "public" : "private"
 }
+
+// exact source the server runs from (release tags -> `git describe`);
+// "dev" outside a git checkout, e.g. a bare Docker context
+const SERVER_VERSION = (() => {
+  try {
+    return execSync("git describe --tags --always --dirty", { cwd: dirname(fileURLToPath(import.meta.url)), stdio: ["ignore", "pipe", "ignore"] }).toString().trim()
+  } catch {
+    return "dev"
+  }
+})()
 
 function resolvePolicy() {
   let mode = String(process.env.SOCKET_POLICY ?? "auto").toLowerCase()
@@ -704,7 +715,7 @@ async function httpHandler(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const path = url.pathname
 
-  if (path === "/health") return json(200, { ok: true, service: "openshare", policy: resolvePolicy(), auth: { mode: authMode() }, frameAuth: true })
+  if (path === "/health") return json(200, { ok: true, service: "openshare", version: SERVER_VERSION, policy: resolvePolicy(), auth: { mode: authMode() }, frameAuth: true })
 
   if (path === "/branding") {
     return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "" })

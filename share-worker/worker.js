@@ -55,6 +55,9 @@ const encoder = new TextEncoder()
 // in openshare.config.json (bundled at build); BRAND_* env vars override
 // both — same ENV > file > defaults chain as the plugin config.
 import defaultBrandingFile from "./openshare.config.json"
+// written by `npm run deploy` (tools/write-version.mjs) from the release
+// tags; the committed placeholder reads "dev" for local wrangler runs
+import versionInfo from "./version.json"
 const DEFAULT_BRANDING = {
   name: "",
   logoUrl: "",
@@ -276,7 +279,7 @@ export default {
       }
 
       if (path === "/health")
-        return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env), auth: { mode: authMode(env) }, frameAuth: true })
+        return json(200, { ok: true, service: "openshare", version: versionInfo.full, policy: resolvePolicy(env), auth: { mode: authMode(env) }, frameAuth: true })
 
       // ---- identity -------------------------------------------------------
       // Enrollment + self-service. The heavy lifting lives in the AuthDO

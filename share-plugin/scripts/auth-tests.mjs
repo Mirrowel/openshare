@@ -115,6 +115,7 @@ try {
   // T01 — health advertises auth mode
   const health = await req(W1, "GET", "/health")
   ok("T01 health auth.mode=private", health.json?.auth?.mode === "private")
+  ok("T01b health reports version", typeof health.json?.version === "string" && health.json.version.length > 0, JSON.stringify(health.json?.version))
 
   // T02/T03 — private enrollment needs a valid code
   ok("T02 enroll without code rejected", (await req(W1, "POST", "/api/enroll", { body: {} })).status === 403)
