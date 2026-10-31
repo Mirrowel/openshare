@@ -1,9 +1,10 @@
 {
   "name": "@mirrowel/openshare-server",
-  "version": "0.3.0",
+  "version": "0.3.0-dev.8",
   "description": "Open(code)Share portable backend — one Bun process, SQLite, native WebSockets; protocol-identical to the Cloudflare worker",
   "type": "module",
-  "scripts": {    "start": "bun server.ts",
+  "scripts": {
+    "start": "bun server.ts",
     "test": "cd ../share-plugin && npm run test:server-auth"
   },
   "license": "MIT"

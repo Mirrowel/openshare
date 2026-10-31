@@ -1,6 +1,6 @@
 {
   "name": "@mirrowel/opencode-openshare",
-  "version": "0.3.0",
+  "version": "0.3.0-dev.8",
   "type": "module",
   "description": "Open(code)Share — re:share: self-hosted session sharing for opencode. Server plugin (single file or package), optional TUI for interactive opt-in sharing.",
   "license": "MIT",
@@ -65,7 +65,8 @@
     "build:standalone": "bun scripts/build-standalone.mjs",
     "typecheck": "tsc --noEmit",
     "ci": "npm run ci:package",
-    "ci:package": "npm run typecheck && npm run build && npm run pack:dry-run",    "pack:dry-run": "node scripts/pack-dry-run.mjs",
+    "ci:package": "npm run typecheck && npm run build && npm run pack:dry-run",
+    "pack:dry-run": "node scripts/pack-dry-run.mjs",
     "test:regression": "node scripts/regression-tests.mjs",
     "prepublishOnly": "npm run typecheck && npm run build",
     "test:manual": "node scripts/manual-tests.mjs",

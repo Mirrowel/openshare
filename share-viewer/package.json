@@ -2,7 +2,8 @@
   "name": "mirrobot-share-viewer",
   "private": true,
   "type": "module",
-  "scripts": {    "vendor": "node scripts/vendor-v2.mjs && node scripts/vendor-solid.mjs && bun install && node scripts/link-vendor.mjs",
+  "scripts": {
+    "vendor": "node scripts/vendor-v2.mjs && node scripts/vendor-solid.mjs && bun install && node scripts/link-vendor.mjs",
     "build": "node scripts/link-vendor.mjs && vite build && node scripts/build-themes.mjs",
     "typecheck": "bunx tsc --noEmit",
     "dev": "vite",
@@ -59,5 +60,5 @@
     "vite": "7.1.4",
     "vite-plugin-solid": "2.11.10"
   },
-  "version": "0.3.0"
+  "version": "0.3.0-dev.8"
 }
