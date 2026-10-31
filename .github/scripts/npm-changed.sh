@@ -9,8 +9,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# shellcheck source=kit-paths.sh
-. .github/scripts/kit-paths.sh
+# shellcheck source=kit-lib.sh
+. .github/scripts/kit-lib.sh
 
 if [ "${NPM_FORCE:-false}" = "true" ] || [ "$NPM_GATE" != "on" ]; then
   echo "changed=true" | tee -a "${GITHUB_OUTPUT:-/dev/null}"

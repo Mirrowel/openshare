@@ -3,9 +3,7 @@
   "version": "0.3.0",
   "description": "Open(code)Share portable backend — one Bun process, SQLite, native WebSockets; protocol-identical to the Cloudflare worker",
   "type": "module",
-  "scripts": {
-    "prepare": "node ../.github/scripts/install-hooks.mjs",
-    "start": "bun server.ts",
+  "scripts": {    "start": "bun server.ts",
     "test": "cd ../share-plugin && npm run test:server-auth"
   },
   "license": "MIT"

@@ -364,19 +364,22 @@ jobs:
             $FLAGS
 
       - name: Sync version back to the branch
-        # Mismatch means the pushed tip did not carry the release version
-        # (unstamped push, dispatch override): write the authoritative
-        # version back so git, the tag tree, and npm agree. The pre-push
-        # hook normally makes this a no-op. Dev-channel builds never
-        # write back (their versions are per-push build stamps).
-        if: inputs.dry_run != true && needs.version.outputs.channel == 'latest' && needs.version.outputs.repo_stamped != 'true'
+        # Authoritative write-back: every release (stable and dev channels)
+        # records its version on the branch - VERSION (base) + all manifests
+        # (full) - so files, tags, and npm always agree. [skip ci] stops the
+        # stamp commit from re-triggering this workflow (it touches
+        # paths-filtered files). A locally staged tip (`release-kit.sh stage`)
+        # already matches and makes this a no-op.
+        if: inputs.dry_run != true && needs.version.outputs.repo_stamped != 'true'
         working-directory: ${{ github.workspace }}
         run: |
           git config user.name "release-bot"
           git config user.email "release-bot@users.noreply.github.com"
           branch="${{ github.ref_name }}"
           manifests="$(sed -n 's/^MANIFESTS="\([^"]*\)"/\1/p' .github/scripts/release-kit.conf)"
-          git add VERSION $manifests share-plugin/package-lock.json
-          git commit -m "release: ${{ needs.version.outputs.version }}" --allow-empty
-          git pull --rebase origin "$branch"
+          # the ci bundle is a tracked build artifact carrying the version;
+          # the earlier build steps regenerate it after the stamp
+          git add VERSION $manifests share-plugin/package-lock.json share-plugin/ci/openshare.js
+          git commit -m "[skip ci] release: ${{ needs.version.outputs.version }}" --allow-empty
+          git pull --rebase --autostash origin "$branch"
           git push origin "$branch"

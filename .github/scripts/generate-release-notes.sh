@@ -227,8 +227,8 @@ fi
 # any cwd (package subdir or repo root).
 notes_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git rev-parse --show-toplevel)"
-# shellcheck source=kit-paths.sh
-. "$notes_dir/kit-paths.sh"
+# shellcheck source=kit-lib.sh
+. "$notes_dir/kit-lib.sh"
 parts_changed=""
 if [ -n "$previous_tag" ] && git -C "$repo_root" rev-parse -q --verify "refs/tags/$previous_tag" >/dev/null 2>&1; then
   range_files="$(git -C "$repo_root" diff --name-only "$previous_tag..HEAD")"

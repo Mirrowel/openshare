@@ -2,9 +2,7 @@
   "name": "mirrobot-share-viewer",
   "private": true,
   "type": "module",
-  "scripts": {
-    "prepare": "node ../.github/scripts/install-hooks.mjs",
-    "vendor": "node scripts/vendor-v2.mjs && node scripts/vendor-solid.mjs && bun install && node scripts/link-vendor.mjs",
+  "scripts": {    "vendor": "node scripts/vendor-v2.mjs && node scripts/vendor-solid.mjs && bun install && node scripts/link-vendor.mjs",
     "build": "node scripts/link-vendor.mjs && vite build && node scripts/build-themes.mjs",
     "typecheck": "bunx tsc --noEmit",
     "dev": "vite",

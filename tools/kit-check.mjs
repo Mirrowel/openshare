@@ -21,14 +21,21 @@ const repos = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULTS
 // files that must match byte-for-byte everywhere
 const IDENTICAL = [
   ".github/scripts/generate-release-notes.sh",
-  ".github/scripts/hook-pre-push.mjs",
   ".github/scripts/release-stamp.mjs",
+  ".github/scripts/release-kit.sh",
+  ".github/scripts/kit-lib.sh",
+  ".github/scripts/npm-changed.sh",
+  ".github/workflows/cleanup-releases.yml",
+]
+
+// files the kit no longer ships (local stamping is retired; CI write-back
+// and the release-kit.sh levers replace them)
+const MUST_NOT_EXIST = [
+  ".github/scripts/hook-pre-push.mjs",
   ".github/scripts/install-hooks.mjs",
   ".github/scripts/next-version.mjs",
   ".github/scripts/kit-paths.sh",
-  ".github/scripts/npm-changed.sh",
   ".githooks/pre-push",
-  ".github/workflows/cleanup-releases.yml",
 ]
 
 // parse `KEY="a b c"` from a release-kit.conf
@@ -81,6 +88,13 @@ for (const repo of repos) {
       console.log(`DRIFT ${name}: ${rel} differs from openshare`)
       failures++
     }
+  }
+  for (const rel of MUST_NOT_EXIST) {
+    try {
+      readFileSync(join(repo, rel))
+      console.log(`DRIFT ${name}: ${rel} exists but the kit retired it`)
+      failures++
+    } catch {}
   }
   failures += checkPathSync(name, repo)
 }
