@@ -284,9 +284,27 @@
     </p>
   </section>
 
-  <!-- turn 7: self-host -->
-  <section class="turn" id="selfhost">
+  <!-- turn 6b: the full tour -->
+  <section class="turn" id="tour">
     <span class="turnmark" aria-hidden="true">t-07</span>
+    <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> what does a real session look like?</p>
+    <h2 class="rv">The full tour: every tool, real work.</h2>
+    <p class="body rv" style="--d:.08s">A second curated session, driven to exercise the whole surface: a test run that
+      fails red then passes green, a subagent with its own page, an image the agent drew and
+      inspected, grep and glob results, a todo list, web fetches, display math and a rust snippet
+      in the prose. Nothing staged: same viewer, same snapshot button, real session.</p>
+    <div class="demo-frame rv" style="--d:.14s">
+      <iframe src="./demo-full.html" title="The full tour: a real session exercising every OpenShare feature" loading="lazy"></iframe>
+    </div>
+    <p class="demo-links rv" style="--d:.2s">
+      <a href="./demo-full.html" target="_blank" rel="noopener">open the tour fullscreen ↗</a>
+      <span>two sessions, 12 prompts, every tool the plugin shares</span>
+    </p>
+  </section>
+
+  <!-- turn 8: self-host -->
+  <section class="turn" id="selfhost">
+    <span class="turnmark" aria-hidden="true">t-08</span>
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> who holds the data?</p>
     <h2 class="rv">You do. It's your worker.</h2>
     <p class="body rv" style="--d:.08s">OpenShare is a Cloudflare Worker you deploy in three commands, or a single
@@ -300,7 +318,7 @@ curl -s https://your-worker.workers.dev/health</code></pre>
 
   <!-- closing prompt -->
   <section class="close">
-    <span class="turnmark" aria-hidden="true">t-08</span>
+    <span class="turnmark" aria-hidden="true">t-09</span>
     <p class="prompt rv"><span class="prompt-mark" aria-hidden="true">❯</span> ship it</p>
     <h2 class="rv">The session is the artifact.</h2>
     <div class="cta rv" style="--d:.1s">
