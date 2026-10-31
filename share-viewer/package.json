@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prepare": "node ../.github/scripts/install-hooks.mjs",
     "vendor": "node scripts/vendor-v2.mjs && node scripts/vendor-solid.mjs && bun install && node scripts/link-vendor.mjs",
     "build": "node scripts/link-vendor.mjs && vite build && node scripts/build-themes.mjs",
     "typecheck": "bunx tsc --noEmit",
@@ -59,5 +60,6 @@
     "typescript": "^7.0.2",
     "vite": "7.1.4",
     "vite-plugin-solid": "2.11.10"
-  }
+  },
+  "version": "0.3.0"
 }

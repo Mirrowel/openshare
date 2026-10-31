@@ -2,9 +2,11 @@
   "name": "openshare-worker",
   "private": true,
   "scripts": {
+    "prepare": "node ../.github/scripts/install-hooks.mjs",
     "deploy": "node ../tools/write-version.mjs share-worker && npx wrangler deploy && git restore version.json"
   },
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2"
-  }
+  },
+  "version": "0.3.0"
 }
