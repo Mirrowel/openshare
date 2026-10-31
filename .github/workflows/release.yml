@@ -268,11 +268,11 @@ jobs:
           version="${{ needs.version.outputs.version }}"
           npm_tag="${{ needs.version.outputs.npm_tag }}"
           # npm's read index can lag the publish by minutes; poll patiently
-          for attempt in $(seq 1 12); do
+          for attempt in $(seq 1 20); do
             if npm view "$name@$version" version >/dev/null 2>&1; then
               published=yes; break
             fi
-            sleep 15
+            sleep 30
           done
           if [ "$published" != "yes" ]; then
             echo "::error::npm does not list $name@$version after publish."
