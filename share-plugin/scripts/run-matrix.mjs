@@ -136,7 +136,7 @@ try {
   // workers and the enroll teardown stopped killing a foreign port.
   const costs = {
     "manual-allmode": 70,
-    "fanout-tests": 105,
+    "fanout-tests": 70,
     "manual-core": 60,
     "auth-tests": 60,
     "enroll-b": 75,
@@ -147,7 +147,7 @@ try {
     "manual-engine1": 10,
     "manual-engine2": 9,
     "big-tests": 18,
-    "v2-mock-tests": 14,
+    "v2-mock-tests": 35,
   }
   const queue = active.flat().sort((a, b) => (costs[b.name] ?? 30) - (costs[a.name] ?? 30))
   const limit = Math.max(1, Number(process.env.OPENSHARE_MATRIX_CONCURRENCY) || 6)
@@ -181,11 +181,11 @@ try {
   // Wall-clock budget on the WAVE span (pre-warm and worker boot are
   // environment noise, not suite cost): every test is a perpetual tax, so
   // growth must pay for itself by deleting/merging time elsewhere. The
-  // budgets sit above observed run-to-run variance (~±20% on the real-
-  // host suites) so a hit means a real regression, not a busy box:
-  // typical waves are ~55-75s quick / ~130-145s full. OSH_MATRIX_BUDGET_S
-  // overrides (0 disables) for one-off diagnostics.
-  const budget = Number(process.env.OSH_MATRIX_BUDGET_S ?? (requested.length ? 90 : 155))
+  // budgets sit above observed run-to-run variance so a hit means a real
+  // regression, not a busy box: typical waves are ~55-75s quick /
+  // ~130-160s full (real-host suites inflate ~1.5-2x in-wave vs solo).
+  // OSH_MATRIX_BUDGET_S overrides (0 disables) for one-off diagnostics.
+  const budget = Number(process.env.OSH_MATRIX_BUDGET_S ?? (requested.length ? 90 : 165))
   if (budget > 0 && waveS > budget) {
     console.error(`[matrix] BUDGET EXCEEDED: wave ${waveS.toFixed(1)}s > ${budget}s budget - trim suites or move coverage to on-demand runs`)
     process.exitCode = 1

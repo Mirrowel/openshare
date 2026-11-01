@@ -925,10 +925,14 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const scheduleBindingWrite = (st: SessionState) => {
     if (st.metaTimer) return
+    // env knob exists for the mock suites: their two-remote scenarios
+    // assert the SETTLED binding, and waiting out the production 30s
+    // coalescing window per scenario would dominate suite time
+    const debounce = Number(process.env.OPENSHARE_BINDING_WRITE_MS) > 0 ? Number(process.env.OPENSHARE_BINDING_WRITE_MS) : 30000
     st.metaTimer = setTimeout(() => {
       st.metaTimer = null
       chain = chain.then(() => writeBinding(st)).catch(() => {})
-    }, 30000)
+    }, debounce)
   }
 
   // ---- spool (temporary buffer for unacked frames) ----------------------

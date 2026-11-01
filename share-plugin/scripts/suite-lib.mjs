@@ -320,10 +320,14 @@ async function startBunServer(suiteDir, opts = {}) {
   const url = `http://127.0.0.1:${port}`
   killPortOwners(port)
   const db = join(suiteDir, `bun-${opts.name ?? port}.db`)
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      rmSync(db + suffix, { force: true })
-    } catch {}
+  // keepDb: a restart that must SURVIVE (remote-outage scenarios) skips
+  // the wipe; default wipes so every scenario starts from empty state
+  if (!opts.keepDb) {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        rmSync(db + suffix, { force: true })
+      } catch {}
+    }
   }
   const { child, kill } = spawnTree(
     "bun",
