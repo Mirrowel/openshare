@@ -234,8 +234,10 @@ export type Engine = {
 // only. Informational lines (live:/url file:/mode banner, lifecycle
 // traces) are suppressed because the TUI surfaces the URL itself.
 // All-mode (CI/server-only) keeps its stderr contract, layered by the
-// announceStderr ladder: "all" = announce + status lines, "url" = announce
-// lines only, "off" = neither. Error-class lines always reach stderr.
+// announceStderr ladder: "all" = announce + status lines, "status" =
+// status lines only (the share URL never touches stderr), "url" =
+// announce lines only, "off" = neither. Error-class lines always reach
+// stderr.
 let stderrInfoAllowed = true
 
 const log = (...a: unknown[]) => {
@@ -354,11 +356,13 @@ export function createEngine(deps: EngineDeps): Engine {
   const mode: ShareMode = resolveShareMode(cfg, deps)
   // Stderr = errors only when the TUI part exists (the TUI surfaces URLs)
   if (mode === "manual") stderrInfoAllowed = false
-  // Status lines (mode banner, enrollment, adoption notes) sit one rung
-  // below announce lines on the ladder: "url" keeps the announce lines a
-  // CI scrapes while dropping these, "off" drops them both.
+  // The ladder controls two line classes independently: announce lines
+  // (live:, url file:) print at all/url; status lines (mode banner,
+  // enrollment, adoption notes) print at all/status. "status" is the
+  // public-CI shape - the share URL never reaches the log.
+  const wantAnnounce = () => cfg.announceStderr === "all" || cfg.announceStderr === "url"
   const logStatus = (...a: unknown[]) => {
-    if (cfg.announceStderr !== "all") return
+    if (cfg.announceStderr !== "all" && cfg.announceStderr !== "status") return
     log(...a)
   }
   if (process.env.OPENSHARE_DEBUG_FILE) {
@@ -1150,7 +1154,7 @@ export function createEngine(deps: EngineDeps): Engine {
     if (r.announced) return
     r.announced = true
     const url = `${r.url}/s/${r.shareId}`
-    if (cfg.announceStderr !== "off") log(`live: ${url}`)
+    if (wantAnnounce()) log(`live: ${url}`)
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       // default: the file lives where the session lives (its directory,
       // falling back to the process cwd) — never a fixed global path.
@@ -1178,7 +1182,7 @@ export function createEngine(deps: EngineDeps): Engine {
               }) + "\n"
             : url + "\n"
         appendFileSync(file, line)
-        if (cfg.announceStderr !== "off" && (file !== lastUrlFile || !urlFileAnnounced)) {
+        if (wantAnnounce() && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true
           lastUrlFile = file
           log(`url file: ${file}`)

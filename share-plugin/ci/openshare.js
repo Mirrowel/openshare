@@ -21,8 +21,9 @@
 // shareMode ("all" | "manual"; default = TUI presence), debounceMs,
 // completedDelayMs, modelLabel, ttlDays,
 // authLogin, authPassword, spoolDir, urlFile ("none" = off),
-// announceStderr ("all" | "url" | "off"; url keeps the live:/url file:
-// lines and drops the status/banner lines - clean CI logs).
+// announceStderr ("all" | "status" | "url" | "off"; status keeps the
+// status/banner lines and never prints the share URL - the public-CI
+// shape; url prints announce lines only).
 //
 // src/config.ts
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -233,7 +234,7 @@ function normalizeAnnounce(value, fallback) {
     return "off";
   if (typeof value === "string") {
     const v = value.trim().toLowerCase();
-    if (v === "all" || v === "url" || v === "off")
+    if (v === "all" || v === "status" || v === "url" || v === "off")
       return v;
     if (/^(1|true|yes|on)$/.test(v))
       return "all";
@@ -907,8 +908,9 @@ function createEngine(deps) {
   const mode = resolveShareMode(cfg, deps);
   if (mode === "manual")
     stderrInfoAllowed = false;
+  const wantAnnounce = () => cfg.announceStderr === "all" || cfg.announceStderr === "url";
   const logStatus = (...a) => {
-    if (cfg.announceStderr !== "all")
+    if (cfg.announceStderr !== "all" && cfg.announceStderr !== "status")
       return;
     log(...a);
   };
@@ -1561,7 +1563,7 @@ function createEngine(deps) {
       return;
     r.announced = true;
     const url = `${r.url}/s/${r.shareId}`;
-    if (cfg.announceStderr !== "off")
+    if (wantAnnounce())
       log(`live: ${url}`);
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       const file = cfg.urlFile ? isAbsolute(cfg.urlFile) ? cfg.urlFile : join2(deps.directory ?? process.cwd(), cfg.urlFile) : join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
@@ -1575,7 +1577,7 @@ function createEngine(deps) {
 ` : url + `
 `;
         appendFileSync(file, line);
-        if (cfg.announceStderr !== "off" && (file !== lastUrlFile || !urlFileAnnounced)) {
+        if (wantAnnounce() && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true;
           lastUrlFile = file;
           log(`url file: ${file}`);

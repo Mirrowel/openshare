@@ -191,11 +191,11 @@ const LABELS: Record<string, LabelMeta> = {
   },
   announceStderr: {
     label: "Announce on stderr",
-    help: '"all" | "url" | "off": which [openshare] info lines reach stderr.',
+    help: '"all" | "status" | "url" | "off": which [openshare] info lines reach stderr.',
     kind: "text",
-    options: ["all", "url", "off"],
+    options: ["all", "status", "url", "off"],
     section: "Advanced",
-    info: "The stderr ladder for informational [openshare] lines (all-mode/CI). all: announce lines (live:/url file:) plus status lines (mode banner, enrollment, adoption notes). url: announce lines only - clean CI logs while the share URL stays scrapeable. off: no info lines. Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
+    info: "The stderr ladder for informational [openshare] lines (all-mode/CI). all: announce lines (live:/url file:) plus status lines (mode banner, enrollment, adoption notes). status: status lines only - the share URL never touches stderr (public CI logs). url: announce lines only (private runners scraping the share URL). off: no info lines. Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
     def: "all",
   },
 }

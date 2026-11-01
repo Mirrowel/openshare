@@ -715,6 +715,9 @@ try {
         OPENSHARE_URL_FILE: latUrlFile,
         OPENSHARE_DEBOUNCE_MS: "8000",
         OPENSHARE_COMPLETED_DELAY_MS: "300",
+        // stderr ladder, "status" rung: status/banner lines print, the
+        // share URL never does (the public-CI shape)
+        OPENSHARE_ANNOUNCE_STDERR: "status",
       })
       try {
         await createAndPrompt(latServe, "latency probe")
@@ -727,6 +730,9 @@ try {
         }, "S10: turn-end content visible")
         const latency = Date.now() - t0
         check("S10: turn-end content flushed immediately (<3s despite 8s interval)", latency < 3000, `${latency}ms`)
+        const latOut = latServe.output()
+        check("S10: ladder status keeps the mode banner", latOut.includes("[openshare] share mode:"), latOut.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 2).join(" | "))
+        check("S10: ladder status never prints the share URL", !latOut.includes("[openshare] live: ") && !latOut.includes("[openshare] url file:"), latOut.split("\n").filter((l) => l.includes("live:")).slice(0, 2).join(" | "))
       } finally {
         await stopServe(latServe)
       }

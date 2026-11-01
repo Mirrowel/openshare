@@ -285,12 +285,15 @@ try {
     ok = ok && cfg.urlFileFormat === "url" // bogus value ignored, default stays
     console.log(`${ok ? "PASS" : "FAIL"} config: urlFileFormat enum honored`)
     if (!ok) failures.push("config: urlFileFormat")
-    // announceStderr ladder: enum values honored, legacy booleans coerce,
-    // bogus values fall back to the default position
+    // announceStderr ladder: all four enum values honored, legacy
+    // booleans coerce, bogus values fall back to the default position
     process.env.OPENSHARE_URL_FILE_FORMAT = ""
     process.env.OPENSHARE_ANNOUNCE_STDERR = "url"
     cfg = loadConfig(pluginDir)
     ok = cfg.announceStderr === "url"
+    process.env.OPENSHARE_ANNOUNCE_STDERR = "status"
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.announceStderr === "status"
     process.env.OPENSHARE_ANNOUNCE_STDERR = "false"
     cfg = loadConfig(pluginDir)
     ok = ok && cfg.announceStderr === "off"
@@ -298,10 +301,10 @@ try {
     cfg = loadConfig(pluginDir)
     ok = ok && cfg.announceStderr === "all"
     delete process.env.OPENSHARE_ANNOUNCE_STDERR
-    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({ announceStderr: "url" })
+    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({ announceStderr: "status" })
     cfg = loadConfig(pluginDir)
-    ok = ok && cfg.announceStderr === "url"
-    console.log(`${ok ? "PASS" : "FAIL"} config: announceStderr ladder (enum + legacy boolean + fallback)`)
+    ok = ok && cfg.announceStderr === "status"
+    console.log(`${ok ? "PASS" : "FAIL"} config: announceStderr ladder (4 positions + legacy boolean + fallback)`)
     if (!ok) failures.push("config: announceStderr ladder")
     // meta caps: non-string values dropped, over-long dropped
     process.env.OPENSHARE_URL_FILE_FORMAT = ""

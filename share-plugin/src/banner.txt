@@ -21,6 +21,7 @@
 // shareMode ("all" | "manual"; default = TUI presence), debounceMs,
 // completedDelayMs, modelLabel, ttlDays,
 // authLogin, authPassword, spoolDir, urlFile ("none" = off),
-// announceStderr ("all" | "url" | "off"; url keeps the live:/url file:
-// lines and drops the status/banner lines - clean CI logs).
+// announceStderr ("all" | "status" | "url" | "off"; status keeps the
+// status/banner lines and never prints the share URL - the public-CI
+// shape; url prints announce lines only).
 //

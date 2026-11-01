@@ -62,12 +62,14 @@ export type ShareConfig = {
    * "json" (one JSON object per line: id, url, status, gated) for CI
    * consumers that want machine-readable lines without parsing URLs. */
   urlFileFormat: "url" | "json"
-  /** Stderr announce ladder: "all" (default) prints announce lines
-   * (`live:`, `url file:`) AND status lines (the mode banner, enrollment,
-   * adoption notes); "url" keeps announce lines and drops the status
-   * lines (CI: clean logs, the share URL stays scrapeable); "off" drops
-   * announce lines too. Error-class lines ALWAYS reach stderr. */
-  announceStderr: "all" | "url" | "off"
+  /** Stderr ladder with two independently controllable line classes:
+   * announce lines (`live:`, `url file:`) and status lines (mode banner,
+   * enrollment, adoption notes). "all" (default) prints both; "status"
+   * prints status lines only - the share URL never touches stderr
+   * (public CI logs); "url" prints announce lines only (private runners
+   * scraping the URL); "off" prints neither. Error-class lines ALWAYS
+   * reach stderr. */
+  announceStderr: "all" | "status" | "url" | "off"
   /** Wave 3 redaction: user-supplied regex rules (client-side only)
    * applied beside the built-in detectors on UNGATED shares. */
   redact?: { patterns?: string[] }
@@ -373,13 +375,13 @@ export function deleteServerEntry(url: string, target?: string): string | undefi
 }
 
 /** Coerce an announceStderr value from any layer (enum string, legacy
- * boolean, truthy/falsy word) to the 3-position ladder. */
-function normalizeAnnounce(value: unknown, fallback: "all" | "url" | "off"): "all" | "url" | "off" {
+ * boolean, truthy/falsy word) to the 4-position ladder. */
+function normalizeAnnounce(value: unknown, fallback: "all" | "status" | "url" | "off"): "all" | "status" | "url" | "off" {
   if (value === true) return "all"
   if (value === false) return "off"
   if (typeof value === "string") {
     const v = value.trim().toLowerCase()
-    if (v === "all" || v === "url" || v === "off") return v
+    if (v === "all" || v === "status" || v === "url" || v === "off") return v
     if (/^(1|true|yes|on)$/.test(v)) return "all"
     if (/^(0|false|no)$/.test(v)) return "off"
   }
