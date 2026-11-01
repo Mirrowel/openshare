@@ -179,7 +179,11 @@ let worker
 let llm
 try {
   llm = await startMockLLM()
-  worker = await startWorker(suiteDir)
+  // configSuffix forces this suite onto its OWN worker even under matrix
+  // reuse: F7/F8 call admin.purge(), which empties the WHOLE backend -
+  // running that on the shared worker wipes other suites' shares out
+  // from under them (the v2-mock in-wave flake)
+  worker = await startWorker(suiteDir, { configSuffix: "tui" })
   console.log("worker ready")
 
   const sandbox = join(suiteDir, "tui")
@@ -579,7 +583,7 @@ try {
   try {
     llm?.close()
   } catch {}
-  if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
+  if (!worker?.reused) killWranglerSuites() // own worker (purge isolation): always sweep; reused: never
   killPortOwners(SERVE_PORT)
   killPortOwners(LLM_PORT)
 }

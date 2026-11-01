@@ -279,14 +279,17 @@ try {
   try { workerB?.kill() } catch {}
   try { worker2?.kill() } catch {}
   await sleep(1500)
+  // kill ONLY the ports this shard actually booted: W2_PORT (B1+20) sits
+  // in ANOTHER suite's port block, so an unconditional kill murdered the
+  // fanout suite's first worker mid-run whenever the shards raced
   if (BACKEND === "wrangler") {
-    killWranglerSuites(B1_PORT)
-    killWranglerSuites(B2_PORT)
-    killWranglerSuites(W2_PORT)
+    if (RUN_A) killWranglerSuites(B1_PORT)
+    if (RUN_B) killWranglerSuites(B2_PORT)
+    if (RUN_PUBLIC) killWranglerSuites(W2_PORT)
   } else {
-    killPortOwners(B1_PORT)
-    killPortOwners(B2_PORT)
-    killPortOwners(W2_PORT)
+    if (RUN_A) killPortOwners(B1_PORT)
+    if (RUN_B) killPortOwners(B2_PORT)
+    if (RUN_PUBLIC) killPortOwners(W2_PORT)
   }
   try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
 }
