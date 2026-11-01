@@ -1393,10 +1393,11 @@ function createEngine(deps) {
   const scheduleBindingWrite = (st) => {
     if (st.metaTimer)
       return;
+    const debounce = Number(process.env.OPENSHARE_BINDING_WRITE_MS) > 0 ? Number(process.env.OPENSHARE_BINDING_WRITE_MS) : 30000;
     st.metaTimer = setTimeout(() => {
       st.metaTimer = null;
       chain = chain.then(() => writeBinding(st)).catch(() => {});
-    }, 30000);
+    }, debounce);
   };
   const h8 = (url) => {
     let h = 5381;
