@@ -439,17 +439,15 @@ function makeAuth(login: string, password: string) {
   })
 }
 
-function createShare(sessionID: string, ttlHours: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null): { id: string; secret: string } {
+async function createShare(sessionID: string, ttlHours: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null): Promise<{ id: string; secret: string }> {
   const id = randomId()
   const secret = randomId() + randomId()
-  const auth = authLogin && authPassword ? JSON.stringify({ salt: "", loginHash: "", passHash: "" }) : null
+  // hash BEFORE the insert: a viewer logging in the instant the create
+  // returns must not race the credentials (worker parity - the DO awaits
+  // makeAuth too). The gate is live the moment id+secret are handed out.
+  const auth = authLogin && authPassword ? await makeAuth(authLogin, authPassword) : null
   db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, ttlHours, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom, creatorTokenId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?, ?)")
     .run(id, secret, sessionID, Math.ceil(ttlHours / 24), ttlHours, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom), creatorTokenId)
-  if (authLogin && authPassword) {
-    // hash asynchronously then persist (the synchronous insert keeps the
-    // response fast; the gate materializes a moment later)
-    void makeAuth(authLogin, authPassword).then((a) => db.query("UPDATE shares SET auth = ? WHERE id = ?").run(a, id))
-  }
   return { id, secret }
 }
 
@@ -606,7 +604,14 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
       }
       rest.push(raw)
     }
-    if (priv) db.query("UPDATE shares SET private = ? WHERE id = ?").run(JSON.stringify(priv), shareId)
+    if (priv) {
+      db.query("UPDATE shares SET private = ? WHERE id = ?").run(JSON.stringify(priv), shareId)
+      // pmeta merges don't change share CONTENT, so rev stays - but the
+      // cached /data envelope embeds the private block for authed reads
+      // and must not survive the merge (a rev-keyed hit would serve the
+      // pre-pmeta public body to a logged-in viewer)
+      dataCacheInvalidate(shareId)
+    }
     // session summaries for the private meta surface: stamped at write so
     // /meta never scans (worker parity)
     const summaries: Record<string, Record<string, unknown>> = JSON.parse(share.summaries || "{}")
@@ -698,7 +703,7 @@ function broadcast(shareId: string, frame: unknown) {
 // a hundred large polled shares (audit N9). Map insertion order doubles
 // as the LRU (re-set on hit).
 const DATA_CACHE_MAX_BYTES = 128 * 1024 * 1024
-const dataCache = new Map<string, { rev: number; status: string; dataJson: string; frameJson: string; privData?: string; bytes: number }>()
+const dataCache = new Map<string, { rev: number; status: string; dataJson: string; frameJson: string; privData?: string; privJson: string; bytes: number }>()
 let dataCacheBytes = 0
 function dataCacheTrim() {
   for (const [k, v] of dataCache) {
@@ -707,13 +712,22 @@ function dataCacheTrim() {
     dataCacheBytes -= v.bytes
   }
 }
+/** Drop a share's cached envelopes (rev stays authoritative). */
+function dataCacheInvalidate(shareId: string) {
+  const hit = dataCache.get(shareId)
+  if (hit) {
+    dataCacheBytes -= hit.bytes
+    dataCache.delete(shareId)
+  }
+}
 function dataCacheSet(share: ShareRow, dataJson: string, frameJson: string) {
   const hit = dataCache.get(share.id)
   if (hit) dataCacheBytes -= hit.bytes
   dataCache.delete(share.id)
   const priv = JSON.parse(share.private || "{}") as Record<string, unknown>
+  const privJson = share.private || "{}"
   const privData = Object.keys(priv).length ? dataJson.slice(0, -1) + ',"private":' + JSON.stringify(priv) + "}" : undefined
-  dataCache.set(share.id, { rev: share.rev, status: share.status, dataJson, frameJson, privData, bytes: dataJson.length + frameJson.length + (privData?.length ?? 0) })
+  dataCache.set(share.id, { rev: share.rev, status: share.status, dataJson, frameJson, privData, privJson, bytes: dataJson.length + frameJson.length + privJson.length + (privData?.length ?? 0) })
   dataCacheBytes += dataJson.length + frameJson.length
   dataCacheTrim()
 }
@@ -936,7 +950,17 @@ async function httpHandler(req: Request): Promise<Response> {
     if (share.auth) {
       renderData(share)
       const hit = dataCache.get(share.id)
-      if (hit && hit.privData) return new Response(hit.privData, { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
+      // guard: rev alone doesn't cover private-only writes (pmeta merges
+      // don't bump rev), so the cached authed variant must ALSO match the
+      // row's current private block; on mismatch rebuild instead of
+      // serving a pre-private public body to a logged-in viewer
+      if (hit && hit.privData && hit.privJson === (share.private ?? "{}")) {
+        return new Response(hit.privData, { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
+      }
+      dataCacheInvalidate(share.id)
+      renderData(share)
+      const fresh = dataCache.get(share.id)
+      if (fresh?.privData) return new Response(fresh.privData, { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
     }
     return new Response(renderData(share), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } })
   }
@@ -1071,7 +1095,7 @@ async function httpCreate(body: Record<string, unknown>, ownerId: string | null,
   // explicit ttlHours wins (legacy ttlDays converts); else the owner's
   // stored default, re-clamped
   const ttlHours = clampTtlHours(ttlHoursFrom(body) ?? (ownerDefault || undefined), ttlMax)
-  const { id, secret } = createShare(body.sessionID, ttlHours, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
+  const { id, secret } = await createShare(body.sessionID, ttlHours, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
   return json(200, { ok: true, id, secret, ttlHours })
 }
 
@@ -1683,7 +1707,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         }
         // explicit ttlHours wins (legacy ttlDays converts); else default
         const ttlHours = clampTtlHours(ttlHoursFrom(createBody) ?? (chk.defaultTtlHours || undefined), chk.ttlMaxHours ?? 0)
-        const { id, secret } = createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlHours, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)
+        const { id, secret } = await createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlHours, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)
         data.attachId = id
         data.attachSecret = secret
         data.attachOwner = chk.userId ?? null
