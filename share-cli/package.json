@@ -1,0 +1,24 @@
+{
+  "name": "@mirrowel/openshare-cli",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Admin console for OpenShare workers: stateful CLI + interactive TUI over the worker API",
+  "type": "module",
+  "bin": { "osh": "./dist/osh.mjs" },
+  "scripts": {
+    "build": "node build.mjs",
+    "osh": "node dist/osh.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=20" },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.5",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "ink": "^6.4.0",
+    "react": "^19.1.0"
+  }
+}

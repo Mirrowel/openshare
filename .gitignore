@@ -5,6 +5,7 @@ package-lock.json.bak
 # builds
 share-plugin/dist/
 share-viewer/dist/
+share-cli/dist/
 share-viewer/node_modules/.vite/
 
 # wrangler

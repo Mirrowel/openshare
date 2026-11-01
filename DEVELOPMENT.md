@@ -27,7 +27,7 @@ share-plugin/          the opencode plugin (@mirrowel/opencode-openshare)
 share-worker/          Cloudflare Worker backend (worker.js, wrangler.toml)
 share-server/          portable Bun backend (server.ts + Dockerfile)
 share-viewer/          vendored upstream share page (vite + solid)
-  src/views/           the viewer views SDK + nine skins (see views/README.md)
+share-cli/             admin console over the worker API (stateful CLI + ink TUI)
 tools/                 session interchange + offline snapshots (see tools/README.md)
 ```
 

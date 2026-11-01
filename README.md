@@ -182,6 +182,7 @@ opencode (plugin)  --ws-->  Cloudflare Worker  <--ws--  viewers (browser)
 | `share-server/` | the portable backend: one Bun process, SQLite, native WebSockets — protocol-identical to the worker | [server README](share-server/README.md) |
 | `share-viewer/` | the share page (vendored opencode v2 kit, vite + solid) with branding and settings | [viewer README](share-viewer/README.md) |
 | `tools/` | CLI converters: export/pack/import sessions, view exported sessions locally | [tools README](tools/README.md) |
+| `share-cli/` | `osh` — the admin console: stateful CLI + interactive TUI over a worker (users, tokens, codes, shares) | [console README](share-cli/README.md) |
 
 Delivery reliability is structural: every accepted sync bumps a monotonic rev, acked on the socket; unacked frames spool to disk and replay on reconnect; the share binding lives inside opencode session metadata, so recovery never depends on the spool. The binding key is stripped from everything synced, and the worker strips session metadata on all read paths — the write secret never reaches viewers.
 
