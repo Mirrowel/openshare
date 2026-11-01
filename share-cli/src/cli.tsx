@@ -496,6 +496,9 @@ global: --json anywhere for machine output`)
           return 0
         }
         if (sub === "self") {
+          // self-service routes need a user identity; the root credential
+          // is not one - pre-flight instead of surfacing the server's 401
+          if (cfg.current(cfg.load())?.entry.kind === "root") return fail("the root token has no user identity to mint for - use: osh tokens new --user <userId>")
           const r = await assertOk(await api.tokenSelfMint({ kind: str(flags, "kind"), label: str(flags, "label"), limits: limits(), ...expiry() }), "self-mint token")
           const c = cfg.load(); const cur = cfg.current(c)
           if (cur) cfg.setToken(c, cur.name, r.token, r.kind)
@@ -504,6 +507,7 @@ global: --json anywhere for machine output`)
           return 0
         }
         if (sub === "rotate") {
+          if (cfg.current(cfg.load())?.entry.kind === "root") return fail("the root token cannot rotate via the API - mint a full user token (osh tokens new --user <id>) and rotate that, or change the worker's CREATE_TOKEN secret")
           const r = await assertOk(await api.tokenRotate({ label: str(flags, "label"), limits: limits(), ...expiry() }), "rotate")
           const c = cfg.load(); const cur = cfg.current(c)
           if (cur) { cfg.setToken(c, cur.name, r.token, r.tokenKind); cfg.save(c) }
@@ -512,6 +516,7 @@ global: --json anywhere for machine output`)
         }
         if (sub === "update") {
           const c = cfg.load(); const cur = cfg.current(c)
+          if (cur?.entry.kind === "root" && !pos[2]) return fail("root must pass the token ID explicitly (list with: osh tokens ls --all)")
           const r0 = cur?.entry.kind === "root" && pos[2]
             ? await api.tokenAdminUpdate(pos[2], { label: str(flags, "label"), limits: limits(), ...expiry() })
             : await api.tokenUpdate({ tokenId: pos[2], label: str(flags, "label"), limits: limits(), ...expiry() })

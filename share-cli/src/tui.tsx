@@ -657,7 +657,12 @@ function TokensScreen(props: { api: Api; conf: cfg.CliConfig; setConf: (c: cfg.C
     if (ch === "s") { sort.cycle(); return }
     if (ch === "v") { setShowRevoked((v) => !v); return }
     if (ch === "m") { setMode("mint"); return }
-    if (ch === "R") { setMode("confirm-rotate"); return }
+    if (ch === "R") {
+      // the root credential is not a token-store entry; rotating it via
+      // the API is impossible - say so instead of surfacing the 401
+      if (cfg.current(props.conf)?.entry.kind === "root") { props.say("the root token cannot rotate via the API - mint a full user token and rotate that"); return }
+      setMode("confirm-rotate"); return
+    }
     if (!rows.length) return
     const t = rows[sel] as any
     if (ch === "e") setMode("edit")
