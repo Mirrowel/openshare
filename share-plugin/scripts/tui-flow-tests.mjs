@@ -531,7 +531,7 @@ try {
     state.menuAnswers.push("group:interface", "ui:size", "__back", "action:exit")
     await settings.settingsDialog(host)
     check("F9: size picker persisted both dims in kv", state.kv.get("openshare.ui-width") === "xlarge" && state.kv.get("openshare.ui-height-percent") === 66, JSON.stringify([...state.kv]))
-    const rootMenu = state.menus.findLast((m) => m.title === "OpenShare settings")
+    const rootMenu = state.menus.findLast((m) => /^OpenShare v.* · settings$/.test(m.title))
     check("F9: root is compact groups only", !!rootMenu && rootMenu.options.length <= 9 && !rootMenu.options.some((o) => o.value.startsWith("key:")), JSON.stringify(rootMenu?.options.map((o) => o.value)))
     check("F9: no separate connection group", !rootMenu?.options.some((o) => o.value === "group:connection"))
     check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 6, JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))

@@ -21,7 +21,8 @@
 // shareMode ("all" | "manual"; default = TUI presence), debounceMs,
 // completedDelayMs, modelLabel, ttlDays,
 // authLogin, authPassword, spoolDir, urlFile ("none" = off),
-// announceStderr.
+// announceStderr ("all" | "url" | "off"; url keeps the live:/url file:
+// lines and drops the status/banner lines - clean CI logs).
 //
 // src/config.ts
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -42,7 +43,7 @@ var DEFAULTS = {
   urlFile: "",
   urlFileFormat: "url",
   configSet: "",
-  announceStderr: true
+  announceStderr: "all"
 };
 var CONFIG_NAME = "openshare.config.json";
 var LOCAL_NAME = "openshare.local.json";
@@ -193,8 +194,8 @@ function resolveServer(cfg) {
   if (cfg.workerUrl)
     servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true };
   if (cfg.servers)
-    for (const [url, entry] of Object.entries(cfg.servers))
-      servers[url] = entry;
+    for (const [url2, entry] of Object.entries(cfg.servers))
+      servers[url2] = entry;
   const urls = Object.keys(servers);
   if (!urls.length)
     return;
@@ -224,6 +225,22 @@ function saveServerEntry(url, patch, target) {
 }
 function saveServerToken(url, token, target) {
   return saveServerEntry(url, { token }, target);
+}
+function normalizeAnnounce(value, fallback) {
+  if (value === true)
+    return "all";
+  if (value === false)
+    return "off";
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (v === "all" || v === "url" || v === "off")
+      return v;
+    if (/^(1|true|yes|on)$/.test(v))
+      return "all";
+    if (/^(0|false|no)$/.test(v))
+      return "off";
+  }
+  return fallback;
 }
 function loadConfig(pluginDir, options) {
   const cfg = { ...DEFAULTS };
@@ -332,11 +349,12 @@ function loadConfig(pluginDir, options) {
   if (env.OPENSHARE_SPOOL_DIR)
     cfg.spoolDir = env.OPENSHARE_SPOOL_DIR;
   if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined)
-    cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim());
+    cfg.announceStderr = env.OPENSHARE_ANNOUNCE_STDERR;
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual")
     cfg.shareMode = env.OPENSHARE_SHARE_MODE;
   if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE)
     cfg.urlFile = URL_FILE_NONE;
+  cfg.announceStderr = normalizeAnnounce(cfg.announceStderr, "all");
   if (cfg.workerUrl)
     cfg.workerUrl = cfg.workerUrl.trim().replace(/\/+$/, "");
   if (cfg.servers) {
@@ -554,7 +572,7 @@ function normalizeV1Message(info, parts) {
   if (info.role === "user") {
     const compaction = parts.find((p) => p?.type === "compaction");
     if (compaction) {
-      const message = {
+      const message2 = {
         id,
         type: "compaction",
         status: "completed",
@@ -563,7 +581,7 @@ function normalizeV1Message(info, parts) {
         recent: "",
         time: { created }
       };
-      return { message };
+      return { message: message2 };
     }
     const text = parts.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join(`
 `);
@@ -889,6 +907,11 @@ function createEngine(deps) {
   const mode = resolveShareMode(cfg, deps);
   if (mode === "manual")
     stderrInfoAllowed = false;
+  const logStatus = (...a) => {
+    if (cfg.announceStderr !== "all")
+      return;
+    log(...a);
+  };
   if (process.env.OPENSHARE_DEBUG_FILE) {
     try {
       writeFileSync2(process.env.OPENSHARE_DEBUG_FILE, JSON.stringify({
@@ -902,7 +925,7 @@ function createEngine(deps) {
   }
   const server = resolveServer(cfg);
   if (!server || !server.url) {
-    log("disabled: no share server configured (workerUrl or a servers entry)");
+    logStatus("disabled: no share server configured (workerUrl or a servers entry)");
     return {
       mode,
       config: () => cfg,
@@ -912,7 +935,7 @@ function createEngine(deps) {
       }
     };
   }
-  log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
+  logStatus(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
   const resolveTargets = () => {
     const merged = {};
     const hasServers = !!cfg.servers && Object.keys(cfg.servers).length > 0;
@@ -920,7 +943,7 @@ function createEngine(deps) {
     if (cfg.workerUrl && (!hasServers || envWorker))
       merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true };
     if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers[cfg.workerUrl]) {
-      log(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`);
+      logStatus(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`);
     }
     if (cfg.servers)
       for (const [u, e] of Object.entries(cfg.servers))
@@ -993,12 +1016,12 @@ function createEngine(deps) {
       if (adoptModel && doc.modelLabel === undefined) {
         doc.modelLabel = wantModel;
         dirty = true;
-        log(`${url}: adopted modelLabel from the server config set`);
+        logStatus(`${url}: adopted modelLabel from the server config set`);
       }
       if (adoptMode && doc.shareMode === undefined) {
         doc.shareMode = wantMode;
         dirty = true;
-        log(`${url}: adopted shareMode from the server config set`);
+        logStatus(`${url}: adopted shareMode from the server config set`);
       }
       if (dirty)
         writeFileSync2(home, JSON.stringify(doc, null, 2) + `
@@ -1043,7 +1066,7 @@ function createEngine(deps) {
         c.credential = b.token;
         c.error = "";
         const savedTo = saveServerToken(url, c.credential);
-        log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
+        logStatus(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
         adoptServerSuggestions(url, c.credential);
         return c.credential;
       }
@@ -1102,19 +1125,19 @@ function createEngine(deps) {
     if (!raw || typeof raw !== "object")
       return;
     const p = raw;
-    const num = (v, d) => {
+    const num2 = (v, d) => {
       const n = Number(v);
       return Number.isFinite(n) && n >= 0 ? n : d;
     };
     const prev = policyOf(url);
     policyMap.set(url, {
       mode: p.mode === "turn" ? "turn" : "persistent",
-      turnGraceMs: num(p.turnGraceMs, prev.turnGraceMs),
-      idleDropMs: num(p.idleDropMs, prev.idleDropMs),
-      finalizeAfterMs: num(p.finalizeAfterMs, prev.finalizeAfterMs),
-      debounceMinMs: num(p.debounceMinMs, 0),
-      debounceMaxMs: Math.max(num(p.debounceMaxMs, Infinity), num(p.debounceMinMs, 0)),
-      completedDelayMaxMs: num(p.completedDelayMaxMs, Infinity)
+      turnGraceMs: num2(p.turnGraceMs, prev.turnGraceMs),
+      idleDropMs: num2(p.idleDropMs, prev.idleDropMs),
+      finalizeAfterMs: num2(p.finalizeAfterMs, prev.finalizeAfterMs),
+      debounceMinMs: num2(p.debounceMinMs, 0),
+      debounceMaxMs: Math.max(num2(p.debounceMaxMs, Infinity), num2(p.debounceMinMs, 0)),
+      completedDelayMaxMs: num2(p.completedDelayMaxMs, Infinity)
     });
     clampToPolicy();
     if (debugEvents)
@@ -1190,7 +1213,7 @@ function createEngine(deps) {
         const after = targets.map((t) => t.url);
         const added = after.filter((u) => !before.has(u));
         if (added.length)
-          log(`fan-out set grew: ${added.join(", ")}`);
+          logStatus(`fan-out set grew: ${added.join(", ")}`);
       }
     }
   };
@@ -1538,7 +1561,7 @@ function createEngine(deps) {
       return;
     r.announced = true;
     const url = `${r.url}/s/${r.shareId}`;
-    if (cfg.announceStderr)
+    if (cfg.announceStderr !== "off")
       log(`live: ${url}`);
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       const file = cfg.urlFile ? isAbsolute(cfg.urlFile) ? cfg.urlFile : join2(deps.directory ?? process.cwd(), cfg.urlFile) : join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
@@ -1552,7 +1575,7 @@ function createEngine(deps) {
 ` : url + `
 `;
         appendFileSync(file, line);
-        if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
+        if (cfg.announceStderr !== "off" && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true;
           lastUrlFile = file;
           log(`url file: ${file}`);
@@ -1604,7 +1627,7 @@ function createEngine(deps) {
         attach.ttlHours = st.opts.ttlHours;
       const sent = wsSend(r, { op: "init", attach });
       if (sent)
-        log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`);
+        logStatus(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`);
     }
   };
   const deleteAbandoned = (r) => {
@@ -2783,8 +2806,8 @@ function createEngine(deps) {
     if (sessionInfoValue)
       enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid));
     let modelSeen = false;
-    const consume = (messages) => {
-      for (const message of messages) {
+    const consume = (messages2) => {
+      for (const message of messages2) {
         const m = message.info ?? message;
         if (!m || typeof m.id !== "string")
           continue;
@@ -2896,31 +2919,31 @@ function createEngine(deps) {
     const parent = trackChild(sid, info);
     if (mode === "manual") {
       if (parent) {
-        const st = sessions.get(parent);
-        if (st?.activated && !st.closed) {
+        const st3 = sessions.get(parent);
+        if (st3?.activated && !st3.closed) {
           if (info)
-            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
+            enqueue(st3, itemFor("session", stripLocalFacts(redact(info)), sid));
         }
         return;
       }
       const flag = shareFlag(info);
-      const st = sessions.get(sid);
+      const st2 = sessions.get(sid);
       if (flag.enabled) {
-        if (st?.activated && !st.closed) {
+        if (st2?.activated && !st2.closed) {
           if (flag.opts)
-            applyOpts(st, flag.opts);
+            applyOpts(st2, flag.opts);
           if (info)
-            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
+            enqueue(st2, itemFor("session", stripLocalFacts(redact(info)), sid));
           if (t === "session.updated")
-            chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
+            chain = chain.then(() => refreshOptOuts(st2)).catch(() => {});
           return;
         }
         activate(sid, flag.opts, info);
         return;
       }
-      if (st?.activated && !st.closed && t === "session.updated") {
+      if (st2?.activated && !st2.closed && t === "session.updated") {
         log(`share disabled for ${sid} - removing`);
-        chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
+        chain = chain.then(() => remove(st2)).catch((e) => logError("remove error", e?.message || e));
         return;
       }
       return;
@@ -3067,16 +3090,16 @@ function createEngine(deps) {
               chain = chain.then(async () => {
                 if (created.closed)
                   return;
-                const info = await sessionInfo(created.client, main);
+                const info2 = await sessionInfo(created.client, main);
                 verifying.delete(main);
                 if (created.closed)
                   return;
-                const flag = shareFlag(info);
-                const hasBinding = !!info?.metadata?.[METADATA_KEY];
-                const createdMs = info?.time?.created;
+                const flag = shareFlag(info2);
+                const hasBinding = !!info2?.metadata?.[METADATA_KEY];
+                const createdMs = info2?.time?.created;
                 const isPreExisting = typeof createdMs === "number" && createdMs < bootTime;
                 if (debugEvents) {
-                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info}`);
+                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info2}`);
                 }
                 if (isPreExisting && !flag.enabled && !hasBinding) {
                   preExistingRetired.add(main);
@@ -3481,7 +3504,7 @@ var server_default = {
   setup: createV2ServerSetup()
 };
 export {
-  OpenSharePlugin,
+  server_default as default,
   PLUGIN_ID,
-  server_default as default
+  OpenSharePlugin
 };

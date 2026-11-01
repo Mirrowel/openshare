@@ -191,12 +191,12 @@ const LABELS: Record<string, LabelMeta> = {
   },
   announceStderr: {
     label: "Announce on stderr",
-    help: '"true"/"false": the [openshare] live: and url file: log lines. false silences them; the share itself is unaffected.',
+    help: '"all" | "url" | "off": which [openshare] info lines reach stderr.',
     kind: "text",
-    options: ["true", "false"],
+    options: ["all", "url", "off"],
     section: "Advanced",
-    info: "Whether the informational [openshare] lines reach stderr in all-mode (CI logs). Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
-    def: "true",
+    info: "The stderr ladder for informational [openshare] lines (all-mode/CI). all: announce lines (live:/url file:) plus status lines (mode banner, enrollment, adoption notes). url: announce lines only - clean CI logs while the share URL stays scrapeable. off: no info lines. Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
+    def: "all",
   },
 }
 
@@ -214,7 +214,6 @@ function helpForKey(key: string, cfg: ShareConfig, sources: Record<string, strin
 
 function displayValue(key: string, cfg: ShareConfig): string {
   if (key === "createToken" || key === "authPassword") return mask(String(cfg[key] ?? ""))
-  if (key === "announceStderr") return cfg.announceStderr !== false ? "on" : "off"
   const value = (cfg as unknown as Record<string, unknown>)[key]
   return value === undefined || value === "" ? "(not set)" : String(value)
 }
@@ -238,7 +237,6 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
     if (picked === undefined) return undefined
     const next = { ...cfg } as unknown as Record<string, unknown>
     if (key === "shareMode") next[key] = picked === "auto" ? undefined : picked
-    else if (key === "announceStderr") next[key] = picked === "true"
     else next[key] = picked
     return next as ShareConfig
   }

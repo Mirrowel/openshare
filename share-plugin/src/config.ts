@@ -62,9 +62,12 @@ export type ShareConfig = {
    * "json" (one JSON object per line: id, url, status, gated) for CI
    * consumers that want machine-readable lines without parsing URLs. */
   urlFileFormat: "url" | "json"
-  /** false silences the `[openshare] live:` (and `url file:`) stderr
-   * lines. The share itself is unaffected. */
-  announceStderr: boolean
+  /** Stderr announce ladder: "all" (default) prints announce lines
+   * (`live:`, `url file:`) AND status lines (the mode banner, enrollment,
+   * adoption notes); "url" keeps announce lines and drops the status
+   * lines (CI: clean logs, the share URL stays scrapeable); "off" drops
+   * announce lines too. Error-class lines ALWAYS reach stderr. */
+  announceStderr: "all" | "url" | "off"
   /** Wave 3 redaction: user-supplied regex rules (client-side only)
    * applied beside the built-in detectors on UNGATED shares. */
   redact?: { patterns?: string[] }
@@ -103,7 +106,7 @@ export const DEFAULTS: ShareConfig = {
   urlFile: "",
   urlFileFormat: "url",
   configSet: "",
-  announceStderr: true,
+  announceStderr: "all",
 }
 
 const CONFIG_NAME = "openshare.config.json"
@@ -369,6 +372,20 @@ export function deleteServerEntry(url: string, target?: string): string | undefi
   }
 }
 
+/** Coerce an announceStderr value from any layer (enum string, legacy
+ * boolean, truthy/falsy word) to the 3-position ladder. */
+function normalizeAnnounce(value: unknown, fallback: "all" | "url" | "off"): "all" | "url" | "off" {
+  if (value === true) return "all"
+  if (value === false) return "off"
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase()
+    if (v === "all" || v === "url" || v === "off") return v
+    if (/^(1|true|yes|on)$/.test(v)) return "all"
+    if (/^(0|false|no)$/.test(v)) return "off"
+  }
+  return fallback
+}
+
 /** Load the effective config. `options` is the plugin-array options tuple
  * object (env still wins over it). Files MERGE lowest→highest priority
  * (later files override per key); empty strings in credential/path keys
@@ -473,11 +490,17 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url") cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT
   if (env.OPENSHARE_CONFIG_SET) cfg.configSet = env.OPENSHARE_CONFIG_SET
   if (env.OPENSHARE_SPOOL_DIR) cfg.spoolDir = env.OPENSHARE_SPOOL_DIR
-  if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim())
+  if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = env.OPENSHARE_ANNOUNCE_STDERR as ShareConfig["announceStderr"]
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual") cfg.shareMode = env.OPENSHARE_SHARE_MODE
 
   // normalize the disable sentinel (case-insensitive from any source)
   if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE) cfg.urlFile = URL_FILE_NONE
+
+  // announceStderr may arrive from ANY layer as the enum string or a
+  // legacy boolean/word (old saved configs carry true/false) - coerce the
+  // merged value once; unknown values fall back to the default ladder
+  // position
+  cfg.announceStderr = normalizeAnnounce(cfg.announceStderr, "all")
 
   // URL hygiene: a trailing slash on a server url becomes
   // wss://host//api/ws and https://host//s/<id> downstream - strip once,

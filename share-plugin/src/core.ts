@@ -233,8 +233,9 @@ export type Engine = {
 // Stderr policy: in manual mode (TUI present) stderr is for ACTUAL ERRORS
 // only. Informational lines (live:/url file:/mode banner, lifecycle
 // traces) are suppressed because the TUI surfaces the URL itself.
-// All-mode (CI/server-only) keeps its stderr contract (announce lines,
-// silenceable via announceStderr). Error-class lines always reach stderr.
+// All-mode (CI/server-only) keeps its stderr contract, layered by the
+// announceStderr ladder: "all" = announce + status lines, "url" = announce
+// lines only, "off" = neither. Error-class lines always reach stderr.
 let stderrInfoAllowed = true
 
 const log = (...a: unknown[]) => {
@@ -351,8 +352,15 @@ export function engineTargetUrls(): string[] {
 export function createEngine(deps: EngineDeps): Engine {
   let cfg = loadConfig(deps.pluginDir, deps.options)
   const mode: ShareMode = resolveShareMode(cfg, deps)
-  // stderr = errors only when the TUI part exists (the TUI surfaces URLs)
+  // Stderr = errors only when the TUI part exists (the TUI surfaces URLs)
   if (mode === "manual") stderrInfoAllowed = false
+  // Status lines (mode banner, enrollment, adoption notes) sit one rung
+  // below announce lines on the ladder: "url" keeps the announce lines a
+  // CI scrapes while dropping these, "off" drops them both.
+  const logStatus = (...a: unknown[]) => {
+    if (cfg.announceStderr !== "all") return
+    log(...a)
+  }
   if (process.env.OPENSHARE_DEBUG_FILE) {
     // diagnostic ground truth for the suites (never set in production)
     try {
@@ -374,7 +382,7 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const server = resolveServer(cfg)
   if (!server || !server.url) {
-    log("disabled: no share server configured (workerUrl or a servers entry)")
+    logStatus("disabled: no share server configured (workerUrl or a servers entry)")
     return {
       mode,
       config: () => cfg,
@@ -384,7 +392,7 @@ export function createEngine(deps: EngineDeps): Engine {
       },
     }
   }
-  log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
+  logStatus(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
 
   // ---- share servers (the fan-out set) -----------------------------------
   // Every entry flagged active:true shares new sessions; when none is
@@ -401,7 +409,7 @@ export function createEngine(deps: EngineDeps): Engine {
     const envWorker = !!process.env.OPENSHARE_WORKER_URL
     if (cfg.workerUrl && (!hasServers || envWorker)) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
     if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers![cfg.workerUrl]) {
-      log(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`)
+      logStatus(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`)
     }
     if (cfg.servers) for (const [u, e] of Object.entries(cfg.servers)) merged[u] = { ...merged[u], ...e }
     const urls = Object.keys(merged)
@@ -480,8 +488,8 @@ export function createEngine(deps: EngineDeps): Engine {
         if (!doc || typeof doc !== "object") doc = {}
       } catch {}
       let dirty = false
-      if (adoptModel && doc.modelLabel === undefined) { doc.modelLabel = wantModel; dirty = true; log(`${url}: adopted modelLabel from the server config set`) }
-      if (adoptMode && doc.shareMode === undefined) { doc.shareMode = wantMode; dirty = true; log(`${url}: adopted shareMode from the server config set`) }
+      if (adoptModel && doc.modelLabel === undefined) { doc.modelLabel = wantModel; dirty = true; logStatus(`${url}: adopted modelLabel from the server config set`) }
+      if (adoptMode && doc.shareMode === undefined) { doc.shareMode = wantMode; dirty = true; logStatus(`${url}: adopted shareMode from the server config set`) }
       if (dirty) writeFileSync(home, JSON.stringify(doc, null, 2) + "\n")
     } catch {
       // suggestions are best-effort; a failed fetch never blocks sharing
@@ -530,7 +538,7 @@ export function createEngine(deps: EngineDeps): Engine {
         c.credential = b.token
         c.error = ""
         const savedTo = saveServerToken(url, c.credential)
-        log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
+        logStatus(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
         void adoptServerSuggestions(url, c.credential)
         return c.credential
       }
@@ -700,7 +708,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (debugEvents) {
         const after = targets.map((t) => t.url)
         const added = after.filter((u) => !before.has(u))
-        if (added.length) log(`fan-out set grew: ${added.join(", ")}`)
+        if (added.length) logStatus(`fan-out set grew: ${added.join(", ")}`)
       }
     }
   }
@@ -1142,7 +1150,7 @@ export function createEngine(deps: EngineDeps): Engine {
     if (r.announced) return
     r.announced = true
     const url = `${r.url}/s/${r.shareId}`
-    if (cfg.announceStderr) log(`live: ${url}`)
+    if (cfg.announceStderr !== "off") log(`live: ${url}`)
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       // default: the file lives where the session lives (its directory,
       // falling back to the process cwd) — never a fixed global path.
@@ -1170,7 +1178,7 @@ export function createEngine(deps: EngineDeps): Engine {
               }) + "\n"
             : url + "\n"
         appendFileSync(file, line)
-        if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
+        if (cfg.announceStderr !== "off" && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true
           lastUrlFile = file
           log(`url file: ${file}`)
@@ -1237,7 +1245,7 @@ export function createEngine(deps: EngineDeps): Engine {
       const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st) }
       if (st.opts?.ttlHours) attach.ttlHours = st.opts.ttlHours
       const sent = wsSend(r, { op: "init", attach })
-      if (sent) log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`)
+      if (sent) logStatus(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`)
     }
   }
 

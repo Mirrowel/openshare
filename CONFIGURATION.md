@@ -135,7 +135,7 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `configSet` | `""` | Which named config set on the server token this client uses (unset = the token's first/default set). Rides every create frame |
 | `urlFileFormat` | `"url"` | Line format: `url` = one bare URL per line; `json` = one JSON object per line (`{"id","url","status","gated"}`) for CI consumers that parse fields instead of URLs |
 | `meta` | - | Free-form string labels (max 20 keys, 64-char names, 500-char values) stamped onto every share at create; shown in the server's admin shares listing. Values may reference env vars as `${NAME}` - resolved when the share is created; unresolved refs stay literal so misconfiguration is visible |
-| `announceStderr` | `true` | `false` silences the `[openshare] live:` and `url file:` stderr lines (errors still print; the TUI carries the URL) |
+| `announceStderr` | `all` | Stderr ladder for the informational `[openshare]` lines: `all` = announce lines (`live:`, `url file:`) + status lines (mode banner, enrollment, adoption notes); `url` = announce lines only (clean CI logs, the share URL stays scrapeable); `off` = no info lines. Error-class lines always print; legacy `true`/`false` values coerce to `all`/`off` |
 | `shareMode` | presence-detected | `all` = every session auto-shares (the CI shape); `manual` = explicit `/share` with per-share consent. Unset → presence detection: an openshare TUI entry in any `tui.json` layer (global, `OPENCODE_TUI_CONFIG`, project chain) = manual, none = all. Detection is read-only; the plugin never writes `tui.json`. Fixed at process start |
 
 Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_DEBOUNCE_MS`, `OPENSHARE_COMPLETED_DELAY_MS`, `OPENSHARE_MODEL_LABEL`, `OPENSHARE_TTL_HOURS` (legacy `OPENSHARE_TTL_DAYS`), `OPENSHARE_CONFIG_SET`, `OPENSHARE_AUTH_LOGIN`, `OPENSHARE_AUTH_PASSWORD`, `OPENSHARE_URL_FILE`, `OPENSHARE_URL_FILE_FORMAT`, `OPENSHARE_SPOOL_DIR`, `OPENSHARE_ANNOUNCE_STDERR`, `OPENSHARE_SHARE_MODE`.
@@ -146,7 +146,7 @@ Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_
 
 ```jsonc
 // CI: watched runs — near-real-time, everything to the url file
-{ "shareMode": "all", "debounceMs": 5000, "announceStderr": true }
+{ "shareMode": "all", "debounceMs": 5000, "announceStderr": "url" }
 
 // Default: interactive with TUI — manual sharing, standard cadence
 { "shareMode": "manual", "debounceMs": 10000 }

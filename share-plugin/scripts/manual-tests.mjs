@@ -394,6 +394,10 @@ try {
       const r = await httpGet(`${WORKER_URL}/api/share/${boundId}/data`)
       return r.ok && (await r.json()).status === "completed"
     }, "S8 setup: bound share completes")
+    // stderr ladder, default position ("all"): the status/banner lines and
+    // the announce lines all print in all-mode (this serve runs default env)
+    const s8Out = preServe1.output()
+    check("S8: default ladder prints banner + live:", /\[openshare\] share mode: /.test(s8Out) && /\[openshare\] live: /.test(s8Out), s8Out.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 3).join(" | "))
     // NOTE: serve is deliberately NOT restarted between the bound-session
     // setup and the dormancy/resume assertions below (restart-attach is
     // S5's contract; merging the two serves saves a full spawn cycle)
@@ -581,6 +585,9 @@ try {
     const stServe = await startServe({ name: "status", path: PKG }, stSandbox, stProject, {
       OPENSHARE_URL_FILE: stUrlFile,
       OPENSHARE_COMPLETED_DELAY_MS: "8000",
+      // stderr ladder, "url" rung: announce lines stay, status/banner lines
+      // drop (the CI shape: clean logs, scrapeable share URL)
+      OPENSHARE_ANNOUNCE_STDERR: "url",
     })
     try {
       const stsid = await createAndPrompt(stServe, "status debounce")
@@ -601,6 +608,11 @@ try {
       check("S10: status still live inside the debounce window", mid.status === "live", `status=${mid.status}`)
       const done = await waitForShareData(stid, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: completed after the window (8s)")
       check("S10: settles to completed after the delay", done.status === "completed")
+
+      // ladder at "url": announce lines present, banner/status lines absent
+      const stOut = stServe.output()
+      check("S10: ladder url keeps the live: announce", stOut.includes("[openshare] live: "), stOut.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 3).join(" | "))
+      check("S10: ladder url drops the mode banner", !stOut.includes("[openshare] share mode:"), stOut.split("\n").filter((l) => l.includes("share mode")).slice(0, 2).join(" | "))
 
       // dispose-flush: a GRACEFUL process exit while the 8s pending timer
       // is armed must still land the final completed (the `opencode run`
