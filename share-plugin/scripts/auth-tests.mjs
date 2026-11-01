@@ -780,6 +780,50 @@ try {
     await req(W1, "DELETE", `/api/share/${SID34}`, { body: { secret: SECRET34 } })
   }
 
+  // T37 — token editing + rotation overrides: rotate may relabel/re-scope
+  // and keeps sets; POST /api/token/update and PATCH /api/admin/tokens/:id
+  // rename/re-limit tokens; scoped edits only itself (label, never limits)
+  {
+    const u37 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t37" } })
+    const f37 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u37.json?.userId, label: "orig", sets: { main: { modelLabel: "keep-me" } } } })
+    const T37 = f37.json?.token
+    const sc37 = await req(W1, "POST", "/api/token", { token: T37, body: { kind: "scoped", label: "scoped-a" } })
+    const SC37 = sc37.json?.token
+    // rotate with label+limits override; sets must survive
+    const rot37 = await req(W1, "POST", "/api/token/rotate", { token: T37, body: { label: "relabeled", limits: { maxLiveShares: 4 } } })
+    ok("T37 rotate relabels + returns the label", rot37.json?.ok === true && rot37.json?.label === "relabeled", JSON.stringify(rot37.json))
+    ok("T37a rotate applies the limit override", rot37.json?.limits?.maxLiveShares === 4, JSON.stringify(rot37.json?.limits))
+    const sets37 = await req(W1, "GET", "/api/token/sets", { token: rot37.json?.token })
+    ok("T37b rotation preserves sets", Object.keys(sets37.json?.sets ?? {}).includes("main"), JSON.stringify(sets37.json))
+    // self-update: rename the bearer itself
+    const upSelf = await req(W1, "POST", "/api/token/update", { token: rot37.json?.token, body: { label: "renamed-self" } })
+    ok("T37c self rename", upSelf.json?.ok === true && upSelf.json?.token?.label === "renamed-self", JSON.stringify(upSelf.json))
+    // full bearer renames + re-limits its own scoped token
+    const rows37 = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const scId37 = rows37.find((t) => t.userId === u37.json?.userId && t.kind === "scoped" && !t.revoked)?.id
+    const upScoped = await req(W1, "POST", "/api/token/update", { token: rot37.json?.token, body: { tokenId: scId37, label: "ci-renamed", limits: { dailyCreates: 3 } } })
+    ok("T37d full edits its scoped token", upScoped.json?.ok === true && upScoped.json?.token?.label === "ci-renamed" && upScoped.json?.token?.limits?.dailyCreates === 3, JSON.stringify(upScoped.json))
+    // scoped edits itself: label ok, limits refused
+    const scSelfLabel = await req(W1, "POST", "/api/token/update", { token: SC37, body: { label: "self-renamed" } })
+    ok("T37e scoped renames itself", scSelfLabel.json?.ok === true && scSelfLabel.json?.token?.label === "self-renamed", JSON.stringify(scSelfLabel.json))
+    const scSelfLim = await req(W1, "POST", "/api/token/update", { token: SC37, body: { limits: { maxLiveShares: 99 } } })
+    ok("T37f scoped cannot change its own limits", scSelfLim.status === 403, JSON.stringify(scSelfLim.json))
+    // scoped cannot edit a sibling token; scoped rotation cannot re-scope itself
+    const sib = await req(W1, "POST", "/api/token", { token: rot37.json?.token, body: { kind: "scoped", label: "scoped-b" } })
+    const sibRow = ((await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []).find((t) => t.label === "scoped-b")
+    const scOther = await req(W1, "POST", "/api/token/update", { token: SC37, body: { tokenId: sibRow?.id, label: "hijack" } })
+    ok("T37g scoped cannot edit siblings", scOther.status === 403, JSON.stringify(scOther.json))
+    const scRotLim = await req(W1, "POST", "/api/token/rotate", { token: SC37, body: { limits: { maxLiveShares: 99 } } })
+    ok("T37h scoped rotation cannot raise limits", scRotLim.status === 403, JSON.stringify(scRotLim.json))
+    // admin PATCH renames any token
+    const admin37 = await req(W1, "PATCH", `/api/admin/tokens/${sibRow?.id}`, { token: CREATE_TOKEN, body: { label: "admin-renamed" } })
+    ok("T37i admin PATCH renames", admin37.json?.ok === true && admin37.json?.token?.label === "admin-renamed", JSON.stringify(admin37.json))
+    // revoked tokens refuse edits
+    await req(W1, "DELETE", `/api/admin/tokens/${sibRow?.id}`, { token: CREATE_TOKEN })
+    const upDead = await req(W1, "PATCH", `/api/admin/tokens/${sibRow?.id}`, { token: CREATE_TOKEN, body: { label: "nope" } })
+    ok("T37j revoked token refuses edits", upDead.status === 400, JSON.stringify(upDead.json))
+  }
+
   // T35 — B4 token config sets: named sets on one token; Class A applies
   // at create server-side (never transported); Class B fetch is safe
   {

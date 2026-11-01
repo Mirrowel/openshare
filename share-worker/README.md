@@ -264,7 +264,22 @@ explicit value always wins).
 Self-service: `GET /api/me`, `GET /api/me/shares`,
 `GET`/`PUT /api/me/settings` (full tokens only), `POST /api/token`
 (self-mint full/scoped; full tokens only), `POST /api/token/rotate`,
-`DELETE /api/token` (self-revoke). **Revocation freezes control**: when a
+`POST /api/token/update` (rename/re-limit a token; see below),
+`DELETE /api/token` (self-revoke).
+
+`POST /api/token/rotate {label?, limits?}` — the successor keeps the
+token's class, named config sets, and (unless overridden) label and
+limits; a scoped rotation transfers its shares to the successor. A scoped
+token rotating itself may override `label` but never `limits` (they are
+the restriction its minter imposed).
+
+`POST /api/token/update {tokenId?, label?, limits?}` — edit a token in
+place: rename, change limits. A full token edits any of its own user's
+tokens (scoped included); a scoped token edits only itself, label only.
+Omitting `tokenId` targets the bearer itself. Class, user, and revocation
+state never change here (rotate or revoke are the lifecycle moves).
+
+**Revocation freezes control**: when a
 user's last valid FULL token is revoked (self or admin) — or they all
 expire —
 every share that user created turns read-only for EVERYONE holding its
@@ -282,7 +297,9 @@ Admin API (Bearer `CREATE_TOKEN`):
 - `DELETE /api/admin/users/:id {mode?}` — default freezes; `{"mode":
   "delete"}` also removes every share and token
 - `POST /api/admin/tokens {userId, label?, limits?, kind?}` · `GET
-  /api/admin/tokens` · `DELETE /api/admin/tokens/:id`
+  /api/admin/tokens` · `DELETE /api/admin/tokens/:id` ·
+  `PATCH /api/admin/tokens/:id {label?, limits?}` (rename/re-limit any
+  token)
   - `POST /api/admin/tokens/:id/freeze-shares` — bulk-freeze just the
     shares that token created (scoped blast radius without touching the
     owner's other shares; rotation never does this)
@@ -355,6 +372,8 @@ title/version/model.
   server-side),
   `POST /api/share/:id/sync` (secret or Bearer owner token; bodies over
   8 MB are refused before parsing),
+  `POST /api/share/:id/auth {login, password}` (viewer login for a gated
+  share; rate-limited, returns the 7-day session cookie),
   `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
   when `since >= rev` (unchanged, or the server rewound/recreated — the
   client prunes), only the items touched since when `since < rev`),

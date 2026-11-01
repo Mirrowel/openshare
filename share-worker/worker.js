@@ -309,7 +309,13 @@ export default {
         return json(r.status, r.body)
       }
       if (path === "/api/token/rotate" && req.method === "POST") {
-        const r = await authCall(env, "/rotate", { token: bearer(req) })
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/rotate", { ...body, token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token/update" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/token-update-self", { token: bearer(req), ...body })
         return json(r.status, r.body)
       }
       if (path === "/api/token" && req.method === "DELETE") {
@@ -353,6 +359,7 @@ export default {
         if (path === "/api/admin/tokens" && req.method === "GET") return json(...(await call("/tokens-get")))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/token-revoke:" + m[1])))
+        if (m && req.method === "PATCH") return json(...(await call("/token-update:" + m[1])))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/sets$/)
         if (m && req.method === "PUT") return json(...(await call("/token-sets-admin:" + m[1])))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/freeze-shares$/)
@@ -2233,6 +2240,8 @@ export class AuthDO {
         case "/user-delete": return json(...(await this.userDelete(param, body)))
         case "/token-mint": return json(...(await this.tokenMint(body)))
         case "/token-self-mint": return json(...(await this.tokenSelfMint(body)))
+        case "/token-update": return json(...(await this.tokenUpdate(param, body)))
+        case "/token-update-self": return json(...(await this.tokenUpdateSelf(body)))
         case "/token-sets-get": return json(...(await this.tokenSetsGet(body)))
         case "/token-sets-put": return json(...(await this.tokenSetsPut(body)))
         case "/token-sets-admin": return json(...(await this.tokenSetsAdmin(param, body)))
@@ -2485,16 +2494,31 @@ export class AuthDO {
   async rotate(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    // limits are a restriction the minter imposed: a scoped token rotating
+    // itself cannot raise them (label rename is fine)
+    if (chk.tokenKind === "scoped" && body?.limits !== undefined) {
+      return [403, { ok: false, error: "scoped tokens cannot change their own limits" }]
+    }
     const t = chk.token
     t.revokedAt = Date.now()
     await this.state.storage.put("t:" + t.hash, t)
     // successor keeps the class: rotating a scoped token yields a scoped
-    // token (service credential), rotating a full token a full one
-    const fresh = await this.mint(t.userId, t.label, t.limits, t.kind === "scoped" ? "scoped" : "full")
+    // token (service credential), rotating a full token a full one.
+    // Optional label/limits overrides ride the rotation (unset = keep the
+    // current values); sets always carry over - a rotated credential must
+    // not silently lose its named configs
+    const fresh = await this.mint(
+      t.userId,
+      body?.label !== undefined ? body.label : t.label,
+      body?.limits !== undefined ? this.normLimits(body.limits) : t.limits,
+      t.kind === "scoped" ? "scoped" : "full",
+    )
+    const sets = t.sets ?? {}
+    if (Object.keys(sets).length) { fresh.rec.sets = sets; await this.state.storage.put("t:" + fresh.rec.hash, fresh.rec) }
     // SCOPED authority is keyed by creatorTokenId: transfer the old
     // token's shares to the successor or rotation orphans its own pages
     if (t.kind === "scoped") await this.transferCreator(t.id, fresh.rec.id)
-    return [200, { ok: true, token: fresh.value, userId: t.userId, tokenKind: fresh.rec.kind }]
+    return [200, { ok: true, token: fresh.value, userId: t.userId, tokenKind: fresh.rec.kind, label: fresh.rec.label, limits: fresh.rec.limits }]
   }
 
   /** Re-point a retiring scoped token's shares at its successor: registry
@@ -2824,6 +2848,44 @@ export class AuthDO {
     await this.state.storage.put("t:" + t.hash, t)
     const frozen = await this.freezeIfNoValidTokens(t.userId)
     return [200, { ok: true, frozen }]
+  }
+
+  /** Edit a token's label and limits (rename, re-scope). Class, user and
+   *  revocation state never change here - rotating or revoking are the
+   *  lifecycle moves. Authority: a full token edits ANY of its own user's
+   *  tokens (scoped included); a scoped token edits only itself.
+   *  The admin route passes any tokenId with no bearer. */
+  async tokenUpdate(tokenId, body) {
+    if (!tokenId) return [400, { ok: false, error: "token id required" }]
+    const bearerChk = body?.token ? await this.checkToken(String(body.token)) : null
+    const tokens = await this.listPrefix("t:")
+    const t = tokens.find((x) => x.id === tokenId)
+    if (!t) return [404, { ok: false, error: "no such token" }]
+    if (t.revokedAt) return [400, { ok: false, error: "token is revoked" }]
+    if (bearerChk) {
+      if (bearerChk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+      const mine = t.userId === bearerChk.userId
+      const self = t.id === bearerChk.token?.id
+      if (!mine || (bearerChk.tokenKind === "scoped" && !self)) {
+        return [403, { ok: false, error: bearerChk.tokenKind === "scoped" ? "scoped tokens can only edit themselves" : "not your token" }]
+      }
+      // self-escalation guard: a scoped token may rename itself but never
+      // lift its own limits
+      if (bearerChk.tokenKind === "scoped" && body?.limits !== undefined) {
+        return [403, { ok: false, error: "scoped tokens cannot change their own limits" }]
+      }
+    }
+    if (body?.label !== undefined) t.label = String(body.label).slice(0, 64)
+    if (body?.limits !== undefined) t.limits = this.normLimits(body.limits)
+    await this.state.storage.put("t:" + t.hash, t)
+    return [200, { ok: true, token: this.tokenView(t) }]
+  }
+
+  async tokenUpdateSelf(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    const id = body.tokenId && String(body.tokenId) !== chk.token.id ? String(body.tokenId) : chk.token.id
+    return this.tokenUpdate(id, { ...body, token: body.token })
   }
 
   async codeCreate(body) {

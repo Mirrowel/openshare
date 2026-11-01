@@ -304,7 +304,7 @@ function ttlHoursOf(row: ShareRow): number {
 
 // --- identity ----------------------------------------------------------------
 
-type TokenRow = { id: string; hash: string; userId: string; label: string; limits: string; createdAt: number; lastUsedAt: number; revokedAt: number; expiresAt: number; kind?: string }
+type TokenRow = { id: string; hash: string; userId: string; label: string; limits: string; createdAt: number; lastUsedAt: number; revokedAt: number; expiresAt: number; kind?: string; sets?: string }
 
 function defaultLimits() {
   const num = (v: unknown) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0 }
@@ -726,7 +726,14 @@ async function httpHandler(req: Request): Promise<Response> {
   if (path === "/api/me" && req.method === "GET") return meRoute(bearer(req))
   if (path === "/api/me/settings" && (req.method === "GET" || req.method === "PUT")) return settingsRoute(bearer(req), await bodyJson(req))
   if (path === "/api/me/shares" && req.method === "GET") return meSharesRoute(bearer(req))
-  if (path === "/api/token/rotate" && req.method === "POST") return rotateRoute(bearer(req))
+  if (path === "/api/token/rotate" && req.method === "POST") return rotateRoute(await bodyJson(req), bearer(req))
+  if (path === "/api/token/update" && req.method === "POST") {
+    const body = await bodyJson(req)
+    const chk = await checkToken(bearer(req))
+    if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+    const id = body.tokenId && String(body.tokenId) !== chk.token.id ? String(body.tokenId) : chk.token.id
+    return tokenUpdateRoute(id, body, bearer(req))
+  }
   if (path === "/api/token" && req.method === "POST") return tokenSelfMintRoute(await bodyJson(req), bearer(req))
   if (path === "/api/token/sets" && req.method === "GET") return tokenSetsGetRoute(bearer(req))
   if (path === "/api/token/sets" && req.method === "PUT") return tokenSetsPutRoute(await bodyJson(req), bearer(req))
@@ -1095,16 +1102,51 @@ async function meSharesRoute(token: string): Promise<Response> {
   return json(200, { ok: true, shares: rows })
 }
 
-async function rotateRoute(token: string): Promise<Response> {
+async function rotateRoute(body: Record<string, unknown>, token: string): Promise<Response> {
   const chk = await checkToken(token)
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+  // limits are a restriction the minter imposed: a scoped token rotating
+  // itself cannot raise them (label rename is fine)
+  if (chk.tokenKind === "scoped" && body.limits !== undefined) return json(403, { ok: false, error: "scoped tokens cannot change their own limits" })
   db.query("UPDATE tokens SET revokedAt = ? WHERE id = ?").run(Date.now(), chk.token.id)
-  // successor keeps the class (rotating scoped yields scoped); a scoped
-  // rotation TRANSFERS its shares to the successor, or rotation would
-  // orphan the very pages it created (creatorTokenId is the scope key)
-  const fresh = await mint(chk.userId, chk.token.label, JSON.parse(chk.token.limits), chk.token.kind === "scoped" ? "scoped" : "full")
+  // successor keeps the class (rotating scoped yields scoped); optional
+  // label/limits overrides ride the rotation, unset = keep current; sets
+  // always carry over - a rotated credential must not lose its named
+  // configs. A scoped rotation TRANSFERS its shares to the successor, or
+  // rotation would orphan the very pages it created (creatorTokenId is
+  // the scope key)
+  const label = body.label !== undefined ? String(body.label).slice(0, 64) : chk.token.label
+  const limits = body.limits !== undefined ? normLimits(body.limits) : JSON.parse(chk.token.limits)
+  const fresh = await mint(chk.userId, label, limits, chk.token.kind === "scoped" ? "scoped" : "full")
+  if (Object.keys(chk.sets ?? {}).length) db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(chk.sets), fresh.id)
   if (chk.token.kind === "scoped") db.query("UPDATE shares SET creatorTokenId = ? WHERE creatorTokenId = ?").run(fresh.id, chk.token.id)
-  return json(200, { ok: true, token: fresh.value, userId: chk.userId, tokenKind: fresh.kind })
+  return json(200, { ok: true, token: fresh.value, userId: chk.userId, tokenKind: fresh.kind, label, limits })
+}
+
+/** Edit a token's label and limits (rename, re-scope). Class, user and
+ *  revocation state never change here. Authority: a full token edits ANY
+ *  of its own user's tokens (scoped included); a scoped token edits only
+ *  itself, and never its own limits. No bearer = admin route. */
+async function tokenUpdateRoute(tokenId: string, body: Record<string, unknown>, bearerToken: string): Promise<Response> {
+  const row = db.query("SELECT * FROM tokens WHERE id = ?").get(tokenId) as TokenRow | undefined
+  if (!row) return json(404, { ok: false, error: "no such token" })
+  if (row.revokedAt) return json(400, { ok: false, error: "token is revoked" })
+  if (bearerToken) {
+    const chk = await checkToken(bearerToken)
+    if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
+    const mine = row.userId === chk.userId
+    const self = row.id === chk.token.id
+    if (!mine || (chk.tokenKind === "scoped" && !self)) {
+      return json(403, { ok: false, error: chk.tokenKind === "scoped" ? "scoped tokens can only edit themselves" : "not your token" })
+    }
+    if (chk.tokenKind === "scoped" && body.limits !== undefined) {
+      return json(403, { ok: false, error: "scoped tokens cannot change their own limits" })
+    }
+  }
+  const label = body.label !== undefined ? String(body.label).slice(0, 64) : row.label
+  const limits = body.limits !== undefined ? JSON.stringify(normLimits(body.limits)) : row.limits
+  db.query("UPDATE tokens SET label = ?, limits = ? WHERE id = ?").run(label, limits, tokenId)
+  return json(200, { ok: true, token: { id: tokenId, label, limits: JSON.parse(limits), kind: row.kind === "scoped" ? "scoped" : "full", createdAt: row.createdAt, lastUsedAt: row.lastUsedAt, expiresAt: row.expiresAt } })
 }
 
 /** Self-service mint (worker parity): only FULL tokens may mint; scoped
@@ -1265,6 +1307,7 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
     const frozen = row ? freezeIfNoValidTokens(row.userId) : false
     return json(200, { ok: true, frozen })
   }
+  if (m && req.method === "PATCH") return tokenUpdateRoute(m[1], body, "")
   if (path === "/api/admin/codes" && req.method === "POST") {
     const activations = Math.floor(Number(body.activations))
     const left = Number.isFinite(activations) && activations >= 1 ? activations : -1
