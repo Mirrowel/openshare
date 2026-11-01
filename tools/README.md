@@ -2,7 +2,9 @@
 
 Small standalone utilities around the share ecosystem. Nothing here is needed to run the plugin or the worker - these are local conveniences.
 
-The two snapshot tools are the important ones: they turn a session into **one portable HTML file** that opens offline in any browser, with no server, no account and no install. `osh-snapshot.mjs` does it for a live share (CI friendly); `osh-snapshot-local.mjs` does it from a plain `opencode export`, with no share and no network at all. `osh-session.mjs` converts between a share, an `opencode export` and `opencode import`.
+The two snapshot tools are the important ones: they turn a session into **one portable HTML file** that opens offline in any browser, with no server, no account and no install. `osh-snapshot.mjs` does it for a live share (CI friendly); `osh-snapshot-local.mjs` does it from a plain `opencode export`, with no share and no network at all. `osh-session.mjs` converts between a share, an `opencode export` and `opencode import`. The snapshot packing itself lives in `snapshot-builder.mjs` next to the tools; the tools are self-contained inside this folder.
+
+Every GitHub release also carries three artifacts: `viewer-dist-<version>.zip` (the built viewer — snapshot tooling without a local build), `openshare-ci-<version>.js` (the single-file CI plugin), and `mirrowel-opencode-openshare-<version>.tgz` (the npm package archive, byte-identical to the registry tarball).
 
 ## osh-snapshot-local.mjs
 
@@ -18,7 +20,9 @@ node tools/osh-snapshot-local.mjs main.json child.json --viewer share-viewer/dis
 ```
 
 Requires a built viewer (`cd share-viewer && npm run build`) because it packs
-that build into the file. The conversion is the interchange tool's, so the
+that build into the file — or unzip a release's `viewer-dist-<version>.zip`
+and pass it as `--viewer <dir>` when there is no checkout to build. The
+conversion is the interchange tool's, so the
 page renders exactly like a share of the same session; the header reads
 `snapshot` instead of the share status.
 ## osh-snapshot.mjs

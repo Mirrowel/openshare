@@ -246,8 +246,9 @@ node tools/osh-snapshot.mjs https://<host>/s/<id> -o session.html
 node tools/osh-snapshot-local.mjs main.json child.json -o session.html
 ```
 
-The third path needs only this repo's built viewer
-(`cd share-viewer && npm run build`), so a session you exported months ago
+The third path needs a built viewer - either `cd share-viewer && npm run
+build`, or a release's `viewer-dist-<version>.zip` unzipped and passed as
+`--viewer <dir>` - so a session you exported months ago
 becomes a portable page with nothing else involved. The server endpoint
 (`GET /s/<id>/snapshot`) exists too and is off by default: assembling it
 inside the worker costs one subrequest per asset, which the free plan does
