@@ -108,7 +108,7 @@ function envSnapshots(env) {
   return String(env?.SNAPSHOT_ENDPOINT ?? "") === "1"
 }
 // GET /api/share/:id/snapshot - ONE self-contained HTML file: the viewer
-// bundle and every chunk it can reach inlined (see og/snapshot.js), the
+// bundle and every chunk it can reach inlined (see tools/snapshot-builder.mjs), the
 // share frozen as a JSON island. Opens offline in any browser; a
 // point-in-time record that outlives the deployment. Read gate applies
 // exactly as /data: a gated share demands a satisfied viewer session.
@@ -188,7 +188,7 @@ async function serveOgIndex(req, env, url) {
 }
 
 import { renderOgPng } from "./og/og-card.js"
-import { buildSnapshotHtml } from "./og/snapshot.js"
+import { buildSnapshotHtml } from "../tools/snapshot-builder.mjs"
 
 // OG card render cache: PNG bytes per share at its rev (bounded LRU-ish;
 // the ?v=<rev> URL makes crawler caches self-busting anyway)

@@ -1371,7 +1371,7 @@ function htmlEscape(s: string): string {
 // per-share OG card renderer shared with the worker (satori + resvg-wasm;
 // Bun imports the wasm module natively)
 import { renderOgPng } from "../share-worker/og/og-card.js"
-import { buildSnapshotHtml } from "../share-worker/og/snapshot.js"
+import { buildSnapshotHtml } from "../tools/snapshot-builder.mjs"
 
 const ogPngCache = new Map<string, { rev: number; bytes: Uint8Array }>()
 

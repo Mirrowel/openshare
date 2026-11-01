@@ -1,6 +1,6 @@
 // Build the offline snapshot ENTIRELY in the browser: fetch the live
 // envelope, then fetch the page's own assets and inline them (the same
-// bundling rules as the server endpoint - see share-worker/og/snapshot.js).
+// bundling rules as the server endpoint - see tools/snapshot-builder.mjs).
 // Browser-side generation exists because a Cloudflare isolate allows 50
 // subrequests per invocation on the free plan (10,000 paid), far below the
 // ~1500 files a snapshot needs; the browser has no such cap. The CLI
@@ -38,7 +38,7 @@ async function fetchEnvelope(shareID: string): Promise<Envelope> {
  */
 export async function downloadSnapshot(shareID: string, branding: Branding): Promise<void> {
   const envelope = await fetchEnvelope(shareID)
-  const { buildSnapshotHtml } = await import("../../share-worker/og/snapshot")
+  const { buildSnapshotHtml } = await import("../../tools/snapshot-builder.mjs")
   const html = await (await fetch("/index.html", { cache: "force-cache" })).text()
   const island = JSON.stringify({ ...envelope, branding }).replace(/</g, "\\u003c")
   const out = await buildSnapshotHtml({

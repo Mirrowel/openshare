@@ -19,7 +19,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { envelopeFromExports } from "./osh-session.mjs"
-import { buildSnapshotHtml } from "../share-worker/og/snapshot.js"
+import { buildSnapshotHtml } from "./snapshot-builder.mjs"
 
 const here = resolve(fileURLToPath(new URL("..", import.meta.url)))
 

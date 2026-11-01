@@ -10,7 +10,7 @@
 // unlimited on Cloudflare), so this needs no worker CPU and never touches
 // the per-invocation subrequest cap the server-side endpoint has. The
 // assembly is the same code the worker and the viewer's download button
-// run (share-worker/og/snapshot.js).
+// run (tools/snapshot-builder.mjs).
 //
 // A gated share needs credentials: --login posts them to /api/share/<id>/auth
 // and keeps the returned cookie, --token sends a viewer token as a bearer.
@@ -18,7 +18,7 @@
 
 import { writeFileSync } from "node:fs"
 import { basename } from "node:path"
-import { buildSnapshotHtml } from "../share-worker/og/snapshot.js"
+import { buildSnapshotHtml } from "./snapshot-builder.mjs"
 
 const USAGE = `usage: osh-snapshot <share-url> [-o out.html] [--login user:pass | --token <viewer-token>]
 
