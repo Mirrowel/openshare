@@ -134,8 +134,12 @@ const RUN_PUBLIC = SHARD === "all" || SHARD === "public"
 try {
   llm = await startMockLLM()
   if (RUN_A || RUN_B) {
-    if (RUN_A) worker = await startBackend(suiteDir, { configSuffix: "enroll", name: "enroll-b1" })
-    if (RUN_B) workerB = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "enroll-b", name: "enroll-bb" })
+    // both private workers boot concurrently - chains can't start until
+    // their own worker answers, but the boots themselves don't serialize
+    const bootA = RUN_A ? startBackend(suiteDir, { configSuffix: "enroll", name: "enroll-b1" }) : undefined
+    const bootB = RUN_B ? startBackend(suiteDir, { port: B2_PORT, configSuffix: "enroll-b", name: "enroll-bb" }) : undefined
+    worker = await bootA
+    workerB = await bootB
     console.log("workers ready (private)")
     const WB_URL = `http://127.0.0.1:${B2_PORT}`
 
@@ -220,7 +224,7 @@ try {
         await stopServe(s)
         s = await startServe(variant("reenroll3", opts(WB_URL, { code: codeB })), sandbox, project, envB, SERVE_PORT + 10)
         await createAndPrompt(s, "enroll blocked path")
-        await sleep(5000) // ample at a 300ms debounce: any (wrong) share would already exist
+        await sleep(2500) // at a 300ms debounce any (wrong) share or enroll would already exist
         const shares4 = (await adminB("GET", "/api/admin/shares")).json?.shares ?? []
         check("P4 no share created", shares4.length === 2, `shares=${shares4.length}`)
         check("P4 no new user", ((await adminB("GET", "/api/admin/users")).json?.users ?? []).length === 2)

@@ -153,7 +153,7 @@ try {
   const urlFile = join(sandbox, "share-url.txt")
 
   const variant = { name: "manual", path: PKG }
-  const serve = await startServe(variant, sandbox, projectDir, { OPENSHARE_DEBUG_FILE: join(sandbox, "debug.json") })
+  const serve = await startServe(variant, sandbox, projectDir, { OPENSHARE_DEBUG_FILE: join(sandbox, "debug.json"), OPENSHARE_DEBOUNCE_MS: "300" })
 
   let sid
   let shareId
@@ -161,7 +161,9 @@ try {
   try {
     // S1: dormancy — a full session+prompt cycle with the TUI present
     sid = await createAndPrompt(serve, "manual mode dormancy")
-    await sleep(4000) // give any (wrong) share creation time to surface
+    // at a 300ms debounce, 1.5s is five flush windows: a wrong share would
+    // have long since surfaced
+    await sleep(1500)
     try {
       console.log("plugin debug:", readFileSync(join(sandbox, "debug.json"), "utf8"))
     } catch {
@@ -667,10 +669,11 @@ try {
       const retried = await waitForShareData(retryId, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: recovered retry ends completed")
       check("S10: recovered 429 retry -> completed (not error)", retried.status === "completed", `status=${retried.status}`)
 
-      // terminal error path: mock LLM hard-fails every request; opencode
-      // retries with backoff (~68s for 5 attempts) and the turn dies as
-      // an assistant message with finish:"error" (a 200, not session.error);
-      // the share must still say error
+      // terminal error path: mock LLM hard-fails every request with a
+      // NON-retryable 4xx (a 5xx would ride opencode's own retry ladder,
+      // 2+4+8+16+32s); the turn dies immediately as an assistant message
+      // with finish:"error" (a 200, not session.error); the share must
+      // still say error
       const linesBeforeFail = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
       {
         const created = await httpGet(`${stServe.base}/session`, {

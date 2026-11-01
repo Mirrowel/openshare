@@ -14,8 +14,10 @@ import {
   waitFor,
   httpGet,
   killWranglerSuites,
+  killPortOwners,
   startMockLLM,
   startWorker,
+  startBunServer,
   startServe,
   stopServe,
   bindingUrlOf,
@@ -115,12 +117,20 @@ const opts = (extra = {}) => ({
 let worker1, worker2, llm, serve
 try {
   llm = await startMockLLM()
-  worker1 = await startWorker(suiteDir, { configSuffix: "f1" })
-  worker2 = await startWorker(suiteDir, { port: W2_PORT, configSuffix: "f2" })
+  // server2 runs the portable Bun backend: the ENGINE under test is
+  // backend-agnostic, the boot is ~2s instead of ~10s, and it gives the
+  // matrix standing mixed-backend fan-out coverage (wrangler + bun);
+  // both boots run concurrently (they share no state)
+  const [w1, w2] = await Promise.all([
+    startWorker(suiteDir, { configSuffix: "f1" }),
+    startBunServer(suiteDir, { port: W2_PORT, name: "f2", createToken: CREATE_TOKEN }),
+  ])
+  worker1 = w1
+  worker2 = w2
   console.log("both workers ready")
 
   // ---- F1: both servers receive the session --------------------------------
-  serve = await startServe({ name: "fanout", path: PKG, options: opts() }, suiteDir, projectDir, { OPENSHARE_URL_FILE: urlFile, OPENSHARE_DEBOUNCE_MS: "300" })
+  serve = await startServe({ name: "fanout", path: PKG, options: opts() }, suiteDir, projectDir, { OPENSHARE_URL_FILE: urlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_COMPLETED_DELAY_MS: "300" })
   const sid = await createAndPrompt(serve, "fanout turn one")
   await waitFor(async () => {
     const s = await (await httpGet(`${serve.base}/session/${sid}`)).json()
@@ -175,7 +185,7 @@ try {
     servers: { [WORKER_URL]: { token: CREATE_TOKEN, active: true } },
   }
   await stopServe(serve)
-  serve = await startServe({ name: "late", path: PKG, options: lateOpts }, serve3sandbox, join(serve3sandbox, "project"), { OPENSHARE_URL_FILE: lateUrlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_DEBUG_EVENTS: "1" })
+  serve = await startServe({ name: "late", path: PKG, options: lateOpts }, serve3sandbox, join(serve3sandbox, "project"), { OPENSHARE_URL_FILE: lateUrlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_COMPLETED_DELAY_MS: "300", OPENSHARE_DEBUG_EVENTS: "1" })
   const lateSid = await createAndPrompt(serve, "late join turn one")
   await waitFor(() => urlLines(lateUrlFile).length >= 1, "F3: first share (server1 only)", 45000)
   const before2 = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
@@ -184,7 +194,9 @@ try {
   // activate server2 through the settings home (exactly what the TUI does)
   const homeCfg = join(serve3sandbox, "xdg", "opencode", "openshare.config.json")
   writeFileSync(homeCfg, JSON.stringify({ servers: { [W2_URL]: { token: CREATE_TOKEN, active: true } } }, null, 2))
-  await sleep(7000) // engine target refresh (throttled to 5s) + connect
+  // deterministic signal: the engine logs its fan-out adoption to stderr
+  // (target refresh is throttled to ~5s; poll instead of sleeping past it)
+  await waitFor(() => (serve.output().includes("fan-out set grew") ? true : undefined), "F3: engine adopted server2", 30000)
   await promptSession(serve, lateSid, "late join turn two")
   await waitFor(async () => {
     const shares = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
@@ -209,9 +221,23 @@ try {
     body: JSON.stringify({ metadata: { ...sMeta.metadata, openshare: opted } }),
   })
   const sharesBeforeOptOut = (await adminList(W2_URL, "/api/admin/shares")).shares.length
-  await sleep(8000)
+  // the host's session.updated event carries the binding change to the
+  // engine immediately; retire+socket close is local (<1s) - a short
+  // margin beats the old fixed 8s
+  await sleep(3000)
+  const w1SharesPre = (await adminList(WORKER_URL, "/api/admin/shares")).shares ?? []
+  const w1LatePre = w1SharesPre.find((s) => s.sessionID === lateSid)
+  const w1MsgsBefore = ((await shareBody(WORKER_URL, w1LatePre?.id ?? w1SharesPre[0]?.id))?.data ?? []).filter((i) => i.type === "message").length
   await promptSession(serve, lateSid, "post opt-out turn")
-  await sleep(8000)
+  // positive signal first: server1 received the turn (deterministic poll)
+  await waitFor(async () => {
+    const body = await shareBody(WORKER_URL, w1LatePre?.id ?? w1SharesPre[0]?.id)
+    const msgs = (body?.data ?? []).filter((i) => i.type === "message").length
+    return msgs > w1MsgsBefore ? body : undefined
+  }, "F4: active server received the turn", 45000)
+  // negative grace: with a 300ms debounce a broken opt-out would have
+  // created/synced on server2 long before this point
+  await sleep(2500)
   const sharesAfterOptOut = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
   check("F4: opted-out server gets NO new share", sharesAfterOptOut.length === sharesBeforeOptOut, `${sharesBeforeOptOut} -> ${sharesAfterOptOut.length}`)
   const w1Shares = (await adminList(WORKER_URL, "/api/admin/shares")).shares ?? []
@@ -229,6 +255,14 @@ try {
     const out = serve?.output?.() ?? ""
     console.log(`--- serve [openshare] tail ---\n${out.split("\n").filter((l) => l.includes("[openshare]")).slice(-30).join("\n")}`)
   } catch {}
+  // backend output matters most on a crash: a died backend explains most
+  // "fetch failed" classes (the suite holds the only captured stderr)
+  for (const [name, w] of [["worker1", worker1], ["worker2(bun)", worker2]]) {
+    try {
+      const o = w?.output?.() ?? ""
+      if (o) console.log(`--- ${name} tail ---\n${o.split("\n").slice(-25).join("\n")}`)
+    } catch {}
+  }
 } finally {
   clearTimeout(watchdog)
   const keep = failures.length > 0
@@ -238,7 +272,7 @@ try {
   try { worker2?.kill() } catch {}
   await sleep(1500)
   killWranglerSuites(WORKER_PORT)
-  killWranglerSuites(W2_PORT)
+  killPortOwners(W2_PORT)
   if (!keep) {
     try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
   } else {

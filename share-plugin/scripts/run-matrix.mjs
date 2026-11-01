@@ -51,9 +51,15 @@ const waves = [
 
 const requested = process.argv.slice(2)
 // Explicit args = a curated one-wave run (npm run test:quick uses this);
-// no args = the full two-wave matrix.
+// no args = the full matrix.
+//
+// Quick-gate backend swap: the curated run is the LOCAL DEV LOOP, so
+// auth-tests rides the portable Bun server there (boots in ~2s, no
+// wrangler). The full matrix keeps wrangler - the production runtime -
+// so workerd/KV/DO parity is checked before every push.
+const QUICK_ENV = { "auth-tests": { OPENSHARE_BACKEND: "bun" } }
 const active = requested.length
-  ? [waves.flatMap((w) => w).filter((s) => requested.includes(s.name))]
+  ? [waves.flatMap((w) => w).filter((s) => requested.includes(s.name)).map((s) => ({ ...s, env: { ...s.env, ...(QUICK_ENV[s.name] ?? {}) } }))]
   : waves
 const needsShared = active.some((w) => w.some((s) => s.reuse))
 
@@ -117,26 +123,29 @@ try {
   let failed = null
   const timings = []
   // Bounded scheduler: launching every suite at once oversubscribes the
-  // machine (13 suites spawn ~40 processes; serves then time out and the
-  // wall grows). Suites run longest-first through a fixed-size window.
+  // machine (suites spawn workers + opencode serves; everything then
+  // inflates 20-60% and the wall grows). Suites run longest-first through
+  // a fixed-size window; 4 measured fastest (6 thrashes, 2-3 stretches
+  // into more sequential batches).
   const costs = {
-    "manual-core": 55,
-    "manual-allmode": 60,
-    "manual-engine1": 30,
-    "manual-engine2": 30,
-    "enroll-a": 35,
-    "enroll-b": 45,
-    "enroll-public": 35,
-    "fanout-tests": 55,
-    "auth-tests": 50,
-    "regression-tests": 35,
+    "manual-allmode": 110,
+    "fanout-tests": 105,
+    "manual-core": 60,
+    "auth-tests": 60,
+    "enroll-a": 55,
+    "enroll-b": 55,
+    "enroll-public": 53,
+    "regression-tests": 50,
     "tui-flow-tests": 45,
+    "manual-engine1": 25,
+    "manual-engine2": 20,
+    "big-tests": 18,
     "v2-mock-tests": 14,
-    "big-tests": 30,
   }
   const queue = active.flat().sort((a, b) => (costs[b.name] ?? 30) - (costs[a.name] ?? 30))
-  const limit = Math.max(1, Number(process.env.OPENSHARE_MATRIX_CONCURRENCY) || 6)
+  const limit = Math.max(1, Number(process.env.OPENSHARE_MATRIX_CONCURRENCY) || 4)
   const running = new Set()
+  const tWave = performance.now()
   await new Promise((resolve) => {
     const pump = () => {
       if (failed || !queue.length) {
@@ -159,8 +168,22 @@ try {
   })
   console.log("\n[matrix] suite timings:")
   for (const t of timings) console.log(`  ${t.name}: ${t.seconds}s (${t.code === 0 ? "ok" : "FAILED"})`)
-  console.log(`[matrix] total ${((performance.now() - t0) / 1000).toFixed(1)}s`)
-  process.exitCode = failed ? 1 : 0
+  const totalS = (performance.now() - t0) / 1000
+  const waveS = (performance.now() - tWave) / 1000
+  console.log(`[matrix] wave ${waveS.toFixed(1)}s (all suites) · total ${totalS.toFixed(1)}s (incl. warm-up)`)
+  // Wall-clock budget on the WAVE span (pre-warm and worker boot are
+  // environment noise, not suite cost): every test is a perpetual tax, so
+  // growth must pay for itself by deleting/merging time elsewhere. The
+  // full-matrix number is load-sensitive (same config spans 186-223s
+  // depending on ambient machine load) - treat a budget hit as "measure
+  // again on a quiet box" before trimming. OSH_MATRIX_BUDGET_S overrides
+  // (0 disables) for one-off diagnostics.
+  const budget = Number(process.env.OSH_MATRIX_BUDGET_S ?? (requested.length ? 80 : 200))
+  if (budget > 0 && waveS > budget) {
+    console.error(`[matrix] BUDGET EXCEEDED: wave ${waveS.toFixed(1)}s > ${budget}s budget - trim suites or move coverage to on-demand runs`)
+    process.exitCode = 1
+  }
+  process.exitCode = failed ? 1 : process.exitCode
 } finally {
   if (worker?.kill) worker.kill()
   await new Promise((resolve) => setTimeout(resolve, 300))
