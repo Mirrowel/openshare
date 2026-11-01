@@ -11,8 +11,6 @@
     "vendor:check": "node scripts/vendor-v2.mjs --check"
   },
   "dependencies": {
-    "@fontsource/ibm-plex-mono": "^5.3.0",
-    "@fontsource/inter": "^5.3.0",
     "@kitlangton/solid-motion": "0.2.2",
     "@kobalte/core": "0.13.13",
     "@pierre/diffs": "1.6.1",
