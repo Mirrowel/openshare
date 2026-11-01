@@ -16,7 +16,7 @@
 //
 // Idempotent; runs as part of `npm run vendor` (after bun install) and
 // at the head of `npm run build`.
-import { existsSync, lstatSync, rmSync, symlinkSync, readdirSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -31,6 +31,9 @@ const LINKS = [
 ]
 
 let failures = 0
+// a fresh `npm ci` leaves no node_modules/@opencode at all — the junction
+// parent must exist before symlinkSync (which does not create it)
+mkdirSync(NM, { recursive: true })
 for (const [name, dir] of LINKS) {
   const target = join(ROOT, "vendor", dir)
   if (!existsSync(target)) continue // patchmark and friends are optional
@@ -59,7 +62,7 @@ for (const [name, dir] of LINKS) {
 // guard: a nested duplicate of a SHARED package under a vendored tree
 // reintroduces the split-identity bug class — fail loudly instead of
 // shipping a two-instance bundle
-for (const entry of readdirSync(NM, { withFileTypes: true })) {
+if (existsSync(NM)) for (const entry of readdirSync(NM, { withFileTypes: true })) {
   const nested = join(NM, entry.name, "node_modules")
   if (!existsSync(nested)) continue
   const pkgs = readdirSync(nested).filter((p) => p !== ".bin")

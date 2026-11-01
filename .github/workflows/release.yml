@@ -253,20 +253,29 @@ jobs:
           NPM_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_npm || 'false' }}
         run: bash ../.github/scripts/npm-changed.sh
 
-      - name: Publish to npm
-        if: inputs.dry_run != true && steps.npm-version.outputs.exists != 'true' && steps.npm-changed.outputs.changed == 'true'
+      - name: Pack and publish to npm
+        id: npm-publish
+        if: inputs.dry_run != true && steps.npm-changed.outputs.changed == 'true'
         env:
           # Trusted Publishing uses GitHub OIDC. Avoid setup-node token auth so
           # npm does not try to publish with an absent/placeholder NODE_AUTH_TOKEN.
           NODE_AUTH_TOKEN: ""
         run: |
+          # Pack once and publish the tarball itself: the archive attached to
+          # the GitHub release is the exact one npm serves.
+          TGZ="$(npm pack --silent)"
+          echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.npm-version.outputs.exists }}" = "true" ]; then
+            echo "::notice::$TGZ is already on npm (re-run) - attaching the packed archive only"
+            exit 0
+          fi
           # the publish's own exit code is the success signal; no post-publish
           # registry read verifies it (npm's read index lags the write by
           # minutes and false-fails runs). One tolerated failure: a re-run
           # inside that lag window sees the version absent in the pre-check
           # while the registry primary already holds it - npm rejects the
           # republish, which means the version IS on npm: success.
-          if npm publish --provenance --access public --tag "${{ needs.version.outputs.npm_tag }}" > /tmp/npm-publish.log 2>&1; then
+          if npm publish --provenance --access public --tag "${{ needs.version.outputs.npm_tag }}" "./$TGZ" > /tmp/npm-publish.log 2>&1; then
             cat /tmp/npm-publish.log
           elif grep -qi "cannot publish over" /tmp/npm-publish.log; then
             cat /tmp/npm-publish.log
@@ -353,6 +362,38 @@ jobs:
             --title "v${{ needs.version.outputs.version }}" \
             --notes-file release-notes.md \
             $FLAGS
+
+      - name: Build viewer dist
+        # The built viewer for offline snapshot tooling: consumers without a
+        # local checkout fetch the zip from the release instead of dist from
+        # git (hashed assets churn every rebuild; dist is never committed).
+        if: inputs.dry_run != true
+        working-directory: share-viewer
+        run: |
+          npm ci
+          npm run build
+          cd dist
+          zip -r -q "$GITHUB_WORKSPACE/viewer-dist-${{ needs.version.outputs.version }}.zip" .
+
+      - name: Attach release artifacts
+        # viewer-dist zip + the CI single-file bundle always; the plugin tgz
+        # only when this release published a plugin (the asset is then
+        # byte-identical to the npm tarball - it IS the packed archive).
+        if: inputs.dry_run != true
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ needs.version.outputs.version }}"
+          ASSETS=("$GITHUB_WORKSPACE/viewer-dist-$VER.zip")
+          cp "share-plugin/ci/openshare.js" "$GITHUB_WORKSPACE/openshare-ci-$VER.js"
+          ASSETS+=("$GITHUB_WORKSPACE/openshare-ci-$VER.js")
+          TGZ="${{ steps.npm-publish.outputs.tgz }}"
+          if [ -n "$TGZ" ] && [ -f "share-plugin/$TGZ" ]; then
+            cp "share-plugin/$TGZ" "$GITHUB_WORKSPACE/$TGZ"
+            ASSETS+=("$GITHUB_WORKSPACE/$TGZ")
+          fi
+          gh release upload "v$VER" "${ASSETS[@]}" --clobber
 
       - name: Sync version back to the branch
         # Authoritative write-back: every release (stable and dev channels)
