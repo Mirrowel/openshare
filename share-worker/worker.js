@@ -396,6 +396,11 @@ export default {
         }
         m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/reassign$/)
         if (m && req.method === "POST") return json(...(await call("/reassign:" + m[1])))
+        m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/(freeze|unfreeze)$/)
+        if (m && req.method === "POST") {
+          const r = await shareStub(env, m[1]).fetch("https://do/set-frozen", { method: "POST", body: JSON.stringify({ frozen: m[2] === "freeze" }) })
+          return json(r.status, await r.json().catch(() => ({})))
+        }
         return json(404, { error: "not found" })
       }
 
@@ -456,7 +461,7 @@ export default {
       // 404s here instead of waking a Durable Object per guess); the bare
       // POST create keeps its flexible hex suffix (routing convention —
       // the share id is minted server-side)
-      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|)$/)
+      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|\/meta|)$/)
       if (!sm) return json(404, { error: "not found" })
       const id = sm[1]
       const op = sm[2]
@@ -486,6 +491,23 @@ export default {
           method: "POST",
           body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, data: body.data ?? [], status: body.status }),
         })
+        return json(r.status, await r.json())
+      }
+
+      if (req.method === "GET" && op === "/meta") {
+        // PRIVATE meta (summaries, owner, liveness): root or the share's
+        // owner only. Viewers never see this surface - the page itself is
+        // their whole world; anything else only leaks.
+        const ident = await resolveIdentity(env, req, {})
+        if (!ident.root && !ident.ownerId) return json(403, { ok: false, error: "meta is admin/owner only" })
+        const doUrl = new URL("https://do/meta")
+        if (ident.root) doUrl.searchParams.set("root", "1")
+        else {
+          doUrl.searchParams.set("ownerId", ident.ownerId)
+          if (ident.tokenId) doUrl.searchParams.set("tokenId", ident.tokenId)
+          if (ident.tokenKind) doUrl.searchParams.set("tokenKind", ident.tokenKind)
+        }
+        const r = await shareStub(env, id).fetch(doUrl)
         return json(r.status, await r.json())
       }
 
@@ -1298,6 +1320,13 @@ export class ShareDO {
       }
       const pair = new WebSocketPair()
       this.state.acceptWebSocket(pair[1], ["viewer"])
+      // viewer liveness for the private meta surface; write-throttled to
+      // once a minute so reconnect storms cannot churn storage
+      const nowMs = Date.now()
+      if ((meta.lastViewerAt ?? 0) < nowMs - 60000) {
+        meta.lastViewerAt = nowMs
+        this.state.storage.put("meta", meta).catch(() => {})
+      }
       try {
         // `since` handshake: a viewer that just loaded /data at rev N
         // doesn't need the full first frame again. Cases (delta frames
@@ -1561,6 +1590,7 @@ export class ShareDO {
       const tokens = [{ token, expires: now + 7 * 86400000 }, ...(meta.tokens ?? [])].slice(0, 5)
       meta.tokens = tokens
       meta.attempts = attempts
+      meta.lastViewerAt = now
       await this.state.storage.put("meta", meta)
       const cookie = `osh_${this.state.id.name}=${token}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`
       // the router translates this into a real Set-Cookie header
@@ -1664,8 +1694,32 @@ export class ShareDO {
     if (path === "/meta" && req.method === "GET") {
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { error: "not found" })
-      const { secret, auth, tokens, pluginSeen, ...rest } = meta
-      return json(200, { ...rest, auth: auth ? { set: true } : null, tokens: tokens?.length ?? 0, pluginSeen: pluginSeen ?? 0 })
+      // authority resolved by the router (root or owner); the DO compares
+      // against its own records - a scoped token must be the creator.
+      // Paramless calls are DO-internal (status hydration): the router is
+      // the only path in and it always stamps identity, so allow those.
+      if (url.searchParams.has("ownerId") || url.searchParams.has("root")) {
+        if (!url.searchParams.get("root")) {
+          const ownerId = url.searchParams.get("ownerId")
+          const tokenId = url.searchParams.get("tokenId")
+          const scoped = url.searchParams.get("tokenKind") === "scoped"
+          if (scoped ? tokenId !== meta.creatorTokenId : ownerId !== meta.ownerId) {
+            return json(403, { ok: false, error: scoped ? "scoped tokens read meta of shares they created" : "not your share" })
+          }
+        }
+      }
+      const summaries = meta.summaries ?? (await this.backfillSummaries(meta))
+      const ttlH = meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24)
+      const { secret, auth, tokens, ...rest } = meta
+      return json(200, {
+        ok: true,
+        ...rest,
+        summaries,
+        auth: auth ? { set: true } : null,
+        viewerSessions: tokens?.length ?? 0,
+        expiresAt: ttlH > 0 ? (meta.createdAt ?? 0) + ttlH * 3600000 : 0,
+        ttlHours: ttlH,
+      })
     }
 
     if (path === "/plugin-gone" && req.method === "POST") {
@@ -1841,7 +1895,9 @@ export class ShareDO {
     // entry. Storage stays capped (few hundred bytes per session).
     let privateDirty = false
     const priv = meta.private && typeof meta.private === "object" ? { ...meta.private } : {}
-    const rest = []
+      const rest = []
+    const summaries = meta.summaries && typeof meta.summaries === "object" ? { ...meta.summaries } : {}
+    let summariesDirty = false
     for (const raw of body.data ?? []) {
       const it = fitItem(raw)
       if (it?.type === "pmeta") {
@@ -1858,6 +1914,23 @@ export class ShareDO {
         continue
       }
       rest.push(it)
+      // session summaries for the private meta surface: title/agent/
+      // parent/model per session, stamped at write so /meta never scans
+      if (it.type === "session" && it.data && typeof it.data === "object") {
+        const sid = it.sessionID ?? it.data.id ?? ""
+        if (it.del && sid) { delete summaries[sid]; summariesDirty = true }
+        else if (sid) {
+          summaries[sid] = {
+            title: typeof it.data.title === "string" ? it.data.title.slice(0, 200) : "",
+            agent: typeof it.data.agent === "string" ? it.data.agent : "",
+            parentID: typeof it.data.parentID === "string" ? it.data.parentID : null,
+            model: it.data.model && typeof it.data.model === "object" ? String(it.data.model.id ?? "") : "",
+            version: typeof it.data.version === "string" ? it.data.version : "",
+            updated: Date.now(),
+          }
+          summariesDirty = true
+        }
+      }
     }
     if (privateDirty) {
       meta.private = priv
@@ -1905,11 +1978,44 @@ export class ShareDO {
     meta.lastActive = Date.now()
     meta.pluginSeen = Date.now()
     if (body.status && STATUSES.has(body.status)) meta.status = body.status
+    if (summariesDirty && Object.keys(summaries).length) { meta.summaries = summaries; }
     this._cache = null // rev advanced: render cache is stale
     await this.state.storage.put("meta", meta)
     const batch = [...ops.values()].map((op) => op.it)
     await this.broadcast({ op: "frame", status: meta.status, rev, items: redactItems(batch, meta.private) })
     return [200, { ok: true, rev, status: meta.status }]
+  }
+
+  /** One-time session summaries for shares created before summaries were
+   *  stamped at write: session shards are few (one per session), so a
+   *  prefix scan is bounded by session count, never message volume. The
+   *  result caches into meta so the scan runs once per share. */
+  async backfillSummaries(meta) {
+    const summaries = {}
+    try {
+      let cursor
+      do {
+        const page = await this.state.storage.list({ prefix: "i:session/", cursor })
+        for (const row of page.values()) {
+          const it = row?.i
+          if (row?.d || it?.type !== "session" || !it.data) continue
+          const sid = it.sessionID ?? it.data.id ?? ""
+          if (!sid) continue
+          summaries[sid] = {
+            title: typeof it.data.title === "string" ? it.data.title.slice(0, 200) : "",
+            agent: typeof it.data.agent === "string" ? it.data.agent : "",
+            parentID: typeof it.data.parentID === "string" ? it.data.parentID : null,
+            model: it.data.model && typeof it.data.model === "object" ? String(it.data.model.id ?? "") : "",
+            version: typeof it.data.version === "string" ? it.data.version : "",
+            updated: 0,
+          }
+        }
+        cursor = page.list_complete ? undefined : page.cursor
+      } while (cursor)
+    } catch {}
+    meta.summaries = summaries
+    await this.state.storage.put("meta", meta)
+    return summaries
   }
 
   async broadcast(frame) {
@@ -2352,10 +2458,27 @@ export class AuthDO {
     }
   }
 
-  async mint(userId, label, limits, kind = "full") {
+  /** Token expiry from body: expiresInMinutes | expiresInHours |
+   *  expiresInDays (days x24h, hours x60m). Floor is one minute - a
+   *  short-lived CI credential must be mintable for minutes. Returns
+   *  undefined when no field was sent, 0 for an explicit clear, and an
+   *  absolute timestamp otherwise. */
+  normExpiry(body) {
+    if (!(body?.expiresInMinutes || body?.expiresInHours || body?.expiresInDays)) {
+      if (body?.expiresInMinutes === 0 || body?.expiresInHours === 0 || body?.expiresInDays === 0) return 0
+      return undefined
+    }
+    const m = Math.floor(Number(body?.expiresInMinutes))
+    const h = Math.floor(Number(body?.expiresInHours))
+    const d = Math.floor(Number(body?.expiresInDays))
+    const minutes = Number.isFinite(m) && m > 0 ? m : Number.isFinite(h) && h > 0 ? h * 60 : Number.isFinite(d) && d > 0 ? d * 1440 : 0
+    return Date.now() + Math.max(1, minutes) * 60000
+  }
+
+  async mint(userId, label, limits, kind = "full", opts = {}) {
     const value = "osk_" + randomId() + randomId()
     const hash = await sha256hex(value)
-    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, kind: kind === "scoped" ? "scoped" : "full", sets: {}, createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
+    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, kind: kind === "scoped" ? "scoped" : "full", sets: {}, createdBy: String(opts.createdBy ?? "admin").slice(0, 24), createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: Number.isFinite(opts.expiresAt) && opts.expiresAt > Date.now() ? Math.floor(opts.expiresAt) : 0 }
     await this.state.storage.put("t:" + hash, rec)
     return { value, rec }
   }
@@ -2452,7 +2575,7 @@ export class AuthDO {
       || (code ? `${code.label || "invite"}-${code.used}` : "user-" + randomId().slice(0, 4))
     const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: now, frozen: false, settings: {}, ...(code ? { createdByCode: code.id } : {}) }
     await this.state.storage.put("u:" + user.id, user)
-    const token = await this.mint(user.id, label, this.defaultLimits(), "full")
+    const token = await this.mint(user.id, label, this.defaultLimits(), "full", { createdBy: code ? code.id : "enroll" })
     console.log("[authdo] enrolled", user.id, label, code ? "via code" : "codeless")
     return [200, { ok: true, token: token.value, userId: user.id, label }]
   }
@@ -2494,10 +2617,10 @@ export class AuthDO {
   async rotate(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
-    // limits are a restriction the minter imposed: a scoped token rotating
-    // itself cannot raise them (label rename is fine)
-    if (chk.tokenKind === "scoped" && body?.limits !== undefined) {
-      return [403, { ok: false, error: "scoped tokens cannot change their own limits" }]
+    // limits and expiry are restrictions the minter imposed: a scoped
+    // token rotating itself cannot raise either (label rename is fine)
+    if (chk.tokenKind === "scoped" && (body?.limits !== undefined || this.normExpiry(body) !== undefined)) {
+      return [403, { ok: false, error: "scoped tokens cannot change their own limits or expiry" }]
     }
     const t = chk.token
     t.revokedAt = Date.now()
@@ -2507,18 +2630,22 @@ export class AuthDO {
     // Optional label/limits overrides ride the rotation (unset = keep the
     // current values); sets always carry over - a rotated credential must
     // not silently lose its named configs
+    // successor keeps the class and the provenance; optional expiry
+    // override (unset = carry the remaining expiry)
+    const expiry = this.normExpiry(body)
     const fresh = await this.mint(
       t.userId,
       body?.label !== undefined ? body.label : t.label,
       body?.limits !== undefined ? this.normLimits(body.limits) : t.limits,
       t.kind === "scoped" ? "scoped" : "full",
+      { createdBy: t.createdBy ?? "rotate", expiresAt: expiry !== undefined ? expiry : t.expiresAt },
     )
     const sets = t.sets ?? {}
     if (Object.keys(sets).length) { fresh.rec.sets = sets; await this.state.storage.put("t:" + fresh.rec.hash, fresh.rec) }
     // SCOPED authority is keyed by creatorTokenId: transfer the old
     // token's shares to the successor or rotation orphans its own pages
     if (t.kind === "scoped") await this.transferCreator(t.id, fresh.rec.id)
-    return [200, { ok: true, token: fresh.value, userId: t.userId, tokenKind: fresh.rec.kind, label: fresh.rec.label, limits: fresh.rec.limits }]
+    return [200, { ok: true, token: fresh.value, userId: t.userId, tokenKind: fresh.rec.kind, label: fresh.rec.label, limits: fresh.rec.limits, expiresAt: fresh.rec.expiresAt }]
   }
 
   /** Re-point a retiring scoped token's shares at its successor: registry
@@ -2572,7 +2699,7 @@ export class AuthDO {
     // sets ride the new token: explicit, else inherit the minter's (a
     // repo's scoped key is provisioned from its full token)
     const sets = body.sets !== undefined ? this.normSets(body.sets) : (chk.token.sets ?? {})
-    const t = await this.mint(chk.userId, body.label, this.normLimits(body.limits), kind)
+    const t = await this.mint(chk.userId, body.label, this.normLimits(body.limits), kind, { createdBy: chk.tokenId ?? "self", expiresAt: this.normExpiry(body) ?? 0 })
     if (Object.keys(sets).length) { t.rec.sets = sets; await this.state.storage.put("t:" + t.rec.hash, t.rec) }
     return [200, { ok: true, token: t.value, id: t.rec.id, userId: chk.userId, kind: t.rec.kind }]
   }
@@ -2640,7 +2767,7 @@ export class AuthDO {
   // ---- self-service ---------------------------------------------------------
 
   tokenView(t) {
-    return { id: t.id, label: t.label, limits: t.limits, kind: t.kind === "scoped" ? "scoped" : "full", createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
+    return { id: t.id, label: t.label, limits: t.limits, kind: t.kind === "scoped" ? "scoped" : "full", createdBy: t.createdBy ?? null, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
   }
 
   async me(body) {
@@ -2748,6 +2875,7 @@ export class AuthDO {
         const toks = tokens.filter((t) => t.userId === u.id)
         out.push({
           id: u.id, label: u.label, createdAt: u.createdAt, frozen: !!u.frozen,
+          createdByCode: u.createdByCode ?? null,
           shares: ((await this.state.storage.get(`uShares:${u.id}`)) ?? []).length,
           tokens: toks.length, tokensActive: toks.filter((t) => !t.revokedAt).length,
         })
@@ -2829,14 +2957,14 @@ export class AuthDO {
   async tokenMint(body) {
     const u = await this.state.storage.get("u:" + body?.userId)
     if (!u) return [404, { ok: false, error: "no such user" }]
-    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits), body?.kind === "scoped" ? "scoped" : "full")
+    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits), body?.kind === "scoped" ? "scoped" : "full", { createdBy: "admin", expiresAt: this.normExpiry(body) ?? 0 })
     const sets = this.normSets(body?.sets)
     if (Object.keys(sets).length) { t.rec.sets = sets; await this.state.storage.put("t:" + t.rec.hash, t.rec) }
     return [200, { ok: true, token: t.value, id: t.rec.id, userId: u.id, kind: t.rec.kind }]
   }
 
   async tokensGet() {
-    const tokens = (await this.listPrefix("t:")).map((t) => ({ ...this.tokenView(t), userId: t.userId, revoked: !!t.revokedAt }))
+    const tokens = (await this.listPrefix("t:")).map((t) => ({ ...this.tokenView(t), userId: t.userId, createdBy: t.createdBy ?? null, revoked: !!t.revokedAt }))
     return [200, { ok: true, tokens }]
   }
 
@@ -2870,13 +2998,15 @@ export class AuthDO {
         return [403, { ok: false, error: bearerChk.tokenKind === "scoped" ? "scoped tokens can only edit themselves" : "not your token" }]
       }
       // self-escalation guard: a scoped token may rename itself but never
-      // lift its own limits
-      if (bearerChk.tokenKind === "scoped" && body?.limits !== undefined) {
-        return [403, { ok: false, error: "scoped tokens cannot change their own limits" }]
+      // lift its own limits or extend its own life
+      if (bearerChk.tokenKind === "scoped" && (body?.limits !== undefined || this.normExpiry(body) !== undefined)) {
+        return [403, { ok: false, error: "scoped tokens cannot change their own limits or expiry" }]
       }
     }
     if (body?.label !== undefined) t.label = String(body.label).slice(0, 64)
     if (body?.limits !== undefined) t.limits = this.normLimits(body.limits)
+    const expiry = this.normExpiry(body)
+    if (expiry !== undefined) t.expiresAt = expiry
     await this.state.storage.put("t:" + t.hash, t)
     return [200, { ok: true, token: this.tokenView(t) }]
   }

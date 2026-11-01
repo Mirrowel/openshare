@@ -279,6 +279,16 @@ tokens (scoped included); a scoped token edits only itself, label only.
 Omitting `tokenId` targets the bearer itself. Class, user, and revocation
 state never change here (rotate or revoke are the lifecycle moves).
 
+Token provenance and expiry: every token records `createdBy` (the
+minting admin, the enroll code id, or the self-minting token id - the
+`GET /api/admin/tokens` list and `/api/me` expose it), and mint/update
+accept `expiresInMinutes` | `expiresInHours` | `expiresInDays`
+(days x24h, hours x60m, floor **one minute** - short-lived CI
+credentials; `0` clears the expiry). Scoped tokens can never change
+their own expiry (that would be extending their own life). `users-get`
+reports each user's `createdByCode`, so code → users → tokens → shares
+is one visible chain.
+
 **Revocation freezes control**: when a
 user's last valid FULL token is revoked (self or admin) — or they all
 expire —
@@ -311,6 +321,9 @@ Admin API (Bearer `CREATE_TOKEN`):
 - `GET /api/admin/shares` (global, with ownerId; entries carry any
   `custom` labels the plugin stamped at create)
 - `POST /api/admin/shares/:id/reassign {userId}`
+- `POST /api/admin/shares/:id/freeze` · `/unfreeze` - freeze ONE share
+  (a leaked secret on a single page without freezing the account):
+  writes reject with `frozen`, viewing continues until TTL
 - `DELETE /api/share/:id` — root may delete any share directly (the
   TUI admin console uses this)
 - `POST /api/admin/purge` — removes EVERY share; details in
@@ -374,6 +387,13 @@ title/version/model.
   8 MB are refused before parsing),
   `POST /api/share/:id/auth {login, password}` (viewer login for a gated
   share; rate-limited, returns the 7-day session cookie),
+  `GET /api/share/:id/meta` (**private**: root or the share's owner
+  only - viewers and strangers get 403; the page itself is a viewer's
+  whole world. Carries status/rev, per-session summaries
+  `{title, agent, parentID, model}` stamped at sync (old shares
+  backfill once), gate state, viewer-session count, `pluginSeen`,
+  `lastViewerAt` (viewer-liveness, throttled to one stamp/minute),
+  `expiresAt`/`ttlHours`, `ownerId`, `creatorTokenId`, custom labels),
   `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
   when `since >= rev` (unchanged, or the server rewound/recreated — the
   client prunes), only the items touched since when `since < rev`),

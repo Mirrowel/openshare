@@ -824,6 +824,77 @@ try {
     ok("T37j revoked token refuses edits", upDead.status === 400, JSON.stringify(upDead.json))
   }
 
+  // T38 — private meta surface + single-share freeze + token provenance
+  // and expiry: meta serves admins and the owner only (viewers and other
+  // users get 403), summaries expose title/agent/parent per session,
+  // freeze stops writes on exactly one share, and tokens record who
+  // minted them plus minute-granularity expiry
+  {
+    const u38 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t38" } })
+    const U38 = u38.json?.userId
+    const f38 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U38 } })
+    const T38FULL = f38.json?.token
+    const sc38 = await req(W1, "POST", "/api/token", { token: T38FULL, body: { kind: "scoped", label: "t38ci" } })
+    const T38SCOPED = sc38.json?.token
+    // a share with a real session item (summary source)
+    const c38 = await req(W1, "POST", CREATE, { token: T38FULL, body: { sessionID: "ses_t38main" } })
+    const SID38 = c38.json?.id
+    const SEC38 = c38.json?.secret
+    await req(W1, "POST", `/api/share/${SID38}/sync`, { token: T38FULL, body: { data: [
+      { type: "session", sessionID: "ses_t38main", data: { id: "ses_t38main", title: "T38 Main", agent: "build", parentID: null } },
+      { type: "session", sessionID: "ses_t38sub", data: { id: "ses_t38sub", title: "T38 Child", agent: "explore", parentID: "ses_t38main" } },
+    ] } })
+    // root reads meta with summaries
+    const metaRoot = await req(W1, "GET", `/api/share/${SID38}/meta`, { token: CREATE_TOKEN })
+    ok("T38 root reads meta", metaRoot.json?.ok === true && metaRoot.json?.sessionID === "ses_t38main", JSON.stringify(metaRoot.json).slice(0, 200))
+    const summ = metaRoot.json?.summaries ?? {}
+    ok("T38a summaries carry title/agent/parent", summ["ses_t38main"]?.title === "T38 Main" && summ["ses_t38main"]?.agent === "build" && summ["ses_t38sub"]?.parentID === "ses_t38main", JSON.stringify(summ))
+    ok("T38b meta exposes liveness + expiry", typeof metaRoot.json?.pluginSeen === "number" && typeof metaRoot.json?.expiresAt === "number" && metaRoot.json?.ttlHours > 0, JSON.stringify({ p: metaRoot.json?.pluginSeen, e: metaRoot.json?.expiresAt }))
+    // owner full token reads; scoped creator reads; strangers and anonymous 403
+    const metaOwner = await req(W1, "GET", `/api/share/${SID38}/meta`, { token: T38FULL })
+    ok("T38c owner reads own meta", metaOwner.json?.ok === true, JSON.stringify(metaOwner.json).slice(0, 120))
+    const metaScoped = await req(W1, "GET", `/api/share/${SID38}/meta`, { token: T38SCOPED })
+    ok("T38d scoped creator denied (not its share)", metaScoped.status === 403, JSON.stringify(metaScoped.json))
+    // a scoped-CREATED share is readable by that scoped token
+    const c38b = await req(W1, "POST", CREATE, { token: T38SCOPED, body: { sessionID: "ses_t38ci" } })
+    const metaScopedOwn = await req(W1, "GET", `/api/share/${c38b.json?.id}/meta`, { token: T38SCOPED })
+    ok("T38d2 scoped reads meta of its own share", metaScopedOwn.json?.ok === true, JSON.stringify(metaScopedOwn.json).slice(0, 120))
+    const other38 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t38other" } })
+    const otherTok = (await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: other38.json?.userId } })).json?.token
+    ok("T38e stranger 403", (await req(W1, "GET", `/api/share/${SID38}/meta`, { token: otherTok })).status === 403)
+    ok("T38f anonymous 403", (await req(W1, "GET", `/api/share/${SID38}/meta`)).status === 403)
+    // single-share freeze: writes stop, viewing continues, unfreeze resumes
+    const fr38 = await req(W1, "POST", `/api/admin/shares/${SID38}/freeze`, { token: CREATE_TOKEN })
+    ok("T38g freeze ok", fr38.json?.ok === true, JSON.stringify(fr38.json))
+    const wr38 = await req(W1, "POST", `/api/share/${SID38}/sync`, { token: T38FULL, body: { data: [] } })
+    ok("T38h frozen share refuses writes", wr38.json?.ok === false, JSON.stringify(wr38.json))
+    ok("T38i viewing unaffected", (await req(W1, "GET", `/api/share/${SID38}/data`)).status === 200)
+    // other shares of the same user unaffected
+    const wr38b = await req(W1, "POST", `/api/share/${c38b.json?.id}/sync`, { token: T38FULL, body: { data: [] } })
+    ok("T38j sibling share unaffected", wr38b.json?.ok !== false, JSON.stringify(wr38b.json))
+    await req(W1, "POST", `/api/admin/shares/${SID38}/unfreeze`, { token: CREATE_TOKEN })
+    ok("T38k unfreeze resumes writes", (await req(W1, "POST", `/api/share/${SID38}/sync`, { token: T38FULL, body: { data: [] } })).json?.ok === true)
+    // token provenance + expiry
+    const toks38 = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const scopedRow38 = toks38.find((t) => t.id === sc38.json?.id)
+    ok("T38l createdBy records the minter", scopedRow38?.createdBy === f38.json?.id, JSON.stringify({ createdBy: scopedRow38?.createdBy, minter: f38.json?.id }))
+    const exp38 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U38, label: "ephemeral", expiresInMinutes: 90 } })
+    const expRow = toks38.find(() => false) ?? ((await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []).find((t) => t.id === exp38.json?.id)
+    const minsLeft = (expRow?.expiresAt - Date.now()) / 60000
+    ok("T38m minute-granularity expiry lands ~90m", minsLeft > 85 && minsLeft <= 90, String(minsLeft))
+    // update can clear it
+    const clr38 = await req(W1, "PATCH", `/api/admin/tokens/${exp38.json?.id}`, { token: CREATE_TOKEN, body: { expiresInHours: 0 } })
+    ok("T38n expiry cleared via update", clr38.json?.token?.expiresAt === 0, JSON.stringify(clr38.json?.token))
+    // scoped self cannot set its own expiry (self-life escalation)
+    const scExp = await req(W1, "POST", "/api/token/update", { token: T38SCOPED, body: { expiresInHours: 999 } })
+    ok("T38o scoped cannot extend own expiry", scExp.status === 403, JSON.stringify(scExp.json))
+    // cleanup
+    await req(W1, "DELETE", `/api/share/${SID38}`, { token: CREATE_TOKEN, body: { secret: SEC38 } })
+    await req(W1, "DELETE", `/api/share/${c38b.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/admin/users/${U38}`, { token: CREATE_TOKEN, body: { mode: "delete" } })
+    await req(W1, "DELETE", `/api/admin/users/${other38.json?.userId}`, { token: CREATE_TOKEN, body: { mode: "delete" } })
+  }
+
   // T35 — B4 token config sets: named sets on one token; Class A applies
   // at create server-side (never transported); Class B fetch is safe
   {

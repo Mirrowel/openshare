@@ -84,8 +84,16 @@ export class Api {
 
   // ---- shares ----
   shareData(id: string, since?: number) { return this.get(`/api/share/${id}/data${since !== undefined ? `?since=${since}` : ""}`) }
+  shareMeta(id: string) { return this.get(`/api/share/${id}/meta`) }
+  shareFreeze(id: string, frozen: boolean) { return this.post(`/api/admin/shares/${id}/${frozen ? "freeze" : "unfreeze"}`) }
   shareDelete(id: string, secret?: string) { return this.del(`/api/share/${id}`, secret ? { secret } : {}) }
   sharePatch(id: string, o: Record<string, unknown>) { return this.patch(`/api/share/${id}`, o) }
   shareAuth(id: string, login: string, password: string) { return this.post(`/api/share/${id}/auth`, { login, password }) }
   shareSnapshot(id: string) { return this.get(`/s/${id}/snapshot?download=1`) }
+  headers(): Record<string, string> {
+    const h: Record<string, string> = {}
+    if (this.token) h.authorization = `Bearer ${this.token}`
+    if (this.cookies.size) h.cookie = [...this.cookies].map(([k, v]) => `${k}=${v}`).join("; ")
+    return h
+  }
 }

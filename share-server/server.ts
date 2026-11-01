@@ -119,6 +119,20 @@ async function pbkdf2(value: string, salt: string): Promise<string> {
 
 const STATUSES = new Set(["live", "completed", "error", "interrupted"])
 
+/** Session summary for the private meta surface (title/agent/parent/
+ *  model), shared by the write-time stamp and the one-time backfill. */
+function summaryFromSession(it: Record<string, any>): Record<string, unknown> {
+  const d = it.data ?? {}
+  return {
+    title: typeof d.title === "string" ? d.title.slice(0, 200) : "",
+    agent: typeof d.agent === "string" ? d.agent : "",
+    parentID: typeof d.parentID === "string" ? d.parentID : null,
+    model: d.model && typeof d.model === "object" ? String(d.model.id ?? "") : "",
+    version: typeof d.version === "string" ? d.version : "",
+    updated: Date.now(),
+  }
+}
+
 function itemKey(item: unknown): string | undefined {
   if (!item || typeof item !== "object") return
   const t = (item as Record<string, unknown>).type
@@ -262,7 +276,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS shares (
   ttlDays INTEGER NOT NULL, ttlHours INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, lastActive INTEGER NOT NULL,
   pluginSeen INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'live',
   ownerId TEXT, frozen INTEGER NOT NULL DEFAULT 0, auth TEXT, tokens TEXT NOT NULL DEFAULT '[]',
-  attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER, custom TEXT NOT NULL DEFAULT '{}')`)
+  attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER, custom TEXT NOT NULL DEFAULT '{}', summaries TEXT NOT NULL DEFAULT '{}', lastViewerAt INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 0, del INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (shareId, key))`)
 // pre-existing databases: add the delta-tracking columns (rev stamps +
 // delete markers for the /data `since` handshake)
@@ -270,7 +284,7 @@ try { db.exec("ALTER TABLE items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0") } c
 try { db.exec("ALTER TABLE items ADD COLUMN del INTEGER NOT NULL DEFAULT 0") } catch {}
 try { db.exec("ALTER TABLE shares ADD COLUMN custom TEXT NOT NULL DEFAULT '{}'") } catch {}
 db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, label TEXT NOT NULL, createdAt INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}', createdByCode TEXT)`)
-db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'full', sets TEXT NOT NULL DEFAULT '{}')`)
+db.exec(`CREATE TABLE IF NOT EXISTS tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, userId TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL DEFAULT 0, revokedAt INTEGER NOT NULL DEFAULT 0, expiresAt INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'full', sets TEXT NOT NULL DEFAULT '{}', createdBy TEXT NOT NULL DEFAULT 'admin')`)
 db.exec(`CREATE TABLE IF NOT EXISTS codes (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, label TEXT NOT NULL, activationsLeft INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS rate (ip TEXT PRIMARY KEY, n INTEGER NOT NULL, resetAt INTEGER NOT NULL)`)
 db.exec(`CREATE TABLE IF NOT EXISTS dcreates (k TEXT PRIMARY KEY, n INTEGER NOT NULL)`)
@@ -281,6 +295,9 @@ try { db.exec("ALTER TABLE tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'full'")
 try { db.exec("ALTER TABLE users ADD COLUMN createdByCode TEXT") } catch {}
 try { db.exec("ALTER TABLE shares ADD COLUMN ttlHours INTEGER NOT NULL DEFAULT 0") } catch {}
 try { db.exec("ALTER TABLE shares ADD COLUMN private TEXT NOT NULL DEFAULT '{}'") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN summaries TEXT NOT NULL DEFAULT '{}'") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN lastViewerAt INTEGER NOT NULL DEFAULT 0") } catch {}
+try { db.exec("ALTER TABLE tokens ADD COLUMN createdBy TEXT NOT NULL DEFAULT 'admin'") } catch {}
 // legacy rows: backfill hours from days once (idempotent: only where 0)
 try { db.exec("UPDATE shares SET ttlHours = ttlDays * 24 WHERE ttlHours = 0") } catch {}
 try { db.exec("ALTER TABLE tokens ADD COLUMN sets TEXT NOT NULL DEFAULT '{}'") } catch {}
@@ -289,6 +306,7 @@ type ShareRow = {
   id: string; secret: string; sessionID: string; ttlDays: number; ttlHours?: number; private?: string; createdAt: number; lastActive: number
   pluginSeen: number; rev: number; status: string; ownerId: string | null; frozen: number
   auth: string | null; tokens: string; attempts: string; finalizeAt: number | null; custom: string
+  summaries?: string; lastViewerAt?: number
 }
 
 const q = {
@@ -386,12 +404,29 @@ async function createCheck(token: string, set: unknown = undefined): Promise<{ o
   return { ok: true, userId: chk.userId, tokenId: chk.token.id, tokenKind: chk.token.kind === "scoped" ? "scoped" : "full", ttlMaxHours: (limits.maxTtlHours || 0) || Math.floor((limits.maxTtlDays || 0) * 24), defaultTtlHours, ...(Object.keys(setA).length ? { setA } : {}) }
 }
 
-async function mint(userId: string, label: string, limits: unknown, kind: "full" | "scoped" = "full"): Promise<{ value: string; id: string; kind: string }> {
+async function mint(userId: string, label: string, limits: unknown, kind: "full" | "scoped" = "full", opts: { createdBy?: string; expiresAt?: number } = {}): Promise<{ value: string; id: string; kind: string }> {
   const value = "osk_" + randomId() + randomId()
   const hash = await sha256hex(value)
   const id = "t_" + randomId().slice(0, 10)
-  db.query("INSERT INTO tokens (id, hash, userId, label, limits, createdAt, kind) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, hash, userId, String(label ?? "").slice(0, 64), JSON.stringify(normLimits(limits)), Date.now(), kind)
+  const createdBy = String(opts.createdBy ?? "admin").slice(0, 24)
+  const expiresAt = Number.isFinite(opts.expiresAt) && (opts.expiresAt as number) > Date.now() ? Math.floor(opts.expiresAt as number) : 0
+  db.query("INSERT INTO tokens (id, hash, userId, label, limits, createdAt, kind, createdBy, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, hash, userId, String(label ?? "").slice(0, 64), JSON.stringify(normLimits(limits)), Date.now(), kind, createdBy, expiresAt)
   return { value, id, kind }
+}
+
+/** Token expiry from body: expiresInMinutes | expiresInHours |
+ *  expiresInDays (days x24h, hours x60m; floor one minute - short-lived
+ *  CI credentials). undefined = no field sent, 0 = explicit clear. */
+function normExpiry(body: Record<string, unknown>): number | undefined {
+  if (!(body.expiresInMinutes || body.expiresInHours || body.expiresInDays)) {
+    if (body.expiresInMinutes === 0 || body.expiresInHours === 0 || body.expiresInDays === 0) return 0
+    return undefined
+  }
+  const m = Math.floor(Number(body.expiresInMinutes))
+  const h = Math.floor(Number(body.expiresInHours))
+  const d = Math.floor(Number(body.expiresInDays))
+  const minutes = Number.isFinite(m) && m > 0 ? m : Number.isFinite(h) && h > 0 ? h * 60 : Number.isFinite(d) && d > 0 ? d * 1440 : 0
+  return Date.now() + Math.max(1, minutes) * 60000
 }
 
 // --- share ops -----------------------------------------------------------------
@@ -572,6 +607,20 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
       rest.push(raw)
     }
     if (priv) db.query("UPDATE shares SET private = ? WHERE id = ?").run(JSON.stringify(priv), shareId)
+    // session summaries for the private meta surface: stamped at write so
+    // /meta never scans (worker parity)
+    const summaries: Record<string, Record<string, unknown>> = JSON.parse(share.summaries || "{}")
+    let summariesDirty = false
+    for (const raw of rest) {
+      const it = raw as { type?: string; del?: boolean }
+      if (it?.type !== "session") continue
+      const s = summaryFromSession(it)
+      const sid = (it as { sessionID?: string }).sessionID ?? (it as { data?: { id?: string } }).data?.id ?? ""
+      if (!sid) continue
+      if (it.del) { delete summaries[sid]; summariesDirty = true }
+      else { summaries[sid] = s; summariesDirty = true }
+    }
+    if (summariesDirty) db.query("UPDATE shares SET summaries = ? WHERE id = ?").run(JSON.stringify(summaries), shareId)
     for (const raw of rest) {
       const it = (raw as { del?: boolean }).del ? raw : fitItem(raw)
       const key = itemKey(it)
@@ -761,6 +810,11 @@ async function httpHandler(req: Request): Promise<Response> {
       const token = cookie ? cookie.slice(1).join("=") : ""
       if (!(await validViewerToken(share, token))) return new Response("auth required", { status: 401 })
     }
+    // viewer liveness for the private meta surface; throttled to once a
+    // minute so reconnect storms cannot churn SQLite (worker parity)
+    if ((share.lastViewerAt ?? 0) < Date.now() - 60000) {
+      try { db.query("UPDATE shares SET lastViewerAt = ? WHERE id = ?").run(Date.now(), share.id) } catch {}
+    }
     return new Response(null, { status: 200 }) // upgraded in fetch() below
   }
 
@@ -795,7 +849,7 @@ async function httpHandler(req: Request): Promise<Response> {
 
   // share-referencing ops need a REAL share id (32 hex); the bare POST
   // create keeps its flexible hex suffix (routing convention)
-  const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|)$/)
+  const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|\/meta|)$/)
   if (!sm) return staticOr404(req, url)
   const id = sm[1]
   const op = sm[2]
@@ -816,6 +870,47 @@ async function httpHandler(req: Request): Promise<Response> {
     const r = applySync(id, { ...body, ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind })
     return json(r.status, r.body)
   }
+  if (req.method === "GET" && op === "/meta") {
+    // PRIVATE meta (summaries, owner, liveness): root or the share's
+    // owner only. Viewers never see this surface - the page itself is
+    // their whole world; anything else only leaks.
+    const ident = await resolveIdentity(req, {})
+    if (!ident.root && !ident.ownerId) return json(403, { ok: false, error: "meta is admin/owner only" })
+    const share = q.share(id)
+    if (!share) return json(404, { error: "gone" })
+    if (!ident.root) {
+      if (ident.tokenKind === "scoped" ? ident.tokenId !== share.creatorTokenId : ident.ownerId !== share.ownerId) {
+        return json(403, { ok: false, error: ident.tokenKind === "scoped" ? "scoped tokens read meta of shares they created" : "not your share" })
+      }
+    }
+    // summaries stamped at write; backfill once for shares predating that
+    let summaries: Record<string, Record<string, unknown>> = {}
+    try { summaries = JSON.parse(share.summaries || "{}") } catch {}
+    if (!Object.keys(summaries).length) {
+      const rows = db.query("SELECT item, del FROM items WHERE shareId = ? AND key LIKE 'session/%'").all(id) as Array<{ item: string; del: number }>
+      for (const r of rows) {
+        if (r.del) continue
+        const it = JSON.parse(r.item) as Record<string, any>
+        const sid = it.sessionID ?? it.data?.id ?? ""
+        if (sid) summaries[sid] = summaryFromSession(it)
+      }
+      db.query("UPDATE shares SET summaries = ? WHERE id = ?").run(JSON.stringify(summaries), id)
+    }
+    const ttlH = share.ttlHours || Math.floor((share.ttlDays ?? 90) * 24)
+    return json(200, {
+      ok: true,
+      id: share.id, sessionID: share.sessionID, status: share.status, rev: share.rev,
+      createdAt: share.createdAt, lastActive: share.lastActive, pluginSeen: share.pluginSeen,
+      ownerId: share.ownerId, creatorTokenId: share.creatorTokenId ?? null,
+      frozen: !!share.frozen, custom: JSON.parse(share.custom || "{}"),
+      auth: share.auth ? { set: true } : null,
+      viewerSessions: (JSON.parse(share.tokens || "[]") as unknown[]).length,
+      lastViewerAt: (share as any).lastViewerAt ?? 0,
+      ttlHours: ttlH, expiresAt: ttlH > 0 ? share.createdAt + ttlH * 3600000 : 0,
+      summaries,
+    })
+  }
+
   if (req.method === "GET" && op === "/data") {
     const share = q.share(id)
     if (!share) return json(404, { data: [], status: "gone", rev: 0 })
@@ -1062,7 +1157,7 @@ async function enrollRoute(body: Record<string, unknown>, req: Request): Promise
   const label = String(body.label ?? "").trim().slice(0, 64) || (codeRow ? `${codeRow.label || "invite"}-${codeRow.used + 1}` : "user-" + randomId().slice(0, 4))
   const userId = "u_" + randomId().slice(0, 10)
   db.query("INSERT INTO users (id, label, createdAt, createdByCode) VALUES (?, ?, ?, ?)").run(userId, label, now, codeRow?.id ?? null)
-  const token = await mint(userId, label, defaultLimits())
+  const token = await mint(userId, label, defaultLimits(), "full", { createdBy: codeRow ? codeRow.id : "enroll" })
   console.log(`[auth] enrolled ${userId} ${label}${codeRow ? " via code" : " codeless"}`)
   return json(200, { ok: true, token: token.value, userId, label })
 }
@@ -1072,7 +1167,7 @@ async function meRoute(token: string): Promise<Response> {
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
   const user = db.query("SELECT * FROM users WHERE id = ?").get(chk.userId) as { label: string; settings: string }
   const t = chk.token
-  return json(200, { ok: true, userId: chk.userId, label: user.label, settings: JSON.parse(user.settings), token: { id: t.id, label: t.label, limits: JSON.parse(t.limits), createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt } })
+  return json(200, { ok: true, userId: chk.userId, label: user.label, settings: JSON.parse(user.settings), token: { id: t.id, label: t.label, limits: JSON.parse(t.limits), createdBy: (t as TokenRow & { createdBy?: string }).createdBy ?? null, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt } })
 }
 
 async function settingsRoute(token: string, patch: Record<string, unknown>): Promise<Response> {
@@ -1105,9 +1200,9 @@ async function meSharesRoute(token: string): Promise<Response> {
 async function rotateRoute(body: Record<string, unknown>, token: string): Promise<Response> {
   const chk = await checkToken(token)
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
-  // limits are a restriction the minter imposed: a scoped token rotating
-  // itself cannot raise them (label rename is fine)
-  if (chk.tokenKind === "scoped" && body.limits !== undefined) return json(403, { ok: false, error: "scoped tokens cannot change their own limits" })
+  // limits and expiry are restrictions the minter imposed: a scoped token
+  // rotating itself cannot raise either (label rename is fine)
+  if (chk.tokenKind === "scoped" && (body.limits !== undefined || normExpiry(body) !== undefined)) return json(403, { ok: false, error: "scoped tokens cannot change their own limits or expiry" })
   db.query("UPDATE tokens SET revokedAt = ? WHERE id = ?").run(Date.now(), chk.token.id)
   // successor keeps the class (rotating scoped yields scoped); optional
   // label/limits overrides ride the rotation, unset = keep current; sets
@@ -1117,10 +1212,12 @@ async function rotateRoute(body: Record<string, unknown>, token: string): Promis
   // the scope key)
   const label = body.label !== undefined ? String(body.label).slice(0, 64) : chk.token.label
   const limits = body.limits !== undefined ? normLimits(body.limits) : JSON.parse(chk.token.limits)
-  const fresh = await mint(chk.userId, label, limits, chk.token.kind === "scoped" ? "scoped" : "full")
+  const expiry = normExpiry(body)
+  const fresh = await mint(chk.userId, label, limits, chk.token.kind === "scoped" ? "scoped" : "full", { createdBy: (chk.token as TokenRow & { createdBy?: string }).createdBy ?? "rotate", expiresAt: expiry !== undefined ? expiry : chk.token.expiresAt })
   if (Object.keys(chk.sets ?? {}).length) db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(chk.sets), fresh.id)
   if (chk.token.kind === "scoped") db.query("UPDATE shares SET creatorTokenId = ? WHERE creatorTokenId = ?").run(fresh.id, chk.token.id)
-  return json(200, { ok: true, token: fresh.value, userId: chk.userId, tokenKind: fresh.kind, label, limits })
+  const expiresAt = expiry !== undefined ? expiry : chk.token.expiresAt
+  return json(200, { ok: true, token: fresh.value, userId: chk.userId, tokenKind: fresh.kind, label, limits, expiresAt })
 }
 
 /** Edit a token's label and limits (rename, re-scope). Class, user and
@@ -1139,14 +1236,16 @@ async function tokenUpdateRoute(tokenId: string, body: Record<string, unknown>, 
     if (!mine || (chk.tokenKind === "scoped" && !self)) {
       return json(403, { ok: false, error: chk.tokenKind === "scoped" ? "scoped tokens can only edit themselves" : "not your token" })
     }
-    if (chk.tokenKind === "scoped" && body.limits !== undefined) {
-      return json(403, { ok: false, error: "scoped tokens cannot change their own limits" })
+    if (chk.tokenKind === "scoped" && (body.limits !== undefined || normExpiry(body) !== undefined)) {
+      return json(403, { ok: false, error: "scoped tokens cannot change their own limits or expiry" })
     }
   }
   const label = body.label !== undefined ? String(body.label).slice(0, 64) : row.label
   const limits = body.limits !== undefined ? JSON.stringify(normLimits(body.limits)) : row.limits
-  db.query("UPDATE tokens SET label = ?, limits = ? WHERE id = ?").run(label, limits, tokenId)
-  return json(200, { ok: true, token: { id: tokenId, label, limits: JSON.parse(limits), kind: row.kind === "scoped" ? "scoped" : "full", createdAt: row.createdAt, lastUsedAt: row.lastUsedAt, expiresAt: row.expiresAt } })
+  const expiry = normExpiry(body)
+  const expiresAt = expiry !== undefined ? expiry : row.expiresAt
+  db.query("UPDATE tokens SET label = ?, limits = ?, expiresAt = ? WHERE id = ?").run(label, limits, expiresAt, tokenId)
+  return json(200, { ok: true, token: { id: tokenId, label, limits: JSON.parse(limits), kind: row.kind === "scoped" ? "scoped" : "full", createdAt: row.createdAt, lastUsedAt: row.lastUsedAt, expiresAt } })
 }
 
 /** Self-service mint (worker parity): only FULL tokens may mint; scoped
@@ -1156,7 +1255,7 @@ async function tokenSelfMintRoute(body: Record<string, unknown>, token: string):
   if (chk.kind !== "user") return json(401, { ok: false, error: "invalid token" })
   if (chk.tokenKind === "scoped") return json(403, { ok: false, error: "scoped tokens cannot mint tokens" })
   const kind = body.kind === "scoped" ? "scoped" : "full"
-  const t = await mint(chk.userId, String(body.label ?? ""), body.limits, kind)
+  const t = await mint(chk.userId, String(body.label ?? ""), body.limits, kind, { createdBy: chk.tokenId ?? "self", expiresAt: normExpiry(body) ?? 0 })
   // sets ride the new token: explicit, else inherit the minter's
   const sets = body.sets !== undefined ? normSets(body.sets) : chk.sets ?? {}
   if (Object.keys(sets).length) db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(sets), t.id)
@@ -1240,26 +1339,26 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
     return json(200, { ok: true, userId: id, label })
   }
   if (path === "/api/admin/users" && req.method === "GET") {
-    const users = db.query("SELECT * FROM users").all() as Array<{ id: string; label: string; createdAt: number; frozen: number }>
+    const users = db.query("SELECT * FROM users").all() as Array<{ id: string; label: string; createdAt: number; frozen: number; createdByCode?: string | null }>
     const tokens = db.query("SELECT * FROM tokens").all() as TokenRow[]
     const out = users.map((u) => {
       const toks = tokens.filter((t) => t.userId === u.id)
       const shares = (db.query("SELECT COUNT(*) c FROM shares WHERE ownerId = ?").get(u.id) as { c: number }).c
-      return { id: u.id, label: u.label, createdAt: u.createdAt, frozen: !!u.frozen, shares, tokens: toks.length, tokensActive: toks.filter((t) => !t.revokedAt).length }
+      return { id: u.id, label: u.label, createdAt: u.createdAt, frozen: !!u.frozen, createdByCode: u.createdByCode ?? null, shares, tokens: toks.length, tokensActive: toks.filter((t) => !t.revokedAt).length }
     })
     return json(200, { ok: true, users: out })
   }
   if (path === "/api/admin/tokens" && req.method === "POST") {
     const user = db.query("SELECT id FROM users WHERE id = ?").get(String(body.userId ?? ""))
     if (!user) return json(404, { ok: false, error: "no such user" })
-    const t = await mint(String(body.userId), String(body.label ?? ""), body.limits, body.kind === "scoped" ? "scoped" : "full")
+    const t = await mint(String(body.userId), String(body.label ?? ""), body.limits, body.kind === "scoped" ? "scoped" : "full", { createdBy: "admin", expiresAt: normExpiry(body) ?? 0 })
     const sets = normSets(body.sets)
     if (Object.keys(sets).length) db.query("UPDATE tokens SET sets = ? WHERE id = ?").run(JSON.stringify(sets), t.id)
     return json(200, { ok: true, token: t.value, id: t.id, userId: body.userId, kind: t.kind })
   }
   if (path === "/api/admin/tokens" && req.method === "GET") {
     const tokens = db.query("SELECT * FROM tokens").all() as TokenRow[]
-    return json(200, { ok: true, tokens: tokens.map((t) => ({ id: t.id, userId: t.userId, label: t.label, limits: JSON.parse(t.limits), createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt, revoked: !!t.revokedAt, kind: t.kind === "scoped" ? "scoped" : "full" })) })
+    return json(200, { ok: true, tokens: tokens.map((t) => ({ id: t.id, userId: t.userId, label: t.label, limits: JSON.parse(t.limits), createdBy: (t as TokenRow & { createdBy?: string }).createdBy ?? null, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt, revoked: !!t.revokedAt, kind: t.kind === "scoped" ? "scoped" : "full" })) })
   }
   // code-lineage kill-switch: revoke every token of every user this
   // code onboarded (freezing each per the no-full-token rule)
@@ -1338,6 +1437,14 @@ async function adminRoute(req: Request, path: string, body: Record<string, unkno
     db.query("UPDATE shares SET ownerId = ?, frozen = 0 WHERE id = ?").run(body.userId, m[1])
     return json(200, { ok: true })
   }
+  m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/(freeze|unfreeze)$/)
+  if (m && req.method === "POST") {
+    const res = db.query("UPDATE shares SET frozen = ? WHERE id = ?").run(m[2] === "freeze" ? 1 : 0, m[1])
+    if (!res.changes) return json(404, { ok: false, error: "no such share" })
+    const share = q.share(m[1])
+    if (share) broadcast(m[1], { op: "frame", status: m[2] === "freeze" ? "frozen" : share.status, rev: share.rev + 1, items: [] })
+    return json(200, { ok: true })
+  }
   return json(404, { error: "not found" })
 }
 
@@ -1393,7 +1500,7 @@ async function shareAuthRoute(id: string, body: Record<string, unknown>, req: Re
   }
   const token = randomId() + randomId()
   const tokens = [{ token, expires: now + 7 * 86400000 }, ...JSON.parse(share.tokens)].slice(0, 5)
-  db.query("UPDATE shares SET tokens = ?, attempts = ? WHERE id = ?").run(JSON.stringify(tokens), JSON.stringify(attempts), id)
+  db.query("UPDATE shares SET tokens = ?, attempts = ?, lastViewerAt = ? WHERE id = ?").run(JSON.stringify(tokens), JSON.stringify(attempts), now, id)
   const cookie = `osh_${id}=${token}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`
   return json(200, { setCookie: cookie, body: { ok: true } }, { "set-cookie": cookie })
 }

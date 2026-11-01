@@ -1,5 +1,5 @@
 /** Interactive console: every mutation here has a headless twin in
- *  cli.tsx. Structure: one tab bar, one list pane, detail/actions under
+ *  cli.tsx. One tab bar, list panes with sort cycling, detail panes under
  *  the selection, modals for input and confirmation. */
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { Box, Text, render, useApp, useInput } from "ink"
@@ -8,6 +8,27 @@ import * as cfg from "./config"
 
 const dim = (s: string) => <Text color="gray">{s}</Text>
 const fmtDate = (ms?: number) => (ms ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "-")
+const rel = (ms?: number): string => {
+  if (!ms) return "never"
+  const s = Math.max(0, Date.now() - ms) / 1000
+  if (s < 60) return `${Math.floor(s)}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
+const relFuture = (ms?: number): string => {
+  if (!ms) return "-"
+  const s = (ms - Date.now()) / 1000
+  if (s <= 0) return "EXPIRED"
+  if (s < 3600) return `in ${Math.ceil(s / 60)}m`
+  if (s < 86400) return `in ${Math.ceil(s / 3600)}h`
+  return `in ${Math.ceil(s / 86400)}d`
+}
+function StatusText(props: { status?: string | null; frozen?: boolean; children?: React.ReactNode }) {
+  const s = props.status ?? "?"
+  const color = props.frozen ? "red" : s === "live" ? "green" : s === "completed" ? "cyan" : s === "error" ? "red" : s === "interrupted" ? "yellow" : "gray"
+  return <Text color={color} bold>{s}{props.frozen ? "/FROZEN" : ""}</Text>
+}
 
 // ---- small primitives --------------------------------------------------------
 
@@ -84,6 +105,25 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data: T | null; e
   return { data, err, reload: () => setN(n + 1), set: setData }
 }
 
+/** Sort cycler: s cycles the given keys, default = first entry. */
+function useSort(keys: string[]): { key: string; label: string; cycle: () => void } {
+  const [i, setI] = useState(0)
+  const cycle = useCallback(() => setI((v) => (v + 1) % (keys.length * 2)), [keys.length])
+  const idx = Math.floor(i / 2)
+  const desc = i % 2 === 0
+  return { key: keys[idx], label: `${keys[idx]}${desc ? "↓" : "↑"}`, cycle }
+}
+function sortWith<T>(rows: T[], key: string, desc: boolean, keyOf: (r: T, key: string) => string | number | undefined): T[] {
+  const dir = desc ? -1 : 1
+  return [...rows].sort((a, b) => {
+    const ka = keyOf(a, key); const kb = keyOf(b, key)
+    if (ka === kb) return 0
+    if (ka === undefined || ka === null) return 1
+    if (kb === undefined || kb === null) return -1
+    return ka > kb ? dir : -dir
+  })
+}
+
 // ---- app ---------------------------------------------------------------------
 
 type Screen = "servers" | "shares" | "users" | "tokens" | "codes" | "settings"
@@ -95,7 +135,7 @@ function App() {
   const cur = cfg.current(conf)
   const [screen, setScreen] = useState<Screen>("servers")
   const [toast, setToast] = useState("")
-  const api = useMemo(() => new Api(cur?.entry ?? { url: "" }), [cur?.entry.url, cur?.entry.token])
+  const api = useMemo(() => new Api(cur ? { url: cur.entry.url, token: cur.entry.token } : { url: "" }), [cur?.entry.url, cur?.entry.token])
   const health = useAsync(async () => (cur ? await api.health() : null), [cur?.entry.url])
   const me = useAsync(async () => (cur && cur.entry.token ? await api.me() : null), [cur?.entry.url, cur?.entry.token])
 
@@ -115,7 +155,7 @@ function App() {
     return (
       <Box flexDirection="column" paddingX={1}>
         <ServersScreen conf={conf} setConf={setConf} onPicked={() => { setScreen("shares"); health.reload(); me.reload() }} say={say} />
-        <StatusLine conf={conf} health={health.data?.body} me={me.data?.body} screen="servers" />
+        <StatusLine conf={conf} health={health.data?.body} me={me.data?.body} />
         <Toast toast={toast} />
       </Box>
     )
@@ -141,17 +181,17 @@ function App() {
       {screen === "users" && <UsersScreen api={api} say={say} />}
       {screen === "tokens" && <TokensScreen api={api} conf={conf} setConf={setConf} say={say} />}
       {screen === "codes" && <CodesScreen api={api} say={say} />}
-      {screen === "settings" && <SettingsScreen api={api} say={say} />}
-      <StatusLine conf={conf} health={health.data?.body} me={me.data?.body} screen={screen} />
+      {screen === "settings" && <SettingsScreen api={api} kind={cur.entry.kind} say={say} />}
+      <StatusLine conf={conf} health={health.data?.body} me={me.data?.body} />
       <Toast toast={toast} />
     </Box>
   )
 }
 
-function StatusLine(props: { conf: cfg.CliConfig; health: any; me: any; screen: Screen }) {
+function StatusLine(props: { conf: cfg.CliConfig; health: any; me: any }) {
   return (
     <Box marginTop={1}>
-      {dim(`←→ tabs · r reload · q quit`)}
+      {dim(`←→ tabs · s sort · r reload · q quit`)}
       {props.health ? dim(` · auth ${props.health.auth?.mode ?? "?"}`) : null}
       {props.me?.ok ? dim(` · ${props.me.userId}`) : null}
     </Box>
@@ -174,7 +214,6 @@ function ServersScreen(props: { conf: cfg.CliConfig; setConf: (c: cfg.CliConfig)
     if (key.upArrow) setSel((v) => Math.max(0, v - 1))
     else if (key.downArrow) setSel((v) => Math.min(names.length - 1, v + 1))
     else if (ch === "a") setMode("add")
-    else if (ch === "q") return
     else if (key.return && names.length) {
       const c = { ...props.conf, current: names[sel] }
       props.setConf(c); cfg.save(c); props.onPicked()
@@ -303,23 +342,68 @@ const listKeys = (ch: string, key: any, sel: number, len: number, setSel: (fn: (
 
 // ---- shares -------------------------------------------------------------------
 
+type ShareListRow = {
+  id: string; sessionID?: string; ownerId?: string | null; createdAt?: number; custom?: Record<string, unknown>
+  meta?: { status?: string; rev?: number; frozen?: boolean; gated?: boolean; title?: string; subagents?: number; expiresAt?: number; pluginSeen?: number; lastViewerAt?: number; viewerSessions?: number; sessions?: Array<{ id: string; title: string; agent: string; subagent: boolean; parentID: string | null; model?: string }> } | null
+}
+
 function SharesScreen(props: { api: Api; conf: cfg.CliConfig; say: (m: string) => void }) {
   const [detail, setDetail] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ id: string } | null>(null)
+  const sort = useSort(["created", "title", "status", "owner"])
   const list = useAsync(async () => {
     const admin = await props.api.sharesAdmin()
-    if (admin.status === 200 && admin.body?.ok) return { scope: "all" as const, rows: admin.body.shares ?? [] }
-    const mine = await props.api.meShares()
-    if (mine.body?.ok) return { scope: "own" as const, rows: (mine.body.shares ?? []).map((s: any) => ({ id: s.id, sessionID: s.sessionID, ownerId: null, createdAt: s.createdAt })) }
-    return { scope: "denied" as const, rows: [] }
+    let rows: Array<{ id: string; sessionID?: string; ownerId?: string | null; createdAt?: number; custom?: Record<string, unknown> }> = []
+    let scope = "denied" as "all" | "own" | "denied"
+    if (admin.status === 200 && admin.body?.ok) { rows = admin.body.shares ?? []; scope = "all" }
+    else {
+      const mine = await props.api.meShares()
+      if (mine.body?.ok) { rows = (mine.body.shares ?? []).map((s: any) => ({ id: s.id, sessionID: s.sessionID, ownerId: null, createdAt: s.createdAt })); scope = "own" }
+    }
+    // owner label join + bounded meta hydration
+    const owners = new Map<string, string>()
+    if (scope === "all") {
+      const users = await props.api.users()
+      if (users.status === 200 && users.body?.ok) for (const u of users.body.users ?? []) owners.set(u.id, u.label)
+    }
+    const metas = new Map<string, any>()
+    const ids = rows.slice(0, 100).map((r) => r.id)
+    const queue = [...ids]
+    await Promise.all(Array.from({ length: Math.min(6, queue.length) }, async () => {
+      for (;;) {
+        const id = queue.shift()
+        if (!id) return
+        try {
+          const r = await props.api.shareMeta(id)
+          if (r.status === 200 && r.body?.ok) {
+            const sessions = Object.entries(r.body.summaries ?? {}).map(([sid, s]: [string, any]) => ({ id: sid, title: s.title, agent: s.agent, subagent: !!s.parentID, parentID: s.parentID, model: s.model }))
+            metas.set(id, {
+              status: r.body.status, rev: r.body.rev, frozen: !!r.body.frozen, gated: !!r.body.auth?.set,
+              title: sessions.find((s) => !s.subagent)?.title ?? "",
+              subagents: sessions.filter((s) => s.subagent).length,
+              expiresAt: r.body.expiresAt, pluginSeen: r.body.pluginSeen, lastViewerAt: r.body.lastViewerAt,
+              viewerSessions: r.body.viewerSessions, sessions,
+            })
+          }
+        } catch { /* row lists unhydrated */ }
+      }
+    }))
+    return { scope, owners, rows: rows.map((r) => ({ ...r, meta: metas.get(r.id) ?? null })) }
   }, [props.api])
-  const rows = list.data?.rows ?? []
+  const allRows = list.data?.rows ?? []
+  const rows = sortWith(allRows, sort.key, true, (r, k) => {
+    if (k === "title") return (r.meta?.title || r.sessionID || "").toLowerCase()
+    if (k === "status") return r.meta?.status ?? ""
+    if (k === "owner") return (list.data?.owners.get(r.ownerId ?? "") ?? r.ownerId ?? "").toLowerCase()
+    return -(r.createdAt ?? 0)
+  })
   const [sel, setSel] = useList(rows.length)
 
   useInput((ch, key) => {
     if (detail || confirm) return
     if (listKeys(ch, key, sel, rows.length, setSel)) return
     if (ch === "r") { list.reload(); return }
+    if (ch === "s") { sort.cycle(); return }
     if (!rows.length) return
     const row = rows[sel]
     if (key.return) setDetail(row.id)
@@ -342,41 +426,47 @@ function SharesScreen(props: { api: Api; conf: cfg.CliConfig; say: (m: string) =
       />
     )
   }
+  const start = Math.max(0, sel - 14)
   return (
     <Box flexDirection="column">
-      <Text bold>shares {list.data ? dim(list.data.scope === "all" ? "(global)" : list.data.scope === "own" ? "(yours)" : "") : ""}</Text>
+      <Text bold>shares {list.data ? dim(`${list.data.scope === "all" ? "(global)" : list.data.scope === "own" ? "(yours)" : ""} · sorted by ${sort.label}`) : ""}</Text>
       {list.err ? <Text color="red">{list.err}</Text> : null}
+      <Box gap={1}>{dim("title                        status      owner           gated sub  expires")}</Box>
       {rows.length === 0 && !list.err ? dim(list.data?.scope === "denied" ? "no listing rights on this credential" : "none") : null}
-      {rows.slice(Math.max(0, sel - 15), Math.max(0, sel - 15) + 16).map((s: any, i: number) => {
-        const real = Math.max(0, sel - 15) + i
+      {rows.slice(start, start + 15).map((r, i) => {
+        const real = start + i
+        const owner = list.data?.owners.get(r.ownerId ?? "") ?? r.ownerId
         return (
-          <Box key={s.id} gap={1}>
-            <Text color={real === sel ? "cyan" : undefined} bold={real === sel}>{(real === sel ? "> " : "  ") + String(s.id).slice(0, 12)}</Text>
-            <Text>{String(s.sessionID ?? "-").slice(0, 26)}</Text>
-            {dim(fmtDate(s.createdAt))}
-            {s.ownerId ? dim(` ${s.ownerId}`) : null}
+          <Box key={r.id} gap={1}>
+            <Text color={real === sel ? "cyan" : undefined} bold={real === sel}>{(real === sel ? "> " : "  ") + (r.meta?.title || r.sessionID || r.id).slice(0, 27).padEnd(28)}</Text>
+            <StatusText status={r.meta?.status} frozen={r.meta?.frozen} />
+            {dim(String(owner ?? "-").slice(0, 15).padEnd(16))}
+            {r.meta ? (r.meta.gated ? <Text color="magenta">LOCK </Text> : dim("  -  ")) : dim("  ?  ")}
+            {dim(String(r.meta?.subagents ?? 0).padStart(3) + "  ")}
+            {dim(r.meta?.expiresAt ? relFuture(r.meta.expiresAt).padEnd(10) : "-".padEnd(10))}
           </Box>
         )
       })}
-      {rows.length ? dim("enter detail · d delete") : null}
+      {rows.length ? dim("enter detail · d delete · s sort") : null}
     </Box>
   )
 }
 
 function ShareDetail(props: { api: Api; id: string; onBack: () => void; say: (m: string) => void }) {
   const info = useAsync(async () => {
-    const r = await props.api.shareData(props.id)
-    if (!r.body || r.status >= 400) throw new Error(`read failed (${r.status}): ${r.body?.error ?? ""}`)
-    const d = r.body.data ?? []
-    const types: Record<string, number> = {}
-    for (const it of d) types[it.type] = (types[it.type] ?? 0) + 1
-    return { status: r.body.status, rev: r.body.rev, n: d.length, types, sessionID: d.find((x: any) => x.type === "session")?.sessionID, title: d.find((x: any) => x.type === "session")?.data?.title }
+    const r = await props.api.shareMeta(props.id)
+    if (!r.body || r.status >= 400 || !r.body?.ok) throw new Error(`private meta unavailable (${r.status}) - admin/owner only`)
+    const b = r.body
+    const sessions = Object.entries(b.summaries ?? {}).map(([sid, s]: [string, any]) => ({ id: sid, title: s.title, agent: s.agent, subagent: !!s.parentID, parentID: s.parentID, model: s.model, version: s.version }))
+    return { b, sessions }
   }, [props.id])
   const [patching, setPatching] = useState(false)
+  const [confirmFreeze, setConfirmFreeze] = useState<"freeze" | "unfreeze" | null>(null)
   useInput((ch, key) => {
-    if (patching) return
+    if (patching || confirmFreeze) return
     if (key.escape || ch === "b") { props.onBack(); return }
     if (ch === "p") setPatching(true)
+    if (ch === "f") setConfirmFreeze(info.data?.b.frozen ? "unfreeze" : "freeze")
     if (ch === "c") { console.log(`${props.api.url}/s/${props.id}`); props.say("url printed to terminal") }
   })
   if (patching) {
@@ -405,19 +495,36 @@ function ShareDetail(props: { api: Api; id: string; onBack: () => void; say: (m:
       />
     )
   }
+  if (confirmFreeze) {
+    return (
+      <Confirm
+        text={`${confirmFreeze} share ${props.id.slice(0, 10)}?${confirmFreeze === "freeze" ? " writes stop, viewing continues" : " writes resume"}`}
+        onYes={async () => {
+          const r = await props.api.shareFreeze(props.id, confirmFreeze === "freeze")
+          props.say(r.body?.ok ? confirmFreeze + "d" : `failed: ${r.body?.error ?? r.status}`)
+          setConfirmFreeze(null); info.reload()
+        }}
+        onNo={() => setConfirmFreeze(null)}
+      />
+    )
+  }
   return (
     <Box flexDirection="column">
       <Text bold>share {props.id}</Text>
       {info.err ? <Text color="red">{info.err}</Text> : info.data ? (
         <Box flexDirection="column">
           <Text>  url: <Text color="cyan">{props.api.url}/s/{props.id}</Text></Text>
-          <Text>  status: {info.data.status} · rev {info.data.rev} · {info.data.n} items</Text>
-          <Text>  {dim(Object.entries(info.data.types).map(([k, v]) => `${k}=${v}`).join("  "))}</Text>
-          {info.data.title ? <Text>  {dim(`"${info.data.title}"`)}</Text> : null}
-          {info.data.sessionID ? dim(`  ${info.data.sessionID}`) : null}
+          <Text>  status: <StatusText status={info.data.b.status} frozen={info.data.b.frozen} /> · rev {info.data.b.rev} · gated {info.data.b.auth?.set ? <Text color="magenta">yes</Text> : "no"}</Text>
+          <Text>  owner: {info.data.b.ownerId ?? "-"}{info.data.b.creatorTokenId ? dim(` · created by token ${info.data.b.creatorTokenId}`) : null}</Text>
+          <Text>  expires: {info.data.b.expiresAt ? relFuture(info.data.b.expiresAt) : "never"} {dim(`(${info.data.b.ttlHours}h · ${fmtDate(info.data.b.createdAt)})`)}</Text>
+          <Text>  liveness: plugin {rel(info.data.b.pluginSeen)} · last viewer {rel(info.data.b.lastViewerAt)} {dim(`(${info.data.b.viewerSessions} session${info.data.b.viewerSessions === 1 ? "" : "s"})`)}</Text>
+          <Text>  </Text>
+          {info.data.sessions.map((s) => (
+            <Text key={s.id}>  {s.subagent ? dim("↳") : <Text bold color="green">●</Text>} {s.subagent ? "subagent " : "session  "}{s.id} "{s.title}" {dim(`[${s.agent ?? "-"}]${s.model ? ` ${s.model}` : ""}`)}</Text>
+          ))}
         </Box>
       ) : dim("loading...")}
-      {dim("p patch (ttl/gate) · c print url · esc back")}
+      {dim("p patch (ttl/gate) · f freeze/unfreeze · c print url · esc back")}
     </Box>
   )
 }
@@ -425,22 +532,34 @@ function ShareDetail(props: { api: Api; id: string; onBack: () => void; say: (m:
 // ---- users -------------------------------------------------------------------
 
 function UsersScreen(props: { api: Api; say: (m: string) => void }) {
+  const [detail, setDetail] = useState<string | null>(null)
+  const sort = useSort(["created", "label"])
   const list = useAsync(async () => {
     const r = await props.api.users()
     if (!r.body?.ok) throw new Error(`${r.body?.error ?? r.status} (root only)`)
-    return r.body.users ?? []
+    const users: any[] = r.body.users ?? []
+    const codes = await props.api.codes()
+    const codeLabel = new Map<string, string>()
+    if (codes.status === 200 && codes.body?.ok) for (const c of codes.body.codes ?? []) codeLabel.set(c.id, c.label)
+    // their shares for the detail pane (admin list join)
+    const shares = await props.api.sharesAdmin()
+    const shareRows: any[] = shares.status === 200 && shares.body?.ok ? shares.body.shares ?? [] : []
+    return { users, codeLabel, shareRows }
   }, [props.api])
-  const rows = list.data ?? []
+  const all = list.data?.users ?? []
+  const rows = sortWith(all, sort.key, true, (u, k) => (k === "label" ? String(u.label ?? "").toLowerCase() : -(u.createdAt ?? 0)))
   const [sel, setSel] = useList(rows.length)
   const [creating, setCreating] = useState(false)
   const [confirm, setConfirm] = useState<{ what: string; run: () => Promise<void> } | null>(null)
   useInput((ch, key) => {
-    if (creating || confirm) return
+    if (creating || confirm || detail) return
     if (listKeys(ch, key, sel, rows.length, setSel)) return
     if (ch === "r") { list.reload(); return }
+    if (ch === "s") { sort.cycle(); return }
     if (ch === "n") { setCreating(true); return }
     if (!rows.length) return
     const u = rows[sel]
+    if (key.return) setDetail(u.id)
     if (ch === "f") setConfirm({ what: `${u.frozen ? "unfreeze" : "freeze"} ${u.id} (${u.label})`, run: async () => { const r = u.frozen ? await props.api.userUnfreeze(u.id) : await props.api.userFreeze(u.id); props.say(r.body?.ok ? "done" : `failed: ${r.body?.error}`); list.reload() } })
     if (ch === "d") setConfirm({ what: `delete user ${u.id} (${u.label}) and all its shares/tokens`, run: async () => { const r = await props.api.userDelete(u.id, "delete"); props.say(r.body?.ok ? `deleted (${r.body.shares} shares)` : `failed: ${r.body?.error}`); list.reload() } })
   })
@@ -451,19 +570,57 @@ function UsersScreen(props: { api: Api; say: (m: string) => void }) {
   if (confirm) {
     return <Confirm text={confirm.what} onYes={async () => { await confirm.run(); setConfirm(null) }} onNo={() => setConfirm(null)} />
   }
+  if (detail) {
+    return <UserDetail api={props.api} id={detail} data={list.data} onBack={() => setDetail(null)} say={props.say} />
+  }
   return (
     <Box flexDirection="column">
-      <Text bold>users {dim("(root)")}</Text>
+      <Text bold>users {dim(`(root) · sorted by ${sort.label}`)}</Text>
       {list.err ? <Text color="red">{list.err}</Text> : null}
       {rows.map((u: any, i: number) => (
         <Box key={u.id} gap={1}>
           <Text color={i === sel ? "cyan" : undefined} bold={i === sel}>{(i === sel ? "> " : "  ") + u.id}</Text>
           <Text>{u.label}</Text>
           {dim(`s:${u.shares} t:${u.tokensActive}`)}
+          {u.createdByCode ? dim(` via ${list.data?.codeLabel.get(u.createdByCode) ?? u.createdByCode}`) : null}
           {u.frozen ? <Text color="red" bold>FROZEN</Text> : null}
         </Box>
       ))}
-      {rows.length ? dim("f freeze/unfreeze · d delete · n new") : null}
+      {rows.length ? dim("enter detail · f freeze/unfreeze · d delete · n new · s sort") : null}
+    </Box>
+  )
+}
+
+function UserDetail(props: { api: Api; id: string; data: { users: any[]; codeLabel: Map<string, string>; shareRows: any[] } | null; onBack: () => void; say: (m: string) => void }) {
+  const detail = useAsync(async () => {
+    const [tokens, shares] = await Promise.all([props.api.tokens(), props.api.sharesAdmin()])
+    const toks: any[] = tokens.status === 200 && tokens.body?.ok ? (tokens.body.tokens ?? []).filter((t: any) => t.userId === props.id) : []
+    const shr: any[] = shares.status === 200 && shares.body?.ok ? (shares.body.shares ?? []).filter((s: any) => s.ownerId === props.id) : []
+    return { toks, shr }
+  }, [props.id])
+  const u = props.data?.users.find((x: any) => x.id === props.id)
+  useInput((ch, key) => { if (key.escape || ch === "b") props.onBack() })
+  return (
+    <Box flexDirection="column">
+      <Text bold>user {props.id} "{u?.label ?? ""}"{u?.frozen ? <Text color="red"> FROZEN</Text> : null}</Text>
+      {u?.createdByCode ? <Text>  onboarded via code: {props.data?.codeLabel.get(u.createdByCode) ?? u.createdByCode}</Text> : dim("  onboarded without a code")}
+      <Text>  </Text>
+      <Text>  shares ({detail.data?.shr.length ?? 0}):</Text>
+      {(detail.data?.shr ?? []).slice(0, 12).map((s: any) => (
+        <Box key={s.id} gap={1}>{dim("   ")}<Text>{s.id.slice(0, 12)}</Text>{dim(s.sessionID ?? "-")}{dim(rel(s.createdAt))}</Box>
+      ))}
+      <Text>  tokens ({detail.data?.toks.length ?? 0}):</Text>
+      {(detail.data?.toks ?? []).slice(0, 12).map((t: any) => (
+        <Box key={t.id} gap={1}>
+          {dim("   ")}
+          <Text color={t.kind === "scoped" ? "yellow" : "green"}>{t.kind}</Text>
+          <Text>{`"${t.label ?? ""}"`}</Text>
+          {dim(t.revoked ? "REVOKED" : t.expiresAt ? relFuture(t.expiresAt) : "no expiry")}
+          {t.createdBy ? dim(` via ${t.createdBy}`) : null}
+        </Box>
+      ))}
+      {detail.err ? <Text color="red">{detail.err}</Text> : null}
+      {dim("esc back")}
     </Box>
   )
 }
@@ -471,23 +628,38 @@ function UsersScreen(props: { api: Api; say: (m: string) => void }) {
 // ---- tokens ------------------------------------------------------------------
 
 function TokensScreen(props: { api: Api; conf: cfg.CliConfig; setConf: (c: cfg.CliConfig) => void; say: (m: string) => void }) {
+  const sort = useSort(["created", "label", "kind", "user"])
+  const [showRevoked, setShowRevoked] = useState(false)
   const list = useAsync(async () => {
     const r = await props.api.tokens()
-    if (r.body?.ok) return r.body.tokens ?? []
+    if (r.body?.ok) {
+      const users = await props.api.users()
+      const userLabel = new Map<string, string>()
+      if (users.status === 200 && users.body?.ok) for (const u of users.body.users ?? []) userLabel.set(u.id, u.label)
+      return { tokens: r.body.tokens ?? [], userLabel }
+    }
     throw new Error(`${r.body?.error ?? r.status}`)
   }, [props.api])
-  const rows = (list.data ?? []).filter((t: any) => !t.revoked)
-  const all = list.data ?? []
+  const all = list.data?.tokens ?? []
+  const visible = showRevoked ? all : all.filter((t: any) => !t.revoked)
+  const rows = sortWith(visible, sort.key, true, (t, k) => {
+    if (k === "label") return String((t as any).label ?? "").toLowerCase()
+    if (k === "kind") return (t as any).kind
+    if (k === "user") return (list.data?.userLabel.get((t as any).userId) ?? (t as any).userId).toLowerCase()
+    return -((t as any).createdAt ?? 0)
+  })
   const [sel, setSel] = useList(rows.length)
   const [mode, setMode] = useState<null | "mint" | "edit" | "confirm-rotate" | { what: string; run: () => Promise<void> }>(null)
   useInput((ch, key) => {
     if (mode) return
     if (listKeys(ch, key, sel, rows.length, setSel)) return
     if (ch === "r") { list.reload(); return }
+    if (ch === "s") { sort.cycle(); return }
+    if (ch === "v") { setShowRevoked((v) => !v); return }
     if (ch === "m") { setMode("mint"); return }
     if (ch === "R") { setMode("confirm-rotate"); return }
     if (!rows.length) return
-    const t = rows[sel]
+    const t = rows[sel] as any
     if (ch === "e") setMode("edit")
     if (ch === "x") setMode({ what: `revoke ${t.id} "${t.label}" (freezes control if it is the last full token)`, run: async () => { const r = await props.api.tokenRevoke(t.id); props.say(r.body?.ok ? `revoked (frozen: ${!!r.body.frozen})` : `failed: ${r.body?.error}`); list.reload() } })
     if (ch === "F") setMode({ what: `freeze every share created by ${t.id}`, run: async () => { const r = await props.api.tokenFreezeShares(t.id); props.say(r.body?.ok ? `froze ${r.body.shares}` : `failed: ${r.body?.error}`); list.reload() } })
@@ -502,13 +674,15 @@ function TokensScreen(props: { api: Api; conf: cfg.CliConfig; setConf: (c: cfg.C
           { name: "label", label: "label", optional: true },
           { name: "maxLiveShares", label: "max live shares", optional: true, numeric: true },
           { name: "dailyCreates", label: "daily creates", optional: true, numeric: true },
+          { name: "expiresInHours", label: "expires in hours (blank=never)", optional: true, numeric: true },
         ]}
         onCancel={() => setMode(null)}
         onSubmit={async (v) => {
           const limits: Record<string, number> = {}
           if (v.maxLiveShares) limits.maxLiveShares = Number(v.maxLiveShares)
           if (v.dailyCreates) limits.dailyCreates = Number(v.dailyCreates)
-          const r = await props.api.tokenMint({ userId: v.userId, kind: v.kind, label: v.label, limits: Object.keys(limits).length ? limits : undefined })
+          const expiry: Record<string, number> = v.expiresInHours ? { expiresInHours: Number(v.expiresInHours) } : {}
+          const r = await props.api.tokenMint({ userId: v.userId, kind: v.kind, label: v.label, limits: Object.keys(limits).length ? limits : undefined, ...expiry })
           if (r.body?.ok) { console.log(`token: ${r.body.token}`); props.say(`minted ${r.body.id} - token printed to terminal`) }
           else props.say(`mint failed: ${r.body?.error ?? r.status}`)
           setMode(null); list.reload()
@@ -517,7 +691,7 @@ function TokensScreen(props: { api: Api; conf: cfg.CliConfig; setConf: (c: cfg.C
     )
   }
   if (mode === "edit") {
-    const t = rows[sel]
+    const t = rows[sel] as any
     return (
       <Form
         title={`edit ${t.id}`}
@@ -525,13 +699,16 @@ function TokensScreen(props: { api: Api; conf: cfg.CliConfig; setConf: (c: cfg.C
           { name: "label", label: "label", initial: t.label ?? "" },
           { name: "maxLiveShares", label: "max live shares", initial: String(t.limits?.maxLiveShares ?? ""), optional: true, numeric: true },
           { name: "dailyCreates", label: "daily creates", initial: String(t.limits?.dailyCreates ?? ""), optional: true, numeric: true },
+          { name: "expiresInHours", label: "expires in hours (blank=keep, 0=never)", initial: t.expiresAt ? String(Math.max(1, Math.round((t.expiresAt - Date.now()) / 3600000))) : "", optional: true, numeric: true },
         ]}
         onCancel={() => setMode(null)}
         onSubmit={async (v) => {
           const limits: Record<string, number> = {}
           if (v.maxLiveShares) limits.maxLiveShares = Number(v.maxLiveShares)
           if (v.dailyCreates) limits.dailyCreates = Number(v.dailyCreates)
-          const r = await props.api.tokenAdminUpdate(t.id, { label: v.label, limits: Object.keys(limits).length ? limits : t.limits })
+          const expiry: Record<string, number> = {}
+          if (v.expiresInHours !== "") expiry.expiresInHours = Number(v.expiresInHours || 0)
+          const r = await props.api.tokenAdminUpdate(t.id, { label: v.label, limits: Object.keys(limits).length ? limits : t.limits, ...expiry })
           props.say(r.body?.ok ? `updated ${t.id}` : `failed: ${r.body?.error}`)
           setMode(null); list.reload()
         }}
@@ -560,19 +737,29 @@ function TokensScreen(props: { api: Api; conf: cfg.CliConfig; setConf: (c: cfg.C
   if (mode && typeof mode === "object") {
     return <Confirm text={mode.what} onYes={async () => { await mode.run!(); setMode(null) }} onNo={() => setMode(null)} />
   }
+  const start = Math.max(0, sel - 14)
+  const hidden = all.length - visible.length
   return (
     <Box flexDirection="column">
-      <Text bold>tokens {dim(`(${all.length} total, ${rows.length} active)`)}</Text>
+      <Text bold>tokens {dim(`${visible.length} shown${hidden ? ` (${hidden} revoked hidden, v toggles)` : ""} · sorted by ${sort.label}`)}</Text>
       {list.err ? <Text color="red">{list.err}</Text> : null}
-      {rows.map((t: any, i: number) => (
-        <Box key={t.id} gap={1}>
-          <Text color={i === sel ? "cyan" : undefined} bold={i === sel}>{(i === sel ? "> " : "  ") + t.id}</Text>
-          <Text color={t.kind === "scoped" ? "yellow" : "green"}>{t.kind}</Text>
-          <Text>{`"${t.label ?? ""}"`}</Text>
-          {dim(`s:${t.limits?.maxLiveShares ?? "∞"} d:${t.limits?.dailyCreates ?? "∞"} used ${t.lastUsedAt ? fmtDate(t.lastUsedAt) : "never"}`)}
-        </Box>
-      ))}
-      {rows.length || !list.err ? dim("e edit · x revoke · F freeze its shares · m mint · R rotate MY credential") : null}
+      {rows.length === 0 && !list.err ? dim(showRevoked ? "none" : "none active (v shows revoked)") : null}
+      {rows.slice(start, start + 15).map((t: any, i: number) => {
+        const real = start + i
+        const user = list.data?.userLabel.get(t.userId) ?? t.userId
+        return (
+          <Box key={t.id} gap={1}>
+            <Text color={real === sel ? "cyan" : undefined} bold={real === sel}>{(real === sel ? "> " : "  ") + t.id}</Text>
+            <Text color={t.kind === "scoped" ? "yellow" : "green"}>{t.kind}</Text>
+            <Text>{`"${t.label ?? ""}"`.slice(0, 20)}</Text>
+            {dim(String(user).slice(0, 12).padEnd(13))}
+            {t.expiresAt ? <Text color={t.expiresAt < Date.now() ? "red" : "magenta"}>{relFuture(t.expiresAt)}</Text> : dim("no-exp")}
+            {t.createdBy ? dim(`via ${String(t.createdBy).slice(0, 10)}`) : null}
+            {t.revoked ? <Text color="red" bold>REVOKED</Text> : null}
+          </Box>
+        )
+      })}
+      {rows.length || !list.err ? dim("e edit · x revoke · F freeze its shares · m mint · R rotate MY credential · v revoked · s sort") : null}
     </Box>
   )
 }
@@ -583,9 +770,17 @@ function CodesScreen(props: { api: Api; say: (m: string) => void }) {
   const list = useAsync(async () => {
     const r = await props.api.codes()
     if (!r.body?.ok) throw new Error(`${r.body?.error ?? r.status} (root only)`)
-    return r.body.codes ?? []
+    const codes: any[] = r.body.codes ?? []
+    const users = await props.api.users()
+    const lineage = new Map<string, string[]>()
+    if (users.status === 200 && users.body?.ok) {
+      for (const u of users.body.users ?? []) {
+        if (u.createdByCode) lineage.set(u.createdByCode, [...(lineage.get(u.createdByCode) ?? []), u.label || u.id])
+      }
+    }
+    return { codes, lineage }
   }, [props.api])
-  const rows = list.data ?? []
+  const rows = list.data?.codes ?? []
   const [sel, setSel] = useList(rows.length)
   const [creating, setCreating] = useState(false)
   const [confirm, setConfirm] = useState<{ what: string; run: () => Promise<void> } | null>(null)
@@ -626,26 +821,32 @@ function CodesScreen(props: { api: Api; say: (m: string) => void }) {
       <Text bold>access codes {dim("(root)")}</Text>
       {list.err ? <Text color="red">{list.err}</Text> : null}
       {rows.length === 0 && !list.err ? dim("none") : null}
-      {rows.map((c: any, i: number) => (
-        <Box key={c.id} gap={1}>
-          <Text color={i === sel ? "cyan" : undefined} bold={i === sel}>{(i === sel ? "> " : "  ") + c.id}</Text>
-          <Text>{c.label}</Text>
-          {dim(`left ${c.activationsLeft < 0 ? "∞" : c.activationsLeft} · used ${c.used}`)}
-          {c.disabled ? <Text color="red" bold>OFF</Text> : null}
-        </Box>
-      ))}
-      {rows.length ? dim("d disable · L revoke lineage (kill switch) · n new") : null}
+      {rows.map((c: any, i: number) => {
+        const on = list.data?.lineage.get(c.id) ?? []
+        return (
+          <Box key={c.id} gap={1}>
+            <Text color={i === sel ? "cyan" : undefined} bold={i === sel}>{(i === sel ? "> " : "  ") + c.id}</Text>
+            <Text>{c.label}</Text>
+            {dim(`left ${c.activationsLeft < 0 ? "∞" : c.activationsLeft} · used ${c.used}`)}
+            {on.length ? dim(` · onboarded ${on.slice(0, 2).join(", ")}${on.length > 2 ? ` +${on.length - 2}` : ""}`) : dim(" · no users yet")}
+            {c.disabled ? <Text color="red" bold>OFF</Text> : null}
+          </Box>
+        )
+      })}
+      {rows.length ? dim("d disable · L revoke lineage (kill switch) · n new · r reload") : null}
     </Box>
   )
 }
 
 // ---- settings ----------------------------------------------------------------
 
-function SettingsScreen(props: { api: Api; say: (m: string) => void }) {
+function SettingsScreen(props: { api: Api; kind?: string; say: (m: string) => void }) {
   const st = useAsync(async () => {
     const r = await props.api.meSettings()
-    if (!r.body?.ok) throw new Error(`${r.body?.error ?? r.status} (user identity required)`)
-    return r.body.settings ?? {}
+    if (r.body?.ok) return { role: "user" as const, settings: r.body.settings ?? {} }
+    const h = await props.api.health()
+    if (h.status === 200 && h.body?.policy) return { role: "policy" as const, policy: h.body.policy }
+    throw new Error(`${r.body?.error ?? r.status} - no user settings and no policy available`)
   }, [props.api])
   const [editing, setEditing] = useState(false)
   useInput((ch) => {
@@ -653,8 +854,8 @@ function SettingsScreen(props: { api: Api; say: (m: string) => void }) {
     if (ch === "r") st.reload()
     if (ch === "e") setEditing(true)
   })
-  if (editing) {
-    const cur = st.data ?? {}
+  if (editing && st.data?.role === "user") {
+    const cur = st.data.settings as Record<string, unknown>
     return (
       <Form
         title="me settings (server-applied defaults)"
@@ -665,7 +866,7 @@ function SettingsScreen(props: { api: Api; say: (m: string) => void }) {
         ]}
         onCancel={() => setEditing(false)}
         onSubmit={async (v) => {
-          const settings: Record<string, number> = { ...(st.data ?? {}) }
+          const settings: Record<string, number> = { ...(st.data?.role === "user" ? st.data.settings : {}) }
           if (v.defaultTtlHours) settings.defaultTtlHours = Number(v.defaultTtlHours)
           if (v.defaultMaxLiveShares) settings.defaultMaxLiveShares = Number(v.defaultMaxLiveShares)
           if (v.defaultDailyCreates) settings.defaultDailyCreates = Number(v.defaultDailyCreates)
@@ -678,12 +879,16 @@ function SettingsScreen(props: { api: Api; say: (m: string) => void }) {
   }
   return (
     <Box flexDirection="column">
-      <Text bold>me settings</Text>
-      {st.err ? <Text color="red">{st.err}</Text> : Object.entries(st.data ?? {}).map(([k, v]) => (
+      {st.data?.role === "policy" ? <Text bold>server policy {dim("(read-only - this credential has no user settings)")}</Text> : <Text bold>me settings</Text>}
+      {st.err ? <Text color="red">{st.err}</Text> : null}
+      {st.data?.role === "user" && Object.entries(st.data.settings).map(([k, v]) => (
         <Box key={k} gap={1}><Text>  {k}</Text><Text color="cyan">{String(v)}</Text></Box>
       ))}
-      {(st.data && !Object.keys(st.data).length) ? dim("  (empty - server defaults apply)") : null}
-      {dim("e edit · r reload")}
+      {st.data?.role === "policy" && Object.entries(st.data.policy).map(([k, v]) => (
+        <Box key={k} gap={1}><Text>  {k}</Text><Text color="cyan">{String(JSON.stringify(v))}</Text></Box>
+      ))}
+      {st.data?.role === "user" && !Object.keys(st.data.settings).length ? dim("  (empty - server defaults apply)") : null}
+      {st.data?.role === "user" ? dim("e edit · r reload") : dim("r reload")}
     </Box>
   )
 }
