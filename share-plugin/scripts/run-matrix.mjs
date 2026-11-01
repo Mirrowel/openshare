@@ -25,7 +25,11 @@ const suite = (name, base, reuse, extraEnv = {}) => ({
 })
 
 const SHARED = 8789 // the shared matrix worker's port
-const manualShard = (shard, base) => suite(`manual-${shard}`, base, false, { OPENSHARE_MANUAL_SHARD: shard })
+// manual shards REUSE the shared worker (plain startWorker, no vars):
+// nothing in them purges or asserts global state, and each drops a
+// ~10s wrangler boot. tui-flow is NOT reuse (its purge empties the
+// backend) - see its own worker boot.
+const manualShard = (shard, base) => suite(`manual-${shard}`, base, true, { OPENSHARE_MANUAL_SHARD: shard })
 const enrollShard = (shard, base) => suite(`enroll-${shard}`, base, false, { OPENSHARE_ENROLL_SHARD: shard })
 // Every suite in ONE wave: each owns a disjoint port block, so the wall
 // clock is the slowest single suite instead of the sum of two halves.
@@ -43,7 +47,10 @@ const waves = [
     suite("fanout-tests", 8830, false),
     suite("auth-tests", 8850, false),
     suite("regression-tests", 9110, true),
-    suite("tui-flow-tests", 8890, true),
+    // NOT reuse: this suite purges the whole backend, so it runs on its
+    // own worker (the matrix reuse env would otherwise point it - and its
+    // port sweep - at the shared 8789 instance, killing it for everyone)
+    suite("tui-flow-tests", 8890, false),
     suite("v2-mock-tests", 8910, true),
     suite("big-tests", 8990, false),
   ],
@@ -123,27 +130,27 @@ try {
   let failed = null
   const timings = []
   // Bounded scheduler: launching every suite at once oversubscribes the
-  // machine (suites spawn workers + opencode serves; everything then
-  // inflates 20-60% and the wall grows). Suites run longest-first through
-  // a fixed-size window; 4 measured fastest (6 thrashes, 2-3 stretches
-  // into more sequential batches).
+  // machine. Suites run longest-first through a fixed-size window; 6
+  // measured fastest on the 12-logical-core box (4 serialized the queue
+  // tail, 13 thrashed) once the manual shards stopped booting their own
+  // workers and the enroll teardown stopped killing a foreign port.
   const costs = {
-    "manual-allmode": 110,
+    "manual-allmode": 70,
     "fanout-tests": 105,
     "manual-core": 60,
     "auth-tests": 60,
-    "enroll-a": 55,
-    "enroll-b": 55,
-    "enroll-public": 53,
+    "enroll-b": 75,
+    "enroll-a": 60,
+    "enroll-public": 50,
     "regression-tests": 50,
-    "tui-flow-tests": 45,
-    "manual-engine1": 25,
-    "manual-engine2": 20,
+    "tui-flow-tests": 55,
+    "manual-engine1": 10,
+    "manual-engine2": 9,
     "big-tests": 18,
     "v2-mock-tests": 14,
   }
   const queue = active.flat().sort((a, b) => (costs[b.name] ?? 30) - (costs[a.name] ?? 30))
-  const limit = Math.max(1, Number(process.env.OPENSHARE_MATRIX_CONCURRENCY) || 4)
+  const limit = Math.max(1, Number(process.env.OPENSHARE_MATRIX_CONCURRENCY) || 6)
   const running = new Set()
   const tWave = performance.now()
   await new Promise((resolve) => {
@@ -174,11 +181,11 @@ try {
   // Wall-clock budget on the WAVE span (pre-warm and worker boot are
   // environment noise, not suite cost): every test is a perpetual tax, so
   // growth must pay for itself by deleting/merging time elsewhere. The
-  // full-matrix number is load-sensitive (same config spans 186-223s
-  // depending on ambient machine load) - treat a budget hit as "measure
-  // again on a quiet box" before trimming. OSH_MATRIX_BUDGET_S overrides
-  // (0 disables) for one-off diagnostics.
-  const budget = Number(process.env.OSH_MATRIX_BUDGET_S ?? (requested.length ? 80 : 200))
+  // budgets sit above observed run-to-run variance (~±20% on the real-
+  // host suites) so a hit means a real regression, not a busy box:
+  // typical waves are ~55-75s quick / ~130-145s full. OSH_MATRIX_BUDGET_S
+  // overrides (0 disables) for one-off diagnostics.
+  const budget = Number(process.env.OSH_MATRIX_BUDGET_S ?? (requested.length ? 90 : 155))
   if (budget > 0 && waveS > budget) {
     console.error(`[matrix] BUDGET EXCEEDED: wave ${waveS.toFixed(1)}s > ${budget}s budget - trim suites or move coverage to on-demand runs`)
     process.exitCode = 1

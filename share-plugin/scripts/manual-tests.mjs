@@ -576,7 +576,7 @@ try {
     }
   }
   // S10: completed debounce — idle between sequential prompts must NOT
-  // flip the share to completed instantly (8s delay here); a genuinely
+  // flip the share to completed instantly (4s delay here); a genuinely
   // finished session settles to completed after the window; a killed
   // process (dispose) flushes the pending completed immediately.
   {
@@ -586,11 +586,45 @@ try {
     const stUrlFile = join(stSandbox, "share-url.txt")
     const stServe = await startServe({ name: "status", path: PKG }, stSandbox, stProject, {
       OPENSHARE_URL_FILE: stUrlFile,
-      OPENSHARE_COMPLETED_DELAY_MS: "8000",
+      OPENSHARE_COMPLETED_DELAY_MS: "4000",
       // stderr ladder, "url" rung: announce lines stay, status/banner lines
       // drop (the CI shape: clean logs, scrapeable share URL)
       OPENSHARE_ANNOUNCE_STDERR: "url",
     })
+    // idle-flush latency serve runs CONCURRENTLY on its own port (the old
+    // serial ordering existed only because both serves shared one port);
+    // its probes are independent of everything below
+    const latSandbox = join(suiteDir, "latency")
+    const latProject = join(latSandbox, "project")
+    mkdirSync(latProject, { recursive: true })
+    const latUrlFile = join(latSandbox, "share-url.txt")
+    const latChain = (async () => {
+      const latServe = await startServe({ name: "latency", path: PKG }, latSandbox, latProject, {
+        OPENSHARE_URL_FILE: latUrlFile,
+        OPENSHARE_DEBOUNCE_MS: "8000",
+        OPENSHARE_COMPLETED_DELAY_MS: "300",
+        // stderr ladder, "status" rung: status/banner lines print, the
+        // share URL never does (the public-CI shape)
+        OPENSHARE_ANNOUNCE_STDERR: "status",
+      }, SERVE_PORT + 8)
+      try {
+        await createAndPrompt(latServe, "latency probe")
+        const latUrl = (await waitFor(() => readUrlFile(latUrlFile), "S10: latency share url")).trim().split("\n").at(-1)
+        const latId = latUrl.split("/").pop()
+        const t0 = Date.now()
+        await waitForShareData(latId, (parsed) => {
+          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.type === "user")
+          return msgs.length ? parsed : undefined
+        }, "S10: turn-end content visible")
+        const latency = Date.now() - t0
+        check("S10: turn-end content flushed immediately (<3s despite 8s interval)", latency < 3000, `${latency}ms`)
+        const latOut = latServe.output()
+        check("S10: ladder status keeps the mode banner", latOut.includes("[openshare] share mode:"), latOut.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 2).join(" | "))
+        check("S10: ladder status never prints the share URL", !latOut.includes("[openshare] live: ") && !latOut.includes("[openshare] url file:"), latOut.split("\n").filter((l) => l.includes("live:")).slice(0, 2).join(" | "))
+      } finally {
+        await stopServe(latServe)
+      }
+    })()
     try {
       const stsid = await createAndPrompt(stServe, "status debounce")
       const sturl = (await waitFor(() => readUrlFile(stUrlFile), "S10: share created")).trim().split("\n").at(-1)
@@ -605,10 +639,10 @@ try {
         )
         return hasResponse ? parsed : undefined
       }, "S10: response parts synced")
-      await sleep(1500)
+      await sleep(900)
       const mid = await (await httpGet(`${WORKER_URL}/api/share/${stid}/data`)).json()
       check("S10: status still live inside the debounce window", mid.status === "live", `status=${mid.status}`)
-      const done = await waitForShareData(stid, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: completed after the window (8s)")
+      const done = await waitForShareData(stid, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: completed after the window (4s)")
       check("S10: settles to completed after the delay", done.status === "completed")
 
       // ladder at "url": announce lines present, banner/status lines absent
@@ -705,41 +739,8 @@ try {
       await stopServe(stServe)
     }
 
-    // idle-flush latency: with a LONG sync interval (8s) the turn-end
-    // batch must still land within ~3s of the prompt returning — the
-    // idle flush, not the interval, delivers turn ends (own serve: the
-    // port rebind kills the previous one, so this runs last)
-    {
-      const latSandbox = join(suiteDir, "latency")
-      const latProject = join(latSandbox, "project")
-      mkdirSync(latProject, { recursive: true })
-      const latUrlFile = join(latSandbox, "share-url.txt")
-      const latServe = await startServe({ name: "latency", path: PKG }, latSandbox, latProject, {
-        OPENSHARE_URL_FILE: latUrlFile,
-        OPENSHARE_DEBOUNCE_MS: "8000",
-        OPENSHARE_COMPLETED_DELAY_MS: "300",
-        // stderr ladder, "status" rung: status/banner lines print, the
-        // share URL never does (the public-CI shape)
-        OPENSHARE_ANNOUNCE_STDERR: "status",
-      })
-      try {
-        await createAndPrompt(latServe, "latency probe")
-        const latUrl = (await waitFor(() => readUrlFile(latUrlFile), "S10: latency share url")).trim().split("\n").at(-1)
-        const latId = latUrl.split("/").pop()
-        const t0 = Date.now()
-        await waitForShareData(latId, (parsed) => {
-          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.type === "user")
-          return msgs.length ? parsed : undefined
-        }, "S10: turn-end content visible")
-        const latency = Date.now() - t0
-        check("S10: turn-end content flushed immediately (<3s despite 8s interval)", latency < 3000, `${latency}ms`)
-        const latOut = latServe.output()
-        check("S10: ladder status keeps the mode banner", latOut.includes("[openshare] share mode:"), latOut.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 2).join(" | "))
-        check("S10: ladder status never prints the share URL", !latOut.includes("[openshare] live: ") && !latOut.includes("[openshare] url file:"), latOut.split("\n").filter((l) => l.includes("live:")).slice(0, 2).join(" | "))
-      } finally {
-        await stopServe(latServe)
-      }
-    }
+    // join the concurrent latency/ladder chain (booted above stServe)
+    await latChain
   }
   } // end engineA
   if (engineB) {

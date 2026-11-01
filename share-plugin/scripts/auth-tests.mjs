@@ -939,9 +939,17 @@ try {
   }
 
   // T20 — public mode worker: codeless onboarding is OFF by default, so
-  // enrollment needs a code even on public; anonymous creates stay open
-  console.log(`[${SUITE}] starting public-mode worker…`)
-  worker2 = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1" }, authMode: "public" })
+  // enrollment needs a code even on public; anonymous creates stay open.
+  // Both public instances boot CONCURRENTLY (independent ports/state);
+  // sequential boots put ~20s of wrangler cold-starts on the wave's
+  // critical path for no ordering benefit.
+  console.log(`[${SUITE}] starting public-mode workers…`)
+  const [w2, w3] = await Promise.all([
+    startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1" }, authMode: "public" }),
+    startBackend(suiteDir, { port: B3_PORT, configSuffix: "pub2", name: "b3", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1", CODELESS_ONBOARDING: "1" }, authMode: "public" }),
+  ])
+  worker2 = w2
+  worker3 = w3
   const W2 = worker2.url
   const h2 = await req(W2, "GET", "/health")
   ok("T20 health auth.mode=public", h2.json?.auth?.mode === "public")
@@ -955,8 +963,8 @@ try {
   ok("T20d owned create with pub token", (await req(W2, "POST", CREATE, { token: pubEnroll.json?.token, body: { sessionID: "ses_pubuser" } })).json?.ok === true)
 
   // T20e — codeless onboarding explicitly enabled: enroll without a code
-  // is allowed, on a separate instance (flag is per-deployment)
-  worker3 = await startBackend(suiteDir, { port: B3_PORT, configSuffix: "pub2", name: "b3", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1", CODELESS_ONBOARDING: "1" }, authMode: "public" })
+  // is allowed, on a separate instance (flag is per-deployment; booted
+  // above in parallel)
   const W3 = worker3.url
   const clEnroll = await req(W3, "POST", "/api/enroll", { body: { label: "codeless-one" } })
   ok("T20e codeless onboarding when enabled", clEnroll.json?.ok === true && typeof clEnroll.json?.token === "string", JSON.stringify(clEnroll.json))
