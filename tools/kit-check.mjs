@@ -46,7 +46,7 @@ function confList(conf, key) {
 
 // parse the workflow's push `paths:` entries (indented dashes after paths:)
 function workflowPaths(wf) {
-  const m = wf.match(/^\s{4}paths:\n((?:\s+- .+\n?)+)/m)
+  const m = wf.match(/^\s{4}paths:\r?\n((?:\s+- .+\r?\n?)+)/m)
   if (!m) return null
   return m[1].split("\n").filter((l) => /^\s+- /.test(l)).map((l) => l.replace(/^\s+- /, "").trim())
 }

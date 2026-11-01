@@ -35,6 +35,7 @@ commit_preprocessors = [
   { pattern = '\\((\\w+\\s)?#([0-9]+)\\)', replace = "([#${2}]({{ repository_url }}/issues/${2}))" },
 ]
 commit_parsers = [
+  { message = "^\\[skip ci\\]", skip = true },
   { message = "^Merge pull request", skip = true },
   { message = "^Merge branch", skip = true },
   { message = "^feat", group = "Features" },

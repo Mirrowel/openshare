@@ -24,17 +24,40 @@ if [ -z "$ref" ]; then
 fi
 
 # The release stamp rewrites every MANIFESTS file (version carriers), so a
-# stamped-only diff must not count as a plugin change: filter the manifest
-# paths out. Real dependency changes always pair with the lockfile, which the
-# stamp never touches.
-manifest_filter=""
-for m in $MANIFESTS; do
-  manifest_filter="${manifest_filter:+$manifest_filter|}^$m$"
-done
+# The release stamp rewrites every MANIFESTS file AND every lockfile's
+# "version" fields, so path-level filtering alone would count every
+# stamped release as an npm change (the gate publishes forever). A
+# lockfile counts only when its diff carries lines beyond version
+# fields - a real dependency move always does.
+stamp_only_lock() {
+  git diff "$ref..HEAD" -- "$1" | awk '
+    /^[+-][^+-]/ { if ($0 !~ /"version"/) { real = 1; exit } }
+    END { exit real ? 0 : 1 }'
+  # awk 0 = has non-version hunks = real change; invert to "stamp only"
+  [ $? -ne 0 ]
+}
 
 changed=false
-if git diff --name-only "$ref..HEAD" | grep -vE "$manifest_filter" | kit_any_match "$NPM_RE"; then
-  changed=true
-fi
+while IFS= read -r p; do
+  [ -z "$p" ] && continue
+  skip_one=false
+  for m in $MANIFESTS; do
+    [ "$p" = "$m" ] && { skip_one=true; break; }
+  done
+  [ "$skip_one" = true ] && continue
+  case "$p" in
+    */package-lock.json|*/npm-shrinkwrap.json)
+      if kit_path_matches "$p" "$NPM_RE" && ! stamp_only_lock "$p"; then
+        changed=true
+        break
+      fi
+      continue
+      ;;
+  esac
+  if kit_path_matches "$p" "$NPM_RE"; then
+    changed=true
+    break
+  fi
+done < <(git diff --name-only "$ref..HEAD")
 
 echo "changed=$changed" | tee -a "${GITHUB_OUTPUT:-/dev/null}"
