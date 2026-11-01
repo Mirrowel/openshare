@@ -261,8 +261,10 @@ jobs:
           # npm does not try to publish with an absent/placeholder NODE_AUTH_TOKEN.
           NODE_AUTH_TOKEN: ""
         run: |
-          # Pack once and publish the tarball itself: the archive attached to
-          # the GitHub release is the exact one npm serves.
+          # Pack once: the archive attached to the GitHub release is the
+          # exact one npm serves. Publish only when the version is not on
+          # npm yet - a re-run after a publish keeps the asset without
+          # attempting a republish.
           TGZ="$(npm pack --silent)"
           echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
           if [ "${{ steps.npm-version.outputs.exists }}" = "true" ]; then
@@ -389,6 +391,12 @@ jobs:
           cp "share-plugin/ci/openshare.js" "$GITHUB_WORKSPACE/openshare-ci-$VER.js"
           ASSETS+=("$GITHUB_WORKSPACE/openshare-ci-$VER.js")
           TGZ="${{ steps.npm-publish.outputs.tgz }}"
+          if [ -z "$TGZ" ] && [ "${{ steps.npm-version.outputs.exists }}" = "true" ]; then
+            # re-run after a recorded publish: the gate went hollow (npm
+            # already holds this version) so nothing was packed - pack now
+            # so the archive ships with the release anyway
+            TGZ="$(cd share-plugin && npm pack --silent)"
+          fi
           if [ -n "$TGZ" ] && [ -f "share-plugin/$TGZ" ]; then
             cp "share-plugin/$TGZ" "$GITHUB_WORKSPACE/$TGZ"
             ASSETS+=("$GITHUB_WORKSPACE/$TGZ")
