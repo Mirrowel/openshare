@@ -13,7 +13,9 @@
 // debugging; older cache entries are always removed). A local checkout is
 // NOT needed - OPENSHARE_BETA_SRC=<path> overrides the download for working
 // against a checkout (documented in VENDOR.md), but the ambient checkout is
-// never read implicitly again.
+// never read implicitly again, and the override must sit exactly at the PIN
+// (git HEAD == PIN.ref) so no random tree state can become the vendored
+// source; --force-src opts out for deliberate experiments.
 //
 // Sources (per VENDOR.md - the patch catalogue lives there):
 //   packages/session-ui  -> vendor/session-ui-v2  (@opencode/session-ui)
@@ -53,6 +55,22 @@ async function resolveSource() {
   if (override) {
     if (!existsSync(join(override, "packages/session-ui"))) {
       console.error(`vendor-v2: OPENSHARE_BETA_SRC checkout has no packages/session-ui: ${override}`)
+      process.exit(1)
+    }
+    // the override must sit exactly at the PIN: an ambient checkout left on
+    // another branch, a stale tip or a detached experiment must never become
+    // the vendored source
+    let head = ""
+    try {
+      head = execSync("git rev-parse HEAD", { cwd: override, encoding: "utf8" }).trim()
+    } catch {
+      head = ""
+    }
+    if (!head || (head !== PIN.ref && !process.argv.includes("--force-src"))) {
+      const got = head ? head.slice(0, 10) : "not a git repo"
+      console.error(`vendor-v2: OPENSHARE_BETA_SRC must sit at the PIN ${PIN.ref.slice(0, 10)} - it is at ${got}`)
+      console.error(`vendor-v2: sync it:  git -C <checkout> fetch origin && git -C <checkout> checkout ${PIN.ref}`)
+      console.error(`vendor-v2: deliberate experiment:  add --force-src`)
       process.exit(1)
     }
     return { src: override, fromDownload: false }

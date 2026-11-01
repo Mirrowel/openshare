@@ -31,7 +31,11 @@ a dev machine is never read implicitly.
 
 - `OPENSHARE_BETA_SRC=<checkout>` overrides the download — for working
   against a local checkout at a specific rev. This is the only way a local
-  clone is involved.
+  clone is involved. The checkout's `git HEAD` must match the PIN exactly
+  (the script refuses otherwise and prints the sync command), so a checkout
+  left on another branch, a stale tip or a detached experiment can never
+  become the vendored source. Add `--force-src` to vendor a different tree
+  deliberately.
 - `OPENSHARE_VENDOR_KEEP_CACHE=1` keeps the download after a successful run.
 - `vendor/V2-SOURCE.txt` records the last regeneration.
 
