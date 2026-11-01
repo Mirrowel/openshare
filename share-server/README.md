@@ -74,9 +74,12 @@ Identical to the worker (see
 activation budgets, per-share secrets, ownership + freeze semantics,
 per-token limits, root `CREATE_TOKEN` as the forever-admin bootstrap.
 
-Admin API: same `/api/admin/*` surface (users, tokens, codes, shares,
-reassign, purge) — drive it with curl or the plugin's TUI admin console
-(`/openshare → Servers → <server> → Admin panel`).
+Admin API: same `/api/admin/*` surface as the worker (users, tokens,
+codes, shares, reassign, single-share freeze/unfreeze, purge) plus the
+same self-service token routes (mint, rotate with label/limits/expiry
+overrides, update, self-delete) and the same private
+`GET /api/share/:id/meta` (admin/owner only, session summaries stamped
+at sync) — drive it all with curl or `share-cli`'s `osh` console.
 
 ## Docker
 

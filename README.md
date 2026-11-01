@@ -55,7 +55,7 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **Backfill** — share a session mid-way (or after the fact) and the full history lands in the page: messages, parts, models, diffs, subagent sessions. Servers added later mirror the whole past too.
 - **Multi-server fan-out** — one session can stream to several servers at once; switch the active set any time; per-session stop or leave-a-snapshot per server.
 - **Identity** — accounts, not just tokens: full tokens (the account credential), scoped tokens for CI that reach only their own shares, access codes that mint users with a one-call lineage kill-switch, ask-once onboarding.
-- **Self-serve admin** — a full admin console *inside the TUI*: users, freeze/delete, mint tokens, invite codes, shares, reassign, purge.
+- **Self-serve admin** — a full admin console *inside the TUI*: users, freeze/delete, mint tokens, invite codes, shares, reassign, purge. Plus `osh` ([share-cli](share-cli/README.md)): a standalone stateful CLI + terminal UI over the same API for running a deployment.
 - **Subagent pages** — child sessions route into the parent's share as numbered sub-pages; task rows link to them.
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share.

@@ -102,6 +102,12 @@ A snapshot is ONE HTML file: the built viewer (entry chunk, every chunk it can r
 - The builder rewrites the island status to `snapshot`; the header shows that instead of the share's last live status.
 - `GET /s/:id/snapshot` requires `SNAPSHOT_ENDPOINT=1`: the build reads one asset per subrequest, past the free plan's 50-per-invocation cap.
 
+## Admin console (share-cli)
+
+The `osh` console is one package with three modules over one API client: `src/api.ts` (typed fetch wrapper, cookie jar for gated-share logins), `src/cli.tsx` (headless command surface - scripts/agents), `src/tui.tsx` (ink interactive screens). `src/config.ts` holds the named server profiles in `~/.config/openshare/cli.json`. Role behavior mirrors the API: root goes through `/api/admin/*`, user tokens self-service; a scoped token only ever sees itself and its own shares. Shares lists hydrate private `/meta` in bounded parallel (6 at a time, first 100 rows) and join user labels - `--no-meta` skips it for raw listings.
+
+Build gotchas: ink eagerly imports the optional `react-devtools-core` peer, so `build.mjs` aliases it to a stub (an `external:` entry would still crash ESM resolution at boot); bundled CJS deps (`signal-exit`) `require()` node builtins, so the banner prepends a `createRequire` shim. Bare `osh` in a pipe prints help instead of half-rendering (TTY check in `main.tsx`).
+
 ## Release workflow
 
 Lifted from the family (agent-variants/config-studio), adapted to the monorepo (the package lives in `share-plugin/`). The whole kit is driven by one config file, `.github/scripts/release-kit.conf`, and one command surface: `bash .github/scripts/release-kit.sh <check|next|stage>` (`compute` is the CI entry).
