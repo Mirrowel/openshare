@@ -162,18 +162,20 @@ kit_any_match() {
 }
 
 # Print which part a file belongs to; empty for root-level files (docs,
-# workflows). Single-package repos set KIT_DEFAULT_PART in the conf so their
-# files map to one part instead of "none". Always exits 0: callers run under
-# set -e and an unmatched file is a normal case, not a failure.
+# workflows). The mapping is config-driven: PART_MAP in release-kit.conf
+# lists "path-prefix:part" pairs (list order decides precedence).
+# Single-package repos skip PART_MAP and set KIT_DEFAULT_PART in the conf
+# so their files map to one part instead of "none". Always exits 0:
+# callers run under set -e and an unmatched file is a normal case, not a
+# failure.
 kit_part_of() {
-  case "$1" in
-    share-plugin/*) echo "plugin" ;;
-    share-worker/*) echo "worker" ;;
-    share-server/*) echo "server" ;;
-    share-viewer/*) echo "viewer" ;;
-    tools/*) echo "tools" ;;
-    website/*) echo "website" ;;
-    *) if [ -n "${KIT_DEFAULT_PART:-}" ]; then echo "$KIT_DEFAULT_PART"; fi ;;
-  esac
+  local entry prefix
+  for entry in ${PART_MAP:-}; do
+    prefix="${entry%%:*}"
+    case "$1" in
+      "$prefix"/*) echo "${entry#*:}"; return 0 ;;
+    esac
+  done
+  if [ -n "${KIT_DEFAULT_PART:-}" ]; then echo "$KIT_DEFAULT_PART"; fi
   return 0
 }

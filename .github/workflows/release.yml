@@ -34,6 +34,12 @@ on:
       - share-viewer/package.json
       - share-viewer/package-lock.json
       - share-viewer/bun.lock
+      - share-cli/src/**
+      - share-cli/build.mjs
+      - share-cli/tsconfig.json
+      - share-cli/package.json
+      - share-cli/package-lock.json
+      - share-cli/README.md
       - tools/*.mjs
       - tools/view-export.py
   workflow_dispatch:
@@ -377,6 +383,17 @@ jobs:
           cd dist
           zip -r -q "$GITHUB_WORKSPACE/viewer-dist-${{ needs.version.outputs.version }}.zip" .
 
+      - name: Build osh console
+        # The admin console as one self-contained file (ink + react
+        # bundled; Node 20+): runs directly, no install and no checkout
+        # needed.
+        if: inputs.dry_run != true
+        working-directory: share-cli
+        run: |
+          npm ci
+          npm run build
+          cp dist/osh.mjs "$GITHUB_WORKSPACE/osh-${{ needs.version.outputs.version }}.mjs"
+
       - name: Attach release artifacts
         # viewer-dist zip + the CI single-file bundle always; the plugin tgz
         # only when this release published a plugin (the asset is then
@@ -387,7 +404,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ needs.version.outputs.version }}"
-          ASSETS=("$GITHUB_WORKSPACE/viewer-dist-$VER.zip")
+          ASSETS=("$GITHUB_WORKSPACE/viewer-dist-$VER.zip" "$GITHUB_WORKSPACE/osh-$VER.mjs")
           cp "share-plugin/ci/openshare.js" "$GITHUB_WORKSPACE/openshare-ci-$VER.js"
           ASSETS+=("$GITHUB_WORKSPACE/openshare-ci-$VER.js")
           TGZ="${{ steps.npm-publish.outputs.tgz }}"

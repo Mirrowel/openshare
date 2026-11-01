@@ -13,6 +13,15 @@ node dist/osh.mjs ...        # any command below
 node dist/osh.mjs            # no args: the TUI
 ```
 
+Without a checkout: every release ships `osh-<version>.mjs` — the same
+single file, prebuilt (see the
+[release assets](https://github.com/Mirrowel/OpenShare/releases)).
+
+```bash
+curl -LO https://github.com/Mirrowel/OpenShare/releases/download/v0.3.0/osh-0.3.0.mjs
+node osh-0.3.0.mjs           # the TUI (or any command below)
+```
+
 The built `dist/osh.mjs` is a single file (ink + react bundled); it runs on
 any Node 20+. State lives in `~/.config/openshare/cli.json`
 (`OPENSHARE_CLI_CONFIG` overrides).
