@@ -7,5 +7,5 @@
   "dependencies": {
     "@resvg/resvg-wasm": "^2.6.2"
   },
-  "version": "0.3.0-dev.11"
+  "version": "0.3.0-dev.12"
 }
