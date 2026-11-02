@@ -14,6 +14,9 @@
 // discipline.
 
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { appendFileSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { JSX } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
@@ -27,6 +30,37 @@ type KeyContext = { event?: { preventDefault?: () => void; stopPropagation?: () 
 const blockKey = (ctx: KeyContext | undefined) => {
   ctx?.event?.preventDefault?.()
   ctx?.event?.stopPropagation?.()
+}
+
+// Opt-in TUI trace for live-host debugging: OPENSHARE_TUI_DEBUG=1 appends a
+// timestamped line per dialog lifecycle event and every keymap command
+// invocation (plus any throw) to %TEMP%/openshare-tui-debug.log. Zero cost
+// when the env is unset. stderr stays error-only (TUI owns the terminal).
+let tuiDebugFile: string | undefined
+export function tuiDebug(line: string): void {
+  if (process.env.OPENSHARE_TUI_DEBUG !== "1") return
+  tuiDebugFile ??= join(tmpdir(), "openshare-tui-debug.log")
+  try {
+    appendFileSync(tuiDebugFile, `${new Date().toISOString()} ${line}\n`)
+  } catch {}
+}
+
+/** wraps a keymap command so invocations and throws reach the debug log */
+function traced(name: string, run: (ctx: KeyContext) => void) {
+  return (ctx: KeyContext) => {
+    tuiDebug(`cmd ${name}`)
+    try {
+      run(ctx)
+    } catch (error) {
+      tuiDebug(`cmd ${name} THREW ${(error as Error)?.stack ?? error}`)
+      throw error
+    }
+  }
+}
+
+function traceCmds<C extends Array<{ name: string; run: (ctx: KeyContext) => void }>>(commands: C): C {
+  if (process.env.OPENSHARE_TUI_DEBUG !== "1") return commands
+  return commands.map((command) => ({ ...command, run: traced(command.name, command.run) })) as C
 }
 
 // verbatim from agent-variants (plus their punctuation coverage)
@@ -417,7 +451,7 @@ export function MenuDialog<Value>(props: {
       : []
   const unregister = props.api.keymap.registerLayer({
     priority: 10000,
-    commands: [
+    commands: traceCmds([
       { name: `${commandPrefix}.up`, title: "Previous item", run: (ctx: KeyContext) => { blockKey(ctx); vertical(-1) } },
       { name: `${commandPrefix}.down`, title: "Next item", run: (ctx: KeyContext) => { blockKey(ctx); vertical(1) } },
       { name: `${commandPrefix}.pageUp`, title: "Page up", run: (ctx: KeyContext) => { blockKey(ctx); page(-1) } },
@@ -431,7 +465,7 @@ export function MenuDialog<Value>(props: {
       { name: `${commandPrefix}.nextSection`, title: "Next section", run: (ctx: KeyContext) => { blockKey(ctx); jumpSection(1) } },
       ...helpSections()
         .slice(0, 9)
-        .map((_, index) => ({
+        .map((_, index): { name: string; title: string; run: (ctx: KeyContext) => void } => ({
           name: `${commandPrefix}.jump${index + 1}`,
           title: `Section ${index + 1}`,
           run: (ctx: KeyContext) => {
@@ -440,8 +474,8 @@ export function MenuDialog<Value>(props: {
             infoScroll?.scrollTo(0)
           },
         })),
-      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
-    ],
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
+    ]),
     bindings: [
       { key: "up", cmd: `${commandPrefix}.up`, desc: "Previous item" },
       { key: "ctrl+p", cmd: `${commandPrefix}.up`, desc: "Previous item" },
@@ -612,10 +646,10 @@ export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; o
       if (settled) return
       settled = true
       release()
-      dbgLog(`menu(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
+      tuiDebug(`menu(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
       resolve(value)
     }
-    dbgLog(`menu(${props.title}) OPEN (${props.options.length} options)`)
+    tuiDebug(`menu(${props.title}) OPEN (${props.options.length} options)`)
     api.ui.dialog.replace(
       () => <MenuDialog api={api} title={props.title} options={props.options} current={props.current} hint={props.hint} onDone={done} />,
       () => done(undefined),
@@ -640,8 +674,10 @@ export function showInfoDialog(api: TuiPluginApi, props: { title: string; messag
       if (settled) return
       settled = true
       release()
+      tuiDebug(`info(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
       resolve(value)
     }
+    tuiDebug(`info(${props.title}) OPEN (${props.actions?.length ?? 1} actions)`)
     api.ui.dialog.replace(
       () => <InfoDialog api={api} title={props.title} message={props.message} actions={props.actions} onDone={done} />,
       () => done(undefined),
@@ -649,13 +685,13 @@ export function showInfoDialog(api: TuiPluginApi, props: { title: string; messag
   })
 }
 
-function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; actions?: DialogAction[]; onDone: (value: string | undefined) => void }): JSX.Element {
-  const theme = () => props.api.theme.current
+export function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; actions?: DialogAction[]; onDone: (value: string | undefined) => void }): JSX.Element {  const theme = () => props.api.theme.current
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
   const dimensions = useTerminalDimensions()
   const lines = createMemo(() => preWrap(props.message, dialogContentWidth(props.api)))
-  const bodyHeight = createMemo(() => cappedHeight(lines().length + 1, maxRows(props.api, dimensions().height, 8, 4), 4))
+  // chrome: frame title + rule + footer row + key legend + paddings
+  const bodyHeight = createMemo(() => cappedHeight(lines().length + 1, maxRows(props.api, dimensions().height, 10, 4), 4))
   let scroll: ScrollBoxRenderable | undefined
   const page = () => Math.max(1, (scroll?.height ?? bodyHeight()) - 1)
   const popMode = props.api.mode.push("openshare.dialog")
@@ -665,18 +701,29 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
     const list = props.actions?.length ? props.actions : [{ title: "ok", value: okValue, danger: false }]
     return list.map((action, index) => ({ ...action, key: action.key ?? (index === 0 ? "enter" : undefined) }))
   })
+  // Keyboard selection between the action buttons. Without it the dialog has
+  // no visible response to arrows (the body usually fits, nothing scrolls),
+  // which reads as a frozen menu to keyboard users.
+  const [focus, setFocus] = createSignal(0)
+  const moveFocus = (delta: number) =>
+    setFocus((value) => {
+      const count = actions().length
+      if (count <= 1) return value
+      return (value + delta + count) % count
+    })
+  const choose = () => props.onDone(actions()[focus()]?.value ?? okValue)
   const unregister = props.api.keymap.registerLayer({
     priority: 10000,
-    commands: [
-      { name: `${commandPrefix}.close`, title: "Close", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(actions().find((a) => a.key === "enter")?.value ?? okValue) } },
+    commands: traceCmds([
+      { name: `${commandPrefix}.close`, title: "Confirm", run: (ctx: KeyContext) => { blockKey(ctx); choose() } },
       { name: `${commandPrefix}.back`, title: "Back", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(undefined) } },
-      { name: `${commandPrefix}.up`, title: "Scroll up", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(-1) } },
-      { name: `${commandPrefix}.down`, title: "Scroll down", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(1) } },
+      { name: `${commandPrefix}.focusUp`, title: "Previous action", run: (ctx: KeyContext) => { blockKey(ctx); moveFocus(-1) } },
+      { name: `${commandPrefix}.focusDown`, title: "Next action", run: (ctx: KeyContext) => { blockKey(ctx); moveFocus(1) } },
       { name: `${commandPrefix}.pageUp`, title: "Page up", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(-page()) } },
       { name: `${commandPrefix}.pageDown`, title: "Page down", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(page()) } },
       { name: `${commandPrefix}.home`, title: "Scroll top", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollTo(0) } },
       { name: `${commandPrefix}.end`, title: "Scroll bottom", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollTo(scroll.scrollHeight) } },
-      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
       ...actions()
         .filter((action) => action.key && action.key !== "enter")
         .map((action) => ({
@@ -687,14 +734,16 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
             props.onDone(action.value)
           },
         })),
-    ],
+    ]),
     bindings: [
-      { key: "enter", cmd: `${commandPrefix}.close`, desc: "Close" },
+      { key: "enter", cmd: `${commandPrefix}.close`, desc: "Confirm" },
       { key: "escape", cmd: `${commandPrefix}.back`, desc: "Back" },
-      { key: "up", cmd: `${commandPrefix}.up`, desc: "Scroll up" },
-      { key: "ctrl+p", cmd: `${commandPrefix}.up`, desc: "Scroll up" },
-      { key: "down", cmd: `${commandPrefix}.down`, desc: "Scroll down" },
-      { key: "ctrl+n", cmd: `${commandPrefix}.down`, desc: "Scroll down" },
+      { key: "up", cmd: `${commandPrefix}.focusUp`, desc: "Previous action" },
+      { key: "ctrl+p", cmd: `${commandPrefix}.focusUp`, desc: "Previous action" },
+      { key: "left", cmd: `${commandPrefix}.focusUp`, desc: "Previous action" },
+      { key: "down", cmd: `${commandPrefix}.focusDown`, desc: "Next action" },
+      { key: "ctrl+n", cmd: `${commandPrefix}.focusDown`, desc: "Next action" },
+      { key: "right", cmd: `${commandPrefix}.focusDown`, desc: "Next action" },
       { key: "pageup", cmd: `${commandPrefix}.pageUp`, desc: "Page up" },
       { key: "ctrl+b", cmd: `${commandPrefix}.pageUp`, desc: "Page up" },
       { key: "pagedown", cmd: `${commandPrefix}.pageDown`, desc: "Page down" },
@@ -704,7 +753,7 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
       ...actions()
         .filter((action) => action.key && action.key !== "enter")
         .map((action) => ({ key: action.key as string, cmd: `${commandPrefix}.act_${action.value}`, desc: action.title })),
-      ...shieldBindings(`${commandPrefix}.shield`, ["home", "end", ...actions().filter((a) => a.key && a.key !== "enter").map((a) => a.key as string)]),
+      ...shieldBindings(`${commandPrefix}.shield`, ["home", "end", "left", "right", ...actions().filter((a) => a.key && a.key !== "enter").map((a) => a.key as string)]),
     ],
   })
   onCleanup(() => {
@@ -729,16 +778,17 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
         </box>
         <box flexDirection="row" gap={1}>
           <For each={actions()}>
-            {(action) => (
+            {(action, index) => (
               <box
                 paddingLeft={2}
                 paddingRight={2}
-                backgroundColor={action.key === "enter" ? (action.danger ? theme().error : theme().primary) : undefined}
-                border={action.key === "enter" ? undefined : true}
+                backgroundColor={index() === focus() ? (action.danger ? theme().error : theme().primary) : undefined}
+                border={index() === focus() ? undefined : true}
                 borderColor={action.danger ? theme().error : theme().textMuted}
+                onMouseOver={() => setFocus(index())}
                 onMouseUp={() => props.onDone(action.value)}
               >
-                <text fg={action.key === "enter" ? theme().background : action.danger ? theme().error : theme().textMuted}>
+                <text fg={index() === focus() ? theme().background : action.danger ? theme().error : theme().textMuted}>
                   <b>{action.title}</b>
                 </text>
               </box>
@@ -746,6 +796,7 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
           </For>
         </box>
       </box>
+      <KeyLegend api={props.api} keys={[["↑↓", "select"], ["⏎", "confirm"], ["esc", "back"]]} onBack={() => props.onDone(undefined)} />
     </DialogFrame>
   )
 }
@@ -801,7 +852,7 @@ export function PromptDialog(props: {
     { name: `${commandPrefix}.ok`, title: "Confirm", run: (ctx) => { blockKey(ctx); props.onDone(text()) } },
     { name: `${commandPrefix}.back`, title: "Cancel", run: (ctx) => { blockKey(ctx); props.onDone(undefined) } },
     { name: `${commandPrefix}.del`, title: "Backspace", run: (ctx) => { blockKey(ctx); setText((v) => v.slice(0, -1)) } },
-    { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
+    { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
   ]
   const bindings: Array<{ key: string; cmd: string; desc?: string }> = [
     { key: "enter", cmd: `${commandPrefix}.ok`, desc: "Confirm" },
@@ -816,7 +867,7 @@ export function PromptDialog(props: {
     commands.push({ name: `${commandPrefix}.${name}`, title: `Type ${ch}`, run: (ctx) => { blockKey(ctx); setText((v) => v + ch) } })
     bindings.push({ key: ch, cmd: `${commandPrefix}.${name}` })
   }
-  const unregister = props.api.keymap.registerLayer({ priority: 10000, commands, bindings })
+  const unregister = props.api.keymap.registerLayer({ priority: 10000, commands: traceCmds(commands), bindings })
   onCleanup(() => {
     unregister()
     popMode()
@@ -840,10 +891,10 @@ export function showPromptOnce(api: TuiPluginApi, props: { title: string; placeh
       if (settled) return
       settled = true
       release()
-      dbgLog(`prompt(${props.title}) -> ${value === undefined ? "cancel" : `len=${value.length}`}`)
+      tuiDebug(`prompt(${props.title}) -> ${value === undefined ? "cancel" : `len=${value.length}`}`)
       resolve(value)
     }
-    dbgLog(`prompt(${props.title}) OPEN`)
+    tuiDebug(`prompt(${props.title}) OPEN`)
     api.ui.dialog.replace(
       () => <PromptDialog api={api} title={props.title} placeholder={props.placeholder} value={props.value} onDone={done} />,
       () => done(undefined),
@@ -872,8 +923,10 @@ export function showSizePickerOnce(api: TuiPluginApi, current: SizePickerResult)
       if (settled) return
       settled = true
       release()
+      tuiDebug(`sizePicker -> ${value === undefined ? "cancel" : `${value.width}/${value.heightPercent}`}`)
       resolve(value)
     }
+    tuiDebug("sizePicker OPEN")
     api.ui.dialog.replace(
       () => <SizePickerDialog api={api} current={current} onDone={done} />,
       () => done(undefined),
@@ -881,7 +934,7 @@ export function showSizePickerOnce(api: TuiPluginApi, current: SizePickerResult)
   })
 }
 
-function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult; onDone: (value: SizePickerResult | undefined) => void }): JSX.Element {
+export function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult; onDone: (value: SizePickerResult | undefined) => void }): JSX.Element {
   const theme = () => props.api.theme.current
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
@@ -941,13 +994,13 @@ function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult;
   })
   const unregister = props.api.keymap.registerLayer({
     priority: 10000,
-    commands: [
+    commands: traceCmds([
       { name: `${commandPrefix}.width`, title: "Cycle width", run: (ctx: KeyContext) => { blockKey(ctx); cycleWidth() } },
       { name: `${commandPrefix}.left`, title: "Lower height", run: (ctx: KeyContext) => { blockKey(ctx); move(-1) } },
       { name: `${commandPrefix}.right`, title: "Raise height", run: (ctx: KeyContext) => { blockKey(ctx); move(1) } },
       { name: `${commandPrefix}.down`, title: "Lower height faster", run: (ctx: KeyContext) => { blockKey(ctx); move(-5) } },
       { name: `${commandPrefix}.up`, title: "Raise height faster", run: (ctx: KeyContext) => { blockKey(ctx); move(5) } },
-      ...HEIGHT_PRESETS.map((preset) => ({
+      ...HEIGHT_PRESETS.map((preset): { name: string; title: string; run: (ctx: KeyContext) => void } => ({
         name: `${commandPrefix}.preset_${preset.label}`,
         title: `${preset.label} preset`,
         run: (ctx: KeyContext) => {
@@ -958,8 +1011,8 @@ function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult;
       { name: `${commandPrefix}.custom`, title: "Custom percent", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone({ width: kvWidthOf(props.api.kv), heightPercent: -1 }) } },
       { name: `${commandPrefix}.save`, title: "Save", run: (ctx: KeyContext) => { blockKey(ctx); save() } },
       { name: `${commandPrefix}.back`, title: "Back", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(undefined) } },
-      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
-    ],
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
+    ]),
     bindings: [
       { key: "w", cmd: `${commandPrefix}.width`, desc: "Cycle width" },
       { key: "left", cmd: `${commandPrefix}.left`, desc: "Lower height" },

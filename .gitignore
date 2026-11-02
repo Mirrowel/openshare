@@ -56,3 +56,6 @@ example/
 # snapshot outputs written by tools/osh-snapshot*.mjs
 openshare-*.html
 *.snapshot.html
+
+share-plugin/scripts/.tui-reactivity-*/
+share-plugin/scripts/.tui-probe/

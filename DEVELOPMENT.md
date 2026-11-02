@@ -42,6 +42,7 @@ enforce it: the same auth/enroll suites run against both backends).
 | Suite | Covers |
 |---|---|
 | regression | parity: legacy single file == standalone build == package (== package-dir via file:// URL) |
+| tui-reactivity (`ci:package`) | the compiled TUI dialogs against the real @opentui renderer: menu selection repaints, info-dialog keyboard focus moves and enter activates it, prompt round-trips, size picker applies — catches the "painted once, never repaints" class mock-host flow tests cannot see (family-plugin discipline) |
 | manual (core/allmode/engine shards) | dormancy, flag/backfill, unshare, re-share, read-auth opts, all-mode gating, undo tombstones, completed debounce, turn sockets, finalize, queued-prompt ordering (S13) |
 | tui-flow | share/manager flows, config write targets, enrollment, admin console, gone detection, size prefs |
 | v2-mock | the v2 adapter against a scripted mock v2 host (incl. inbox queue semantics: held until `session.inbox.delivered`, cancelled never surfaces) |
@@ -55,6 +56,7 @@ What runs where: CI (`.github/workflows/ci.yml`) runs the **quick gate** on ever
 
 Suite rules of the road (all learned from live failures):
 
+- **TUI live-host debugging**: `OPENSHARE_TUI_DEBUG=1` makes every dialog open/settle and every keymap command invocation (plus any throw, with stack) append to `%TEMP%/openshare-tui-debug.log`; unset, it costs one env read. Run opencode with it when a TUI dialog misbehaves live and read the log back.
 - Every spawn gets **all three** XDG homes redirected — config alone is not isolation on opencode ≥1.18 (global plugin merge, machine-wide session DB, instance-lock port bumps).
 - Ports: fast TCP probes gate every sweep; sweeps only run when a port is actually occupied; the matrix driver assigns disjoint port ranges per suite.
 - `opencode run` retries 5xx with its own 2+4+8+16+32s backoff — mock failures use non-retryable 4xx when testing the error path.

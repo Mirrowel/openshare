@@ -11,7 +11,7 @@ import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClientApi } from "./core.js"
 import { registerCommands, buildShareCommand } from "./commands.js"
 import { createSidebarSlot, dbgLog, dbg } from "./sidebar.js"
-import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, showSizePickerOnce, toMenuOptions } from "./dialogs.js"
+import { showAlertMenu, showConfirmMenu, showMenuOnce, showPromptOnce, showSizePickerOnce, toMenuOptions, tuiDebug, MenuDialog, InfoDialog, PromptDialog, SizePickerDialog } from "./dialogs.js"
 import { clampHeightPercent, kvHeightPercentOf, kvWidthOf } from "./ui-prefs.js"
 import type { ShareHostApi } from "./tui-host.js"
 import { createV2TuiSetup } from "./v2-tui.js"
@@ -152,9 +152,11 @@ export function buildV1HostApi(api: TuiPluginApi): ShareHostApi {
             }
           if (key === "replace")
             return (render: () => unknown, onClose?: () => void) => {
+              tuiDebug("host dialog.replace")
               try {
                 api.ui.dialog.replace(render as never, onClose)
               } catch (e) {
+                tuiDebug(`dialog.replace THREW: ${(e as Error)?.message ?? e}`)
                 dbgLog(`dialog.replace THREW: ${(e as Error)?.message ?? e}`)
               }
             }
@@ -314,3 +316,8 @@ const tui: TuiPlugin = async (api) => {
  * - OpenCode v2 requires `default` to be `{ id, setup }`.
  */
 export default { id: "openshare", tui, setup: createV2TuiSetup() }
+
+// Test hooks for the in-process reactivity rig (scripts/tui-reactivity-smoke.mjs):
+// the real compiled dialogs driven against the real @opentui renderer, the way
+// the family plugins verify theirs. Nothing here runs in production paths.
+export const __testInternals = { MenuDialog, InfoDialog, PromptDialog, SizePickerDialog }
