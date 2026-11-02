@@ -35,7 +35,18 @@ EOF
     return
   fi
 
-  git-cliff --config "$workspace/.github/cliff.toml" --github-repo "$repo" --output changes.md "$range"
+  # cliff fetches author metadata from the GitHub API, which intermittently
+  # answers 403 (secondary rate limit) - a panic, exit 101. That killed
+  # releases wholesale; wait and try again before giving up.
+  local attempt
+  for attempt in 1 2 3; do
+    if git-cliff --config "$workspace/.github/cliff.toml" --github-repo "$repo" --output changes.md "$range"; then
+      return
+    fi
+    [ "$attempt" = 3 ] && return 1
+    echo "generate-release-notes: git-cliff failed (attempt $attempt); retrying in 30s" >&2
+    sleep 30
+  done
 }
 
 normalize_changelog() {
