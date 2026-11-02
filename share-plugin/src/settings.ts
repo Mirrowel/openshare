@@ -5,7 +5,20 @@
 //
 // Sections: Connection, Sharing, Read auth, Advanced, This session.
 
-import { configSourceMap, moduleDir, pluginVersion, writeCandidates, type ShareConfig, type WriteCandidate } from "./config.js"
+import {
+  configSourceMap,
+  deleteShareOverrides,
+  liveShares,
+  moduleDir,
+  pluginVersion,
+  saveServerOverrides,
+  saveShareOverrides,
+  writeCandidates,
+  type ShareConfig,
+  type ShareOverrides,
+  type WriteCandidate,
+} from "./config.js"
+import { resolveFor, type SettingProvenance } from "./share-settings.js"
 import {
   adminClient,
   adminTokenFor,
@@ -92,6 +105,77 @@ function mask(value: string | undefined): string {
   return `${value.slice(0, 3)}${"*".repeat(Math.min(10, value.length - 5))}${value.slice(-2)}`
 }
 
+// --- share-settings tiers ----------------------------------------------------
+
+const SRC_LABEL: Record<SettingProvenance, string> = { general: "general", server: "server default", share: "this share" }
+
+/** Row-description suffix naming the tier a value came from. */
+const srcSuffix = (p: SettingProvenance | undefined) => (p ? ` · ${SRC_LABEL[p]}` : "")
+
+/** Server TTL cap from /health, cached per server (0 = unknown/uncapped).
+ * Surfaces the "90d general, 30d server cap" case BEFORE sharing. */
+const ttlCapCache = new Map<string, number>()
+async function serverTtlCap(url: string): Promise<number> {
+  const hit = ttlCapCache.get(url)
+  if (hit !== undefined) return hit
+  let cap = 0
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(5000) })
+    const body = (await res.json().catch(() => ({}))) as { maxTtlHours?: number }
+    if (Number(body.maxTtlHours) > 0) cap = Math.floor(Number(body.maxTtlHours))
+  } catch {}
+  ttlCapCache.set(url, cap)
+  return cap
+}
+
+/** Write one per-share override end to end: config shares{} (authoritative),
+ * session binding opts (the runtime mirror the engine resolves against),
+ * then an immediate REST PATCH on every live page (attaches heal the rest).
+ * A key set to undefined CLEARS the override at this tier. Returns how many
+ * live pages took the PATCH. */
+async function applyShareOverride(
+  host: ShareHostApi,
+  sid: string,
+  patch: Partial<ShareOverrides>,
+): Promise<number> {
+  const root = await resolveRoot(host.client, sid)
+  const binding = await readBinding(host.client, root)
+  const opts: SessionOpts = { ...(binding?.opts ?? {}) }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete (opts as Record<string, unknown>)[k]
+    else (opts as Record<string, unknown>)[k] = v
+  }
+  saveShareOverrides(sid, patch)
+  await setShareOpts(host.client, root, opts)
+  const flat: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(patch)) if (v !== undefined) flat[k] = v
+  if (!Object.keys(flat).length) return 0
+  const all = await readBindings(host.client, root)
+  const live = all.filter((b) => b.url && b.enabled !== false && b.id && b.secret)
+  const results = await Promise.all(live.map((b) => patchShareOpts(b.server, b.id!, flat as Parameters<typeof patchShareOpts>[2], b.secret!)))
+  return results.filter((r) => r.ok).length
+}
+
+/** Drop shares{} overrides whose sessions no longer exist (the plugin was
+ * not running when they were deleted). Best-effort and guarded: nothing is
+ * pruned unless the host returned a believable non-empty session list. */
+async function pruneStaleShareOverrides(host: ShareHostApi): Promise<void> {
+  try {
+    const entries = Object.keys(liveShares())
+    if (!entries.length || !host.client?.session?.list) return
+    const raw = await host.client.session.list({})
+    const list = Array.isArray(raw) ? raw : ((raw as { data?: unknown })?.data as unknown[] | undefined)
+    if (!Array.isArray(list) || list.length === 0) return
+    const alive = new Set<string>()
+    for (const s of list) {
+      const id = (s as { id?: string }).id
+      if (typeof id === "string" && id) alive.add(id)
+    }
+    if (!alive.size) return
+    for (const sid of entries) if (!alive.has(sid)) deleteShareOverrides(sid)
+  } catch {}
+}
+
 type EditKind = "text" | "number" | "password"
 
 /** Row metadata: label (column 1), help (the one-line description), kind
@@ -154,23 +238,23 @@ const LABELS: Record<string, LabelMeta> = {
     help: "Share lifetime in hours (2d writes 48); capped server-side.",
     kind: "number",
     section: "Sharing",
-    info: "How long pages live before the server's sweeper deletes them, in HOURS. Capped server-side: the deployment's MAX_TTL_HOURS (legacy MAX_TTL_DAYS converted) and the token's limit both apply; the floor is one hour.\n\nA per-session override lives in the This-session section; it is sent at create/attach time. The session prompt takes 6h / 2d style input.",
+    info: "How long pages live before the server's sweeper deletes them, in HOURS. The DEFAULTS tier: per-server defaults (Servers -> a server -> Share defaults) and per-share overrides (This session) both beat this value. Capped server-side: the deployment's MAX_TTL_HOURS and the token's limit both apply; the floor is one hour.",
     def: "worker cap (2160h = 90d on the reference deployment)",
   },
   authLogin: {
     label: "Read auth: login",
-    help: "Optional read gate for share pages. Empty removes protection on the next attach.",
+    help: "Default read gate for share pages. Empty removes protection on the next attach.",
     kind: "text",
     section: "Read auth",
-    info: "Optional username for a login gate on NEW shares. Viewers must enter login+password (PBKDF2-hashed server-side, 7-day cookie, lockout after failures).\n\nWrite access is a separate lock — a login never lets anyone edit. Removing both values removes the gate on the next attach.",
+    info: "Optional username for a login gate on NEW shares — the DEFAULTS tier. Viewers must enter login+password (PBKDF2-hashed server-side, 7-day cookie, lockout after failures). Per-server defaults and per-share overrides (This session) beat this value.\n\nWrite access is a separate lock — a login never lets anyone edit.",
     def: "(empty — no gate)",
   },
   authPassword: {
     label: "Read auth: password",
-    help: "Optional read gate for share pages.",
+    help: "Default read gate for share pages.",
     kind: "password",
     section: "Read auth",
-    info: "The password half of the optional read gate. Stored in plain text in the config file — prefer per-session auth for anything sensitive. Only the hash ever reaches the server.",
+    info: "The password half of the default read gate. Stored in plain text in the config file — prefer per-share auth for anything sensitive. Only the hash ever reaches the server.",
     def: "(empty)",
   },
   spoolDir: {
@@ -198,6 +282,39 @@ const LABELS: Record<string, LabelMeta> = {
     info: "The stderr ladder for informational [openshare] lines (all-mode/CI). all: announce lines (live:/url file:) plus status lines (mode banner, enrollment, adoption notes). status: status lines only - the share URL never touches stderr (public CI logs). url: announce lines only (private runners scraping the share URL). off: no info lines. Error-class lines (worker down, refused, timeouts) ALWAYS reach stderr regardless. In manual mode stderr is errors-only by design.",
     def: "all",
   },
+  urlFileFormat: {
+    label: "URL file format",
+    help: '"url" (one bare URL per line) or "json" (id, url, status, gated per line) — CI consumers that want machine-readable lines.',
+    kind: "text",
+    options: ["url", "json"],
+    section: "Advanced",
+    info: 'What each line of the all-mode URL file looks like. "url": the bare share URL. "json": {"id","url","status","gated"} — pipeline steps can branch on status without parsing URLs.',
+    def: "url",
+  },
+  configSet: {
+    label: "Config set",
+    help: "Which named config set the server token provisions (empty = the token's first/default set).",
+    kind: "text",
+    section: "Connection",
+    info: "B4 named config sets: a server-side token can carry named bundles of share defaults (auth, TTL). This picks which set THIS agent uses; empty uses the token's default set. Managed on the server (token settings), not here.",
+    def: "(empty — token default)",
+  },
+  redactPatterns: {
+    label: "Redaction patterns",
+    help: "Extra regex rules redacted from UNGATED shares (comma-separated), beside the built-in detectors.",
+    kind: "text",
+    section: "Sharing",
+    info: 'Client-side redaction (Wave 3): user-supplied regex patterns applied to share content next to the built-in secret detectors. Only UNGATED shares are redacted — a login-gated share keeps full fidelity for its viewers. Comma-separated here; the config file form is an array: "redact": {"patterns": ["sk-[A-Za-z0-9]+", …]} (max 50, 500 chars each).',
+    def: "(none — built-in detectors only)",
+  },
+  metaLabels: {
+    label: "Meta labels",
+    help: 'Free-form labels stamped on every share ("k=v, k2=v2"); ${VAR} interpolates env at send time.',
+    kind: "text",
+    section: "Sharing",
+    info: 'Free-form string metadata for team directories and admin listings (B5): "team=core, run=${CI_JOB_ID}" — values may reference env vars (${NAME}), unresolved refs stay literal so misconfiguration is visible. 20 keys max, 64-char names, 500-char values. Config file form: "meta": {"team": "core"}.',
+    def: "(none)",
+  },
 }
 
 /** [i] pane text for a config key row: long info + live value + source + default. */
@@ -214,6 +331,11 @@ function helpForKey(key: string, cfg: ShareConfig, sources: Record<string, strin
 
 function displayValue(key: string, cfg: ShareConfig): string {
   if (key === "createToken" || key === "authPassword") return mask(String(cfg[key] ?? ""))
+  if (key === "redactPatterns") return cfg.redact?.patterns?.length ? cfg.redact.patterns.join(", ") : "(none)"
+  if (key === "metaLabels") {
+    const entries = Object.entries(cfg.meta ?? {})
+    return entries.length ? entries.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"
+  }
   const value = (cfg as unknown as Record<string, unknown>)[key]
   return value === undefined || value === "" ? "(not set)" : String(value)
 }
@@ -239,6 +361,32 @@ async function editKey(host: ShareHostApi, cfg: ShareConfig, key: string): Promi
     if (key === "shareMode") next[key] = picked === "auto" ? undefined : picked
     else next[key] = picked
     return next as ShareConfig
+  }
+  // composite keys map onto config sub-objects (redact.patterns / meta):
+  // edited as comma lists, persisted as their structured forms
+  if (key === "redactPatterns" || key === "metaLabels") {
+    const current = displayValue(key, cfg)
+    const raw = await showPrompt(host.ui, {
+      title: meta.label,
+      placeholder: key === "redactPatterns" ? "regex, regex, …" : "k=v, k2=v2",
+      value: current === "(none)" ? "" : current,
+    })
+    if (raw === undefined) return undefined
+    const next = { ...cfg } as ShareConfig
+    if (key === "redactPatterns") {
+      const patterns = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0 && s.length < 500).slice(0, 50)
+      next.redact = patterns.length ? { patterns } : undefined
+    } else {
+      const clean: Record<string, string> = {}
+      for (const pair of raw.split(",")) {
+        const i = pair.indexOf("=")
+        const k = i > 0 ? pair.slice(0, i).trim() : ""
+        const v = i > 0 ? pair.slice(i + 1).trim() : ""
+        if (k && k.length <= 64 && v.length <= 500) clean[k] = v
+      }
+      next.meta = Object.keys(clean).length ? clean : undefined
+    }
+    return next
   }
   const raw = await showPrompt(host.ui, {
     title: `${meta.label} — ${displayValue(key, cfg)}`,
@@ -366,6 +514,12 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
     const options: ShareDialogSelectOption<string>[] = [
       { title: url, value: "info", description: `${mine.entry.label ?? "(no label)"} · ${cred}${mine.active ? " · ACTIVE" : ""}`, disabled: true },
     ]
+    options.push({
+      title: "Share defaults…",
+      value: "defaults",
+      description: `TTL · read auth for every share sent here (beats the general config)`,
+      help: `## Per-server share defaults\nThe middle tier of the settings model: values here beat the general config for every share THIS agent sends to ${url}, and lose only to per-share overrides.\n\nApplies when a share is created or next attaches. Existing live pages keep their resolved settings until then.`,
+    })
     if (!mine.active) options.push({ title: "Set active", value: "active", description: "new sessions share here" })
     if (holdsRoot) {
       options.push({
@@ -515,6 +669,10 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       await showInfo(host.ui, { title: result.ok ? "Server reachable" : "Server unreachable", message: `${url} — ${result.detail}` })
       continue
     }
+    if (choice === "defaults") {
+      await serverDefaultsMenu(host, url)
+      continue
+    }
     if (choice === "admin") {
       await adminConsole(host, url)
       continue
@@ -525,6 +683,81 @@ async function serverMenu(host: ShareHostApi, url: string): Promise<void> {
       deleteServerEntry(url)
       host.ui.toast({ variant: "success", title: "OpenShare", message: "Membership removed." })
       return
+    }
+  }
+}
+
+/** Per-server share defaults (the middle tier): TTL + read-auth that beat
+ * the general config for every share sent to THIS server, losing only to
+ * per-share overrides. Persisted in the servers{} entry (settings home). */
+async function serverDefaultsMenu(host: ShareHostApi, url: string): Promise<void> {
+  while (true) {
+    const cfg = currentConfig()
+    const entry = serverEntries(cfg).find((s) => s.url === url)?.entry
+    const ov = entry?.overrides
+    const hasTtl = !!ov?.ttlHours
+    const hasAuth = !!(ov?.authLogin && ov?.authPassword)
+    const cap = await serverTtlCap(url)
+    const res = resolveFor(cfg, url, undefined)
+    const authSrc = res.auth?.source
+    const options: ShareDialogSelectOption<string>[] = [
+      {
+        title: "Lifetime (TTL)",
+        value: "ttl",
+        description: `${res.ttlHours ? fmtHours(res.ttlHours.value) : "(server default)"}${cap && res.ttlHours && res.ttlHours.value > cap ? ` · server caps at ${fmtHours(cap)}` : ""}${srcSuffix(res.ttlHours?.source)}`,
+        dim: !hasTtl,
+        edited: hasTtl,
+        help: `Default lifetime for shares sent to ${url}. Beats the general TTL; a per-share override beats this.\n\nEffective now: ${res.ttlHours ? `${fmtHours(res.ttlHours.value)}${srcSuffix(res.ttlHours.source)}` : "(server default)"}${cap ? `\nServer cap: ${fmtHours(cap)} (higher requests are clamped)` : ""}\nEmpty input clears this tier's override (the general config applies again). Applies when a share is created or next attaches.`,
+      },
+      {
+        title: "Read auth",
+        value: "auth",
+        description: res.auth ? `${res.auth.value.login} / ****${srcSuffix(res.auth.source)}` : `no gate${srcSuffix(authSrc)}`,
+        dim: !hasAuth,
+        edited: hasAuth,
+        help: `Default login gate for shares sent to ${url} — e.g. one server public, another gated, without per-share work. Beats the general read-auth; a per-share override beats this.\n\nEffective now: ${res.auth ? `${res.auth.value.login} / (password set)${srcSuffix(res.auth.source)}` : "no gate"}\nBoth login and password (or neither). Empty login clears this tier's override.`,
+      },
+      { title: "Clear all defaults", value: "clear", description: "this server inherits the general config again", danger: true, disabled: !ov },
+      { title: "Back", value: "__back" },
+    ]
+    const choice = await showSelect(host.ui, { title: `Share defaults — ${hostOf(url)}`, options })
+    if (choice === undefined || choice === "__back") return
+    if (choice === "clear") {
+      const sure = await showConfirm(host.ui, { title: "Clear server defaults", message: `Drop the TTL and read-auth overrides for ${hostOf(url)}?\nThe general config applies to this server's shares again.`, confirmLabel: "Clear" })
+      if (!sure) continue
+      saveServerOverrides(url, null)
+      host.ui.toast({ variant: "success", title: "OpenShare", message: `Defaults cleared for ${hostOf(url)} — the general config applies.` })
+      continue
+    }
+    if (choice === "ttl") {
+      const raw = await showPrompt(host.ui, { title: "Server default TTL", placeholder: `6h, 2d or 48 — empty clears${!hasTtl && res.ttlHours ? ` (inherits ${fmtHours(res.ttlHours.value)})` : ""}`, value: hasTtl && ov?.ttlHours ? fmtHours(ov.ttlHours) : "" })
+      if (raw === undefined) continue
+      if (raw === "") {
+        saveServerOverrides(url, { ttlHours: undefined })
+        host.ui.toast({ variant: "success", title: "OpenShare", message: "Server TTL default cleared." })
+        continue
+      }
+      const hours = parseTtlHours(raw)
+      if (hours === undefined) {
+        host.ui.toast({ variant: "error", title: "OpenShare", message: "TTL must be 6h / 2d style or a positive number of hours." })
+        continue
+      }
+      saveServerOverrides(url, { ttlHours: hours })
+      host.ui.toast({ variant: "success", title: "OpenShare", message: `Server default TTL: ${fmtHours(hours)}${cap && hours > cap ? ` (server caps at ${fmtHours(cap)})` : ""}.` })
+      continue
+    }
+    if (choice === "auth") {
+      const login = await showPrompt(host.ui, { title: "Server read auth: login", placeholder: "empty = clear this tier's override", value: hasAuth ? ov!.authLogin! : "" })
+      if (login === undefined) continue
+      const password = login === "" ? "" : (await showPrompt(host.ui, { title: "Server read auth: password", placeholder: "password (required with a login)" })) ?? ""
+      if (login !== "" && password === "") continue
+      if ((login === "") !== (password === "")) {
+        host.ui.toast({ variant: "error", title: "OpenShare", message: "Read auth needs both a login and a password - or neither." })
+        continue
+      }
+      saveServerOverrides(url, login === "" ? { authLogin: undefined, authPassword: undefined } : { authLogin: login, authPassword: password })
+      host.ui.toast({ variant: "success", title: "OpenShare", message: login === "" ? "Server read-auth default cleared." : "Server read-auth default saved." })
+      continue
     }
   }
 }
@@ -923,16 +1156,16 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
   const candidates = writeCandidates(moduleDir())
   let writeTarget: WriteCandidate = candidates[0]
   const sources = configSourceMap(moduleDir())
+  // fire-and-forget: shares{} overrides for sessions deleted while the
+  // plugin was off must not pile up, but they must not delay the dialog
+  void pruneStaleShareOverrides(host)
 
-  type GroupId = "session" | "servers" | "sharing" | "readauth" | "interface" | "advanced" | "configfiles"
+  type GroupId = "session" | "servers" | "config" | "interface"
   const GROUP_LABEL: Record<GroupId, string> = {
     session: "This session",
     servers: "Servers",
-    sharing: "Sharing",
-    readauth: "Read auth",
+    config: "Config",
     interface: "Interface",
-    advanced: "Advanced",
-    configfiles: "Config files",
   }
   // which keys have edits pending in this dialog (green "edited" markers)
   const dirtyKeys = new Set<string>()
@@ -946,8 +1179,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
 
   const serverRows = (): ShareDialogSelectOption<string>[] => {
     const servers = serverEntries(cfg)
-    const rows: ShareDialogSelectOption<string>[] = keyRows("Connection")
-    rows.push({ title: "— saved servers —", value: "__divider_servers", divider: true } as ShareDialogSelectOption<string>)
+    const rows: ShareDialogSelectOption<string>[] = []
     for (const s of servers) {
       const cred = s.entry.token ? "token saved" : s.entry.code ? "code saved" : "enrolls on demand"
       rows.push({
@@ -962,10 +1194,11 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           `Receives new sessions: ${s.active ? "YES (active)" : "no"}`,
           "",
           "## Notes",
-          "Every ACTIVE server receives new sessions (fan-out); one active server is the normal setup. Tokens persist in the settings home; enroll once, then it just works. The per-server submenu (enter) adds the admin panel for this server.",
+          "Every ACTIVE server receives new sessions (fan-out); one active server is the normal setup. Tokens persist in the settings home; enroll once, then it just works. The per-server submenu (enter) holds the admin panel and this server's share defaults.",
         ].join("\n"),
       })
     }
+    if (!rows.length) rows.push({ title: "No servers yet", value: "__none", description: "connect one below", disabled: true })
     rows.push({
       title: "Connect to a server",
       value: "server:add",
@@ -994,28 +1227,61 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
     ]
   }
 
-  const configRows = (): ShareDialogSelectOption<string>[] => [
-    {
+  /** One flat menu with section dividers: every general config key (the
+   * merged Config group) plus the config-file rows. Dividers keep the
+   * flat list scannable without a second navigation level. */
+  const configRows = (): ShareDialogSelectOption<string>[] => {
+    const rows: ShareDialogSelectOption<string>[] = []
+    const sectionRows = (section: string) => rows.push(...keyRows(section))
+    sectionRows("Connection")
+    rows.push({ title: "— sharing —", value: "__div_sharing", divider: true } as ShareDialogSelectOption<string>)
+    sectionRows("Sharing")
+    rows.push({ title: "— read auth —", value: "__div_auth", divider: true } as ShareDialogSelectOption<string>)
+    sectionRows("Read auth")
+    rows.push({ title: "— advanced —", value: "__div_adv", divider: true } as ShareDialogSelectOption<string>)
+    sectionRows("Advanced")
+    rows.push({ title: "— files —", value: "__div_files", divider: true } as ShareDialogSelectOption<string>)
+    rows.push({
       title: "Write target",
       value: "action:target",
       description: writeTarget.label,
       disabled: candidates.length <= 1,
       help: `Which file "Save & exit" writes. The global settings home is always available; other files in the read chain only when they already exist (the TUI never creates deploy-time override files).\n\nWriting: ${writeTarget.path}`,
-    },
-    {
+    })
+    rows.push({
       title: "Where values come from",
       value: "action:sources",
       description: summarizeSources(sources),
       help: `Config merges per key, highest priority wins: OPENSHARE_* env > plugin options > adjacent openshare.config.json > openshare.local.json (repo walk-up) > settings home > defaults. An empty string means unset for url/token keys.\n\n${sourcesMessage(sources)}`,
-    },
-  ]
+    })
+    return rows
+  }
 
   const sessionRows = async (): Promise<ShareDialogSelectOption<string>[]> => {
     if (!startAtSession) return []
     const root = await resolveRoot(host.client, startAtSession)
     const bindings = await readBindings(host.client, root)
     const live = bindings.filter((b) => b.url && b.enabled !== false)
+    const binding = bindings[0]
+    // three-tier resolution for THIS share, scoped to the first live
+    // server (fan-out servers can diverge by per-server overrides; the
+    // [i] pane explains the tier model)
+    const scopeServer = live[0]?.server
+    const res = resolveFor(cfg, scopeServer, startAtSession, binding?.opts)
+    const cap = scopeServer ? await serverTtlCap(scopeServer) : 0
+    const authSrc = res.auth?.source
     const rows: ShareDialogSelectOption<string>[] = []
+
+    // status header
+    const status = binding?.url ? (binding.enabled === false ? "attached (dormant)" : res.paused?.value ? "live · paused" : "live") : "not shared"
+    rows.push({
+      title: "Status",
+      value: "__status",
+      description: `${status}${live.length ? ` · ${live.length} server(s)` : ""}${binding?.rev ? ` · rev ${binding.rev}` : ""}`,
+      disabled: true,
+      help: `## This share\n${live.length ? `Live on:\n${live.map((b) => `• ${b.url}`).join("\n")}` : "No page exists yet — Share this session creates one."}\n\nSettings below show the EFFECTIVE value and which tier it comes from (general < server default < this share). Inherited values render dim; setting an override here wins for this share only.`,
+    })
+
     if (live.length === 0) {
       rows.push({
         title: "Share this session",
@@ -1023,38 +1289,80 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         description: "set the share flag; the server plugin creates the page",
         help: "Publishes this session (and its subagent sessions) to the active server. The full history lands in the page — sharing mid-session is first-class, nothing is missed. You will be asked to confirm before anything is published.",
       })
-    } else if (live.length === 1) {
-      const b = live[0]
-      rows.push({
-        title: "Copy share link",
-        value: "session:copy",
-        description: "copy the share URL to the clipboard",
-        help: `Copies the share URL to the clipboard.\n\nURL: ${b.url}\nShare id: ${b.id ?? "?"}`,
-      })
     } else {
-      for (const b of live) {
+      rows.push({ title: "— link —", value: "__div_link", divider: true } as ShareDialogSelectOption<string>)
+      if (live.length === 1) {
         rows.push({
-          title: `Copy link — ${hostOf(b.url || b.server)}`,
-          value: `session:copy:${b.server}`,
-          description: b.url,
-          help: `Copies this server's share URL to the clipboard.\n\nURL: ${b.url}\nShare id: ${b.id}\n\nEach server carries an independent page of the same session.`,
+          title: "Copy share link",
+          value: "session:copy",
+          description: live[0].url!,
+          help: `Copies the share URL to the clipboard.\n\nURL: ${live[0].url}\nShare id: ${live[0].id ?? "?"}`,
+        })
+      } else {
+        for (const b of live) {
+          rows.push({
+            title: `Copy link — ${hostOf(b.url || b.server)}`,
+            value: `session:copy:${b.server}`,
+            description: b.url,
+            help: `Copies this server's share URL to the clipboard.\n\nURL: ${b.url}\nShare id: ${b.id}\n\nEach server carries an independent page of the same session.`,
+          })
+        }
+        rows.push({
+          title: "Copy all links",
+          value: "session:copyall",
+          description: `${live.length} servers`,
+          help: `Copies every bound server's share URL.\n\n${live.map((b) => `• ${b.url}`).join("\n")}`,
         })
       }
-      rows.push({
-        title: "Copy all links",
-        value: "session:copyall",
-        description: `${live.length} servers`,
-        help: `Copies every bound server's share URL.\n\n${live.map((b) => `• ${b.url}`).join("\n")}`,
-      })
     }
+
+    rows.push({ title: "— settings —", value: "__div_settings", divider: true } as ShareDialogSelectOption<string>)
+    rows.push({
+      title: "Read auth",
+      value: "session:auth",
+      description: res.auth ? `${res.auth.value.login} / ****${srcSuffix(res.auth.source)}` : `no gate${srcSuffix(authSrc)}`,
+      dim: authSrc !== "share",
+      edited: authSrc === "share",
+      help: `Login gate for THIS share's page: viewers must log in (PBKDF2 server-side, 7-day cookie, lockout after failures). Applies immediately on live pages (credentials rotate; logged-in viewers re-login).\n\nEffective: ${res.auth ? `${res.auth.value.login} / (password set)${srcSuffix(res.auth.source)}` : "no gate"}\nSetting a login+password here overrides the general/server tiers for this share; clearing both removes the override (the lower tiers apply again). A login needs a password — both or neither.`,
+    })
+    rows.push({
+      title: "Lifetime (TTL)",
+      value: "session:ttl",
+      description: res.ttlHours
+        ? `${fmtHours(res.ttlHours.value)}${cap && res.ttlHours.value > cap ? ` · server caps at ${fmtHours(cap)}` : ""}${srcSuffix(res.ttlHours.source)}`
+        : "(server default)",
+      dim: res.ttlHours?.source !== "share",
+      edited: res.ttlHours?.source === "share",
+      help: `How long this page lives before the server's sweeper deletes it. Accepts 6h / 2d / 48 style input (hours).\n\nEffective: ${res.ttlHours ? `${fmtHours(res.ttlHours.value)}${srcSuffix(res.ttlHours.source)}` : "(none — server default)"}${cap ? `\nServer cap: ${fmtHours(cap)} (requests above it are clamped at create)` : ""}\nAn override here wins over the general/server tiers for this share; clearing it lets them apply again. Shortening a live page may end it at once — that is the ask.`,
+    })
+    rows.push({
+      title: "Title",
+      value: "session:title",
+      description: res.title ? `"${res.title.value}" · custom` : `auto — follows session renames`,
+      dim: !res.title,
+      edited: !!res.title,
+      help: `The share page's title. By default it follows the session's live title: renaming the session in opencode renames the page automatically.\n\nA CUSTOM title sticks — the page keeps it and ignores session renames until you clear it. Surfaces in the page header, link previews (OG card) and admin listings.`,
+    })
+    rows.push({
+      title: "Paused",
+      value: "session:paused",
+      description: res.paused?.value ? "paused — syncing stopped, page keeps its last state" : "syncing normally",
+      dim: !res.paused?.value,
+      edited: !!res.paused?.value,
+      help: `Freeze-parity, self-served: while paused NOTHING syncs — the page keeps its last status and content, exactly as a viewer last saw it. Everything keeps queueing locally, and unpausing backfills the gap (same machinery as a long reconnect). Data writes to the page are refused while paused.`,
+    })
+
     if (live.length) {
-      rows.push({
-        title: "Stop sharing",
-        value: "session:unshare",
-        description: live.length > 1 ? `delete every page (${live.length} servers), or leave snapshots` : "delete the page, or leave a snapshot",
-        danger: true,
-        help: `Choose per run: DELETE every page server-side (links stop working — final "gone" state), or LEAVE AS-IS (stop updating; pages stay readable until their TTL — a frozen snapshot).\n\nURLs:\n${live.map((b) => b.url).join("\n")}\n\nSharing again later always creates fresh page(s) with new URLs.`,
-      })
+      rows.push({ title: "— destinations —", value: "__div_dest", divider: true } as ShareDialogSelectOption<string>)
+      const otherServers = serverEntries().filter((s) => !live.some((b) => b.server === s.url))
+      if (otherServers.length) {
+        rows.push({
+          title: "Share to another server…",
+          value: "session:more",
+          description: otherServers.map((s) => hostOf(s.url)).join(", "),
+          help: `Adds one of your other configured servers as a destination for THIS session: it becomes active and the full history is mirrored there within seconds.\n\nAvailable:\n${otherServers.map((s) => `• ${s.url}`).join("\n")}`,
+        })
+      }
       if (live.length > 1) {
         rows.push({
           title: "Stop on one server…",
@@ -1062,36 +1370,28 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           description: "delete or snapshot a single server's page",
           help: `Per-server stop: pick the server, then delete its page or leave it as a read-only snapshot. Other servers are unaffected.\n\nBound servers:\n${live.map((b) => `• ${b.server} — ${b.url}`).join("\n")}`,
         })
-        const otherServers = serverEntries().filter((s) => !live.some((b) => b.server === s.url))
-        if (otherServers.length) {
-          rows.push({
-            title: "Share to another server…",
-            value: "session:more",
-            description: otherServers.map((s) => hostOf(s.url)).join(", "),
-            help: `Adds one of your other configured servers as a destination for THIS session: it becomes the active server and the full history is mirrored there within seconds.\n\nAvailable:\n${otherServers.map((s) => `• ${s.url}`).join("\n")}`,
-          })
-        }
       }
+      rows.push({ title: "— danger —", value: "__div_danger", divider: true } as ShareDialogSelectOption<string>)
+      rows.push({
+        title: "Stop sharing",
+        value: "session:unshare",
+        description: live.length > 1 ? `delete every page (${live.length} servers), or leave snapshots` : "delete the page, or leave a snapshot",
+        danger: true,
+        help: `Choose per run: DELETE every page server-side (links stop working — final "gone" state), or LEAVE AS-IS (stop updating; pages stay readable until their TTL — a frozen snapshot).\n\nURLs:\n${live.map((b) => b.url).join("\n")}\n\nSharing again later always creates fresh page(s) with new URLs.`,
+      })
     }
-    const binding = bindings[0]
     if (binding?.lastError || binding?.ttlClamped) {
       const bits: string[] = []
-      if (binding?.ttlClamped) bits.push(`TTL clamped ${binding.ttlClamped.requested}d -> ${binding.ttlClamped.effective}d by server/token policy`)
+      if (binding?.ttlClamped) bits.push(`TTL clamped ${binding.ttlClamped.requested}h -> ${binding.ttlClamped.effective}h by server/token policy`)
       if (binding?.lastError) bits.push(`last share error: ${binding.lastError}`)
-      rows.push({ title: "Share status notes", value: "__notes", description: bits[0].slice(0, 60), disabled: true, help: `Engine-recorded notes for this session's share(s):\n\n${bits.join("\n")}\n\nThe clamp note appears when the server or your token's policy reduced a requested TTL. The error note is the engine's last create/attach refusal (quota, freeze, rate limit) - it clears on the next successful sync.` })
+      rows.push({
+        title: "Share status notes",
+        value: "__notes",
+        description: bits[0].slice(0, 60),
+        disabled: true,
+        help: `Engine-recorded notes for this session's share(s):\n\n${bits.join("\n")}\n\nThe clamp note appears when the server or your token's policy reduced a requested TTL. The error note is the engine's last create/attach refusal (quota, freeze, rate limit) - it clears on the next successful sync.`,
+      })
     }
-    rows.push({
-      title: "Session TTL override (days)",
-      value: "session:ttl",
-      description: binding?.opts?.ttlHours !== undefined ? fmtHours(binding.opts.ttlHours) : "(worker default)",
-      help: `Per-session share lifetime in HOURS (prompt accepts 6h / 2d / 48). Overrides the config TTL for THIS session's pages; still capped server-side. On a live share it applies immediately (shortening may end an older page at once); otherwise it is used when you share.\n\nCurrent: ${binding?.opts?.ttlHours !== undefined ? fmtHours(binding.opts.ttlHours) : "(none — config default)"}`,
-    })
-    rows.push({
-      title: "Session read auth",
-      value: "session:auth",
-      description: binding?.opts?.authLogin ? `${binding.opts.authLogin} / ****` : "(config default)",
-      help: `Login gate for THIS session's page only — viewers must log in (7-day cookie, lockout). Overrides the config read auth; a login and password are both required (or neither). On a live share it applies immediately; otherwise when you share. Removing the login removes the gate.\n\nCurrent: ${binding?.opts?.authLogin ? `${binding.opts.authLogin} / (password set)` : "(none — config default applies)"}`,
-    })
     return rows
   }
 
@@ -1101,16 +1401,10 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         return await sessionRows()
       case "servers":
         return serverRows()
-      case "sharing":
-        return keyRows("Sharing")
-      case "readauth":
-        return keyRows("Read auth")
+      case "config":
+        return configRows()
       case "interface":
         return interfaceRows()
-      case "advanced":
-        return keyRows("Advanced")
-      case "configfiles":
-        return configRows()
     }
   }
 
@@ -1320,39 +1614,54 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         return
       }
       if (choice === "session:ttl") {
-        const raw = await showPrompt(host.ui, { title: "Session TTL", placeholder: "hours: 6h, 2d or 48", value: current?.opts?.ttlHours !== undefined ? fmtHours(current.opts.ttlHours) : "" })
+        const resT = resolveFor(cfg, live[0]?.server, startAtSession, current?.opts)
+        const raw = await showPrompt(host.ui, {
+          title: "Share lifetime (TTL)",
+          placeholder: `6h, 2d or 48 — empty clears${resT.ttlHours && resT.ttlHours.source !== "share" ? ` (inherits ${fmtHours(resT.ttlHours.value)})` : ""}`,
+          value: resT.ttlHours?.source === "share" ? fmtHours(resT.ttlHours.value) : "",
+        })
         if (raw === undefined) return
-        const opts: SessionOpts = { ...(current?.opts ?? {}) }
-        if (raw === "") delete opts.ttlHours
-        else {
-          const hours = parseTtlHours(raw)
-          if (hours === undefined) {
-            host.ui.toast({ variant: "error", title: "OpenShare", message: "TTL must be 6h / 2d style or a positive number of hours." })
-            return
+        if (raw === "") {
+          // clear the share override: lower tiers apply again. Live pages
+          // get the re-resolved value immediately (the engine's attach
+          // re-sync carries the same number)
+          await applyShareOverride(host, startAtSession, { ttlHours: undefined })
+          const nextTier = resolveFor(cfg, live[0]?.server, startAtSession, undefined)
+          if (live.length && nextTier.ttlHours) {
+            await Promise.all(live.map((b) => (b.id && b.secret ? patchShareOpts(b.server, b.id, { ttlHours: nextTier.ttlHours!.value }, b.secret) : Promise.resolve({ ok: false }))))
           }
-          opts.ttlHours = hours
+          host.ui.toast({
+            variant: "success",
+            title: "OpenShare",
+            message: live.length ? `TTL override cleared — ${nextTier.ttlHours ? fmtHours(nextTier.ttlHours.value) : "server default"} applies now.` : "TTL override cleared.",
+          })
+          return
         }
-        await setShareOpts(host.client, root, opts)
-        const liveNow = live.length > 0
-        if (liveNow) {
-          // REST push (#13): immediate on every server, socket or not
-          const results = await Promise.all(live.map((b) => b.id && b.secret && b.server ? patchShareOpts(b.server, b.id, opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}, b.secret) : Promise.resolve({ ok: false })))
-          const failed = results.filter((r) => !r.ok).length
-          if (failed) host.ui.toast({ variant: "error", title: "OpenShare", message: `TTL applied on ${results.length - failed}/${results.length} server(s) - the rest sync on next connect.` })
+        const hours = parseTtlHours(raw)
+        if (hours === undefined) {
+          host.ui.toast({ variant: "error", title: "OpenShare", message: "TTL must be 6h / 2d style or a positive number of hours." })
+          return
         }
+        const pushed = await applyShareOverride(host, startAtSession, { ttlHours: hours })
         host.ui.toast({
-          variant: "success",
+          variant: live.length ? "success" : "info",
           title: "OpenShare",
-          message: liveNow
-            ? `Session TTL: ${opts.ttlHours !== undefined ? `${fmtHours(opts.ttlHours)} - applied now (shortening may end an older page immediately)` : "(default) - applied now"}.`
-            : `Session TTL: ${opts.ttlHours !== undefined ? fmtHours(opts.ttlHours) : "(default)"} - saved, applies when you share.`,
+          message: live.length
+            ? `Lifetime: ${fmtHours(hours)} — applied now${pushed < live.length ? ` (${live.length - pushed} server(s) heal on next connect)` : ""}.`
+            : `Lifetime: ${fmtHours(hours)} — saved, applies when you share.`,
         })
         return
       }
       if (choice === "session:auth") {
-        const login = await showPrompt(host.ui, { title: "Session read auth: login", placeholder: "empty = no read auth", value: current?.opts?.authLogin ?? "" })
+        const resA = resolveFor(cfg, live[0]?.server, startAtSession, current?.opts)
+        const inherited = resA.auth && resA.auth.source !== "share" ? resA.auth : undefined
+        const login = await showPrompt(host.ui, {
+          title: "Share read auth: login",
+          placeholder: inherited ? `empty = clear override (inherits ${inherited.value.login})` : "empty = no gate",
+          value: resA.auth?.source === "share" ? resA.auth.value.login : "",
+        })
         if (login === undefined) return
-        const password = await showPrompt(host.ui, { title: "Session read auth: password", placeholder: login === "" ? "(unused)" : "password (required with a login)" })
+        const password = await showPrompt(host.ui, { title: "Share read auth: password", placeholder: login === "" ? "(unused)" : "password (required with a login)" })
         if (password === undefined) return
         // both-or-none: the server builds a gate only from a full pair, and
         // rendering half a pair would show protection that does not exist
@@ -1360,23 +1669,61 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
           host.ui.toast({ variant: "error", title: "OpenShare", message: "Read auth needs both a login and a password - or neither (no gate)." })
           return
         }
-        const opts: SessionOpts = { ...(current?.opts ?? {}) }
-        if (login === "") {
-          delete opts.authLogin
-          delete opts.authPassword
-        } else {
-          opts.authLogin = login
-          opts.authPassword = password
+        const pushed = await applyShareOverride(host, startAtSession, login === "" ? { authLogin: undefined, authPassword: undefined } : { authLogin: login, authPassword: password })
+        host.ui.toast({
+          variant: live.length ? "success" : "info",
+          title: "OpenShare",
+          message: live.length
+            ? `Read auth ${login === "" ? "override cleared" : "saved"} — applied now${pushed < live.length ? ` (${live.length - pushed} server(s) heal on next connect)` : ""}.`
+            : `Read auth ${login === "" ? "cleared" : "saved"} — applies when you share.`,
+        })
+        return
+      }
+      if (choice === "session:title") {
+        const resTt = resolveFor(cfg, live[0]?.server, startAtSession, current?.opts)
+        const raw = await showPrompt(host.ui, { title: "Share title", placeholder: "empty = auto (follows session renames)", value: resTt.title?.value ?? "" })
+        if (raw === undefined) return
+        const value = raw.trim().slice(0, 300)
+        const pushed = await applyShareOverride(host, startAtSession, value === "" ? { title: undefined } : { title: value })
+        host.ui.toast({
+          variant: live.length ? "success" : "info",
+          title: "OpenShare",
+          message: live.length
+            ? value === ""
+              ? "Custom title cleared — the page follows session renames again."
+              : `Title set — applied now${pushed < live.length ? ` (${live.length - pushed} server(s) heal on next connect)` : ""}.`
+            : value === ""
+              ? "Custom title cleared."
+              : "Title saved — applies when you share.",
+        })
+        return
+      }
+      if (choice === "session:paused") {
+        const resP = resolveFor(cfg, live[0]?.server, startAtSession, current?.opts)
+        const next = !resP.paused?.value
+        if (next) {
+          const sure = await showConfirm(host.ui, {
+            title: "Pause syncing",
+            message: "Stop syncing every page of this session?\nThe page keeps its last status and content — viewers see nothing change. Everything queues locally; unpausing backfills the gap.",
+            confirmLabel: "Pause",
+          })
+          if (!sure) return
         }
-        await setShareOpts(host.client, root, opts)
-        const liveNow2 = live.length > 0
-        if (liveNow2) {
-          const pair = login === "" ? { authLogin: "", authPassword: "" } : { authLogin: login, authPassword: password }
-          const results2 = await Promise.all(live.map((b) => b.id && b.secret && b.server ? patchShareOpts(b.server, b.id, pair, b.secret) : Promise.resolve({ ok: false })))
-          const failed2 = results2.filter((r) => !r.ok).length
-          if (failed2) host.ui.toast({ variant: "error", title: "OpenShare", message: `Read auth applied on ${results2.length - failed2}/${results2.length} server(s) - the rest sync on next connect.` })
+        // ORDER: pause flips the ENGINE first (stop sending), then the
+        // server flag (block foreign writers). Unpause reverses it — the
+        // server must accept writes before the backfill drain fires.
+        const root2 = await resolveRoot(host.client, startAtSession)
+        if (!next) {
+          await Promise.all(live.map((b) => (b.id && b.secret ? patchShareOpts(b.server, b.id, { paused: false }, b.secret) : Promise.resolve({ ok: false }))))
         }
-        host.ui.toast({ variant: "success", title: "OpenShare", message: liveNow2 ? `Read auth ${login === "" ? "removed" : "saved"} - applied now.` : `Read auth ${login === "" ? "cleared" : "saved"} - applies when you share.` })
+        const binding2 = await readBinding(host.client, root2)
+        const opts2: SessionOpts = { ...(binding2?.opts ?? {}), paused: next === true ? true : undefined }
+        saveShareOverrides(startAtSession, next ? { paused: true } : { paused: undefined })
+        await setShareOpts(host.client, root2, opts2)
+        if (next) {
+          await Promise.all(live.map((b) => (b.id && b.secret ? patchShareOpts(b.server, b.id, { paused: true }, b.secret) : Promise.resolve({ ok: false }))))
+        }
+        host.ui.toast({ variant: "success", title: "OpenShare", message: next ? "Paused — pages keep their last state; unpausing backfills everything." : "Unpaused — backfilling now." })
         return
       }
     }
@@ -1414,7 +1761,7 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
       groups.push({
         id: "session",
         summary: shared,
-        help: `Per-session state and overrides for the session this dialog was opened on.\n\nStatus: ${shared}${binding?.url ? `\nURL: ${binding.url}` : ""}\n\nInside: share/stop sharing (delete or leave a snapshot), session TTL override, session read auth.`,
+        help: `The share dashboard for the session this dialog was opened on: status, link, per-share settings (read auth, TTL, title, pause), destinations, stop.\n\nStatus: ${shared}${binding?.url ? `\nURL: ${binding.url}` : ""}\nPer-share values override the Config and server tiers for this share only.`,
       })
     }
     groups.push({
@@ -1424,32 +1771,17 @@ export async function settingsDialog(host: ShareHostApi, startAtSession?: string
         : cfg.workerUrl
           ? `${hostOf(cfg.workerUrl)} · legacy pair`
           : "no server yet",
-      help: `Server connection, memberships, and admin — one place (owner: "we already do connection in servers, why was it separate").\n\nInside: the legacy workerUrl + createToken pair, saved servers (enroll, rotate, disconnect, admin panel, test, remove), Connect to a server, Test connection.\n\nEvery ACTIVE server receives new sessions (fan-out).`,
+      help: `Server memberships: enroll, rotate, disconnect, per-server share defaults, the admin panel. Connect to a server is here too.\n\nEvery ACTIVE server receives new sessions (fan-out); one active server is the normal setup.`,
     })
     groups.push({
-      id: "sharing",
-      summary: `sync ${seconds(cfg.debounceMs, 10000)} · completed ${seconds(cfg.completedDelayMs, 5000)} · TTL ${fmtHours(cfg.ttlHours ?? 2160)}`,
-      help: `What and how sessions stream: share mode (all/manual), sync cadence, the completed-delay, the model label on pages, share TTL, and the viewer's task-tab behavior.\n\nCadence values are clamped by the server's policy window.`,
-    })
-    groups.push({
-      id: "readauth",
-      summary: cfg.authLogin ? `${cfg.authLogin} / ****` : "none set",
-      help: `Optional login gate for NEW share pages: viewers must enter login+password (PBKDF2 server-side, 7-day cookie, lockout after failures). Per-session overrides live in This session.\n\nWrite access is a separate lock — a login never lets anyone edit.`,
+      id: "config",
+      summary: `sync ${seconds(cfg.debounceMs, 10000)} · TTL ${fmtHours(cfg.ttlHours ?? 2160)} · auth ${cfg.authLogin ? "on" : "off"}`,
+      help: `Every general (all-shares) setting in one place: connection (server URL, config set), sharing (mode, cadence, TTL, model label, redaction, meta labels), read-auth defaults, advanced plumbing (spool, url file, stderr) — plus the config-file tools (write target, source map).\n\nThese are the DEFAULTS tier: per-server defaults and per-share overrides beat them.`,
     })
     groups.push({
       id: "interface",
       summary: `${uiWidth} (${DIALOG_WIDTH_COLUMNS[uiWidth]} cols) · ${kvHeightPercentOf(host.kv)}% height`,
       help: `OpenShare menu sizing: width (opencode's fixed dialog widths: 60/88/116 columns) and height (a percent of terminal rows, presets compact/normal/tall/max).\n\nStored in the host's preference store — per machine, not the config file.`,
-    })
-    groups.push({
-      id: "advanced",
-      summary: "spool dir · url file · stderr",
-      help: `Rarely-touched plumbing: the un-acked frame spool directory, the all-mode URL file (append log for CI), and the stderr announce lines.`,
-    })
-    groups.push({
-      id: "configfiles",
-      summary: `write: ${writeTarget.label}`,
-      help: `Which file Save & exit writes (global settings home by default; other existing files selectable) and the per-key source map of the current read chain (env > options > adjacent > local > home > defaults).`,
     })
 
     const options: ShareDialogSelectOption<string>[] = groups.map((group) => ({
