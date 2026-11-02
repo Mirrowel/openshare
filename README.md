@@ -201,7 +201,7 @@ Delivery reliability is structural: every accepted sync bumps a monotonic rev, a
 
 - **all** — every **new** session shares automatically (the CI posture; what the single file always does). Sessions that predate the plugin's start are never auto-shared; opt one in explicitly (full history backfilled).
 - **manual** — sessions stay dormant until you opt in; sharing backfills full history and attaches to the same page across restarts (binding in session metadata).
-- The **enabled flag** (`metadata.openshare`) is the per-session opt-in in both modes; per-session overrides ride as `opts` (`ttlHours`, read auth, `modelLabel`).
+- The **enabled flag** (`metadata.openshare`) is the per-session opt-in in both modes; share settings resolve in three tiers — general config keys < per-server defaults (`servers.<url>.overrides`) < per-share (the `shares` config section / the TUI dashboard, mirrored in the binding `opts`: `ttlHours`, read auth, `title`, `paused`).
 
 Full resolution rules and the v2 presence signal: [plugin README — Share modes](share-plugin/README.md#share-modes).
 
@@ -213,7 +213,7 @@ One session can fan out to several servers at once (the `servers` config group h
 
 ## TUI commands
 
-- **`/share`** — connect flow when not connected; explicit consent dialog on every creation (nothing is published silently); once shared, the session menu: copy links, stop sharing (delete the page or leave a snapshot), per-server stop, TTL and read-auth overrides.
+- **`/share`** — connect flow when not connected; explicit consent dialog on every creation (nothing is published silently); once shared, the share dashboard: copy links, stop sharing (delete the page or leave a snapshot), per-server stop, and per-share settings — read auth, TTL, a sticky custom title, and pause — resolved through the three tiers (general config < per-server defaults < per-share) with the effective value and its source shown per row.
 - **`/openshare`** — the grouped settings tree: This session, Servers (memberships + the admin console), Sharing, Read auth, Interface, Advanced, Config files.
 - **Gone detection** — a binding can outlive its page (purge, TTL); `/share` probes every bound server, clears dead entries, and offers to share again.
 

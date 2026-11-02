@@ -143,24 +143,32 @@ queue, spool or wire:
 
 - `/share` — share the session (explicit consent on EVERY creation —
   nothing is published silently; then the URL is copied). On a child
-  session, shares the whole family. Already shared → the session menu,
-  identical to `/openshare → This session`: copy links (per server, or
-  all), stop sharing — delete or leave a snapshot, per-server stop on
-  multi-server shares —, share to another server, session TTL, read
-  auth. A credential conflict opens the collision dialog (copy debug
-  info / share on a new share / don't share).
+  session, shares the whole family. Already shared → the **share
+  dashboard**, identical to `/openshare → This session`: status header,
+  copy links (per server, or all), **per-share settings** — read auth,
+  lifetime (TTL), custom title (sticky: a set title survives session
+  renames; empty follows them), paused (freeze-parity: syncing stops, the
+  page keeps its last state, unpause backfills) —, share to another
+  server, per-server stop (delete or leave a snapshot) on multi-server
+  shares, stop sharing everywhere. Per-share rows show the EFFECTIVE
+  value and its tier (general < server default < this share); inherited
+  values render dim. A credential conflict opens the collision dialog
+  (copy debug info / share on a new share / don't share).
 - `/openshare` — grouped settings (compact root with live summaries →
-  focused submenus): This session (share/stop — delete or leave a
-  snapshot —, TTL override, session read auth),
-  **Servers** (connection
-  AND membership: legacy pair, connect, enroll, rotate, get-a-user-token
-  for root holders, disconnect, per-server **admin panel** — users,
-  tokens, codes, shares, purge —, test, remove), Sharing (share mode +
-  booleans via selection menus), Read auth, Interface (one combined
-  Menu-size picker: live width cycling + height slider + capped-height
-  preview), Advanced, Config files. Danger rows red, dirty rows green,
-  `[i]` panes paged (`## sections`, 1-9 jump), messages wrap in real
-  bodies (no clipped one-liners).
+  focused submenus): This session (the share dashboard above),
+  **Servers** (memberships: connect, enroll, rotate, get-a-user-token
+  for root holders, disconnect, per-server **share defaults** (the
+  middle tier: TTL + read auth for every share sent there), per-server
+  **admin panel** — users, tokens, codes, shares, purge —, test,
+  remove), **Config** (every general key in one place: connection
+  (worker URL, create token, config set), sharing (mode, cadence, TTL,
+  model label, redaction patterns, meta labels), read-auth defaults,
+  advanced plumbing (spool, url file + format, stderr ladder), plus the
+  config-file tools (write target, source map)), Interface (one
+  combined Menu-size picker: live width cycling + height slider +
+  capped-height preview). Danger rows red, dirty rows green, inherited
+  tier values dim, `[i]` panes paged (`## sections`, 1-9 jump),
+  messages wrap in real bodies (no clipped one-liners).
 - Sidebar chip (v1 hosts — the v2 TUI context has no slot registry yet) —
   share status next to the session title (`·N` when the session streams
   to several servers); click copies the link. A share whose page died

@@ -421,8 +421,13 @@ title/version/model.
   CDN and assemble locally - free and unlimited on every plan),
 - `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
   body `{secret|Bearer owner, authLogin+authPassword (both-or-none),
-  ttlHours (legacy ttlDays), meta}`; a credential change rotates viewer tokens; identity-
-  gated exactly like sync (scoped tokens reach only their own shares)
+  ttlHours (legacy ttlDays), meta, title, paused}`; a credential change rotates viewer tokens; `title:""`
+  clears back to the live session title (a set title survives session
+  renames and wins on the page envelope, OG card and admin listings);
+  `paused:true` is freeze-parity self-served — data writes reject with 423,
+  the page keeps its last status, the finalize backstop stands down, and
+  the same PATCH unpauses. Identity-gated exactly like sync (scoped tokens
+  reach only their own shares)
 - `GET|PUT /api/token/sets` and `PUT /api/admin/tokens/:id/sets` — named
   config sets on a token: Class A (authLogin/authPassword/ttlHours)
   applies server-side at create and never appears in a client response;

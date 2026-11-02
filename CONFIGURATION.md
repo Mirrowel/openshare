@@ -99,7 +99,7 @@ Created per shared session (`POST /api/share/<hex-suffix>` or the WS `init creat
 
 Removing a share: delete (page gone) or disconnect (snapshot stays until TTL).
 
-Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlHours, meta after creation); admin (root `CREATE_TOKEN` only) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
+Key endpoints (full list in `share-worker/README.md`): enrollment `POST /api/enroll`; self-service `GET /api/me`, `GET /api/me/shares`, `GET|PUT /api/me/settings`, `POST /api/token` (self-mint; full tokens only), `GET|PUT /api/token/sets`, `POST /api/token/rotate`, `DELETE /api/token`, `PATCH /api/share/:id` (edit login/pass, ttlHours, meta, title, paused after creation — `title: ""` clears back to the live session title; `paused: true` freezes the page on its last state, data writes reject with 423 until unpaused); admin (root `CREATE_TOKEN` only) `POST /api/admin/users|tokens|codes`, freeze/unfreeze, `GET /api/admin/shares`, `POST /api/admin/shares/:id/reassign`, `POST /api/admin/codes/:id/revoke-lineage`, `POST /api/admin/tokens/:id/freeze-shares`, `POST /api/admin/purge` (wipes everything).
 
 ---
 
@@ -123,13 +123,13 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 |---|---|---|
 | `workerUrl` | `""` | Legacy single-server shorthand (plugin disabled until set). Synthesizes a `servers` entry |
 | `createToken` | `""` | Legacy credential for the above — the root CREATE_TOKEN, filed as both `token` and `adminToken` |
-| `servers` | — | Multi-server memberships: `{ "<url>": { token, code, label, active, adminToken } }`. `token` = enrolled `osk_` token (or root); `code` = enrollment code for private servers; `adminToken` = root token for the admin console (convenience); `active` picks where new sessions share (default: first entry). Fan-out: every session shares to every ACTIVE member server |
+| `servers` | — | Multi-server memberships: `{ "<url>": { token, code, label, active, adminToken, overrides } }`. `token` = enrolled `osk_` token (or root); `code` = enrollment code for private servers; `adminToken` = root token for the admin console (convenience); `active` picks where new sessions share (default: first entry); `overrides` = per-server share defaults (middle tier, see below). Fan-out: every session shares to every ACTIVE member server |
 | `debounceMs` | `10000` | Sync flush rate limit (server-clamped 1s–60s). CI ~5000, relaxed ~30000 |
 | `completedDelayMs` | `5000` | Grace before the status flips to `completed` (server-capped). Dispose flushes a pending flip |
 | `modelLabel` | `"$Provider/$Model"` | Template for the model label in share data |
-| `ttlHours` | `2160` | Default TTL in hours for this plugin's shares (still server-clamped; legacy `ttlDays` accepted x24) |
+| `ttlHours` | `2160` | Default TTL in hours for this plugin's shares (the GENERAL tier — per-server `overrides` and per-share settings beat it; still server-clamped; legacy `ttlDays` accepted x24) |
 | `redact.patterns` | built-ins | Extra regexes (strings) applied beside the built-in secret detectors on ungated shares |
-| `authLogin` / `authPassword` | `""` | Default read-auth credentials applied when the share sets none. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
+| `authLogin` / `authPassword` | `""` | Default read-auth credentials (the GENERAL tier) applied when no server default or per-share override sets them. Both fields or neither — a half pair never builds a gate and is refused (logged once) |
 | `spoolDir` | `$XDG_DATA_HOME/opencode/openshare` | Where the offline sync spool lives |
 | `urlFile` | unset → `openshare.urls.txt` in the session dir | Append-only log of share URLs per session. `"none"` disables the file entirely |
 | `configSet` | `""` | Which named config set on the server token this client uses (unset = the token's first/default set). Rides every create frame |
@@ -137,6 +137,9 @@ Empty string means "unset" for `workerUrl`, `createToken`, `urlFile`, `spoolDir`
 | `meta` | - | Free-form string labels (max 20 keys, 64-char names, 500-char values) stamped onto every share at create; shown in the server's admin shares listing. Values may reference env vars as `${NAME}` - resolved when the share is created; unresolved refs stay literal so misconfiguration is visible |
 | `announceStderr` | `all` | Stderr ladder for the informational `[openshare]` lines: `all` = announce lines (`live:`, `url file:`) + status lines (mode banner, enrollment, adoption notes); `status` = status lines only — the share URL never touches stderr (public CI logs); `url` = announce lines only (private runners scraping the share URL); `off` = no info lines. Error-class lines always print; legacy `true`/`false` values coerce to `all`/`off` |
 | `shareMode` | presence-detected | `all` = every session auto-shares (the CI shape); `manual` = explicit `/share` with per-share consent. Unset → presence detection: an openshare TUI entry in any `tui.json` layer (global, `OPENCODE_TUI_CONFIG`, project chain) = manual, none = all. Detection is read-only; the plugin never writes `tui.json`. Fixed at process start |
+| `shares` | — | Per-share overrides keyed by session id — the AUTHORITATIVE per-share tier: `{ "<sessionID>": { ttlHours?, authLogin?, authPassword?, title?, paused? } }`. Written by the TUI dashboard; the session-binding opts carry a mirror. Entries are pruned when the session is deleted |
+
+**Share-settings tiers** — TTL and read-auth resolve per share, nearest defined tier wins: general (the `ttlHours` / `authLogin` / `authPassword` keys above) < per-server (`servers.<url>.overrides`, same fields — "every share sent to THIS server") < per-share (the `shares` section / the TUI dashboard, including the per-share-only `title` and `paused`). Read-auth resolves as a pair (login + password together or not at all). The `/share` dashboard and Servers → Share defaults edit these tiers with the effective value and its provenance shown; a TTL request above the server's `maxTtlHours` (advertised on `/health`) is clamped at create.
 
 Matching env vars: `OPENSHARE_WORKER_URL`, `OPENSHARE_CREATE_TOKEN`, `OPENSHARE_DEBOUNCE_MS`, `OPENSHARE_COMPLETED_DELAY_MS`, `OPENSHARE_MODEL_LABEL`, `OPENSHARE_TTL_HOURS` (legacy `OPENSHARE_TTL_DAYS`), `OPENSHARE_CONFIG_SET`, `OPENSHARE_AUTH_LOGIN`, `OPENSHARE_AUTH_PASSWORD`, `OPENSHARE_URL_FILE`, `OPENSHARE_URL_FILE_FORMAT`, `OPENSHARE_SPOOL_DIR`, `OPENSHARE_ANNOUNCE_STDERR`, `OPENSHARE_SHARE_MODE`, `OPENSHARE_BINDING_WRITE_MS` (test-scoped: shortens the 30s binding-metadata coalescing window; leave unset in production).
 
