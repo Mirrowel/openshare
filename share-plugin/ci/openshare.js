@@ -195,8 +195,8 @@ function resolveServer(cfg) {
   if (cfg.workerUrl)
     servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true };
   if (cfg.servers)
-    for (const [url, entry] of Object.entries(cfg.servers))
-      servers[url] = entry;
+    for (const [url2, entry] of Object.entries(cfg.servers))
+      servers[url2] = entry;
   const urls = Object.keys(servers);
   if (!urls.length)
     return;
@@ -451,9 +451,12 @@ function tuiLayerPaths(input) {
   if (envTui && existsSync(envTui))
     paths.push(envTui);
   if (input.directory) {
-    const dir = normalizePath(input.directory);
-    const worktree = input.worktree ? normalizePath(input.worktree) : undefined;
-    const sane = worktree !== undefined && worktree !== "/" && !/^[a-z]:\/$/.test(worktree) && (dir === worktree || dir.startsWith(`${worktree}/`));
+    const fwd = (v) => v.replace(/\\/g, "/").replace(/\/+$/, "");
+    const dir = fwd(input.directory);
+    const worktree = input.worktree ? fwd(input.worktree) : undefined;
+    const dirLower = dir.toLowerCase();
+    const sane = worktree !== undefined && worktree !== "/" && !/^[a-z]:\/$/.test(worktree) && (dirLower === worktree.toLowerCase() || dirLower.startsWith(`${worktree.toLowerCase()}/`));
+    const worktreeLower = worktree?.toLowerCase();
     let current = dir;
     for (let guard = 0;guard < 64 && current; guard++) {
       for (const name of ["tui.json", ".opencode/tui.json"]) {
@@ -461,7 +464,7 @@ function tuiLayerPaths(input) {
         if (existsSync(candidate) && !paths.includes(candidate))
           paths.push(candidate);
       }
-      if (sane && current === worktree)
+      if (sane && current.toLowerCase() === worktreeLower)
         break;
       const parent = dirname(current);
       if (parent === current)
@@ -573,7 +576,7 @@ function normalizeV1Message(info, parts) {
   if (info.role === "user") {
     const compaction = parts.find((p) => p?.type === "compaction");
     if (compaction) {
-      const message = {
+      const message2 = {
         id,
         type: "compaction",
         status: "completed",
@@ -582,7 +585,7 @@ function normalizeV1Message(info, parts) {
         recent: "",
         time: { created }
       };
-      return { message };
+      return { message: message2 };
     }
     const text = parts.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join(`
 `);
@@ -1127,19 +1130,19 @@ function createEngine(deps) {
     if (!raw || typeof raw !== "object")
       return;
     const p = raw;
-    const num = (v, d) => {
+    const num2 = (v, d) => {
       const n = Number(v);
       return Number.isFinite(n) && n >= 0 ? n : d;
     };
     const prev = policyOf(url);
     policyMap.set(url, {
       mode: p.mode === "turn" ? "turn" : "persistent",
-      turnGraceMs: num(p.turnGraceMs, prev.turnGraceMs),
-      idleDropMs: num(p.idleDropMs, prev.idleDropMs),
-      finalizeAfterMs: num(p.finalizeAfterMs, prev.finalizeAfterMs),
-      debounceMinMs: num(p.debounceMinMs, 0),
-      debounceMaxMs: Math.max(num(p.debounceMaxMs, Infinity), num(p.debounceMinMs, 0)),
-      completedDelayMaxMs: num(p.completedDelayMaxMs, Infinity)
+      turnGraceMs: num2(p.turnGraceMs, prev.turnGraceMs),
+      idleDropMs: num2(p.idleDropMs, prev.idleDropMs),
+      finalizeAfterMs: num2(p.finalizeAfterMs, prev.finalizeAfterMs),
+      debounceMinMs: num2(p.debounceMinMs, 0),
+      debounceMaxMs: Math.max(num2(p.debounceMaxMs, Infinity), num2(p.debounceMinMs, 0)),
+      completedDelayMaxMs: num2(p.completedDelayMaxMs, Infinity)
     });
     clampToPolicy();
     if (debugEvents)
@@ -2809,8 +2812,8 @@ function createEngine(deps) {
     if (sessionInfoValue)
       enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid));
     let modelSeen = false;
-    const consume = (messages) => {
-      for (const message of messages) {
+    const consume = (messages2) => {
+      for (const message of messages2) {
         const m = message.info ?? message;
         if (!m || typeof m.id !== "string")
           continue;
@@ -2922,31 +2925,31 @@ function createEngine(deps) {
     const parent = trackChild(sid, info);
     if (mode === "manual") {
       if (parent) {
-        const st = sessions.get(parent);
-        if (st?.activated && !st.closed) {
+        const st3 = sessions.get(parent);
+        if (st3?.activated && !st3.closed) {
           if (info)
-            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
+            enqueue(st3, itemFor("session", stripLocalFacts(redact(info)), sid));
         }
         return;
       }
       const flag = shareFlag(info);
-      const st = sessions.get(sid);
+      const st2 = sessions.get(sid);
       if (flag.enabled) {
-        if (st?.activated && !st.closed) {
+        if (st2?.activated && !st2.closed) {
           if (flag.opts)
-            applyOpts(st, flag.opts);
+            applyOpts(st2, flag.opts);
           if (info)
-            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
+            enqueue(st2, itemFor("session", stripLocalFacts(redact(info)), sid));
           if (t === "session.updated")
-            chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
+            chain = chain.then(() => refreshOptOuts(st2)).catch(() => {});
           return;
         }
         activate(sid, flag.opts, info);
         return;
       }
-      if (st?.activated && !st.closed && t === "session.updated") {
+      if (st2?.activated && !st2.closed && t === "session.updated") {
         log(`share disabled for ${sid} - removing`);
-        chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
+        chain = chain.then(() => remove(st2)).catch((e) => logError("remove error", e?.message || e));
         return;
       }
       return;
@@ -3093,16 +3096,16 @@ function createEngine(deps) {
               chain = chain.then(async () => {
                 if (created.closed)
                   return;
-                const info = await sessionInfo(created.client, main);
+                const info2 = await sessionInfo(created.client, main);
                 verifying.delete(main);
                 if (created.closed)
                   return;
-                const flag = shareFlag(info);
-                const hasBinding = !!info?.metadata?.[METADATA_KEY];
-                const createdMs = info?.time?.created;
+                const flag = shareFlag(info2);
+                const hasBinding = !!info2?.metadata?.[METADATA_KEY];
+                const createdMs = info2?.time?.created;
                 const isPreExisting = typeof createdMs === "number" && createdMs < bootTime;
                 if (debugEvents) {
-                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info}`);
+                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info2}`);
                 }
                 if (isPreExisting && !flag.enabled && !hasBinding) {
                   preExistingRetired.add(main);
@@ -3507,7 +3510,7 @@ var server_default = {
   setup: createV2ServerSetup()
 };
 export {
-  OpenSharePlugin,
+  server_default as default,
   PLUGIN_ID,
-  server_default as default
+  OpenSharePlugin
 };
