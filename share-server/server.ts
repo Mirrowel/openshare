@@ -276,7 +276,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS shares (
   ttlDays INTEGER NOT NULL, ttlHours INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, lastActive INTEGER NOT NULL,
   pluginSeen INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'live',
   ownerId TEXT, frozen INTEGER NOT NULL DEFAULT 0, auth TEXT, tokens TEXT NOT NULL DEFAULT '[]',
-  attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER, custom TEXT NOT NULL DEFAULT '{}', summaries TEXT NOT NULL DEFAULT '{}', lastViewerAt INTEGER NOT NULL DEFAULT 0)`)
+  attempts TEXT NOT NULL DEFAULT '{}', finalizeAt INTEGER, custom TEXT NOT NULL DEFAULT '{}', summaries TEXT NOT NULL DEFAULT '{}', lastViewerAt INTEGER NOT NULL DEFAULT 0,
+  title TEXT, paused INTEGER NOT NULL DEFAULT 0)`)
 db.exec(`CREATE TABLE IF NOT EXISTS items (shareId TEXT NOT NULL, key TEXT NOT NULL, item TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 0, del INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (shareId, key))`)
 // pre-existing databases: add the delta-tracking columns (rev stamps +
 // delete markers for the /data `since` handshake)
@@ -301,12 +302,14 @@ try { db.exec("ALTER TABLE tokens ADD COLUMN createdBy TEXT NOT NULL DEFAULT 'ad
 // legacy rows: backfill hours from days once (idempotent: only where 0)
 try { db.exec("UPDATE shares SET ttlHours = ttlDays * 24 WHERE ttlHours = 0") } catch {}
 try { db.exec("ALTER TABLE tokens ADD COLUMN sets TEXT NOT NULL DEFAULT '{}'") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN title TEXT") } catch {}
+try { db.exec("ALTER TABLE shares ADD COLUMN paused INTEGER NOT NULL DEFAULT 0") } catch {}
 
 type ShareRow = {
   id: string; secret: string; sessionID: string; ttlDays: number; ttlHours?: number; private?: string; createdAt: number; lastActive: number
   pluginSeen: number; rev: number; status: string; ownerId: string | null; frozen: number
   auth: string | null; tokens: string; attempts: string; finalizeAt: number | null; custom: string
-  summaries?: string; lastViewerAt?: number
+  summaries?: string; lastViewerAt?: number; title?: string | null; paused?: number
 }
 
 const q = {
@@ -439,15 +442,15 @@ function makeAuth(login: string, password: string) {
   })
 }
 
-async function createShare(sessionID: string, ttlHours: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null): Promise<{ id: string; secret: string }> {
+async function createShare(sessionID: string, ttlHours: number, ownerId: string | null, authLogin: string, authPassword: string, custom: Record<string, string> = {}, creatorTokenId: string | null = null, title = ""): Promise<{ id: string; secret: string }> {
   const id = randomId()
   const secret = randomId() + randomId()
   // hash BEFORE the insert: a viewer logging in the instant the create
   // returns must not race the credentials (worker parity - the DO awaits
   // makeAuth too). The gate is live the moment id+secret are handed out.
   const auth = authLogin && authPassword ? await makeAuth(authLogin, authPassword) : null
-  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, ttlHours, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom, creatorTokenId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?, ?)")
-    .run(id, secret, sessionID, Math.ceil(ttlHours / 24), ttlHours, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom), creatorTokenId)
+  db.query("INSERT INTO shares (id, secret, sessionID, ttlDays, ttlHours, createdAt, lastActive, pluginSeen, rev, status, ownerId, auth, attempts, tokens, custom, creatorTokenId, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'live', ?, ?, ?, '[]', ?, ?, ?)")
+    .run(id, secret, sessionID, Math.ceil(ttlHours / 24), ttlHours, Date.now(), Date.now(), Date.now(), ownerId, auth, JSON.stringify({ ips: {}, total: 0, lockUntil: 0 }), JSON.stringify(custom), creatorTokenId, title ? title.slice(0, 300) : null)
   return { id, secret }
 }
 
@@ -579,6 +582,11 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
   if (!share) return { status: 404, body: { ok: false, error: "share not found" } }
   const gate = writeGate(share, body)
   if (gate) return { status: 403, body: { ok: false, error: gate } }
+  // user pause (freeze-parity, self-served): data writes reject while
+  // paused; PATCH stays open so the same flag unpauses
+  if (share.paused && ((body.data ?? []).length || body.status)) {
+    return { status: 423, body: { ok: false, error: "share paused" } }
+  }
   const rev = share.rev + 1
   const batch: unknown[] = []
   const tx = db.transaction(() => {
@@ -623,7 +631,13 @@ function applySync(shareId: string, body: { secret?: string; ownerId?: string | 
       const sid = (it as { sessionID?: string }).sessionID ?? (it as { data?: { id?: string } }).data?.id ?? ""
       if (!sid) continue
       if (it.del) { delete summaries[sid]; summariesDirty = true }
-      else { summaries[sid] = s; summariesDirty = true }
+      else {
+        // a sticky custom title overrides the root session's title in
+        // listings, same as on the page (worker parity)
+        if (sid === share.sessionID && share.title) s.title = String(share.title).slice(0, 200)
+        summaries[sid] = s
+        summariesDirty = true
+      }
     }
     if (summariesDirty) db.query("UPDATE shares SET summaries = ? WHERE id = ?").run(JSON.stringify(summaries), shareId)
     for (const raw of rest) {
@@ -741,8 +755,9 @@ function renderData(share: ShareRow): string {
     return hit.dataJson
   }
   const body = JSON.stringify(redactItems(shareData(share), privateFacts(share)))
-  const dataJson = `{"v":2,"data":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev}}`
-  const frameJson = `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${body}}`
+  const titleJson = share.title ? `"title":${JSON.stringify(share.title)},` : ""
+  const dataJson = `{"v":2,${titleJson}"data":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev}}`
+  const frameJson = `{"v":2,"op":"frame",${titleJson}"status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${body}}`
   if (dataJson.length <= 25_000_000) dataCacheSet(share, dataJson, frameJson)
   else if (hit) {
     dataCache.delete(share.id)
@@ -761,7 +776,8 @@ function renderFrame(share: ShareRow): string {
   // populate the shared slot via renderData, then read it back
   renderData(share)
   const fresh = dataCache.get(share.id)
-  return fresh ? fresh.frameJson : `{"v":2,"op":"frame","status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${JSON.stringify(redactItems(shareData(share)))}}`
+  const titleJson = share.title ? `"title":${JSON.stringify(share.title)},` : ""
+  return fresh ? fresh.frameJson : `{"v":2,"op":"frame",${titleJson}"status":${JSON.stringify(share.status)},"rev":${share.rev},"items":${JSON.stringify(redactItems(shareData(share)))}}`
 }
 
 function json(code: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -778,7 +794,7 @@ async function httpHandler(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const path = url.pathname
 
-  if (path === "/health") return json(200, { ok: true, service: "openshare", version: SERVER_VERSION, policy: resolvePolicy(), auth: { mode: authMode() }, frameAuth: true })
+  if (path === "/health") return json(200, { ok: true, service: "openshare", version: SERVER_VERSION, policy: resolvePolicy(), auth: { mode: authMode() }, frameAuth: true, maxTtlHours: clampTtlHours(undefined) })
 
   if (path === "/branding") {
     return json(200, { name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "" })
@@ -914,6 +930,7 @@ async function httpHandler(req: Request): Promise<Response> {
     return json(200, {
       ok: true,
       id: share.id, sessionID: share.sessionID, status: share.status, rev: share.rev,
+      title: share.title ?? null, paused: !!share.paused,
       createdAt: share.createdAt, lastActive: share.lastActive, pluginSeen: share.pluginSeen,
       ownerId: share.ownerId, creatorTokenId: share.creatorTokenId ?? null,
       frozen: !!share.frozen, custom: JSON.parse(share.custom || "{}"),
@@ -941,10 +958,10 @@ async function httpHandler(req: Request): Promise<Response> {
       const since = Number(sinceRaw)
       if (Number.isFinite(since)) {
         if (since === share.rev) {
-          return json(200, { v: 2, data: [], status: share.status, rev: share.rev })
+          return json(200, { v: 2, data: [], status: share.status, rev: share.rev, ...(share.title ? { title: share.title } : {}) })
         }
         const delta = db.query("SELECT item FROM items WHERE shareId = ? AND rev > ?").all(share.id, since) as Array<{ item: string }>
-        return json(200, { v: 2, data: delta.map((r) => JSON.parse(r.item)), status: share.status, rev: share.rev })
+        return json(200, { v: 2, data: delta.map((r) => JSON.parse(r.item)), status: share.status, rev: share.rev, ...(share.title ? { title: share.title } : {}) })
       }
     }
     if (share.auth) {
@@ -984,7 +1001,7 @@ async function httpHandler(req: Request): Promise<Response> {
       sessionID = s?.data?.id ?? ""
     }
     const priv = JSON.parse(share.private || "{}") as Record<string, unknown>
-    const island = `{"items":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev},"sessionID":${JSON.stringify(sessionID)}${Object.keys(priv).length ? `,"private":${JSON.stringify(priv)}` : ""},"branding":${JSON.stringify({
+    const island = `{"items":${body},"status":${JSON.stringify(share.status)},"rev":${share.rev},"sessionID":${JSON.stringify(sessionID)}${share.title ? `,"title":${JSON.stringify(share.title)}` : ""}${Object.keys(priv).length ? `,"private":${JSON.stringify(priv)}` : ""},"branding":${JSON.stringify({
       name: process.env.BRAND_NAME ?? "", logoUrl: process.env.BRAND_LOGO_URL ?? "", wordmarkUrl: process.env.BRAND_WORDMARK_URL ?? "", linkUrl: process.env.BRAND_LINK_URL ?? "", accent: process.env.BRAND_ACCENT ?? "", faviconUrl: process.env.BRAND_FAVICON_URL ?? "", backgroundUrl: process.env.BRAND_BACKGROUND_URL ?? "", description: process.env.BRAND_DESCRIPTION ?? "", ogTitle: process.env.BRAND_OG_TITLE ?? "", ogImage: process.env.BRAND_OG_IMAGE ?? "",
     })}}`
     return serveSnapshot(url, id, island)
@@ -1029,7 +1046,18 @@ async function httpHandler(req: Request): Promise<Response> {
       if (!body.meta || typeof body.meta !== "object" || Array.isArray(body.meta)) return json(400, { error: "meta must be an object" })
       patch.custom = normCustom(body.meta)
     }
-    if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta)" })
+    // sticky custom title: "" clears (live session title applies again)
+    if (body.title !== undefined) {
+      if (typeof body.title !== "string") return json(400, { error: "title must be a string" })
+      if (body.title.length > 300) return json(400, { error: "title too long (300 chars max)" })
+      patch.title = body.title
+    }
+    // write-pause usable by the share user (freeze-parity, self-served)
+    if (body.paused !== undefined) {
+      if (typeof body.paused !== "boolean") return json(400, { error: "paused must be a boolean" })
+      patch.paused = body.paused
+    }
+    if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta, title, paused)" })
     if (patch.authLogin !== undefined) {
       const wantAuth = patch.authLogin && patch.authPassword
       let sameAuth = false
@@ -1054,8 +1082,24 @@ async function httpHandler(req: Request): Promise<Response> {
     if (patch.custom !== undefined) {
       db.query("UPDATE shares SET custom = ? WHERE id = ?").run(JSON.stringify(patch.custom), id)
     }
+    if (patch.title !== undefined) {
+      const t = patch.title === "" ? null : String(patch.title).slice(0, 300)
+      db.query("UPDATE shares SET title = ? WHERE id = ?").run(t, id)
+      // root summary + cached /data envelope follow (worker parity)
+      const summaries = JSON.parse(q.share(id)!.summaries || "{}") as Record<string, { title?: string }>
+      if (t && summaries[share.sessionID]) {
+        summaries[share.sessionID].title = t.slice(0, 200)
+        db.query("UPDATE shares SET summaries = ? WHERE id = ?").run(JSON.stringify(summaries), id)
+      }
+      dataCacheInvalidate(id)
+      console.log("[patch] title", t ? "set" : "cleared")
+    }
+    if (patch.paused !== undefined) {
+      db.query("UPDATE shares SET paused = ? WHERE id = ?").run(patch.paused ? 1 : 0, id)
+      console.log("[patch] paused", !!patch.paused)
+    }
     const updated = q.share(id)!
-    return json(200, { ok: true, id, ttlHours: ttlHoursOf(updated), auth: !!updated.auth, custom: JSON.parse(updated.custom || "{}") })
+    return json(200, { ok: true, id, ttlHours: ttlHoursOf(updated), auth: !!updated.auth, custom: JSON.parse(updated.custom || "{}"), title: updated.title ?? "", paused: !!updated.paused })
   }
 
   if (req.method === "DELETE" && op === "") {
@@ -1095,7 +1139,7 @@ async function httpCreate(body: Record<string, unknown>, ownerId: string | null,
   // explicit ttlHours wins (legacy ttlDays converts); else the owner's
   // stored default, re-clamped
   const ttlHours = clampTtlHours(ttlHoursFrom(body) ?? (ownerDefault || undefined), ttlMax)
-  const { id, secret } = await createShare(body.sessionID, ttlHours, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId)
+  const { id, secret } = await createShare(body.sessionID, ttlHours, ownerId, String(body.authLogin ?? ""), String(body.authPassword ?? ""), normCustom(body.meta), tokenId, typeof body.title === "string" ? body.title : "")
   return json(200, { ok: true, id, secret, ttlHours })
 }
 
@@ -1571,6 +1615,8 @@ function ogMetaOf(share: ShareRow) {
     if (d.type === "user") turns++
     if (d.type === "assistant" && Array.isArray(d.content)) for (const p of d.content) if (p?.type === "tool") tools++
   }
+  // sticky custom title wins over the live session title
+  if (share.title) title = share.title
   return { ok: true as const, gated: false, title: title || "shared session", status: share.status, rev: share.rev, stats: { turns, tools, durationMs: first && last ? last - first : 0, model } }
 }
 
@@ -1707,7 +1753,7 @@ async function controlMessage(ws: Bun.WebSocket<WsData>, raw: string | Buffer) {
         }
         // explicit ttlHours wins (legacy ttlDays converts); else default
         const ttlHours = clampTtlHours(ttlHoursFrom(createBody) ?? (chk.defaultTtlHours || undefined), chk.ttlMaxHours ?? 0)
-        const { id, secret } = await createShare(String((frame.create as Record<string, unknown>).sessionID ?? ""), ttlHours, chk.userId ?? null, String((frame.create as Record<string, unknown>).authLogin ?? ""), String((frame.create as Record<string, unknown>).authPassword ?? ""), normCustom((frame.create as Record<string, unknown>).meta), chk.tokenId ?? null)
+        const { id, secret } = await createShare(String(createBody.sessionID ?? ""), ttlHours, chk.userId ?? null, String(createBody.authLogin ?? ""), String(createBody.authPassword ?? ""), normCustom(createBody.meta), chk.tokenId ?? null, typeof createBody.title === "string" ? createBody.title : "")
         data.attachId = id
         data.attachSecret = secret
         data.attachOwner = chk.userId ?? null
@@ -1835,10 +1881,12 @@ function controlClose(ws: Bun.WebSocket<WsData>) {
 setInterval(() => {
   try {
     const now = Date.now()
-    // finalize: plugin gone without goodbye
-    const overdue = db.query("SELECT id FROM shares WHERE status = 'live' AND finalizeAt IS NOT NULL AND finalizeAt < ?").all(now) as Array<{ id: string }>
+    // finalize: plugin gone without goodbye. A paused share keeps its
+    // last status by design - never flip it to interrupted.
+    const overdue = db.query("SELECT id, paused FROM shares WHERE status = 'live' AND finalizeAt IS NOT NULL AND finalizeAt < ?").all(now) as Array<{ id: string; paused: number }>
     for (const r of overdue) {
       const share = q.share(r.id)!
+      if (share.paused) continue
       if ((share.pluginSeen ?? share.createdAt) + resolvePolicy().finalizeAfterMs > now) continue
       db.query("UPDATE shares SET status = 'interrupted', rev = rev + 1, finalizeAt = NULL WHERE id = ?").run(r.id)
       broadcast(r.id, { op: "frame", status: "interrupted", rev: share.rev + 1, items: [] })

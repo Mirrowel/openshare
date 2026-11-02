@@ -280,7 +280,7 @@ export default {
       }
 
       if (path === "/health")
-        return json(200, { ok: true, service: "openshare", version: versionInfo.full, policy: resolvePolicy(env), auth: { mode: authMode(env) }, frameAuth: true })
+        return json(200, { ok: true, service: "openshare", version: versionInfo.full, policy: resolvePolicy(env), auth: { mode: authMode(env) }, frameAuth: true, maxTtlHours: clampTtlHours(undefined, env) })
 
       // ---- identity -------------------------------------------------------
       // Enrollment + self-service. The heavy lifting lives in the AuthDO
@@ -599,7 +599,21 @@ export default {
           }
           patch.custom = clean
         }
-        if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta)" })
+        // sticky custom title: "" clears (the live session title applies
+        // again); a set title survives session renames
+        if (body.title !== undefined) {
+          if (typeof body.title !== "string") return json(400, { error: "title must be a string" })
+          if (body.title.length > 300) return json(400, { error: "title too long (300 chars max)" })
+          patch.title = body.title
+        }
+        // write-pause usable by the share user (freeze-parity, self-served):
+        // data writes block, the page keeps its last status, the finalize
+        // backstop stands down; PATCH itself stays open so unpause works
+        if (body.paused !== undefined) {
+          if (typeof body.paused !== "boolean") return json(400, { error: "paused must be a boolean" })
+          patch.paused = body.paused
+        }
+        if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta, title, paused)" })
         const r = await shareStub(env, id).fetch("https://do/set-opts", {
           method: "POST",
           body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, ...patch }),
@@ -726,6 +740,7 @@ async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, to
       ttlHours,
       authLogin: body.authLogin ?? "",
       authPassword: body.authPassword ?? "",
+      ...(body.title ? { title: String(body.title).slice(0, 300) } : {}),
       ownerId,
       ...(tokenId ? { creatorTokenId: tokenId } : {}),
     }),
@@ -1025,6 +1040,7 @@ export class ControlDO {
               ttlHours,
               authLogin: frame.create.authLogin ?? "",
               authPassword: frame.create.authPassword ?? "",
+              ...(frame.create.title ? { title: String(frame.create.title).slice(0, 300) } : {}),
               ownerId,
               ...(creatorTokenId ? { creatorTokenId } : {}),
               ...(Object.keys(custom).length ? { custom } : {}),
@@ -1285,8 +1301,9 @@ export class ShareDO {
     // memory (up to 2×25MB per ShareDO) and doubled the rebuild CPU
     const items = redactItems(await this.loadItems(), meta.private)
     const body = JSON.stringify(items)
-    const frameStr = `{"v":2,"op":"frame","status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
-    const dataStr = `{"v":2,"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
+    const titleJson = meta.title ? `"title":${JSON.stringify(meta.title)},` : ""
+    const frameStr = `{"v":2,"op":"frame",${titleJson}"status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
+    const dataStr = `{"v":2,${titleJson}"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
     // authenticated variant: the private block (per-session machine facts)
     // rides the envelope tail; built by SPLICING before the final brace so
     // the shared body serialization is paid once
@@ -1375,6 +1392,8 @@ export class ShareDO {
       await this.state.storage.put("meta", {
         secret,
         sessionID: body.sessionID,
+        // sticky custom title: survives session renames once set ("" unset)
+        title: typeof body.title === "string" && body.title ? body.title.slice(0, 300) : undefined,
         ttlHours: Number(body.ttlHours) > 0 ? Math.floor(Number(body.ttlHours)) : 90 * 24,
         createdAt: now,
         lastActive: now,
@@ -1521,6 +1540,23 @@ export class ShareDO {
         console.log("[set-opts] ttl updated to", meta.ttlHours, "hours")
       }
       if (body.custom !== undefined) meta.custom = body.custom ?? {}
+      // sticky custom title: "" clears (live session title applies again).
+      // Root summary + render cache follow so /meta and fresh loads agree.
+      if (body.title !== undefined) {
+        meta.title = body.title === "" ? undefined : String(body.title).slice(0, 300)
+        if (meta.summaries && meta.summaries[meta.sessionID]) {
+          meta.summaries[meta.sessionID].title = meta.title ?? meta.summaries[meta.sessionID].title
+        }
+        this._cache = null
+        console.log("[set-opts] title", meta.title ? "set" : "cleared")
+      }
+      // write-pause (freeze-parity, self-served): data writes reject while
+      // paused; PATCH stays open so the same flag unpauses. No rev bump -
+      // viewers keep the last status and content until the owner resumes.
+      if (body.paused !== undefined) {
+        meta.paused = body.paused === true ? true : undefined
+        console.log("[set-opts] paused", !!meta.paused)
+      }
       await this.state.storage.put("meta", meta)
       // keep the KV index record honest when labels changed
       if (body.custom !== undefined) {
@@ -1530,7 +1566,7 @@ export class ShareDO {
           })
         } catch {}
       }
-      return json(200, { ok: true, ttlHours: meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24), auth: !!meta.auth, custom: meta.custom ?? {} })
+      return json(200, { ok: true, ttlHours: meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24), auth: !!meta.auth, custom: meta.custom ?? {}, title: meta.title ?? "", paused: !!meta.paused })
     }
 
     if (path === "/auth" && req.method === "POST") {
@@ -1621,9 +1657,9 @@ export class ShareDO {
         const since = Number(sinceRaw)
         if (Number.isFinite(since)) {
           if (since === (meta.rev ?? 0)) {
-            return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0 })
+            return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0, ...(meta.title ? { title: meta.title } : {}) })
           }
-          return json(200, { v: 2, data: redactItems(await this.itemsSince(since), meta.private), status: meta.status, rev: meta.rev ?? 0 })
+          return json(200, { v: 2, data: redactItems(await this.itemsSince(since), meta.private), status: meta.status, rev: meta.rev ?? 0, ...(meta.title ? { title: meta.title } : {}) })
         }
       }
       // a gated share 401s unauthenticated readers above, so reaching here
@@ -1653,7 +1689,7 @@ export class ShareDO {
       // island assembled by concatenation; the body serialization is paid
       // once inside renderCache. Gated shares reaching here are already
       // authenticated, so the private block always rides the island.
-      const island = `{"items":${cache.islandBody},"status":${JSON.stringify(meta.status)},"rev":${meta.rev ?? 0},"sessionID":${JSON.stringify(sessionID)}${cache.privJson ? `,"private":{${cache.privJson}}` : ""},"branding":${JSON.stringify(resolveBrandingObj(this.env))}}`
+      const island = `{"items":${cache.islandBody},"status":${JSON.stringify(meta.status)},"rev":${meta.rev ?? 0},"sessionID":${JSON.stringify(sessionID)}${meta.title ? `,"title":${JSON.stringify(meta.title)}` : ""}${cache.privJson ? `,"private":{${cache.privJson}}` : ""},"branding":${JSON.stringify(resolveBrandingObj(this.env))}}`
       return json(200, { ok: true, island, status: meta.status, rev: meta.rev ?? 0, sessionID })
     }
 
@@ -1687,6 +1723,8 @@ export class ShareDO {
           for (const part of d.content) if (part?.type === "tool") tools++
         }
       }
+      // sticky custom title wins over the live session title
+      if (meta.title) title = meta.title
       const gated = !!meta.auth
       return json(200, { ok: true, gated, title: gated ? "" : title || "shared session", status: meta.status, rev: meta.rev ?? 0, stats: gated ? {} : { turns, tools, durationMs: first && last ? last - first : 0, model } })
     }
@@ -1711,13 +1749,27 @@ export class ShareDO {
       }
       const summaries = meta.summaries ?? (await this.backfillSummaries(meta))
       const ttlH = meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24)
-      const { secret, auth, tokens, ...rest } = meta
+      // explicit whitelist, not a blocklist spread: meta carries viewer
+      // lockout state (attempts.ips) and the private facts block, which
+      // have no business leaving the DO
       return json(200, {
         ok: true,
-        ...rest,
+        sessionID: meta.sessionID,
+        title: meta.title ?? null,
+        status: meta.status,
+        rev: meta.rev ?? 0,
+        createdAt: meta.createdAt,
+        lastActive: meta.lastActive,
+        pluginSeen: meta.pluginSeen,
+        lastViewerAt: meta.lastViewerAt,
+        ownerId: meta.ownerId ?? null,
+        creatorTokenId: meta.creatorTokenId ?? null,
+        frozen: !!meta.frozen,
+        paused: !!meta.paused,
+        custom: meta.custom ?? {},
         summaries,
-        auth: auth ? { set: true } : null,
-        viewerSessions: tokens?.length ?? 0,
+        auth: meta.auth ? { set: true } : null,
+        viewerSessions: meta.tokens?.length ?? 0,
         expiresAt: ttlH > 0 ? (meta.createdAt ?? 0) + ttlH * 3600000 : 0,
         ttlHours: ttlH,
       })
@@ -1747,6 +1799,9 @@ export class ShareDO {
       if (!meta) return json(404, { ok: true })
       await this.state.storage.delete("finalizeAt")
       if (meta.status !== "live") return json(200, { ok: true, note: "settled" })
+      // a paused share keeps its last status by design - the backstop
+      // must not flip it to interrupted while the owner holds the pause
+      if (meta.paused) return json(200, { ok: true, note: "paused" })
       const after = resolvePolicy(this.env).finalizeAfterMs
       if ((meta.pluginSeen ?? meta.createdAt ?? 0) + after > Date.now()) {
         return json(200, { ok: true, note: "plugin alive recently" })
@@ -1878,6 +1933,11 @@ export class ShareDO {
     if (!meta) return [404, { ok: false, error: "share not found" }]
     const gate = this.writeGate(meta, body)
     if (gate) return [gate === "frozen" ? 403 : 403, { ok: false, error: gate }]
+    // user pause: same effect as a freeze, self-served — data writes stop,
+    // the page keeps its last status. PATCH /set-opts stays open to unpause.
+    if (meta.paused && ((body.data ?? []).length || body.status)) {
+      return [423, { ok: false, error: "share paused" }]
+    }
     const rev = (meta.rev ?? 0) + 1
     // One op per key: first-arrival position, last-arrival action, so the
     // broadcast order can never contradict the storage last-wins result
@@ -1922,7 +1982,9 @@ export class ShareDO {
         if (it.del && sid) { delete summaries[sid]; summariesDirty = true }
         else if (sid) {
           summaries[sid] = {
-            title: typeof it.data.title === "string" ? it.data.title.slice(0, 200) : "",
+            // a sticky custom title overrides the root session's title in
+            // listings (admin/CLI) the same way it does on the page
+            title: sid === meta.sessionID && meta.title ? meta.title.slice(0, 200) : typeof it.data.title === "string" ? it.data.title.slice(0, 200) : "",
             agent: typeof it.data.agent === "string" ? it.data.agent : "",
             parentID: typeof it.data.parentID === "string" ? it.data.parentID : null,
             model: it.data.model && typeof it.data.model === "object" ? String(it.data.model.id ?? "") : "",
