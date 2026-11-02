@@ -20,11 +20,15 @@ let wasmReady = null
 const ensureWasm = () => {
   wasmReady ??= (async () => {
     // workerd's bundler hands a WebAssembly.Module; Bun's direct run hands
-    // the asset URL/path — compile it ourselves there
+    // the asset URL/path (file: URL on Windows, bare posix path on Linux) -
+    // compile it ourselves there. Only http(s)/data: are fetched.
     let mod = resvgWasm
     if (!(mod instanceof WebAssembly.Module)) {
       const url = String(mod)
-      const bytes = url.startsWith("file:") || /^[a-z]:[\\/]/i.test(url) ? new Uint8Array(await (await import("node:fs/promises")).readFile(url)) : new Uint8Array(await (await fetch(url)).arrayBuffer())
+      const fromDisk = !/^(https?:|data:)/.test(url)
+      const bytes = fromDisk
+        ? new Uint8Array(await (await import("node:fs/promises")).readFile(url))
+        : new Uint8Array(await (await fetch(url)).arrayBuffer())
       mod = await WebAssembly.compile(bytes)
     }
     await initWasm(mod)
