@@ -144,19 +144,24 @@ try {
   }
   if (needsShared) {
     // the runner's own bind is the only oracle for a busy port (probes
-    // can disagree with workerd's socket options), so a failed boot
-    // slides the shared worker and retries on the next block
-    let lastBootError
+    // can disagree with workerd's socket options), so a failed BIND
+    // slides the shared worker and retries on the next block. Any other
+    // failure (workerd cannot start on this machine) aborts immediately
+    // with the full wrangler output - sliding cannot help it
     for (let tries = 0; tries < 4 && !worker; tries++) {
       const tryPort = sharedPort + tries * 40
       try {
         worker = await lib.startWorker(sandbox, { port: tryPort })
       } catch (error) {
-        lastBootError = error
-        console.log(`[matrix] shared worker boot failed on ${tryPort}: ${String(error.message).split("\n")[0]}`)
+        if (!/could not bind/.test(String(error.message))) {
+          console.error(`[matrix] shared worker boot failed on ${tryPort} (not a port conflict; aborting):`)
+          console.error(error)
+          throw error
+        }
+        console.log(`[matrix] shared worker boot failed on ${tryPort}: bind conflict, sliding`)
       }
     }
-    if (!worker) throw lastBootError
+    if (!worker) throw new Error("shared worker boot failed on every port block")
     for (const w of active) {
       for (const s of w) {
         if (s.reuse) {

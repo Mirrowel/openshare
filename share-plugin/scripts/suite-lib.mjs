@@ -318,6 +318,12 @@ async function startWorker(suiteDir, opts = {}) {
   try {
     return await attempt()
   } catch (error) {
+    // the same-port retry exists for orphaned-workerd cleanup (a crashed
+    // child leaves the port swept by killPortOwners, and the fresh boot
+    // succeeds). A HEALTH-POLL TIMEOUT means the child is still alive and
+    // hung - retrying the same port would only collide with it and
+    // surface as a misleading bind error.
+    if (/timeout waiting for wrangler dev \/health/.test(String(error.message))) throw error
     return await attempt()
   }
 }

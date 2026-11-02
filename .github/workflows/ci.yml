@@ -48,7 +48,7 @@ jobs:
     name: Test suites (quick gate)
     runs-on: ubuntu-latest
     needs: validate
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -71,6 +71,23 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # workerd's sandbox needs unprivileged user namespaces; Ubuntu 24.04+
+      # runner images restrict them via AppArmor, which stalls wrangler dev
+      # forever at "Starting local server...". May need revisiting when the
+      # runner image changes - the smoke step below fails fast with the real
+      # workerd error if this stops working.
+      - name: Enable unprivileged user namespaces
+        run: |
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+
+      # bounded sanity boot (~1-2 min): proves workerd starts on this
+      # runner before the matrix spends its minutes
+      - name: Smoke boot wrangler dev
+        timeout-minutes: 5
+        run: node scripts/ci-smoke.mjs
 
       - name: Run quick gate
         env:
