@@ -424,7 +424,10 @@ function SessionView(props: {
               // label instead; the title itself is live from the folded data,
               // so renames propagate.
               const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
-              const displayTitle = () => stripSubagentSuffix(info().title ?? "")
+              // owner-set sticky title overrides the ROOT page's header
+              // (survives session renames); sub pages always use their own
+              const overrideTitle = () => (!isSub() ? props.source.title?.() : undefined)
+              const displayTitle = () => overrideTitle() ?? stripSubagentSuffix(info().title ?? "")
               const title = () => (
                 <div class="flex flex-col gap-2">
                   {/* line 1: version, model, date */}
@@ -862,7 +865,7 @@ function SessionView(props: {
   return (
     <>
       <Show when={info().title}>
-        <Title>{info().title} | {props.source.branding().name || "openshare"}</Title>
+        <Title>{props.source.title?.() && !isSub() ? props.source.title() : info().title} | {props.source.branding().name || "openshare"}</Title>
       </Show>
         <FileComponentProvider component={File}>
           <DialogProvider>

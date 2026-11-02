@@ -44,6 +44,9 @@ export type Source = {
   authState: () => { busy?: boolean; message?: string; retryAfterMs?: number }
   auth: (login: string, password: string) => Promise<void>
   branding: () => Branding
+  /** Sticky custom share title set by the owner (root page override);
+   *  undefined = no override, the live session title applies. */
+  title?: () => string | undefined
 }
 
 function parsePath(): { shareID: string; sub: number | undefined } {
@@ -101,6 +104,9 @@ export function useShareSource(): Source {
   // Wave 3 private block: per-session machine facts (directory/worktree)
   // that ride the envelope tail for authenticated readers of gated shares
   const [priv, setPriv] = createSignal<Record<string, Record<string, string>> | undefined>(undefined)
+  // owner-set sticky title (envelope `title`): overrides the root page's
+  // header once set; subagent pages always use their own session titles
+  const [shareTitle, setShareTitle] = createSignal<string | undefined>(undefined)
 
   if (embedded?.branding) setBrand(embedded.branding) // snapshot island carries its deployment's branding; the fetch is dead offline
   else fetchBranding().then(setBrand).catch(() => {})
@@ -173,6 +179,7 @@ export function useShareSource(): Source {
     // keeps its historic "cached"
     setStatus(embedded.status ?? "cached")
     if (embedded.private) setPriv(embedded.private)
+    if ((embedded as any).title) setShareTitle((embedded as any).title)
     const all = () => Array.from(items().values())
     const sessionID = () => embedded.sessionID
     // memoized fold: data() was a plain function called many times per
@@ -193,11 +200,13 @@ export function useShareSource(): Source {
       authState,
       auth: async () => {},
       branding: brand,
+      title: shareTitle,
     }
   }
   return liveSource({
     shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull, priv, setPriv,
     setItems, setStatus, setRev, setError, setNeedsAuth, setAuthState, setBrand,
+    shareTitle, setShareTitle,
     all: () => Array.from(items().values()),
     sessionID: () => {
       for (const it of Array.from(items().values())) if (it.type === "session" && !it.data?.parentID) return it.data.id as string
@@ -252,6 +261,7 @@ function liveSource(ctx: any): Source {
       if (isFirst && frame.kind !== "delta" && (frame.items ?? []).length > 0) replaceFull(frame.items)
       else merge(frame.items ?? [])
       if (frame.private) ctx.setPriv?.(frame.private)
+      if (typeof frame.title === "string") ctx.setShareTitle?.(frame.title)
       setRev(frame.rev ?? 0)
       if (frame.status === "gone") {
         setStatus("gone")
@@ -322,6 +332,7 @@ function liveSource(ctx: any): Source {
         replaceFull(body.data ?? [])
       }
       if (body.private) ctx.setPriv?.(body.private)
+      if (typeof body.title === "string") ctx.setShareTitle?.(body.title)
       setRev(body.rev ?? 0)
       setStatus(body.status ?? "live")
     } catch (e) {
@@ -400,5 +411,6 @@ function liveSource(ctx: any): Source {
     authState,
     auth,
     branding: brand,
+    title: ctx.shareTitle,
   }
 }
