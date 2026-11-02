@@ -72,6 +72,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # the suites spawn `wrangler dev` with cwd=share-worker; its worker
+      # bundle imports @resvg/resvg-wasm, which only resolves from
+      # share-worker/node_modules - without this install esbuild fails
+      # with ENOENT and workerd never starts
+      - name: Install worker dependencies
+        working-directory: share-worker
+        run: npm ci
+
       # workerd's sandbox needs unprivileged user namespaces; Ubuntu 24.04+
       # runner images restrict them via AppArmor, which stalls wrangler dev
       # forever at "Starting local server...". May need revisiting when the
@@ -93,7 +101,7 @@ jobs:
         env:
           # 4-vCPU runners: fewer in-flight suites than the local default
           OPENSHARE_MATRIX_CONCURRENCY: "4"
-          # first-iteration allowance above the local ~55-75s band; tighten
-          # once real runner timings settle
-          OSH_MATRIX_BUDGET_S: "120"
+          # runner suites run ~2-4x slower than the local ~55-75s band;
+          # tighten once real runner timings settle
+          OSH_MATRIX_BUDGET_S: "300"
         run: npm run test:quick
