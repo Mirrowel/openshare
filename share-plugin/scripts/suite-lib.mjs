@@ -283,6 +283,8 @@ async function startWorker(suiteDir, opts = {}) {
     let output = ""
     child.stdout.on("data", (d) => (output += d))
     child.stderr.on("data", (d) => (output += d))
+    let childGone = false
+    child.on("exit", () => (childGone = true))
     const fail = async (error) => {
       kill()
       await sleep(1500)
@@ -290,13 +292,21 @@ async function startWorker(suiteDir, opts = {}) {
       return new Error(`${error.message}\n--- wrangler output ---\n${output.slice(-4000)}`)
     }
     try {
-      await waitFor(async () => {
+      // fail FAST on bind errors and dead children: polling /health for
+      // the full window on a wrangler that already exited doubles every
+      // boot failure (startWorker retries once on the same port). The
+      // window itself stays generous - cold CI runners spend ~60s+
+      // bundling before the first /health answer.
+      const deadline = Date.now() + 180000
+      for (;;) {
+        if (/Address already in use/.test(output)) throw new Error(`wrangler dev could not bind 127.0.0.1:${port}`)
+        if (childGone) throw new Error(`wrangler dev exited before /health answered`)
         try {
-          return (await httpGet(`${url}/health`)).ok
-        } catch {
-          return false
-        }
-      }, "wrangler dev /health", 90000)
+          if ((await httpGet(`${url}/health`)).ok) break
+        } catch {}
+        if (Date.now() > deadline) throw new Error("timeout waiting for wrangler dev /health")
+        await sleep(200)
+      }
     } catch (error) {
       // workerd children sometimes survive the tree-kill and re-bind the
       // port late; one full sweep + fresh retry resolves it

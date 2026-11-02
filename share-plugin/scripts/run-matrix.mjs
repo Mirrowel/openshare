@@ -143,12 +143,25 @@ try {
     console.log(`[matrix] provider pre-warm skipped: ${e.message}`)
   }
   if (needsShared) {
-    worker = await lib.startWorker(sandbox, { port: sharedPort })
+    // the runner's own bind is the only oracle for a busy port (probes
+    // can disagree with workerd's socket options), so a failed boot
+    // slides the shared worker and retries on the next block
+    let lastBootError
+    for (let tries = 0; tries < 4 && !worker; tries++) {
+      const tryPort = sharedPort + tries * 40
+      try {
+        worker = await lib.startWorker(sandbox, { port: tryPort })
+      } catch (error) {
+        lastBootError = error
+        console.log(`[matrix] shared worker boot failed on ${tryPort}: ${String(error.message).split("\n")[0]}`)
+      }
+    }
+    if (!worker) throw lastBootError
     for (const w of active) {
       for (const s of w) {
         if (s.reuse) {
           s.env.OPENSHARE_TEST_WORKER_URL = worker.url
-          s.env.OPENSHARE_WORKER_PORT = String(sharedPort)
+          s.env.OPENSHARE_WORKER_PORT = String(worker.port)
         }
       }
     }
