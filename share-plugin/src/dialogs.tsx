@@ -13,7 +13,7 @@
 // settings fields, no family precedent on 1.19.x) built on the same
 // discipline.
 
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup } from "solid-js"
 import { appendFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -306,16 +306,19 @@ function KeyLegend(props: { api: TuiPluginApi; keys: Array<[string, string]>; on
   return (
     <box flexDirection="row" gap={1} paddingTop={1} paddingLeft={1} alignItems="center">
       <For each={props.keys}>
+        {/* one root per pair and NO component siblings inside the boxes:
+            a <Show> (or any component) between <text>/<box> children makes
+            the reconciler drop array-hole text markers straight into the
+            box — "orphan text" throw at mount. The separator is a
+            content-conditional <text> instead. */}
         {(pair, index) => (
-          <>
+          <box flexDirection="row" gap={1} alignItems="center">
             <box backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} onMouseUp={() => { if (pair[0] === "esc") props.onBack?.() }}>
               <text fg={theme().accent}><b>{pair[0]}</b></text>
             </box>
             <text fg={theme().textMuted}>{pair[1]}</text>
-            <Show when={index() < props.keys.length - 1}>
-              <text fg={theme().textMuted}>·</text>
-            </Show>
-          </>
+            <text fg={theme().textMuted}>{index() < props.keys.length - 1 ? "·" : " "}</text>
+          </box>
         )}
       </For>
     </box>
@@ -337,6 +340,8 @@ export type MenuOption<Value = string> = {
   danger?: boolean
   /** pending/edited state — title renders green (config-studio port) */
   edited?: boolean
+  /** inherited/computed value (settings tiers) — muted row (config-studio port) */
+  dim?: boolean
   /** non-interactive section separator row (never focusable) */
   divider?: boolean
 }
@@ -513,66 +518,16 @@ export function MenuDialog<Value>(props: {
 
   return (
     <DialogFrame api={props.api} title={props.title}>
-      <Show when={hintLines().length > 0}>
+      {/* no <Show> siblings in DialogFrame children: a false Show makes the
+          reconciler drop solid's slot-marker text node straight into the
+          box ("orphan text" throw on this opentui rev) — eager ternaries
+          with null arms are the safe conditional here */}
+      {hintLines().length > 0 ? (
         <box flexDirection="column" marginBottom={1} paddingLeft={1} paddingRight={1}>
           <InfoLines api={props.api} lines={hintLines()} />
         </box>
-      </Show>
-      <Show
-        when={inspecting() && current()?.help}
-        fallback={
-          <scrollbox maxHeight={listHeight()} ref={(element: ScrollBoxRenderable) => (listScroll = element)}>
-            <box flexDirection="column" gap={0}>
-              <For each={props.options}>
-                {(option, index) => {
-                  const active = createMemo(() => selected() === index())
-                  const fg = createMemo(() =>
-                    active()
-                      ? theme().background
-                      : option.divider
-                        ? theme().textMuted
-                        : option.disabled
-                          ? theme().textMuted
-                          : option.danger
-                            ? theme().error
-                            : option.edited
-                              ? theme().success
-                              : theme().text,
-                  )
-                  const descFg = createMemo(() => (active() ? theme().background : theme().textMuted))
-                  if (option.divider) {
-                    return (
-                      <box paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={1}>
-                        <text fg={theme().textMuted}>{"─".repeat(Math.max(8, dialogContentWidth(props.api) - 4))}</text>
-                      </box>
-                    )
-                  }
-                  return (
-                    <box
-                      flexDirection="row"
-                      width="100%"
-                      gap={1}
-                      paddingLeft={1}
-                      paddingRight={1}
-                      backgroundColor={active() ? theme().primary : theme().backgroundPanel}
-                      onMouseOver={() => {
-                        if (!option.divider) setSelected(index())
-                      }}
-                      onMouseUp={() => {
-                        if (!option.disabled && !option.divider) props.onDone(option.value)
-                      }}
-                    >
-                      <text width={2} flexShrink={0} fg={fg()}>{active() ? "❯" : " "}</text>
-                      <text width={titleWidth()} flexShrink={0} fg={fg()} wrapMode="none" overflow="hidden"><b>{ellipsize(option.title, titleWidth())}</b></text>
-                      <text flexGrow={1} fg={descFg()} wrapMode="none" overflow="hidden">{option.help ? "ⓘ " : ""}{option.description ?? ""}</text>
-                    </box>
-                  )
-                }}
-              </For>
-            </box>
-          </scrollbox>
-        }
-      >
+      ) : null}
+      {inspecting() && current()?.help ? (
         <box flexDirection="column">
           <box marginBottom={1} paddingLeft={1}>
             <text fg={theme().text} wrapMode="none" overflow="hidden"><b>{current()?.title ?? ""}</b></text>
@@ -581,25 +536,78 @@ export function MenuDialog<Value>(props: {
             <box flexDirection="column" paddingLeft={1} paddingRight={1}>
               <For each={helpSections()}>
                 {(sectionData, index) => (
-                  <>
-                    <Show when={sectionData.title}>
+                  <box flexDirection="column">
+                    {sectionData.title ? (
                       <box marginTop={index() > 0 ? 1 : 0} marginBottom={1}>
                         <text fg={theme().accent}><b>{`── ${sectionData.title} `}{"─".repeat(Math.max(0, Math.min(40, 40 - sectionData.title.length)))}</b></text>
                       </box>
-                    </Show>
+                    ) : null}
                     <InfoLines api={props.api} lines={sectionData.lines} />
-                  </>
+                  </box>
                 )}
               </For>
             </box>
           </scrollbox>
-          <Show when={helpSections().length > 1}>
+          {helpSections().length > 1 ? (
             <box paddingLeft={1} marginTop={1}>
               <text fg={theme().textMuted}>{`section ${section() + 1}/${helpSections().length} · p/n move · 1-${Math.min(9, helpSections().length)} jump`}</text>
             </box>
-          </Show>
+          ) : null}
         </box>
-      </Show>
+      ) : (
+        <scrollbox maxHeight={listHeight()} ref={(element: ScrollBoxRenderable) => (listScroll = element)}>
+          <box flexDirection="column" gap={0}>
+            <For each={props.options}>
+              {(option, index) => {
+                const active = createMemo(() => selected() === index())
+                const fg = createMemo(() =>
+                  active()
+                    ? theme().background
+                    : option.divider
+                      ? theme().textMuted
+                      : option.disabled
+                        ? theme().textMuted
+                        : option.danger
+                          ? theme().error
+                          : option.edited
+                            ? theme().success
+                            : option.dim
+                              ? theme().textMuted
+                              : theme().text,
+                )
+                const descFg = createMemo(() => (active() ? theme().background : theme().textMuted))
+                if (option.divider) {
+                  return (
+                    <box paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={1}>
+                      <text fg={theme().textMuted}>{"─".repeat(Math.max(8, dialogContentWidth(props.api) - 4))}</text>
+                    </box>
+                  )
+                }
+                return (
+                  <box
+                    flexDirection="row"
+                    width="100%"
+                    gap={1}
+                    paddingLeft={1}
+                    paddingRight={1}
+                    backgroundColor={active() ? theme().primary : theme().backgroundPanel}
+                    onMouseOver={() => {
+                      if (!option.divider) setSelected(index())
+                    }}
+                    onMouseUp={() => {
+                      if (!option.disabled && !option.divider) props.onDone(option.value)
+                    }}
+                  >
+                    <text width={2} flexShrink={0} fg={fg()}>{active() ? "❯" : " "}</text>
+                    <text width={titleWidth()} flexShrink={0} fg={fg()} wrapMode="none" overflow="hidden"><b>{ellipsize(option.title, titleWidth())}</b></text>
+                    <text flexGrow={1} fg={descFg()} wrapMode="none" overflow="hidden">{option.help ? "ⓘ " : ""}{option.description ?? ""}</text>
+                  </box>
+                )
+              }}
+            </For>
+          </box>
+        </scrollbox>
+      )}
       <KeyLegend
         api={props.api}
         keys={
@@ -924,7 +932,7 @@ export function showPromptOnce(api: TuiPluginApi, props: { title: string; placeh
 
 /** host-facade adapter: ShareDialogSelectOption (flows) -> MenuOption */
 export function toMenuOptions<Value>(options: ShareDialogSelectOption<Value>[]): MenuOption<Value>[] {
-  return options.map((o) => ({ title: o.title, description: o.description, value: o.value, disabled: o.disabled, help: o.help, danger: o.danger, edited: o.edited, divider: o.divider }))
+  return options.map((o) => ({ title: o.title, description: o.description, value: o.value, disabled: o.disabled, help: o.help, danger: o.danger, edited: o.edited, dim: o.dim, divider: o.divider }))
 }
 
 // --- combined size picker (config-studio SizeSliderDialog port) ----------------
