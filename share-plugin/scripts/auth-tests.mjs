@@ -395,6 +395,67 @@ try {
     ok("T39h cleanup", (await req(W1, "DELETE", `/api/share/${g39.json.id}`, { body: { secret: g39.json.secret } })).json?.ok === true && (await req(W1, "DELETE", `/api/share/${g39b.json.id}`, { body: { secret: g39b.json.secret } })).json?.ok === true)
   }
 
+  // T40 — share title + pause (the settings tiers): a sticky custom title
+  // rides create AND PATCH, wins on the page envelope and the OG card, and
+  // clears back to the live session title. Pause is freeze-parity,
+  // self-served: data writes 423, the finalize backstop stands down (a
+  // plugin-gone pause keeps the last status), unpause reopens writes.
+  {
+    const now = Date.now()
+    const t40Items = (title) => [
+      { type: "session", sessionID: "ses_t40", data: { id: "ses_t40", title, time: { created: now } } },
+      { type: "message", sessionID: "ses_t40", data: { id: "m40", type: "user", time: { created: now + 1 }, text: "hi" } },
+    ]
+    const g40 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t40", title: "custom at create" } })
+    const sync40 = (data) => req(W1, "POST", `/api/share/${g40.json.id}/sync`, { body: { secret: g40.json.secret, status: "live", data } })
+    await sync40(t40Items("live session title"))
+    const d40 = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40 create title rides the envelope", d40.title === "custom at create", JSON.stringify(d40.title))
+
+    const p40 = await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, title: "renamed by owner" } })
+    ok("T40a PATCH title", p40.json?.title === "renamed by owner", JSON.stringify(p40.json))
+    const d40b = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40b patched title serves on the next load", d40b.title === "renamed by owner", JSON.stringify(d40b.title))
+    const og40 = await (await fetch(`${W1}/s/${g40.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })).text()
+    ok("T40c OG title prefers the custom title", /<meta property="og:title" content="renamed by owner">/.test(og40))
+
+    const c40 = await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, title: "" } })
+    ok("T40d title clears", c40.json?.title === "", JSON.stringify(c40.json))
+    const d40c = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40e cleared title leaves the envelope", d40c.title === undefined, JSON.stringify(d40c.title))
+
+    // pause: data writes refuse, status untouched, finalize stands down
+    const pz = await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, paused: true } })
+    ok("T40f pause", pz.json?.paused === true, JSON.stringify(pz.json))
+    const blocked = await req(W1, "POST", `/api/share/${g40.json.id}/sync`, { body: { secret: g40.json.secret, status: "completed", data: t40Items("paused edit") } })
+    ok("T40g paused data write 423", blocked.status === 423, `${blocked.status}`)
+    const d40d = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40h page untouched while paused", d40d.status === "live" && !JSON.stringify(d40d.data).includes("paused edit"), `${d40d.status}`)
+
+    // arm the finalize backstop (plugin-gone: attach then drop the socket)
+    // and outlive it: the 2.4s suite finalize window must NOT flip a paused
+    // share to interrupted
+    const ws40 = wsSession(W1, E)
+    await ws40.open()
+    ws40.send({ op: "init", attach: { id: g40.json.id, secret: g40.json.secret } })
+    await ws40.wait("init")
+    ws40.close()
+    await new Promise((r) => setTimeout(r, 3400))
+    const d40e = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40i finalize stands down while paused", d40e.status === "live", `${d40e.status}`)
+
+    ok("T40j unpause", (await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, paused: false } })).json?.paused === false)
+    ok("T40k writes resume after unpause", (await sync40(t40Items("live session title"))).status === 200)
+    const meta40 = await req(W1, "GET", `/api/share/${g40.json.id}/meta`, { token: E })
+    const m40 = meta40.json ?? {}
+    ok(
+      "T40l meta exposes paused/title, keeps attempts+private inside the DO",
+      meta40.status === 200 && m40.paused === false && m40.title === null && m40.attempts === undefined && m40.private === undefined,
+      `${meta40.status} ${JSON.stringify(m40).slice(0, 160)}`,
+    )
+    ok("T40m cleanup", (await req(W1, "DELETE", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret } })).json?.ok === true)
+  }
+
 
   // T23 - route shape: share-referencing paths need a real 32-hex id
   ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)

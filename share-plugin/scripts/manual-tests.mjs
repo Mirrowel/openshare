@@ -854,6 +854,69 @@ try {
       await stopServe(s13Serve)
     }
   }
+
+  // S15: per-share pause + backfill. Flipping the share tier's paused
+  // flag stops the ENGINE from syncing (the page freezes at its last rev
+  // while the session keeps taking turns); unpausing drains everything
+  // the pause queued. The metadata PATCH is the exact write the TUI
+  // dashboard makes (the binding mirror; the engine resolves the config
+  // tier above it).
+  {
+    const s15Sandbox = join(suiteDir, "paused")
+    const s15Project = join(s15Sandbox, "project")
+    mkdirSync(s15Project, { recursive: true })
+    const s15UrlFile = join(s15Sandbox, "share-url.txt")
+    const s15Serve = await startServe({ name: "paused", path: PKG }, s15Sandbox, s15Project, { OPENSHARE_URL_FILE: s15UrlFile })
+    try {
+      const sid = await createAndPrompt(s15Serve, "pause probe")
+      const url = (await waitFor(() => readUrlFile(s15UrlFile), "S15: share created")).trim().split("\n").at(-1)
+      const id = url.split("/").pop()
+      const shareJson = async () => (await (await fetch(`${WORKER_URL}/api/share/${id}/data`)).json())
+      const userCount = (p) => p.data.filter((i) => i.type === "message" && i.data?.type === "user").length
+      const base = await waitForShareData(id, (p) => (userCount(p) >= 1 ? p : undefined), "S15: baseline turn visible")
+      const revBase = base.rev
+      const usersBase = userCount(base)
+      const patchOpts = async (optsPatch) => {
+        const info = await (await httpGet(`${s15Serve.base}/session/${sid}`)).json()
+        const md = { ...(info.metadata ?? {}) }
+        const osh = { ...(md.openshare ?? {}), enabled: true }
+        const nextOpts = { ...(osh.opts ?? {}), ...optsPatch }
+        for (const k of Object.keys(nextOpts)) if (nextOpts[k] === undefined) delete nextOpts[k]
+        osh.opts = nextOpts
+        md.openshare = osh
+        await httpGet(`${s15Serve.base}/session/${sid}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ metadata: md }) })
+      }
+      await patchOpts({ paused: true })
+      // the dashboard's other half: the REST PATCH gates the server (v1
+      // hosts do not emit session.updated for metadata-only changes, so
+      // the server-side block is what enforces the freeze; v2 hosts also
+      // stop flushing engine-side)
+      const s15Info = await (await httpGet(`${s15Serve.base}/session/${sid}`)).json()
+      const s15Entry = s15Info?.metadata?.openshare?.servers?.[WORKER_URL]
+      const s15Pause = await fetch(`${WORKER_URL}/api/share/${s15Entry?.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: s15Entry?.secret, paused: true }),
+      })
+      check("S15: pause PATCH ok", s15Pause.ok, `${s15Pause.status}`)
+      await sleep(600) // in-flight syncs settle against the closed gate
+      await promptSession(s15Serve, sid, "turn while paused")
+      await sleep(3000) // past the turn-end flush: the gate must hold
+      const frozen = await shareJson()
+      check("S15: page frozen while paused", frozen.rev === revBase && userCount(frozen) === usersBase, `rev ${frozen.rev} vs ${revBase}, users ${userCount(frozen)} vs ${usersBase}`)
+      await patchOpts({ paused: undefined })
+      const s15Unpause = await fetch(`${WORKER_URL}/api/share/${s15Entry?.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: s15Entry?.secret, paused: false }),
+      })
+      check("S15: unpause PATCH ok", s15Unpause.ok, `${s15Unpause.status}`)
+      const caughtUp = await waitForShareData(id, (p) => (userCount(p) > usersBase && p.rev > revBase ? p : undefined), "S15: backfill after unpause")
+      check("S15: unpause backfilled the paused turn", userCount(caughtUp) > usersBase && caughtUp.rev > revBase, `rev ${caughtUp.rev} vs ${revBase}, users ${userCount(caughtUp)} vs ${usersBase}`)
+    } finally {
+      await stopServe(s15Serve)
+    }
+  }
   } // end engineB
   } // end engine shard
 } catch (error) {

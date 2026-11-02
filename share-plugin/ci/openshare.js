@@ -26,9 +26,28 @@
 // shape; url prints announce lines only).
 //
 // src/config.ts
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+function normalizeShareOverrides(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return;
+  const e = raw;
+  const out = {};
+  if (typeof e.ttlHours === "number" && Number.isFinite(e.ttlHours) && e.ttlHours > 0)
+    out.ttlHours = Math.floor(e.ttlHours);
+  else if (typeof e.ttlDays === "number" && e.ttlDays > 0)
+    out.ttlHours = Math.floor(e.ttlDays) * 24;
+  if (typeof e.authLogin === "string")
+    out.authLogin = e.authLogin;
+  if (typeof e.authPassword === "string")
+    out.authPassword = e.authPassword;
+  if (typeof e.title === "string")
+    out.title = e.title;
+  if (e.paused === true || e.paused === false)
+    out.paused = e.paused;
+  return Object.keys(out).length ? out : undefined;
+}
 var METADATA_KEY = "openshare";
 var URL_FILE_NONE = "none";
 var DEFAULTS = {
@@ -84,7 +103,7 @@ function configHomePath(env = process.env) {
 }
 function configSourceMap(pluginDir, env = process.env) {
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"]);
-  const known = new Set([...Object.keys(DEFAULTS), "shareMode", "servers"]);
+  const known = new Set([...Object.keys(DEFAULTS), "shareMode", "servers", "shares", "redact", "meta"]);
   const sources = {};
   const envKeys = {
     workerUrl: env.OPENSHARE_WORKER_URL,
@@ -180,6 +199,9 @@ function normalizeServers(raw) {
       entry.active = true;
     if (e.anonymous === true)
       entry.anonymous = true;
+    const overrides = normalizeShareOverrides(e.overrides);
+    if (overrides)
+      entry.overrides = overrides;
     out[url] = entry;
   }
   return Object.keys(out).length ? out : undefined;
@@ -227,6 +249,65 @@ function saveServerEntry(url, patch, target) {
 function saveServerToken(url, token, target) {
   return saveServerEntry(url, { token }, target);
 }
+function saveShareOverrides(sessionID, patch, target) {
+  if (!sessionID)
+    return;
+  const path = target ?? configHomePath();
+  if (!path)
+    return;
+  try {
+    let previous = {};
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"));
+      if (!previous || typeof previous !== "object")
+        previous = {};
+    } catch {}
+    const shares = previous.shares && typeof previous.shares === "object" ? previous.shares : {};
+    const merged = normalizeShareOverrides({ ...normalizeShareOverrides(shares[sessionID]) ?? {}, ...patch });
+    if (merged)
+      shares[sessionID] = merged;
+    else
+      delete shares[sessionID];
+    if (Object.keys(shares).length)
+      previous.shares = shares;
+    else
+      delete previous.shares;
+    writeFileSync(path, JSON.stringify(previous, null, 2) + `
+`);
+    return path;
+  } catch {
+    return;
+  }
+}
+function deleteShareOverrides(sessionID, target) {
+  return saveShareOverrides(sessionID, { ttlHours: undefined, authLogin: undefined, authPassword: undefined, title: undefined, paused: undefined }, target);
+}
+var liveSharesCache;
+function liveShares() {
+  try {
+    const path = configHomePath();
+    if (!path)
+      return {};
+    const mtime = statSync(path).mtimeMs;
+    if (liveSharesCache && liveSharesCache.mtime === mtime)
+      return liveSharesCache.shares;
+    let shares = {};
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8"));
+      if (raw && typeof raw === "object" && raw.shares && typeof raw.shares === "object") {
+        for (const [sid, ov] of Object.entries(raw.shares)) {
+          const clean = normalizeShareOverrides(ov);
+          if (clean)
+            shares[sid] = clean;
+        }
+      }
+    } catch {}
+    liveSharesCache = { mtime, at: Date.now(), shares };
+    return shares;
+  } catch {
+    return {};
+  }
+}
 function normalizeAnnounce(value, fallback) {
   if (value === true)
     return "all";
@@ -255,6 +336,19 @@ function loadConfig(pluginDir, options) {
         const servers = normalizeServers(value);
         if (servers)
           cfg.servers = mergeServerGroups(cfg.servers, servers);
+        continue;
+      }
+      if (key === "shares") {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          for (const [sid, ov] of Object.entries(value)) {
+            if (typeof sid !== "string" || !sid)
+              continue;
+            const clean = normalizeShareOverrides(ov);
+            if (!clean)
+              continue;
+            cfg.shares = { ...cfg.shares, [sid]: { ...cfg.shares?.[sid] ?? {}, ...clean } };
+          }
+        }
         continue;
       }
       if (key === "redact") {
@@ -494,6 +588,47 @@ import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as r
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { isAbsolute, join as join2 } from "node:path";
+
+// src/share-settings.ts
+function pairFrom(tier) {
+  if (!tier)
+    return;
+  const login = tier.authLogin ?? "";
+  const password = tier.authPassword ?? "";
+  return login !== "" && password !== "" ? { login, password } : undefined;
+}
+function ttlFrom(tier) {
+  const h = tier?.ttlHours;
+  return typeof h === "number" && Number.isFinite(h) && h > 0 ? Math.floor(h) : undefined;
+}
+function resolveShareSettings(input) {
+  const share = { ...input.mirror ?? {}, ...input.share ?? {} };
+  const out = {};
+  const ttl = ttlFrom(share) ?? ttlFrom(input.server) ?? ttlFrom(input.general);
+  if (ttl !== undefined) {
+    out.ttlHours = { value: ttl, source: ttlFrom(share) !== undefined ? "share" : ttlFrom(input.server) !== undefined ? "server" : "general" };
+  }
+  const auth = pairFrom(share) ?? pairFrom(input.server) ?? pairFrom(input.general);
+  if (auth) {
+    out.auth = { value: auth, source: pairFrom(share) !== undefined ? "share" : pairFrom(input.server) !== undefined ? "server" : "general" };
+  } else if ([share, input.server, input.general].some((t) => t && ((t.authLogin ?? "") !== "" || (t.authPassword ?? "") !== ""))) {
+    out.authHalfPair = true;
+  }
+  if (typeof share.title === "string" && share.title !== "")
+    out.title = { value: share.title, source: "share" };
+  if (share.paused === true)
+    out.paused = { value: true, source: "share" };
+  return out;
+}
+function resolveFor(cfg, serverUrl, sessionID, mirror) {
+  const live = sessionID ? liveShares()[sessionID] : undefined;
+  return resolveShareSettings({
+    general: { ttlHours: cfg.ttlHours, authLogin: cfg.authLogin, authPassword: cfg.authPassword },
+    server: serverUrl ? cfg.servers?.[serverUrl]?.overrides : undefined,
+    share: sessionID ? { ...cfg.shares?.[sessionID] ?? {}, ...live ?? {} } : undefined,
+    mirror
+  });
+}
 
 // src/contract.ts
 function messageTombstone(sessionID, messageID) {
@@ -900,6 +1035,10 @@ function shareFlag(info) {
       opts.authPassword = o.authPassword;
     if (typeof o.modelLabel === "string")
       opts.modelLabel = o.modelLabel;
+    if (typeof o.title === "string" && o.title)
+      opts.title = o.title;
+    if (o.paused === true)
+      opts.paused = true;
   }
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined };
 }
@@ -1197,6 +1336,7 @@ function createEngine(deps) {
     bindingQueried: false,
     optOuts: new Set,
     opts: undefined,
+    paused: false,
     activated: false,
     wroteBinding: false,
     everConnected: false,
@@ -1235,6 +1375,7 @@ function createEngine(deps) {
     }
     st.activated = true;
     st.opts = opts;
+    st.paused = resolvedFor(st).paused?.value === true;
     st.sentHash.clear();
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
@@ -1576,7 +1717,7 @@ function createEngine(deps) {
           id: r.shareId,
           url,
           status: st.lastSentStatus ?? "waiting",
-          gated: (st.opts?.authLogin ?? cfg.authLogin ?? "") !== ""
+          gated: resolvedFor(st, r).auth !== undefined
         }) + `
 ` : url + `
 `;
@@ -1592,19 +1733,32 @@ function createEngine(deps) {
     }
   };
   let halfAuthWarned = false;
-  const authFrame = (st) => {
-    const login = st.opts?.authLogin ?? cfg.authLogin ?? "";
-    const password = st.opts?.authPassword ?? cfg.authPassword ?? "";
-    if (login === "" !== (password === "")) {
-      if (!halfAuthWarned) {
-        halfAuthWarned = true;
-        logError("read auth needs BOTH a login and a password - gate disabled until fixed");
-      }
-      return { authLogin: "", authPassword: "" };
+  const resolvedFor = (st, r) => resolveFor(cfg, r?.url, st.sid, st.opts);
+  const authFrame = (st, r) => {
+    const res = resolvedFor(st, r);
+    if (res.auth)
+      return { authLogin: res.auth.value.login, authPassword: res.auth.value.password };
+    if (res.authHalfPair && !halfAuthWarned) {
+      halfAuthWarned = true;
+      logError("read auth needs BOTH a login and a password - gate disabled until fixed");
     }
-    return { authLogin: login, authPassword: password };
+    return { authLogin: "", authPassword: "" };
   };
-  const ttlFor = (st) => st.opts?.ttlHours ?? cfg.ttlHours;
+  const ttlFor = (st, r) => resolvedFor(st, r).ttlHours?.value ?? cfg.ttlHours;
+  const createInit = (st, r) => {
+    const res = resolvedFor(st, r);
+    return {
+      op: "init",
+      create: {
+        sessionID: st.sid,
+        ttlHours: ttlFor(st, r),
+        ...authFrame(st, r),
+        ...res.title ? { title: res.title.value } : {},
+        ...cfg.configSet ? { set: cfg.configSet } : {},
+        ...metaFor() ? { meta: metaFor() } : {}
+      }
+    };
+  };
   const metaFor = () => {
     if (!cfg.meta || typeof cfg.meta !== "object")
       return;
@@ -1622,19 +1776,26 @@ function createEngine(deps) {
     if (!opts)
       return;
     const prev = st.opts ? JSON.stringify(st.opts) : "";
+    const wasPaused = st.paused;
     st.opts = opts;
+    st.paused = resolvedFor(st).paused?.value === true;
     if (prev === JSON.stringify(opts))
       return;
     for (const [url, r] of st.remotes) {
       if (!r.shareId || !r.secret || !r.wsReady)
         continue;
-      const attach = { id: r.shareId, secret: r.secret, ...authFrame(st) };
-      if (st.opts?.ttlHours)
-        attach.ttlHours = st.opts.ttlHours;
+      if (st.paused)
+        continue;
+      const attach = { id: r.shareId, secret: r.secret, ...authFrame(st, r) };
+      const ttl = resolvedFor(st, r).ttlHours?.value;
+      if (ttl)
+        attach.ttlHours = ttl;
       const sent = wsSend(r, { op: "init", attach });
       if (sent)
-        logStatus(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`);
+        logStatus(`opts re-synced to ${url.slice(0, 24)}${ttl ? ` (ttl ${ttl}h)` : ""}`);
     }
+    if (wasPaused && !st.paused)
+      drainRemotes(st);
   };
   const deleteAbandoned = (r) => {
     const id = r.shareId;
@@ -1827,9 +1988,9 @@ function createEngine(deps) {
         }
       }
       if (r.initWasAttach) {
-        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
+        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st, r) } });
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, createInit(st, r));
       }
       r.initTimer = setTimeout(() => {
         if (seq !== r.socketSeq)
@@ -2000,7 +2161,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, createInit(st, r));
         return;
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -2009,7 +2170,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...cfg.configSet ? { set: cfg.configSet } : {}, ...metaFor() ? { meta: metaFor() } : {} } });
+        wsSend(r, createInit(st, r));
         return;
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected;
@@ -2043,7 +2204,7 @@ function createEngine(deps) {
       touch(st);
       const ackTtl = typeof frame.ttlHours === "number" ? frame.ttlHours : typeof frame.ttlDays === "number" ? frame.ttlDays * 24 : undefined;
       if (typeof ackTtl === "number") {
-        const wanted = ttlFor(st);
+        const wanted = ttlFor(st, r);
         const clamp = wanted != null && ackTtl !== wanted ? { requested: wanted, effective: ackTtl } : null;
         if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
           st.ttlClamped = clamp;
@@ -2054,7 +2215,7 @@ function createEngine(deps) {
         st.lastError = null;
         scheduleBindingWrite(st);
       }
-      const wantedGate = (st.opts?.authLogin ?? cfg.authLogin ?? "") !== "" && (st.opts?.authPassword ?? cfg.authPassword ?? "") !== "";
+      const wantedGate = resolvedFor(st, r).auth !== undefined;
       if (wantedGate && frame.auth === false && !r.warnedNoGate) {
         r.warnedNoGate = true;
         logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`);
@@ -2084,8 +2245,9 @@ function createEngine(deps) {
       }
       spoolSave(st, r);
       if (r.pending.length) {
-        for (const f of r.pending)
-          sendSync(r, f);
+        if (!st.paused)
+          for (const f of r.pending)
+            sendSync(r, f);
       } else if (st.queue.size) {
         flush(st);
       }
@@ -2196,6 +2358,8 @@ function createEngine(deps) {
         r.pending.push(cf);
         spoolAppend(st, r, cf);
       }
+      if (st.paused)
+        continue;
       if (r.ws && !r.wsReady)
         continue;
       if (r.wsReady) {
@@ -2272,6 +2436,25 @@ function createEngine(deps) {
     r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq));
     scheduleSpoolSave(st, r);
   };
+  const drainRemotes = (st) => {
+    if (st.closed)
+      return;
+    let httpWork;
+    for (const r of st.remotes.values()) {
+      if (!r.pending.length)
+        continue;
+      if (r.wsReady) {
+        for (const cf of r.pending)
+          sendSync(r, cf);
+        continue;
+      }
+      const viaHttp = flushViaHttp(st, r);
+      if (viaHttp)
+        httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp);
+    }
+    if (httpWork)
+      httpWork.catch((e) => logError("unpause drain error", e?.message || e));
+  };
   const scheduleFlush = (st) => {
     if (st.timer)
       return;
@@ -2312,8 +2495,7 @@ function createEngine(deps) {
     if (h)
       st.sentHash.set(entry.key, h);
     {
-      const gate = authFrame(st);
-      const gated = gate.authLogin !== "" && gate.authPassword !== "";
+      const gated = st.remotes.size ? [...st.remotes.values()].every((r) => resolvedFor(st, r).auth !== undefined) : resolvedFor(st).auth !== undefined;
       const pass = redactItem(entry.item, { rules: redactionRules, home: homeDir, enabled: !gated });
       if (pass.item !== entry.item)
         entry = { ...entry, item: pass.item };
@@ -3154,6 +3336,7 @@ function createEngine(deps) {
           const st = sessions.get(sid);
           if (!st)
             return;
+          deleteShareOverrides(sid);
           chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
         }
       },

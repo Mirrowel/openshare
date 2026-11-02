@@ -32,8 +32,71 @@ if (compiled.includes("@opentui/solid/jsx-runtime") && !compiled.includes("creat
   throw new Error("dist/tui.js was built without the reactive solid transform")
 }
 
-const temp = mkdtempSync(path.join(root, "scripts", ".tui-reactivity-"))
 const failures = []
+
+// --- share-settings resolver (pure unit; no fs, no env) --------------------
+// The tier model is load-bearing for the TUI, the engine's create frames
+// and PATCH pushes — a silent precedence flip would mis-gate or mis-price
+// shares, so the resolution rules are pinned here.
+{
+  const { resolveShareSettings } = await import(path.join(root, "src", "share-settings.ts"))
+  const general = { ttlHours: 10, authLogin: "", authPassword: "" }
+  const eq = (name, got, want) => {
+    const ok = JSON.stringify(got) === JSON.stringify(want)
+    console.log(`${ok ? "ok  " : "FAIL"} ${name}`)
+    if (!ok) {
+      failures.push(name)
+      console.error(`     got  ${JSON.stringify(got)}\n     want ${JSON.stringify(want)}`)
+    }
+  }
+  eq(
+    "resolver: ttl precedence share > server > general",
+    [
+      resolveShareSettings({ general, server: { ttlHours: 20 }, share: { ttlHours: 30 }, mirror: {} })?.ttlHours,
+      resolveShareSettings({ general, server: { ttlHours: 20 }, share: {}, mirror: {} })?.ttlHours,
+      resolveShareSettings({ general, server: {}, share: {}, mirror: {} })?.ttlHours,
+    ],
+    [{ value: 30, source: "share" }, { value: 20, source: "server" }, { value: 10, source: "general" }],
+  )
+  eq(
+    "resolver: auth resolves as a pair-unit (half pairs fall through)",
+    [
+      resolveShareSettings({ general: { ...general, authLogin: "g" }, server: { authLogin: "s", authPassword: "p" }, share: {}, mirror: {} })?.auth,
+      resolveShareSettings({ general, server: { authLogin: "s", authPassword: "p" }, share: { authLogin: "x" }, mirror: {} })?.auth,
+      resolveShareSettings({ general, server: { authLogin: "s" }, share: {}, mirror: {} })?.auth,
+    ],
+    [
+      { value: { login: "s", password: "p" }, source: "server" },
+      { value: { login: "s", password: "p" }, source: "server" },
+      undefined,
+    ],
+  )
+  eq(
+    "resolver: half-pair diagnostics flag without a gate",
+    resolveShareSettings({ general, server: { authLogin: "lonely" }, share: {}, mirror: {} })?.authHalfPair,
+    true,
+  )
+  eq(
+    "resolver: paused/title live only at the share tier",
+    [
+      resolveShareSettings({ general, server: { paused: true, title: "s" }, share: {}, mirror: {} })?.paused,
+      resolveShareSettings({ general, server: {}, share: { paused: true, title: "t" }, mirror: {} })?.paused?.value,
+      resolveShareSettings({ general, server: {}, share: { paused: true, title: "t" }, mirror: {} })?.title,
+    ],
+    [undefined, true, { value: "t", source: "share" }],
+  )
+  eq(
+    "resolver: the binding mirror merges UNDER the config share tier",
+    [
+      resolveShareSettings({ general, server: {}, share: { ttlHours: 8 }, mirror: { ttlHours: 5 } })?.ttlHours,
+      resolveShareSettings({ general, server: {}, share: {}, mirror: { ttlHours: 5 } })?.ttlHours,
+    ],
+    [{ value: 8, source: "share" }, { value: 5, source: "share" }],
+  )
+  eq("resolver: no tiers set -> server defaults", resolveShareSettings({ general: {}, server: {}, share: {}, mirror: {} }), {})
+}
+
+const temp = mkdtempSync(path.join(root, "scripts", ".tui-reactivity-"))
 try {
   await buildFixture(path.join(root, "scripts", "fixtures", "tui-reactivity.tsx"), temp)
   const output = path.join(temp, "tui-reactivity.js")

@@ -313,6 +313,71 @@ try {
       check("F13b: full pair saved", rec2?.opts?.authLogin === "alice" && rec2?.opts?.authPassword === "wonderland", JSON.stringify(rec2?.opts))
     }
 
+    // F16: the share dashboard — one screen for per-share settings with
+    // tier provenance. Rows: read auth, TTL, title, pause + link +
+    // destinations + danger; title writes BOTH stores (config shares{}
+    // authoritative + binding mirror) and PATCHes the live page; pause
+    // flips the page write-gate and unpause reopens it.
+    {
+      const h16 = mockHost(client)
+      // this block's own live share (consent), then the dashboard edits
+      h16.state.dialogAnswers.push(true, true)
+      const shared16 = await flows.shareWithConsent(h16.host, sid)
+      check("F16: own share for the dashboard", shared16.ok === true && !!shared16.url, shared16.message)
+      h16.state.menuAnswers.push("session:title", "session:paused", "__back", "action:exit")
+      h16.state.promptAnswers.push("Renamed Dashboard Title")
+      await settings.settingsDialog(h16.host, sid, "session")
+      const dash = h16.state.menus.findLast((m) => /This session/.test(m.title))
+      const rowValues = dash?.options.map((o) => o.value) ?? []
+      check(
+        "F16a: dashboard rows (settings + link + destinations + danger)",
+        ["session:auth", "session:ttl", "session:title", "session:paused"].every((v) => rowValues.includes(v)) && rowValues.includes("session:unshare") && rowValues.includes("session:copy"),
+        JSON.stringify(rowValues),
+      )
+      const rec16 = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F16b: title set wrote the binding mirror", rec16?.opts?.title === "Renamed Dashboard Title", JSON.stringify(rec16?.opts))
+      const homePath16 = join(homeDir, "opencode", "openshare.config.json")
+      const cfg16 = JSON.parse(readFileSync(homePath16, "utf8"))
+      check("F16c: title set wrote the config shares section (authoritative)", cfg16?.shares?.[sid]?.title === "Renamed Dashboard Title", JSON.stringify(cfg16?.shares?.[sid] ?? null))
+      const shareId16 = shared16.url.split("/").pop()
+      // the share inherits F13b's per-share gate (tier model end to end):
+      // log in as the viewer, then read through the gate
+      const login16 = await fetch(`${WORKER_URL}/api/share/${shareId16}/auth`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ login: "alice", password: "wonderland" }),
+      })
+      const cookie16 = (login16.headers.get("set-cookie") ?? "").split(";")[0]
+      const raw16 = await (await fetch(`${WORKER_URL}/api/share/${shareId16}/data`, { headers: { cookie: cookie16 } })).text()
+      const pg16 = JSON.parse(raw16)
+      check("F16d: gated share inherited F13b's per-share gate", login16.status === 200 && !raw16.includes("authRequired"), `${login16.status}`)
+      check("F16d: live page serves the custom title", pg16.title === "Renamed Dashboard Title", `raw=${raw16.slice(0, 140)}`)
+      const gate16 = await fetch(`${WORKER_URL}/api/share/${shareId16}/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: shared16.secret ?? rec16?.servers?.[WORKER_URL]?.secret, status: "live", data: [] }),
+      })
+      check("F16e: pause gated the page (sync 423)", gate16.status === 423, `${gate16.status}`)
+      const ungate16 = await fetch(`${WORKER_URL}/api/share/${shareId16}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: shared16.secret ?? rec16?.servers?.[WORKER_URL]?.secret, paused: false }),
+      })
+      const re16 = await fetch(`${WORKER_URL}/api/share/${shareId16}/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: shared16.secret ?? rec16?.servers?.[WORKER_URL]?.secret, status: "live", data: [] }),
+      })
+      check("F16f: unpause reopens writes", ungate16.ok && re16.status === 200, `${ungate16.status}/${re16.status}`)
+      // restore: drop the title override both stores (later flows assert plain titles)
+      const cfgMod16 = await import(distUrl("config.js"))
+      cfgMod16.saveShareOverrides(sid, { title: undefined, paused: undefined })
+      const opts16 = { ...(rec16?.opts ?? {}) }
+      delete opts16.title
+      delete opts16.paused
+      await flows.setShareOpts(client, sid, opts16)
+    }
+
     // F14: leave-as-is keeps control (D4). The snapshot path once dropped
     // id/secret - the page could never be deleted or re-shared from the
     // TUI again. Now the entry keeps both under an optedOut marker, a
@@ -506,7 +571,11 @@ try {
     // binding the way the sweep does, then a consented re-share creates
     // the fresh page.
     await flows.clearShareFlag(client, sid)
-    // drop the inherited read-auth override so F8's plain reads work
+    // drop the inherited read-auth override so F8's plain reads work —
+    // BOTH stores: the config shares{} section is authoritative over the
+    // binding mirror, so clearing the mirror alone would re-resolve gated
+    const cfgMod = await import(distUrl("config.js"))
+    cfgMod.saveShareOverrides(sid, { authLogin: undefined, authPassword: undefined })
     await flows.setShareOpts(client, sid, { ttlDays: 21 })
     const reshard = await flows.shareWithConsent(host, sid)
     check("F8: re-share after purge creates a fresh page", reshard.ok === true && !!reshard.url, reshard.message)
@@ -538,7 +607,8 @@ try {
     const rootMenu = state.menus.findLast((m) => /^OpenShare v.* · settings$/.test(m.title))
     check("F9: root is compact groups only", !!rootMenu && rootMenu.options.length <= 9 && !rootMenu.options.some((o) => o.value.startsWith("key:")), JSON.stringify(rootMenu?.options.map((o) => o.value)))
     check("F9: no separate connection group", !rootMenu?.options.some((o) => o.value === "group:connection"))
-    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 6, JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
+    // no-session root: This session only appears with a session context
+    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => o.value.startsWith("group:")).length === 3 && rootMenu?.options.filter((o) => o.value.startsWith("group:")).every((o) => typeof o.help === "string" && o.help.length > 40), JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
     const interfaceMenu = state.menus.findLast((m) => m.title === "OpenShare — Interface")
     check("F9: interface group is the single size row", !!interfaceMenu && interfaceMenu.options.filter((o) => o.value === "ui:size").length === 1, JSON.stringify(interfaceMenu?.options.map((o) => o.value)))
 
@@ -564,7 +634,7 @@ try {
     const homeBefore = existsSync(expectedHome) ? JSON.parse(readFileSync(expectedHome, "utf8")) : {}
     delete homeBefore.shareMode
     writeFileSync(expectedHome, JSON.stringify(homeBefore, null, 2))
-    state.menuAnswers.push("group:sharing", "key:shareMode", "manual", "__back", "__back", "action:exit")
+    state.menuAnswers.push("group:config", "key:shareMode", "manual", "__back", "__back", "action:exit")
     await settings.settingsDialog(host)
     const modeCfg = JSON.parse(readFileSync(expectedHome, "utf8"))
     check("F11: share mode set via selection", modeCfg.shareMode === "manual", JSON.stringify(modeCfg.shareMode))
