@@ -46,7 +46,10 @@ node tools/osh-snapshot.mjs "$SHARE_URL" --token "$VIEWER_TOKEN" --json
 
 Exits `2` when the share is gated and no credentials were given; `--json`
 prints `{ok,file,bytes,rev,status,items,sessionID}` on one line. A GitHub
-Actions job only needs Node 20+ and network access to the deployment:
+Actions job only needs Node 20+ and network access to the deployment.
+Fetching from a `*.workers.dev` URL with a script-like user agent can hit
+Cloudflare error 1010 — see the worker README's "Non-browser consumers"
+note for the zone-side fixes.
 
 ```yaml
 - run: node tools/osh-snapshot.mjs "${{ env.SHARE_URL }}" -o share.html

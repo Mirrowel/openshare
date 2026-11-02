@@ -397,6 +397,14 @@ title/version/model.
   `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
   when `since >= rev` (unchanged, or the server rewound/recreated — the
   client prunes), only the items touched since when `since < rev`),
+
+  **Non-browser consumers**: on `*.workers.dev` domains Cloudflare's
+  bot management can answer script-like user agents (python-requests,
+  bare curl) with error 1010 "Access denied" instead of JSON. Fix by
+  moving the API to a custom domain with a WAF skip rule for `/api/*`,
+  disabling Bot Fight Mode on the zone, or sending a browser-like
+  `User-Agent` header,
+
   `GET /api/share/:id/snapshot` and `GET /s/:id/snapshot` (ONE
   self-contained HTML file: the viewer, every chunk it can reach and the
   provider sprite inlined, the share frozen as a JSON island, a boot
