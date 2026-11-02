@@ -378,17 +378,71 @@ try {
       await flows.setShareOpts(client, sid, opts16)
     }
 
+    // F17: read-auth CLEAR must reach the server. A clear-only patch once
+    // returned before the REST PATCH (the dashboard said "cleared", the
+    // page stayed gated): setting a gate, then clearing it, must leave the
+    // page anonymously readable and the dashboard row gate-free.
+    {
+      const h17 = mockHost(client)
+      h17.state.dialogAnswers.push(true)
+      const shared17 = await flows.shareWithConsent(h17.host, sid)
+      check("F17: own share for the auth round-trip", shared17.ok === true && !!shared17.url, shared17.message)
+      const shareId17 = shared17.url.split("/").pop()
+      const secret17 = shared17.secret ?? null
+      // set: dashboard auth row, alice/wonderland
+      h17.state.menuAnswers.push("session:auth", "__back", "action:exit")
+      h17.state.promptAnswers.push("alice17", "wonderland17")
+      await settings.settingsDialog(h17.host, sid, "session")
+      const gated = await waitFor(async () => {
+        const r = await httpGet(`${WORKER_URL}/api/share/${shareId17}/data`)
+        return r.status === 401 ? true : undefined
+      }, "F17: gate applied after set")
+      check("F17: set gated the page", gated === true)
+      // reopen: the row shows the set override
+      const h17b = mockHost(client)
+      h17b.state.menuAnswers.push("__back", "action:exit")
+      await settings.settingsDialog(h17b.host, sid, "session")
+      const dash17 = h17b.state.menus.findLast((m) => /This session/.test(m.title))
+      const authRow17 = dash17?.options.find((o) => o.value === "session:auth")
+      check("F17a: row shows the set gate", /alice17/.test(authRow17?.description ?? ""), authRow17?.description ?? "")
+      // clear: empty login, empty password
+      const h17c = mockHost(client)
+      h17c.state.menuAnswers.push("session:auth", "__back", "action:exit")
+      h17c.state.promptAnswers.push("", "")
+      await settings.settingsDialog(h17c.host, sid, "session")
+      const rec17 = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F17b: clear dropped the binding mirror", rec17?.opts?.authLogin === undefined, JSON.stringify(rec17?.opts))
+      const home17 = join(homeDir, "opencode", "openshare.config.json")
+      const cfg17 = JSON.parse(readFileSync(home17, "utf8"))
+      check("F17c: clear dropped the config shares entry", !cfg17?.shares?.[sid]?.authLogin, JSON.stringify(cfg17?.shares?.[sid] ?? null))
+      const ungated = await waitFor(async () => {
+        const r = await httpGet(`${WORKER_URL}/api/share/${shareId17}/data`)
+        return r.status === 200 ? true : undefined
+      }, "F17d: server gate dropped after clear")
+      check("F17d: server gate dropped (anonymous read 200)", ungated === true)
+      // reopen: the row must NOT resolve a gate anymore
+      const h17d = mockHost(client)
+      h17d.state.menuAnswers.push("__back", "action:exit")
+      await settings.settingsDialog(h17d.host, sid, "session")
+      const dash17b = h17d.state.menus.findLast((m) => /This session/.test(m.title))
+      const authRow17b = dash17b?.options.find((o) => o.value === "session:auth")
+      check("F17e: row shows no gate after clear", /no gate/.test(authRow17b?.description ?? "") && !/alice17/.test(authRow17b?.description ?? ""), authRow17b?.description ?? "")
+      void secret17
+    }
+
     // F14: leave-as-is keeps control (D4). The snapshot path once dropped
     // id/secret - the page could never be deleted or re-shared from the
     // TUI again. Now the entry keeps both under an optedOut marker, a
     // fully opted-out session re-asks consent, and re-share re-attaches
     // the SAME page.
     {
+      // F17 cleared the inherited gate; set one explicitly so share #2 is
+      // gated on create (the gate applying at create is itself D1/D3
+      // coverage)
+      await flows.setShareOpts(client, sid, { authLogin: "alice", authPassword: "wonderland" })
       const reshared = await flows.shareWithConsent(host, sid)
       check("F14: re-share after unshare works", reshared.ok === true && !!reshared.url, reshared.message)
       const shareId2 = reshared.url.split("/").pop()
-      // the re-share inherits the session opts (F13b set alice/wonderland)
-      // - the gate applying on create is itself D1/D3 coverage
       await waitFor(async () => {
         const r = await httpGet(`${WORKER_URL}/api/share/${shareId2}/data`)
         if (r.status === 404) throw new Error("not there yet")

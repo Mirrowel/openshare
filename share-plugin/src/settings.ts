@@ -131,8 +131,10 @@ async function serverTtlCap(url: string): Promise<number> {
 /** Write one per-share override end to end: config shares{} (authoritative),
  * session binding opts (the runtime mirror the engine resolves against),
  * then an immediate REST PATCH on every live page (attaches heal the rest).
- * A key set to undefined CLEARS the override at this tier. Returns how many
- * live pages took the PATCH. */
+ * A key set to undefined CLEARS the override at this tier — and the clear
+ * must TRAVEL: the server keeps its copy until told (auth ""+"" removes
+ * the gate, title "" restores the live title), so a clear-only patch still
+ * PATCHes. Returns how many live pages took the PATCH. */
 async function applyShareOverride(
   host: ShareHostApi,
   sid: string,
@@ -147,11 +149,20 @@ async function applyShareOverride(
   }
   saveShareOverrides(sid, patch)
   await setShareOpts(host.client, root, opts)
-  const flat: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(patch)) if (v !== undefined) flat[k] = v
-  if (!Object.keys(flat).length) return 0
   const all = await readBindings(host.client, root)
   const live = all.filter((b) => b.url && b.enabled !== false && b.id && b.secret)
+  if (!live.length) return 0
+  const flat: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) flat[k] = v
+    else if (k === "authLogin" || k === "authPassword") {
+      flat.authLogin = ""
+      flat.authPassword = ""
+    } else if (k === "title") flat.title = ""
+    // ttlHours has no server-side unset: the TTL handler re-sends the next
+    // tier's value; paused clears PATCH false at the pause handler
+  }
+  if (!Object.keys(flat).length) return 0
   const results = await Promise.all(live.map((b) => patchShareOpts(b.server, b.id!, flat as Parameters<typeof patchShareOpts>[2], b.secret!)))
   return results.filter((r) => r.ok).length
 }
