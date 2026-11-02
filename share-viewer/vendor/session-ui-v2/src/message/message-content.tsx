@@ -1061,6 +1061,7 @@ export function SessionCompactionMessage(props: { message: SessionMessageCompact
                 text={summary()}
                 cacheKey={props.message.id}
                 streaming={props.message.status === "running"}
+                defer={false}
               />
             </div>
           </div>
@@ -1159,7 +1160,7 @@ function QuietCompaction(props: { id: string; created: number; running: boolean;
         <div id={`${props.id}-summary`} data-slot="session-compaction-summary">
           <div data-component="text-part" data-timeline-part-id={props.id}>
             <div data-slot="text-part-body">
-              <PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} />
+              <PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} defer={false} />
             </div>
           </div>
           <Show when={props.usage}>
@@ -1257,7 +1258,7 @@ export function AssistantTextContent(props: {
     <Show when={props.text}>
       <div data-component="text-part" data-timeline-part-id={props.id}>
         <div data-slot="text-part-body">
-          <PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} />
+          <PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} defer={false} />
         </div>
         <Show when={sources()} fallback={<Show when={props.showCopy}>{copyFooter()}</Show>}>
           {(value) => (
@@ -1306,9 +1307,67 @@ export function AssistantReasoningContent(props: {
   onOpenChange?: (open: boolean) => void
   onContentRendered?: () => void
 }) {
+  // openshare fork: PER-INSTANCE panel ref - a module-level ref would
+  // point at whichever reasoning panel mounted last
+  let panelEl: HTMLDivElement | undefined
+  // the animated height target (CSS cannot compute min(scrollHeight,
+  // cap)); stored on the PART element, which survives the closed-state
+  // content unmount - a var on the content element dies with every
+  // remount. Measured while the body is live (open, or just before the
+  // close unmount); reopens read the cached value
+  const measureTarget = () => {
+    const body = panelEl?.querySelector<HTMLElement>(".osh-think-body")
+    const part = panelEl?.closest("[data-component='reasoning-part']")
+    if (!body || !(part instanceof HTMLElement)) return
+    // a freshly remounted body parses its markdown async and measures
+    // empty; caching that would collapse the box to the chrome - skip
+    // and keep the previous value until the real content lands
+    if (body.scrollHeight < 4) return
+    const cap = parseFloat(getComputedStyle(body).maxHeight) || 416
+    part.style.setProperty("--osh-anim-h", `${Math.round(Math.min(body.scrollHeight, cap))}px`)
+  }
+  // a remounted body parses its markdown async; poll cheap frames until
+  // real content exists, then cache the target
+  const measureWhenReady = () => {
+    let tries = 0
+    const tick = () => {
+      const body = panelEl?.querySelector<HTMLElement>(".osh-think-body")
+      if (body && body.scrollHeight >= 4) {
+        measureTarget()
+        return
+      }
+      if (++tries < 60) requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  }
+  const [keepAlive, setKeepAlive] = createSignal(true)
+  let unmountTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => unmountTimer && clearTimeout(unmountTimer))
   const i18n = useI18n()
   const [state, setState] = createStore<{ open?: boolean }>({})
   const open = () => props.open ?? state.open ?? props.defaultOpen ?? false
+  // openshare fork: the content stays mounted only while OPEN or while
+  // the collapse animation runs (~420ms > the 320ms transition); a
+  // resting closed panel then unmounts its markdown - measured 362 DOM
+  // nodes per closed panel otherwise (74% of page DOM at rest). The
+  // effect (defer:false) also releases panels that LOAD closed and
+  // follows programmatic opens (the reasoningOpen setting)
+  createEffect(on(open, (value) => {
+    if (unmountTimer) {
+      clearTimeout(unmountTimer)
+      unmountTimer = undefined
+    }
+    // capture the animated-height target while the body is live, in
+    // BOTH branches (load-open measures on the first run; close
+    // measures before the unmount releases the body)
+    measureTarget()
+    if (value) {
+      setKeepAlive(true)
+      measureWhenReady()
+    } else {
+      unmountTimer = setTimeout(() => setKeepAlive(false), 420)
+    }
+  }, { defer: false }))
   const heading = createMemo(() => (props.streaming ? reasoningHeading(props.content.text) : ""))
 
   const duration = createMemo(() => {
@@ -1334,11 +1393,16 @@ export function AssistantReasoningContent(props: {
         compact
         hasContent
         allowOpenWhilePending
+        keepMounted={keepAlive()}
         hideDetails={!props.content.text.trim()}
         open={open()}
         onOpenChange={(value) => {
           setState("open", value)
           props.onOpenChange?.(value)
+          // remeasure once the async markdown lands (a remounted body
+          // parses empty first); inside the 420ms window the live body
+          // measures immediately
+          if (value) measureWhenReady()
           props.onContentRendered?.()
         }}
         trigger={
@@ -1366,7 +1430,23 @@ export function AssistantReasoningContent(props: {
           </div>
         }
       >
-        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />
+        {/* openshare fork: the reasoning body is a PANEL - wrapper carries the
+            shared drag system (data-osh-out + grip), the inner box scrolls
+            under its cap; styles live in share-viewer's app.css */}
+        <div data-osh-out="think" class="osh-think-panel" ref={(el) => (panelEl = el)}>
+          <div data-osh-scroll class="osh-think-body">
+            <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />
+          </div>
+          {/* openshare fork: the closing mark - centered gradient lines
+              parting around the thought icon + label, shown at the scroll
+              end (CSS-gated on the scrolled attrs from output-resize) */}
+          <div class="osh-think-end" aria-hidden="true">
+            <span class="osh-think-end-line" />
+            <span class="osh-think-end-label">end of thought</span>
+            <span class="osh-think-end-line" />
+          </div>
+          <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
+        </div>
       </BasicTool>
     </div>
   )

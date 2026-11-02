@@ -33,7 +33,11 @@ export type TextEntry = { kind: "text"; text: string; part: AnyPart }
 export type SessionSection = {
   id: string
   index: number
+  /** the leader prompt's text (compat); `prompts` carries the whole burst */
   prompt: string
+  /** every consecutive user prompt in this turn (>= 1; parallel prompts
+   *  fired together are ONE turn for counting, leader first) */
+  prompts: { id: string; text: string }[]
   model?: { providerID?: string; id?: string }
   tools: ToolEntry[]
   reasoning: ReasoningEntry[]
@@ -52,12 +56,21 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
     const msgs = visibleMessages(data, sessionID)
     const out: SessionSection[] = []
     let current: SessionSection | undefined
+    let prevWasUser = false
     for (const m of msgs as any[]) {
       if (m?.type === "user") {
+        // consecutive prompts with nothing between them merge into the
+        // current turn: one burst, one counting unit
+        if (current && prevWasUser) {
+          current.prompts.push({ id: m.id, text: typeof m.text === "string" ? m.text.trim() : "" })
+          prevWasUser = true
+          continue
+        }
         current = {
           id: m.id,
           index: out.length,
           prompt: typeof m.text === "string" ? m.text.trim() : "",
+          prompts: [{ id: m.id, text: typeof m.text === "string" ? m.text.trim() : "" }],
           model: m.metadata?.model,
           tools: [],
           reasoning: [],
@@ -67,8 +80,10 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
           at: m.time?.created,
         }
         out.push(current)
+        prevWasUser = true
         continue
       }
+      prevWasUser = false
       if (m?.type === "compaction") {
         // a compaction boundary inside the timeline: surface it as its own
         // mini-section so views can mark it

@@ -211,7 +211,7 @@ export function SkinFooter(props: {
   const view = useView()
   const b = () => view.source.branding()
   return (
-    <div class={props.class ?? "px-6 py-6 flex items-center justify-between text-12-mono text-text-weaker select-none"}>
+    <div data-osh-footer class={props.class ?? "px-6 py-6 flex items-center justify-between text-12-mono text-text-weaker select-none"}>
       <div class="flex items-center gap-2 min-w-0">
         <Show when={b().logoUrl}>
           <img src={b().logoUrl} alt="" class="h-3 rounded-sm" />

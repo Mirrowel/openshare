@@ -2,6 +2,15 @@
 // entry.tsx to set html[data-osh-theme] / text size without a flash.
 import { createSignal } from "solid-js"
 
+// set before any render: panels born open during page boot (settings
+// default-open, snapshot-remembered) must NOT pour in - the animation is
+// for live user actions; a booting page should arrive at its final
+// layout statically. app.tsx clears the flag once data has rendered and
+// settled; the fallback timer here guarantees it can never stick (a
+// stuck flag suppresses every reasoning transition for the page's life).
+document.documentElement.setAttribute("data-osh-boot", "")
+setTimeout(() => document.documentElement.removeAttribute("data-osh-boot"), 3000)
+
 export type OshSettings = {
   view: string
   theme: "system" | "light" | "dark" | "darker" | "mirrobot" | "midnight" | "sepia" | "nord"
@@ -77,11 +86,8 @@ export type OshSettings = {
   rowPromptLines: number
   rowResponseLines: number
   /** file-tool card width in rem (text cards; split diffs render at 2x,
-   *  viewport-capped) - applied live as --osh-card on <html> */
-  cardWidth: number
-  /** tall outputs: capped (file cards stop at ~25 lines and scroll) or
-   *  full (the pre-cap behavior - file bodies render at natural height) */
-  outHeight: "capped" | "full"
+    *  viewport-capped) - applied live as --osh-card on <html> */
+   cardWidth: number
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -114,7 +120,6 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   rowPromptLines: 1,
   rowResponseLines: 0,
   cardWidth: 40,
-  outHeight: "capped",
 }
 
 const COOKIE = "osh_settings"
@@ -344,9 +349,43 @@ export function applySettings(s: OshSettings) {
   // at the value, split diffs at 2x, both viewport-capped)
   const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))
   html.style.setProperty("--osh-card", `${cardWidth}rem`)
-  // tall-output cap: file bodies scroll inside a ~25-line window unless the
-  // reader turns the cap off (the older uncapped behavior)
-  html.dataset.oshHeight = s.outHeight === "full" ? "full" : "capped"
+  markMassDisclosureFlip(s)
+}
+
+/* Mass disclosure toggles ("expanded reasoning", auto-expand, grouping)
+ * re-open or re-close every panel at once. Hundreds of simultaneous
+ * height animations feed the virtualizer per-frame measures and the
+ * layout goes incoherent mid-storm (heals only on the next scroll
+ * settle). Outside the viewport the animation buys nothing, so those
+ * rows snap: apply() marks every off-screen row BEFORE the re-render,
+ * and rows mounting during the flip (virtualizer growth) inherit the
+ * snap from the flip flag in the row mount. Panels the reader can
+ * actually see keep their pour animation. The flag is time-boxed -
+ * after it clears, snap classes are inert CSS-wise and scroll-into-view
+ * behavior is unchanged. */
+let lastMassKeys = ""
+let flipTimer: ReturnType<typeof setTimeout> | undefined
+function markMassDisclosureFlip(s: OshSettings) {
+  const keys = `${s.reasoningOpen}|${s.toolGrouping}|${s.autoExpand?.join(",") ?? ""}`
+  if (keys === lastMassKeys) return
+  const first = lastMassKeys === ""
+  lastMassKeys = keys
+  if (first) return
+  const html = document.documentElement
+  // the timeline disposes its out-of-window mounted rows on this event:
+  // a mass toggle re-renders EVERY mounted row's content (panels open),
+  // but only in-window rows get repositioned - out-of-window rows keep
+  // stale transforms under grown painted heights and overlap the
+  // viewport until a scroll-shift re-ranges (the post-flip mangle)
+  window.dispatchEvent(new CustomEvent("osh-flip"))
+  const viewport = window.innerHeight
+  for (const row of document.querySelectorAll<HTMLElement>("[data-row-key]")) {
+    const rect = row.getBoundingClientRect()
+    if (rect.top > viewport + 64 || rect.bottom < -64) row.classList.add("osh-snap-row")
+  }
+  html.setAttribute("data-osh-flip", "")
+  if (flipTimer) clearTimeout(flipTimer)
+  flipTimer = setTimeout(() => html.removeAttribute("data-osh-flip"), 700)
 }
 
 /** wipe every saved setting and re-apply the defaults live: same as

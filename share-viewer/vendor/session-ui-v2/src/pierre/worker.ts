@@ -74,7 +74,8 @@ function createPool(lineDiffType: "none" | "word-line") {
       // NOTE: 2 is probably better for OpenCode, as I think 8 might be
       // a bit overkill, especially because Safari has a significantly slower
       // boot up time for workers
-      poolSize: pierreMainThreadPool() ? 1 : 2,
+            poolSize: 1,
+      totalASTLRUCacheSize: 24,
     },
     {
       ...highlightOptions,

@@ -35,10 +35,18 @@ function measureCard(card: Element): CardState | null {
 /** Write-only: applies a measured state to the card's attributes. */
 function applyCard(card: Element, m: CardState) {
   card.toggleAttribute("data-osh-clipped", m.clipped)
-  if (card.getAttribute("data-osh-out") === "file") {
+  const kind = card.getAttribute("data-osh-out")
+  // file cards mark scroll position with chevrons; the thinking panel uses
+  // it for the closing mark vs clipped fade
+  if (kind === "file" || kind === "think") {
     card.toggleAttribute("data-more-up", m.up)
     card.toggleAttribute("data-more-down", m.down)
   }
+  // scrollbar-aware chrome: the overlay buttons sit flush BESIDE the
+  // scrollbar when one renders (classic-scrollbar browsers report its
+  // width here; overlay scrollbars report 0 and buttons sit at the edge)
+  const sc = scrollerOf(card)
+  if (sc && card instanceof HTMLElement) card.style.setProperty("--osh-sbw", `${Math.max(0, sc.offsetWidth - sc.clientWidth)}px`)
 }
 
 function syncCard(card: Element) {
@@ -91,6 +99,17 @@ export function installOutputResize() {
       if (!card) return
       const next = Math.max(MIN, Math.min(maxHeight(), startH + (e.clientY - startY)))
       card.style.setProperty("--osh-out-h", `${Math.round(next)}px`)
+      // the thinking panel's reserved height rides --osh-anim-h on the
+      // reasoning PART (the content element is unmounted when collapsed);
+      // keep it in step so the grown body is not clipped
+      if (card.getAttribute("data-osh-out") === "think") {
+        const sc = scrollerOf(card)
+        const part = card.closest("[data-component='reasoning-part']")
+        if (sc && part instanceof HTMLElement) {
+          const cap = parseFloat(getComputedStyle(sc).maxHeight) || next
+          part.style.setProperty("--osh-anim-h", `${Math.min(sc.scrollHeight, Math.max(cap, next))}px`)
+        }
+      }
       syncCard(card)
     },
     true,
@@ -112,6 +131,14 @@ export function installOutputResize() {
       if (!owner) return
       e.preventDefault()
       owner.style.removeProperty("--osh-out-h")
+      if (owner.getAttribute("data-osh-out") === "think") {
+        const sc = scrollerOf(owner)
+        const part = owner.closest("[data-component='reasoning-part']")
+        if (sc && part instanceof HTMLElement) {
+          const cap = parseFloat(getComputedStyle(sc).maxHeight) || 416
+          part.style.setProperty("--osh-anim-h", `${Math.min(sc.scrollHeight, cap)}px`)
+        }
+      }
       syncCard(owner)
     },
     true,

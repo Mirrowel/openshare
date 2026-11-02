@@ -211,7 +211,6 @@ All reader settings live in one JSON cookie, `osh_settings` (1-year expiry), per
 | `navSearchBar` | `false` | Filter field in the prompt views |
 | `rowPromptLines` / `rowResponseLines` | `1` / `0` | Prompt-row content lines (1–5 / 0–5) |
 | `cardWidth` | `40` | File-tool card width in rem (split diffs = 2×, viewport-capped); live as `--osh-card` |
-| `outHeight` | `"capped"` | Tall tool outputs: `capped` (file cards stop at ~25 lines with chevrons, `full` = uncapped) |
 
 ---
 

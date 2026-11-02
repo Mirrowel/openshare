@@ -114,13 +114,45 @@ idempotently or throws "upstream drifted". Files are under
 - **session-timeline-row.tsx — spacing union**: forwards the `message`
   category so the row renderer can break between messages; keeps upstream's
   padding classes (our unlayered CSS keys on `data-timeline-spacing`).
+- **session-timeline-row.tsx — per-tool auto-expand wins first**: the
+  viewer's `toolDefaultOpen` callback (the settings' auto-expand list) is
+  consulted before every category default — inside `contentDefaultOpen`, at
+  the context-group call site, and in the standalone shell row's
+  `defaultOpen`. Every replace in this fork asserts its own landing: a
+  cumulative-only check once shipped a half-applied fork after upstream
+  grew a line between anchor parts, and auto-expand went dead while the
+  shell row kept working.
 - **timeline-row / message-content.tsx — stamps**: prompt timestamps are
   absolute 24-hour values from the host clock (`__oshStamp`), not the kit's
   "3 minutes ago" relatives; the header toggle switches the whole session to
   the reader's timezone (src/timefmt.ts).
 - **message-content.tsx — markdown fallback is paragraph-shaped** so the
-  plain-text-to-rich swap does not reflow; reasoning rows render through the
-  kit's live Thinking machinery.
+  plain-text-to-rich swap does not reflow; every markdown-bearing part
+  (reasoning, assistant text, summaries, compaction summaries) renders the
+  instant fallback via `defer={false}` — deferred rows are born blank and
+  collapse the row until the worker parses, shoving every row below when
+  the parse lands.
+- **message-content.tsx — the reasoning body is a panel**: the markdown
+  sits in a `data-osh-out="think"` wrapper with the shared bottom grip
+  (per-card drag resize) and an inner `data-osh-scroll` body capped by
+  `--osh-out-h`; `keepMounted={keepAlive()}` rides the BasicTool so the
+  collapse animation can run. Content unmounts ~420ms after closing (an
+  `on(open)` effect with defer:false also releases panels that load
+  closed and follows programmatic opens) — measured 362 DOM nodes per
+  resting closed panel otherwise, 74% of page DOM. The animated height
+  target is cached as `--osh-anim-h` on the reasoning PART element
+  (survives the content unmount; a var on the content element dies with
+  every remount), measured while the body is live; a freshly remounted
+  body parses its markdown async and measures empty, so measuring skips
+  empty bodies and retries on rAF until content lands. A reopen after
+  unmount pours in via `@starting-style` on the content height (the
+  panel itself renders at natural height and is revealed by the
+  content's clip). Styles live in share-viewer's app.css.
+- **basic-tool.tsx — keepMounted**: a `keepMounted` prop forwarded as
+  `forceMount` on the Collapsible ROOT (kobalte reads it in
+  CollapsibleRoot.shouldMount; on Content it is silently ignored) keeps
+  closed content mounted. Only the reasoning call site passes it; every
+  other tool keeps upstream mount behavior.
 
 ### Tools (tool-renderer.tsx and friends)
 

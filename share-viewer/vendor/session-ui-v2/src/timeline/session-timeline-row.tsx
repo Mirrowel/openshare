@@ -226,6 +226,37 @@ export function createSessionTimelineRowRenderer(input: {
       : undefined
   }
 
+  // openshare fork: an interrupted turn can end on a tool call AFTER its
+  // last text part. The in-text footer then renders in a carved gap
+  // between the completion and its tool call - worse than no footer. The
+  // turn carries tool output after its text, so the reader loses nothing
+  // by having no copy footer on it: suppress the footer entirely for
+  // that shape.
+  const turnEndsOnNonText = (messageID: string) => {
+    if (workingTurn(messageID)) return false
+
+    const messages = input.projection.assistantMessagesByParent().get(messageID) ?? emptyAssistantMessages
+
+    let lastTextEntryID: string | undefined
+    let lastEntryID: string | undefined
+
+    for (const message of messages) {
+      for (const entry of Timeline.contentEntries(message)) {
+        lastEntryID = entry.id
+
+        if (entry.content.type === "text" && !!(entry.content as { text?: string }).text?.trim()) {
+          lastTextEntryID = entry.id
+        }
+      }
+    }
+
+    return !!lastTextEntryID && !!lastEntryID && lastEntryID !== lastTextEntryID
+  }
+
+  const copyContentIDWithRelocation = (messageID: string) => {
+    return turnEndsOnNonText(messageID) ? null : copyContentID(messageID)
+  }
+
   const padding = () => input.padding?.() ?? "px-4 md:px-6"
 
   const indexGroupContents = (refs: PartRef[]) => {
@@ -332,7 +363,9 @@ export function createSessionTimelineRowRenderer(input: {
             reasoningOpen={(id) => input.disclosure.value(id)}
             onReasoningOpenChange={(id, open) => input.disclosure.set(id, open)}
             toolDefaultOpen={(tool) =>
-              input.timelineDetail || tool.name === "execute" ? contentDefaultOpen(tool) : false
+              // openshare fork: the viewer's per-tool auto-expand list wins first
+              input.toolDefaultOpen?.(tool) ??
+              (input.timelineDetail || tool.name === "execute" ? contentDefaultOpen(tool) : false)
             }
             toolOpen={(id) => input.disclosure.value(`${row().group.key}:tool:${id}`)}
             onToolOpenChange={(id, open) => input.disclosure.set(`${row().group.key}:tool:${id}`, open)}
@@ -470,7 +503,7 @@ export function createSessionTimelineRowRenderer(input: {
                 message={message()}
                 content={content()}
                 contentID={ref()!.partID}
-                showAssistantCopyPartID={copyContentID(row().userMessageID)}
+                showAssistantCopyPartID={copyContentIDWithRelocation(row().userMessageID)}
                 turnDurationMs={duration(row().userMessageID)}
                 sources={turnSourcesValue()}
                 onOpenSources={() => sourcesHost?.open(row().userMessageID)}
@@ -487,6 +520,11 @@ export function createSessionTimelineRowRenderer(input: {
   }
 
   function contentDefaultOpen(item: SessionMessageAssistant["content"][number]) {
+    // openshare fork: the viewer's per-tool auto-expand list wins first
+    if (item.type === "tool" && input.toolDefaultOpen) {
+      const custom = input.toolDefaultOpen(item)
+      if (custom !== undefined) return custom
+    }
     if (item.type === "tool" && item.name === "execute") return true
 
     if (input.timelineDetail) {

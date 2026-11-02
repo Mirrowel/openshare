@@ -46,6 +46,9 @@ export interface BasicToolProps {
   allowOpenWhilePending?: boolean
   defer?: boolean
   locked?: boolean
+  /** openshare fork: keepMounted keeps the collapsible content MOUNTED
+   *  when closed (forceMount) so a collapse animation can run. */
+  keepMounted?: boolean
   rail?: boolean
   onSubtitleClick?: () => void
   onTriggerClick?: JSX.EventHandlerUnion<HTMLElement, MouseEvent>
@@ -265,6 +268,9 @@ export function BasicTool(props: BasicToolProps) {
 
   return (
     <Collapsible
+      // openshare fork: forceMount is a ROOT prop (kobalte reads it in
+      // CollapsibleRoot.shouldMount); on Content it is silently ignored
+      forceMount={props.keepMounted || undefined}
       open={open()}
       onOpenChange={props.locked ? undefined : handleOpenChange}
       class="tool-collapsible"

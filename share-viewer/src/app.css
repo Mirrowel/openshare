@@ -295,7 +295,8 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
    bottom margin collapse into one 10px gap. The markdown-code wrapper
    hugs as well - the copy button anchors to its corner and would
    otherwise float at the column's far edge. */
-[data-timeline-row] [data-component="text-part"] pre {
+[data-timeline-row] [data-component="text-part"] pre,
+[data-timeline-row] [data-component="reasoning-part"] pre {
   margin: 10px 0 0;
   width: fit-content;
   min-width: 18rem;
@@ -303,7 +304,8 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-[data-timeline-row] [data-component="text-part"] [data-component="markdown-code"] {
+[data-timeline-row] [data-component="text-part"] [data-component="markdown-code"],
+[data-timeline-row] [data-component="reasoning-part"] [data-component="markdown-code"] {
   width: fit-content;
   min-width: 18rem;
   max-width: min(100%, 68rem);
@@ -410,6 +412,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   color: var(--syntax-keyword, oklch(0.75 0.11 290));
   font-style: normal;
 }
+/* The thought mark: ONE glyph for the reasoning trigger and the panel's
+   closing mark (a skin overriding either rule retargets both). Text
+   glyph, not an image - inherits the surrounding font/color. */
 [data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"]::before,
 [data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"]::before {
   content: "✦ ";
@@ -483,36 +488,44 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   width: fit-content;
   max-width: min(100%, 75vw);
 }
-.osh-pre-wrap [data-slot="osh-overflow-toggle"] {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-}
+/* output-card overlay buttons (copy, wrap toggle) in the shell's ghost
+   language: borderless, transparent, hidden until the card is hovered,
+   with a background bleed so text scrolling under them softens instead
+   of colliding. They sit flush BESIDE the scrollbar when one renders
+   (--osh-sbw, stamped by output-resize) instead of over it. */
+.osh-pre-wrap [data-slot="osh-overflow-toggle"],
 .osh-pre-wrap [data-slot="osh-copy"] {
   position: absolute;
   top: 4px;
-  right: 28px;
-}
-[data-slot="osh-copy"] {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-weaker-base);
-  border-radius: 5px;
-  background: var(--surface-raised-base);
+  right: calc(var(--osh-sbw, 0px) + 2px);
+  border: none;
+  background: transparent;
   color: var(--text-weaker);
-  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  cursor: pointer;
-  opacity: 0.55;
-  transition: opacity 120ms ease;
+  opacity: 0;
 }
-[data-slot="osh-copy"]:hover {
-  opacity: 1;
-  color: var(--text-strong);
+.osh-pre-wrap [data-slot="osh-copy"] {
+  right: calc(var(--osh-sbw, 0px) + 24px);
 }
+.osh-pre-wrap:hover [data-slot="osh-copy"],
+.osh-pre-wrap:hover [data-slot="osh-overflow-toggle"],
+.osh-pre-wrap [data-slot="osh-copy"]:focus-visible,
+.osh-pre-wrap [data-slot="osh-overflow-toggle"]:focus-visible {
+  opacity: 0.9;
+}
+.osh-pre-wrap [data-slot="osh-copy"]::before,
+.osh-pre-wrap [data-slot="osh-overflow-toggle"]::before {
+  content: "";
+  position: absolute;
+  inset: -3px -4px -3px -20px;
+  z-index: -1;
+  background: var(--surface-base);
+  mask-image:
+    linear-gradient(to right, transparent, #000 18px),
+    linear-gradient(transparent, #000 5px, #000 calc(100% - 5px), transparent);
+  mask-composite: intersect;
+  pointer-events: none;
+}
+[data-slot="osh-copy"],
 [data-slot="osh-overflow-toggle"] {
   flex: none;
   width: 20px;
@@ -520,16 +533,14 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-weaker-base);
   border-radius: 5px;
-  background: var(--surface-raised-base);
   color: var(--text-weaker);
   font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
   cursor: pointer;
-  opacity: 0.55;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, color 120ms ease;
 }
-[data-slot="osh-overflow-toggle"]:hover {
+.osh-pre-wrap [data-slot="osh-copy"]:hover,
+.osh-pre-wrap [data-slot="osh-overflow-toggle"]:hover {
   opacity: 1;
   color: var(--text-strong);
 }
@@ -810,6 +821,16 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="u
   opacity: 0.5;
 }
 
+/* the narrow single-turn column: hidden at 900px+, the same breakpoint as
+   the narrow media query and the nav's own bar (768/1024 tailwind steps
+   left a 768-899 band where the desktop column hid but the narrow column
+   was display:none too - nothing rendered) */
+@media (min-width: 900px) {
+  .osh-narrow-col {
+    display: none;
+  }
+}
+
 /* --- conversation layout: row only at 900px+ -----------------------------
    TurnNav switches to its sidebar at 900px; the container must flip to
    the row at the SAME width (Tailwind md:flex-row flipped at 768, and in
@@ -906,6 +927,209 @@ html[data-color-scheme="light"] {
      applied), and a reserved gutter is what makes a thumb press a REAL
      scrollbar press that can never start a text selection under it */
   scrollbar-gutter: stable;
+}
+/* Markdown tables: the frame hugs the table (narrow tables don't stretch
+   a full-width box); 2px column separators; and cells WRAP instead of
+   forcing horizontal scroll - a genuinely wide table caps at the card
+   width with long tokens breaking inside their column (anywhere, not
+   break-word, so wrapping participates in column sizing) */
+[data-component="markdown-table"] {
+  width: fit-content;
+  max-width: 100%;
+}
+[data-component="markdown-table"] table {
+  max-width: 100%;
+}
+[data-component="markdown-table"] th,
+[data-component="markdown-table"] td {
+  overflow-wrap: anywhere;
+}
+[data-component="markdown-table"] th + th,
+[data-component="markdown-table"] td + td {
+  border-left: 2px solid var(--v2-border-border-muted);
+}
+/* --- reasoning panel -----------------------------------------------------
+   The open thinking body is a real panel, not loose markdown under a
+   clamp. Design language (matches the tool cards' geometry):
+   - a 2px left rail at the TRIGGER's left edge marks the element's span
+     (the kit's rail inset is cancelled so rail x = trigger x, exactly
+     where a tool card's edge sits); the text keeps its inset inside
+   - the bottom is scroll-state aware: while content sits below, a soft
+     fade marks the cut (the output cards' clipped-content language);
+     at the scroll end the closing hairline fades in, completing the
+     bracket. Non-overflowing thoughts have neither - they read as plain
+     indented text under the rail
+   - the body scrolls under a 26rem cap only when the thought actually
+     overflows it; the shared per-card drag system (data-osh-out + grip)
+     resizes it
+   Open reserves the FULL height instantly (the vendored open handler
+   writes the final height to --osh-anim-h and suppresses the height
+   transition for two frames) while the panel pours in through its own
+   max-height animation - a CSS height animation on the row itself
+   reports intermediate sizes to the virtualizer's ResizeObserver,
+   which positions rows below one frame behind (measured ~60px visible
+   overlap mid-animation). Collapse animates the height down (safe
+   direction: rows below only ever see a gap). Two more traps:
+   `scrollbar-width` on the body would DISABLE the webkit pseudo
+   scrollbar entirely (measured in the transcript-scrollbar round) -
+   the bar is webkit-only on purpose - and CSS vars inherit downward,
+   so --osh-anim-h is set on the CONTENT element and the panel reads it. */
+ [data-component="reasoning-part"] [data-slot="collapsible-content"] {
+  height: 0;
+  overflow: hidden;
+  /* cancel the kit's rail inset so the panel rail aligns with the
+     trigger edge (tool cards do the same with their card edge) */
+  padding-inline-start: 0;
+  /* the ROW height animates on open too (like collapse, the other safe
+     direction): rows below track it through the virtualizer's ResizeObserver
+     one frame behind - the panel's clip trails slightly (see max-height
+     below), so that lag lands on empty space, never on text */
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0.16, 1) !important;
+}
+[data-component="reasoning-part"] [data-slot="collapsible-content"][data-expanded] {
+  height: calc(var(--osh-anim-h, 26rem) + 32px);
+}
+/* a reopen after the unmount MOUNTS the content already expanded; without
+   this it would appear at full height in one frame. @starting-style gives
+   the first frame height 0, so the same transition pours it in and rows
+   below track it exactly like an in-place expand */
+@starting-style {
+  [data-component="reasoning-part"] [data-slot="collapsible-content"][data-expanded] {
+    height: 0;
+  }
+}
+/* Static mounts: panels born open during page boot (settings
+   default-open, snapshot-remembered) and rows outside the viewport
+   during a mass-disclosure flip snap to their final height - the pour
+   animation is for panels the reader can actually see change. With the
+   transition suppressed, the @starting-style height:0 first frame
+   lands at final height in one step; nothing animates, nothing feeds
+   per-frame intermediate sizes to the virtualizer. */
+html[data-osh-boot] [data-component="reasoning-part"] [data-slot="collapsible-content"],
+html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="collapsible-content"] {
+  transition: none !important;
+}
+
+[data-osh-out="think"] {
+  --osh-out-h: 26rem;
+}
+.osh-think-panel {
+  position: relative;
+  margin-top: 2px;
+  /* NO max-height of its own: the CONTENT's animated height plus its
+     overflow clip produce the pour (the panel renders at natural height
+     and is revealed as the content grows); the body inside keeps the
+     --osh-out-h cap */
+  padding: 2px 12px 6px 16px;
+}
+/* the rail: constant 2px width (a border would animate its width and
+   snap at the end), transparent-leaning, dissolving toward the bottom
+   where the closing mark takes over the bracket */
+.osh-think-panel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 22px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--v2-border-border-muted) 80%, transparent),
+    color-mix(in srgb, var(--v2-border-border-muted) 55%, transparent) 70%,
+    transparent
+  );
+  pointer-events: none;
+}
+/* the closing mark: gradient lines part around the thought icon and a
+   quiet mono label - the lines emerge from nothing at the outer ends.
+   Shown when no unread content sits below (at the scroll end, or a
+   thought that never overflowed); while more content sits below, the
+   clipped fade (below) owns the bottom instead */
+.osh-think-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 22px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+.osh-think-end-line {
+  flex: 1;
+  height: 1px;
+}
+.osh-think-end-line:first-child {
+  background: linear-gradient(to right, transparent, var(--v2-border-border-muted));
+}
+.osh-think-end-line:last-child {
+  background: linear-gradient(to left, transparent, var(--v2-border-border-muted));
+}
+.osh-think-end-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-weaker);
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.02em;
+}
+.osh-think-end-label::before {
+  content: "✦ ";
+  font-size: 11px;
+}
+[data-osh-out="think"]:not([data-more-down]) .osh-think-end {
+  opacity: 1;
+}
+.osh-think-panel .osh-think-body {
+  overflow-y: auto;
+  padding-right: 4px;
+  /* NO blanket contain (the tool-round trap): `contain` on a Y scroll
+     container blocks wheel chaining to the page EVEN WHEN nothing can
+     scroll - an expanded non-overflowing thought locked page scroll */
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar {
+  width: 5px;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar-thumb {
+  background: var(--border-weak-base);
+  border-radius: 3px;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-weaker);
+}
+/* the clipped fade: ONLY while unread content sits below (scrolled state
+   from output-resize); the collapsed max-height-0 panel clips overflow,
+   so closed panels never show it */
+[data-osh-out="think"][data-osh-clipped]::after {
+  content: none;
+}
+[data-osh-out="think"][data-osh-clipped][data-more-down]::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 10px;
+  bottom: 20px;
+  height: 26px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--v2-background-bg-base));
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-component="reasoning-part"] [data-slot="collapsible-content"],
+  .osh-think-panel {
+    transition: none !important;
+  }
+}
+/* transcript bottom breathing room ONLY where no footer sits at the end
+   of the scroller (any of the footer variants carries data-osh-footer);
+   footer-bearing surfaces keep their footer's own spacing */
+[data-transcript-scroll]:not(:has([data-osh-footer])) {
+  padding-bottom: 3rem;
 }
 [data-transcript-scroll]::-webkit-scrollbar {
   width: 12px;
@@ -1380,12 +1604,29 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 /* --- output heights, drag resizing and scroll affordances -------------
    One behavior set for every output surface: shell, text results, generic
    tools and file bodies. `--osh-out-h` is the per-card height set by
-   dragging the bottom grip; `--osh-cap` is the global cap (~25 lines) that
-   the "Cap tall outputs" setting can lift for file bodies. */
+   dragging the bottom grip. */
 /* The cap is a line count, not a width: FileCard measures pierre's real
    line pitch on first paint and sets `--osh-cap` to 20 lines, falling back
    to 32rem when no measurement lands (reduced motion, no cards). */
-:root { --osh-cap: 32rem; }html[data-osh-height="full"] .osh-file-scroll { max-height: none; }
+:root { --osh-cap: 32rem; }
+
+/* Code surfaces carry their own syntax hues for the roles the global
+   theme renders as greys (keyword/operator/comment = text-weak/base).
+   Token DENSITY already matches editor baselines; without these the
+   cards read near-monochrome. Values come per theme from
+   scripts/build-themes.mjs; the fallbacks mirror the upstream greys for
+   a build that somehow emitted none. Scoped to file cards,
+   preformatted outputs and markdown code blocks only - chrome
+   consumers of the same globals (the thought end-mark, reasoning
+   labels, diff badges) keep the quiet palette. Custom properties
+   inherit through pierre's shadow roots, so one rule covers the
+   rendered spans. */
+.osh-file-scroll, .osh-pre, [data-transcript-scroll] pre {
+  --syntax-keyword: var(--osh-code-keyword, var(--text-weak));
+  --syntax-operator: var(--osh-code-operator, var(--text-base));
+  --syntax-comment: var(--osh-code-comment, var(--text-weak));
+}
+
 .osh-file-scroll {
   max-height: var(--osh-out-h, var(--osh-cap));
   overflow: auto;
@@ -1486,8 +1727,8 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 }
 /* the clipped fade belongs to shell and text cards only: a file card marks
    clipping with chevrons, and the fade paints a dark band over its last
-   lines */
-[data-osh-out]:not([data-osh-out="file"])[data-osh-clipped]::after {
+   lines; the thinking panel runs its own scroll-state fade below */
+[data-osh-out]:not([data-osh-out="file"]):not([data-osh-out="think"])[data-osh-clipped]::after {
   content: "";
   position: absolute;
   left: 1px;

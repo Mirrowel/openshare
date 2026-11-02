@@ -719,7 +719,17 @@ function mainThreadWorker(): Worker {
       s = s.replace(factoryAnchor, "workerFactory: () => pierreWorkerFactory(lineDiffType),")
       const poolAnchor = "poolSize: 2,"
       if (!s.includes(poolAnchor)) throw new Error("vendor-v2: pierre poolSize anchor missing - upstream drifted")
-      s = s.replace(poolAnchor, "poolSize: pierreMainThreadPool() ? 1 : 2,")
+      // openshare fork: bound the per-pool render caches. Upstream defaults
+      // totalASTLRUCacheSize to 100 per cache (fileCache + diffCache), per
+      // pool - full-file render results retained indefinitely. 24 entries
+      // bounds the retention while keeping re-expansions cache-hit fast.
+      // poolSize 1: each pierre worker compiles the full grammar engine
+      // (~60-90MB native per process); the viewer renders sequentially
+      // anyway, so a second worker buys latency it does not need.
+      s = s.replace(
+        poolAnchor,
+        ["      poolSize: 1,", "      totalASTLRUCacheSize: 24,"].join("\r\n"),
+      )
       const initAnchor = "void pool.initialize()"
       if (s.includes(initAnchor)) {
         s = s.replace(initAnchor, 'void pool.initialize().catch((e) => console.warn("[openshare] pierre pool init failed", e))')
@@ -923,7 +933,7 @@ function mainThreadWorker(): Worker {
     if (!s.includes("openshare fork: file-change tools NEVER merge")) {
       const nl = "\n"
       const A = ["      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {", "        previous.push(tool)", "", "        return groups", "      }"].join(nl)
-      const B = ["      // openshare fork: file-change tools NEVER merge with each other -", "      // each edit/write/patch renders as its own expandable card inside", "      // the group, exactly like every other tool", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
+      const B = ["      // openshare fork: file-change tools NEVER merge with each other - each", "      // edit/write/patch renders as its own expandable card inside the group,", "      // exactly like every other tool", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: file-tools-merge anchor missing - upstream drifted")
       s = s.replace(A, B)
       writeFileSync(p, s)
@@ -1121,12 +1131,11 @@ function mainThreadWorker(): Worker {
         "      }",
       ].join(nl)
       const B = [
-        "      // openshare fork: reads no longer merge inside a context group -",
-        "      // the merged array rendered through one ToolDisplay row showing",
-        "      // only the first tool (\"Used 4 Read\" expands to a",
-        "      // single row). Reads stay individual expandable rows, like every",
-        "      // other grouped tool. CurrentReadToolGroup is",
-        "      // bypassed below either way.",
+        "      // openshare fork: reads no longer merge inside a context group - the",
+        "      // merged array rendered through one ToolDisplay row showing only the",
+        "      // first tool (\"Used 4 Read\" expands to a single row). Reads stay",
+        "      // individual expandable rows, like every other grouped tool;",
+        "      // CurrentReadToolGroup is bypassed below either way.",
       ].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: read-merge anchor missing - upstream drifted")
       s = s.replace(A, B)
@@ -1335,6 +1344,31 @@ function mainThreadWorker(): Worker {
       if (s === before) throw new Error("vendor-v2: GenericTool body anchor missing")
       writeFileSync(p, s)
     }
+
+    // openshare fork: keepMounted keeps the collapsible content MOUNTED
+    // when closed (forceMount) - the reasoning panel animates its collapse,
+    // which Kobalte otherwise makes impossible by unmounting closed
+    // content. Only the reasoning call site passes it; every other tool
+    // keeps upstream mount behavior.
+    if (!s.includes("openshare fork: keepMounted keeps the collapsible content MOUNTED")) {
+      const nl = "\n"
+      const must = (cond, what) => {
+        if (!cond) throw new Error("vendor-v2: keepMounted fork failed (" + what + ") - upstream drifted")
+      }
+      let before = s
+      s = s.replace(
+        ["  locked?: boolean", "  rail?: boolean"].join(nl),
+        ["  locked?: boolean", "  /** openshare fork: keepMounted keeps the collapsible content MOUNTED", "   *  when closed (forceMount) so a collapse animation can run. */", "  keepMounted?: boolean", "  rail?: boolean"].join(nl),
+      )
+      must(s !== before, "props decl")
+      before = s
+      s = s.replace(
+        ["    <Collapsible", "      open={open()}", "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+        ["    <Collapsible", "      // openshare fork: forceMount is a ROOT prop (kobalte reads it in", "      // CollapsibleRoot.shouldMount); on Content it is silently ignored", "      forceMount={props.keepMounted || undefined}", "      open={open()}", "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+      )
+      must(s.includes("forceMount={props.keepMounted || undefined}"), "root forceMount")
+      writeFileSync(p, s)
+    }
   }
 }
 
@@ -1355,17 +1389,11 @@ function mainThreadWorker(): Worker {
   }
 }
 
-// Row rhythm: upstream emits BOTH the pt-2/pt-4 classes AND the
-// data-timeline-spacing attribute on the same element. share-viewer's
-// app.css keys the rhythm on the attribute with UNLAYERED rules, which
-// beat tailwind's @layer utilities in the cascade regardless of
-// specificity - so no class-removal fork is needed here (app.css scans
-// the vendor trees via @source, the classes are generated but lose).
+// openshare fork: agent transition chip on user rows (renders the
+// plugin-stamped metadata.agentSwitch, never computes anything)
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
   if (existsSync(p)) {
-    // openshare fork: agent transition chip on user rows (renders the
-    // plugin-stamped metadata.agentSwitch, never computes anything)
     {
       let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("osh-agent-switch")) {
@@ -1396,27 +1424,132 @@ $2`,
 
     // openshare fork: per-tool-name default-open input (the viewer's
     // auto-expand checkbox list) consulted BEFORE the category booleans,
-    // in the content default-open and the shell row's defaultOpen.
-    // nl-aware: the anchors use the file's own EOL so regeneration works
-    // on LF checkouts too (was hardcoded \r\n - a portability bug).
+    // in the content default-open, the group call site, and the shell
+    // row's defaultOpen. Every replace asserts its OWN landing: a partial
+    // no-op once shipped a half-applied fork (the type decl landed, the
+    // contentDefaultOpen insert silently missed after upstream grew a line
+    // between the anchor parts) and auto-expand went dead on every common
+    // tool while the shell row still worked.
     {
       let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: the viewer's per-tool auto-expand list wins first")) {
-        const nl2 = s.includes("\r\n") ? "\r\n" : "\n"
-        const before = s
+        const nl2 = "\n"
+        const must = (cond, what) => {
+          if (!cond) throw new Error("vendor-v2: toolDefaultOpen fork failed (" + what + ") - upstream drifted")
+        }
+        let before = s
         s = s.replace(
           ["  editToolDefaultOpen: Accessor<boolean>"].join(nl2),
           ["  editToolDefaultOpen: Accessor<boolean>", "  /** openshare fork: per-tool-name default-open (the viewer's auto-expand", "   *  checkbox list). Consulted BEFORE the category booleans; undefined =", "   *  fall through to the kit's own logic. */", "  toolDefaultOpen?: (tool: { name: string }) => boolean | undefined"].join(nl2),
         )
+        must(s !== before, "input type decl")
+        before = s
         s = s.replace(
-          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {", "    if (input.timelineDetail) {"].join(nl2),
-          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {", "    // openshare fork: the viewer's per-tool auto-expand list wins first", "    if (item.type === \"tool\" && input.toolDefaultOpen) {", "      const custom = input.toolDefaultOpen(item)", "      if (custom !== undefined) return custom", "    }", "    if (input.timelineDetail) {"].join(nl2),
+          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {"].join(nl2),
+          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {", "    // openshare fork: the viewer's per-tool auto-expand list wins first", "    if (item.type === \"tool\" && input.toolDefaultOpen) {", "      const custom = input.toolDefaultOpen(item)", "      if (custom !== undefined) return custom", "    }"].join(nl2),
         )
+        must(s.includes("const custom = input.toolDefaultOpen(item)"), "contentDefaultOpen insert")
+        before = s
+        s = s.replace(
+          ["            toolDefaultOpen={(tool) =>", "              input.timelineDetail || tool.name === \"execute\" ? contentDefaultOpen(tool) : false", "            }"].join(nl2),
+          ["            toolDefaultOpen={(tool) =>", "              // openshare fork: the viewer's per-tool auto-expand list wins first", "              input.toolDefaultOpen?.(tool) ??", "              (input.timelineDetail || tool.name === \"execute\" ? contentDefaultOpen(tool) : false)", "            }"].join(nl2),
+        )
+        must(s.includes("input.toolDefaultOpen?.(tool) ??"), "group call site")
+        before = s
         s = s.replace(
           ["    const defaultOpen = createMemo(() => {", "      if (!input.timelineDetail) return input.shellToolDefaultOpen()"].join(nl2),
           ["    const defaultOpen = createMemo(() => {", "      // openshare fork: the viewer's per-tool auto-expand list wins first", "      if (input.toolDefaultOpen) {", "        const custom = input.toolDefaultOpen({ name: \"shell\" })", "        if (custom !== undefined) return custom", "      }", "      if (!input.timelineDetail) return input.shellToolDefaultOpen()"].join(nl2),
         )
-        if (s === before) throw new Error("vendor-v2: toolDefaultOpen anchors missing - upstream drifted")
+        must(s.includes("const custom = input.toolDefaultOpen({ name: \"shell\" })"), "shell defaultOpen")
+        writeFileSync(p, s)
+      }
+    }
+  }
+
+  // vendor fork (session-timeline-row): suppressed turn footer. An
+  // interrupted turn can end on a tool call AFTER its last text part;
+  // the kit parks the copy/model footer inside that text part, carving a
+  // gap between the completion and its tool call. The turn ends on tool
+  // output, so the reader loses nothing: the footer is suppressed
+  // entirely for that shape.
+  {
+    const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
+    if (existsSync(p)) {
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+      const has = s.includes("const copyContentIDWithRelocation")
+      if (!has) {
+        const must = (cond, what) => {
+          if (!cond) throw new Error("vendor-v2: suppressed-footer fork failed (" + what + ") - upstream drifted")
+        }
+        let before = s
+        s = s.replace(
+          '                showAssistantCopyPartID={copyContentID(row().userMessageID)}',
+          '                showAssistantCopyPartID={copyContentIDWithRelocation(row().userMessageID)}',
+        )
+        must(s !== before, "callsite")
+        before = s
+        s = s.replace(
+          `  const copyContentID = (messageID: string) => {
+    if (workingTurn(messageID)) return null
+
+    const message = input.projection
+      .assistantMessagesByParent()
+      .get(messageID)
+      ?.findLast((message) => message.content.some((content) => content.type === "text" && !!content.text.trim()))
+
+    return message
+      ? Timeline.contentEntries(message).findLast(
+          (entry) => entry.content.type === "text" && !!entry.content.text.trim(),
+        )?.id
+      : undefined
+  }`,
+          `  const copyContentID = (messageID: string) => {
+    if (workingTurn(messageID)) return null
+
+    const message = input.projection
+      .assistantMessagesByParent()
+      .get(messageID)
+      ?.findLast((message) => message.content.some((content) => content.type === "text" && !!content.text.trim()))
+
+    return message
+      ? Timeline.contentEntries(message).findLast(
+          (entry) => entry.content.type === "text" && !!entry.content.text.trim(),
+        )?.id
+      : undefined
+  }
+
+  // openshare fork: an interrupted turn can end on a tool call AFTER its
+  // last text part. The in-text footer then renders in a carved gap
+  // between the completion and its tool call - worse than no footer. The
+  // turn carries tool output after its text, so the reader loses nothing
+  // by having no copy footer on it: suppress the footer entirely for
+  // that shape.
+  const turnEndsOnNonText = (messageID: string) => {
+    if (workingTurn(messageID)) return false
+
+    const messages = input.projection.assistantMessagesByParent().get(messageID) ?? emptyAssistantMessages
+
+    let lastTextEntryID: string | undefined
+    let lastEntryID: string | undefined
+
+    for (const message of messages) {
+      for (const entry of Timeline.contentEntries(message)) {
+        lastEntryID = entry.id
+
+        if (entry.content.type === "text" && !!(entry.content as { text?: string }).text?.trim()) {
+          lastTextEntryID = entry.id
+        }
+      }
+    }
+
+    return !!lastTextEntryID && !!lastEntryID && lastEntryID !== lastTextEntryID
+  }
+
+  const copyContentIDWithRelocation = (messageID: string) => {
+    return turnEndsOnNonText(messageID) ? null : copyContentID(messageID)
+  }`,
+        )
+        must(s.includes("const copyContentIDWithRelocation"), "helper insert")
         writeFileSync(p, s)
       }
     }
@@ -1438,11 +1571,11 @@ $2`,
         const B = [
           "function fallback(markdown: string) {",
           "  // openshare fork: paragraph-SHAPED fallback: upstream joined everything",
-          "  // snap\"): upstream joined everything with <br>, so a paragraph break",
-          "  // (\\n\\n) rendered as a full blank LINE while the ready markdown uses",
-          "  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready",
-          "  // swap snapped the spacing. Emit real <p> chunks with <br> soft breaks",
-          "  // so the fallback is metrically identical to the parsed result.",
+          "  // with <br>, so a paragraph break (\\n\\n) rendered as a full blank LINE",
+          "  // while the ready markdown uses p { margin-bottom: 12px }, visibly tighter,",
+          "  // and the fallback->ready swap snapped the spacing. Emit real <p> chunks",
+          "  // with <br> soft breaks so the fallback is metrically identical to the",
+          "  // parsed result.",
           "  const esc = (s: string) =>",
           '    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")',
           "  return esc(markdown)",
@@ -1484,6 +1617,24 @@ $2`,
           '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />',
           '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />',
         )
+        // assistant text parts and summaries render the instant
+        // paragraph-shaped fallback too: born-blank markdown collapses the
+        // row until the worker parses, then the parse grows it back and
+        // shoves every row below (the reload "completion disappears, next
+        // element in its place, then everything moves" report); the
+        // fallback is metrically identical, so the rich swap never reflows
+        s = s.replace(
+          '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} />',
+          '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} defer={false} />',
+        )
+        s = s.replace(
+          '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} />',
+          '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} defer={false} />',
+        )
+        s = s.replace(
+          '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n              />',
+          '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n                defer={false}\n              />',
+        )
         // (a hidden "prewarm" copy while collapsed was tried and deleted:
         // collapsed bodies unmount inside Collapsible.Content, so the
         // prewarm unmounted with them and never prewarmed anything - it
@@ -1491,32 +1642,101 @@ $2`,
         if (s === before) throw new Error("vendor-v2: message-content anchors missing - upstream drifted")
         writeFileSync(p, s)
       }
+
+      // openshare fork: the reasoning body is a PANEL, not loose markdown:
+      // a wrapper carrying data-osh-out (the shared per-card drag system,
+      // default cap via --osh-out-h) around the markdown, with the same
+      // bottom grip every output surface has. keepMounted rides the
+      // BasicTool so the collapse animation can run (see basic-tool fork).
+      // Open/close drives the CONTENT height: on open the final height is
+      // written to --osh-anim-h BEFORE the disclosure flips (with the
+      // height transition suppressed for two frames), so the row reserves
+      // full space instantly and the panel pours in clipped - a CSS height
+      // animation on the row itself reports intermediate sizes to the
+      // virtualizer's ResizeObserver, which positions rows below one frame
+      // behind (visible overlap mid-animation).
+      if (!s.includes("openshare fork: the reasoning body is a PANEL")) {
+        const nl = "\n"
+        const must = (cond, what) => {
+          if (!cond) throw new Error("vendor-v2: reasoning panel fork failed (" + what + ") - upstream drifted")
+        }
+        let before = s
+        s = s.replace(
+          ["        allowOpenWhilePending", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
+          ["        allowOpenWhilePending", "        keepMounted={keepAlive()}", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
+        )
+        must(s !== before, "keepMounted prop")
+        before = s
+        s = s.replace(
+          ["        onOpenChange={(value) => {", "          setState(\"open\", value)", "          props.onOpenChange?.(value)", "          props.onContentRendered?.()", "        }}"].join(nl),
+          ["        onOpenChange={(value) => {", "          setState(\"open\", value)", "          props.onOpenChange?.(value)", "          // remeasure once the async markdown lands (a remounted body", "          // parses empty first); inside the 420ms window the live body", "          // measures immediately", "          if (value) measureWhenReady()", "          props.onContentRendered?.()", "        }}"].join(nl),
+        )
+        must(s.includes("if (value) measureWhenReady()"), "open handler")
+        before = s
+        s = s.replace(
+          ["        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />"].join(nl),
+          ["        {/* openshare fork: the reasoning body is a PANEL - wrapper carries the", "            shared drag system (data-osh-out + grip), the inner box scrolls", "            under its cap; styles live in share-viewer's app.css */}", "        <div data-osh-out=\"think\" class=\"osh-think-panel\" ref={(el) => (panelEl = el)}>", "          <div data-osh-scroll class=\"osh-think-body\">", "            <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />", "          </div>", "          {/* openshare fork: the closing mark - centered gradient lines", "              parting around the thought icon + label, shown at the scroll", "              end (CSS-gated on the scrolled attrs from output-resize) */}",           "          <div class=\"osh-think-end\" aria-hidden=\"true\">", "            <span class=\"osh-think-end-line\" />", "            <span class=\"osh-think-end-label\">end of thought</span>", "            <span class=\"osh-think-end-line\" />", "          </div>", "          <div class=\"osh-out-grip\" data-osh-out-grip title=\"drag to resize - double-click resets\" />", "        </div>"].join(nl),
+        )
+        must(s.includes('ref={(el) => (panelEl = el)}'), "panel wrapper + ref")
+        before = s
+        s = s.replace(
+          ["  const i18n = useI18n()", "  const [state, setState] = createStore<{ open?: boolean }>({})"].join(nl),
+          ["  // openshare fork: PER-INSTANCE panel ref - a module-level ref would", "  // point at whichever reasoning panel mounted last", "  let panelEl: HTMLDivElement | undefined", "  // the animated height target (CSS cannot compute min(scrollHeight,", "  // cap)); stored on the PART element, which survives the closed-state", "  // content unmount - a var on the content element dies with every", "  // remount. Measured while the body is live (open, or just before the", "  // close unmount); reopens read the cached value",           "  const measureTarget = () => {", "    const body = panelEl?.querySelector<HTMLElement>(\".osh-think-body\")", "    const part = panelEl?.closest(\"[data-component='reasoning-part']\")", "    if (!body || !(part instanceof HTMLElement)) return", "    // a freshly remounted body parses its markdown async and measures", "    // empty; caching that would collapse the box to the chrome - skip", "    // and keep the previous value until the real content lands", "    if (body.scrollHeight < 4) return", "    const cap = parseFloat(getComputedStyle(body).maxHeight) || 416",           "    part.style.setProperty(\"--osh-anim-h\", `${Math.round(Math.min(body.scrollHeight, cap))}px`)", "  }", "  // a remounted body parses its markdown async; poll cheap frames until", "  // real content exists, then cache the target", "  const measureWhenReady = () => {", "    let tries = 0", "    const tick = () => {", "      const body = panelEl?.querySelector<HTMLElement>(\".osh-think-body\")", "      if (body && body.scrollHeight >= 4) {", "        measureTarget()", "        return", "      }", "      if (++tries < 60) requestAnimationFrame(tick)", "    }", "    requestAnimationFrame(tick)", "  }", "  const [keepAlive, setKeepAlive] = createSignal(true)", "  let unmountTimer: ReturnType<typeof setTimeout> | undefined", "  onCleanup(() => unmountTimer && clearTimeout(unmountTimer))", "  const i18n = useI18n()", "  const [state, setState] = createStore<{ open?: boolean }>({})"].join(nl),
+        )
+        must(s.includes("let panelEl") && s.includes("measureTarget"), "panelEl + measureTarget decl")
+        before = s
+        s = s.replace(
+          ["  const open = () => props.open ?? state.open ?? props.defaultOpen ?? false"].join(nl),
+          ["  const open = () => props.open ?? state.open ?? props.defaultOpen ?? false", "  // openshare fork: the content stays mounted only while OPEN or while", "  // the collapse animation runs (~420ms > the 320ms transition); a", "  // resting closed panel then unmounts its markdown - measured 362 DOM", "  // nodes per closed panel otherwise (74% of page DOM at rest). The", "  // effect (defer:false) also releases panels that LOAD closed and", "  // follows programmatic opens (the reasoningOpen setting)", "  createEffect(on(open, (value) => {", "    if (unmountTimer) {", "      clearTimeout(unmountTimer)", "      unmountTimer = undefined", "    }", "    // capture the animated-height target while the body is live, in", "    // BOTH branches (load-open measures on the first run; close", "    // measures before the unmount releases the body)", "    measureTarget()", "    if (value) {", "      setKeepAlive(true)", "      measureWhenReady()", "    } else {", "      unmountTimer = setTimeout(() => setKeepAlive(false), 420)", "    }", "  }, { defer: false }))"].join(nl),
+        )
+        must(s.includes("createEffect(on(open"), "keepAlive effect")
+        writeFileSync(p, s)
+      }
     }
   }
 }
 
-// Inline line virtualization must use the transcript's bounded viewport.
-// pierre's inline file virtualizer picked the nearest overflowY ancestor
-// as its scroll root - a horizontal tool-output wrapper - so line
+// Inline line virtualization must resolve the scroll root by ACTUAL
+// vertical scrollability. pierre's inline file virtualizer picks the
+// nearest overflowY ancestor - a horizontal tool-output wrapper, since
+// setting one overflow axis forces the other to compute "auto" - so line
 // virtualization inside large files misbehaved (wrong scroll root, wrong
-// content target). The fork prefers the transcript viewport element and
-// the transcript content node, and file.tsx drops its now-duplicate
+// content target). Preferring the transcript unconditionally fixed the
+// wrappers but broke CAPPED file cards: their own body scroller is the
+// real viewport for line windowing, and windowing against the transcript
+// paints only the band the card occupies on the page (top-or-end, never
+// the middle). The fork returns the nearest ancestor that scrolls
+// vertically and is not wide-but-not-tall; the capped card body wins,
+// the transcript follows when the card does not scroll itself, and
+// horizontal wrappers are skipped. file.tsx drops its now-duplicate
 // scrollParent walker in favor of the shared one.
 {
   let p = join(ROOT, "vendor/session-ui-v2/src/pierre/virtualizer.ts")
   let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
   const patch = (from, to) => {
     const next = s.replace(from, to)
-    if (next === s) throw new Error(`vendor-v2: transcript viewport anchor missing in ${p}`)
+    if (next === s) throw new Error(`vendor-v2: vertical scroll-root anchor missing in ${p}`)
     s = next
   }
-  if (!s.includes("openshare fork: use the transcript viewport")) {
+  if (!s.includes("openshare fork: the nearest VERTICALLY scrolling ancestor")) {
+    // upstream keeps scrollRoot module-private; file.tsx (second patch
+    // below) imports it, so the export is part of this fork
+    if (!s.includes("export function scrollRoot")) {
+      patch("function scrollRoot(container: HTMLElement) {", "export function scrollRoot(container: HTMLElement) {")
+    }
     patch(
-      "function scrollRoot(container: HTMLElement) {",
-      `export function scrollRoot(container: HTMLElement) {
-  // openshare fork: use the transcript viewport, not horizontal tool wrappers.
-  const transcript = container.closest<HTMLElement>("[data-transcript-scroll]")
-  if (transcript) return transcript`,
+      "if (scrollable(style.overflowY)) return node",
+      `if (
+      scrollable(style.overflowY) &&
+      // openshare fork: the nearest VERTICALLY scrolling ancestor owns line
+      // windowing - a capped file card's own body scroller first, then the
+      // transcript. Horizontal tool-output wrappers compute overflow-y:auto
+      // too (setting one axis forces the other), so style alone misidentifies
+      // them: skip anything wide but not tall.
+      !(node.scrollWidth > node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1)
+    ) {
+      return node
+    }`,
     )
     patch(
       `root.querySelector("[role='log']")`,

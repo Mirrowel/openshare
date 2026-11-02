@@ -16,6 +16,7 @@ import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { Mark } from "@opencode/ui/logo"
 import { DateTime } from "luxon"
 import { visibleMessages, sessionStatus } from "../fold"
+import { buildTurns, leaderOf, groupOfLeader } from "../turns"
 import { VirtualTimeline } from "../timeline-v2"
 import { registerPromptNav } from "../prompt-nav"
 import { findParentTurn } from "../parent-link"
@@ -48,7 +49,9 @@ export function ConversationView(props: ViewProps) {
   const info = createMemo(() => (props.data.session as any[]).find((s) => s.id === props.sessionID))
   const messages = createMemo(() => visibleMessages(props.data, props.sessionID))
   const sections = useSessionSections(props.data, props.sessionID)
-  const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
+  // consecutive prompts are ONE turn: nav/focus/search work on group leaders
+  const turnGroups = createMemo(() => buildTurns(messages()))
+  const userTurns = createMemo(() => turnGroups().map((g) => g.leader))
   const autoExpandOpen = (tool: { name: string }) => props.settings.autoExpand.includes(tool.name)
   const firstUserMessage = createMemo(() => userTurns().at(0))
   const activeMessage = createMemo(() => userTurns().find((m: any) => m.id === messageId()) ?? firstUserMessage())
@@ -91,7 +94,9 @@ export function ConversationView(props: ViewProps) {
   createEffect(() => {
     props.sessionID
     const id = decodeURIComponent(location.hash.slice(1))
-    if (id && userTurns().some((m: any) => m.id === id)) queueMicrotask(() => timeline?.scrollToMessage(id))
+    // a hash may point at any prompt of a burst; the group jumps as one
+    const leader = leaderOf(turnGroups(), id)
+    if (id && leader) queueMicrotask(() => timeline?.scrollToMessage(leader.id))
   })
 
   // the model of the ACTIVE turn: user metadata first (stamped at
@@ -122,23 +127,23 @@ export function ConversationView(props: ViewProps) {
   const filtered = createMemo(() => {
     const q = props.search.trim().toLowerCase()
     if (!q) return userTurns()
-    return userTurns().filter((m: any) => {
-      if (typeof m?.text === "string" && m.text.toLowerCase().includes(q)) return true
-      const all = messages()
-      const start = all.findIndex((x: any) => x.id === m.id)
-      if (start < 0) return false
-      for (let i = start + 1; i < all.length; i++) {
-        const msg: any = all[i]
-        if (msg?.type === "user") break
-        if (msg?.type === "assistant") {
+    const all = messages()
+    return turnGroups()
+      .filter((g) => {
+        for (const p of g.prompts) {
+          if (typeof p?.text === "string" && p.text.toLowerCase().includes(q)) return true
+        }
+        for (let i = g.startIdx; i < g.endIdx; i++) {
+          const msg: any = all[i]
+          if (msg?.type !== "assistant") continue
           for (const c of msg?.content ?? []) {
             const text = c?.type === "text" || c?.type === "reasoning" ? c.text : c?.type === "tool" ? `${c.name}` : ""
             if (typeof text === "string" && text.toLowerCase().includes(q)) return true
           }
         }
-      }
-      return false
-    })
+        return false
+      })
+      .map((g) => g.leader)
   })
   const responsePreview = (messageID: string) => {
     const all = messages()
@@ -174,16 +179,13 @@ export function ConversationView(props: ViewProps) {
     status: sessionStatus(props.source.status()),
     diffs: [],
   }))
-  // A focused turn includes every response up to the next prompt.
+  // A focused turn includes every response up to the next prompt: the
+  // active group's span, every prompt of the burst included.
   const pagedDocument = createMemo(() => {
     const all = messages()
-    const idx = all.findIndex((m) => m.id === activeMessage()?.id)
-    if (idx < 0) return { ...document(), messages: [] as any[] }
-    let end = all.length
-    for (let i = idx + 1; i < all.length; i++) {
-      if ((all[i] as any)?.type === "user") { end = i; break }
-    }
-    return { ...document(), messages: all.slice(idx, end) }
+    const group = groupOfLeader(turnGroups(), activeMessage()?.id)
+    if (!group) return { ...document(), messages: [] as any[] }
+    return { ...document(), messages: all.slice(group.startIdx, group.endIdx) }
   })
 
   const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
@@ -203,7 +205,7 @@ export function ConversationView(props: ViewProps) {
       onReady={(controls) => {
         if (!p.focusID) timeline = controls as any
       }}
-      onActiveMessageChange={p.focusID ? undefined : setMessageId}
+      onActiveMessageChange={p.focusID ? undefined : (id) => { const leader = leaderOf(turnGroups(), id); if (leader) setMessageId(leader.id) }}
       header={
         <div class="px-4 py-4 sm:px-6">
           <div class="flex flex-col gap-3">
@@ -255,7 +257,7 @@ export function ConversationView(props: ViewProps) {
           </div>
         </div>
       }
-      footer={<div class="px-4 pt-6 pb-6 sm:px-6 text-center text-12-mono text-text-weaker select-none">{(props.source.branding().name ? props.source.branding().name + " · " : "") + "Open(code)Share"}</div>}
+      footer={<div data-osh-footer class="px-4 pt-6 pb-6 sm:px-6 text-center text-12-mono text-text-weaker select-none">{(props.source.branding().name ? props.source.branding().name + " · " : "") + "Open(code)Share"}</div>}
       class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow min-h-0 w-full"}
     />
   )

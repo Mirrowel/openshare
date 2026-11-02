@@ -28,15 +28,22 @@ function scrollable(value: string) {
 }
 
 export function scrollRoot(container: HTMLElement) {
-  // openshare fork: use the transcript viewport, not horizontal tool wrappers.
-  const transcript = container.closest<HTMLElement>("[data-transcript-scroll]")
-  if (transcript) return transcript
   let node = container.parentElement
 
   while (node) {
     const style = getComputedStyle(node)
 
-    if (scrollable(style.overflowY)) return node
+    if (
+      scrollable(style.overflowY) &&
+      // openshare fork: the nearest VERTICALLY scrolling ancestor owns line
+      // windowing - a capped file card's own body scroller first, then the
+      // transcript. Horizontal tool-output wrappers compute overflow-y:auto
+      // too (setting one axis forces the other), so style alone misidentifies
+      // them: skip anything wide but not tall.
+      !(node.scrollWidth > node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1)
+    ) {
+      return node
+    }
     node = node.parentElement
   }
 }

@@ -53,9 +53,21 @@ function writeDisclosure(key: string, store: Record<string, boolean | undefined>
 // re-measured rows, the total height shrank under the scroll position and the
 // page appeared to jump (probed and confirmed on the live build).
 type RowSnapshot = { index: number; key: string; start: number; size: number }
-type Snapshot = { items: RowSnapshot[]; offset: number }
+type Snapshot = { items: RowSnapshot[]; offset: number; width?: number; atEnd?: boolean; topKey?: string; topDelta?: number }
 const snapshotMemory = new Map<string, Snapshot>()
-const snapshotKey = (sessionKey: string) => `osh:vrows:${sessionKey}`
+// v2: v1 child-session snapshots were poisoned atEnd by the pre-remount
+// clamp (a carried main-page scrollTop clamped into the shorter child
+// transcript and got saved as a bottom position); the bump gives every
+// session a clean slate
+const snapshotKey = (sessionKey: string) => `osh:vrows2:${sessionKey}`
+// deep links consumed this page load (see the deep-link effect): bounded by
+// the reader's own navigation, a Set of small strings
+const consumedDeepLinks = new Set<string>()
+// scrollbar-stable viewport width: window.innerWidth changes by the
+// scrollbar's width between "content overflowing" (save time) and "fresh
+// load before render" (read time), which made the width gate reject
+// restores nondeterministically
+const viewportWidth = () => document.documentElement.clientWidth
 function readSnapshot(sessionKey: string): Snapshot | undefined {
   const memory = snapshotMemory.get(sessionKey)
   if (memory) return memory
@@ -111,6 +123,11 @@ export function VirtualTimeline(props: {
    * active marker */
   onActiveMessageChange?: (id: string) => void
 }): JSX.Element {
+  // frozen at mount: the sessionKey prop is a live getter, and during the
+  // cleanup of a session switch it already evaluates to the NEW session -
+  // an unmount-save through the live prop would write one session's state
+  // under the next session's key
+  const mountKey = props.sessionKey
   const projection = createReactiveTimelineProjection({
     sessionMessages: () => props.doc.messages,
     status: () => props.doc.status,
@@ -121,9 +138,9 @@ export function VirtualTimeline(props: {
   })
   const [toolOpen, setToolOpen] = createStore<Record<string, boolean | undefined>>(
     // seed from the persistent disclosure map (survives remounts)
-    readDisclosure(props.sessionKey),
+    readDisclosure(mountKey),
   )
-  onCleanup(() => writeDisclosure(props.sessionKey, toolOpen))
+  onCleanup(() => writeDisclosure(mountKey, toolOpen))
   // document-level click capture: records the toggled row key (used by the
   // compensation predicate above); idempotent
   armToggleAnchor()
@@ -153,7 +170,7 @@ export function VirtualTimeline(props: {
           // record ownership so a clear closes them
           claimDisclosure(key, open)
           setToolOpen(key, open)
-          writeDisclosure(props.sessionKey, toolOpen)
+          writeDisclosure(mountKey, toolOpen)
           return
         }
         if (searchOwnsDisclosure(key)) {
@@ -164,7 +181,7 @@ export function VirtualTimeline(props: {
         }
         if (!open) releaseDisclosure(key)
         setToolOpen(key, open)
-        writeDisclosure(props.sessionKey, toolOpen)
+        writeDisclosure(mountKey, toolOpen)
         // NO JS scroll compensation here, ever: tanstack's
         // shouldAdjustScrollPositionOnItemSizeChange owns the virtualized path
         // (its predicate never scrolls for growth below the fold). A JS settle
@@ -190,7 +207,15 @@ export function VirtualTimeline(props: {
   // would snap the reader back before/after the jump (the jump lands, then the
   // restored offset overwrites scrollTop)
   const deepAtMount = !!rowKeyFromHash(location.hash)
-  const restored = deepAtMount ? undefined : readSnapshot(props.sessionKey)
+  // snapshots are all-or-nothing: the offset and the heights are a PAIR.
+  // Restoring the offset without its heights plants the reader at a
+  // position estimate-based layout cannot honor (tall rows born at 90px
+  // get painted over until measured - the cut-off big prompt); restoring
+  // heights from another wrap width mangles the layout. Same width ->
+  // exact restore; different width -> fresh layout, position handled by
+  // the hide/show anchor
+  const snap = deepAtMount ? undefined : readSnapshot(mountKey)
+  const restored = snap && snap.width != null && Math.abs(snap.width - viewportWidth()) <= 8 ? snap : undefined
   const initialMeasurementsCache = restored?.items.map((item) => ({
     index: item.index,
     key: item.key,
@@ -199,17 +224,40 @@ export function VirtualTimeline(props: {
     end: item.start + item.size,
     lane: 0,
   }))
+  const [cacheGrace, setCacheGrace] = createSignal(!!restored)
 
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     get count() {
       return rowKeys().length
     },
     getScrollElement: () => scrollElement ?? null,
-    estimateSize: (index: number) => measurementCache.get(rowKeys()[index]) ?? ESTIMATE,
+    estimateSize: (index: number) => {
+      const key = rowKeys()[index]
+      const known = measurementCache.get(key)
+      if (known !== undefined) return known
+      // an open reasoning panel mounts at a broadly known height; the
+      // generic 90px estimate makes post-flip scroll-backs grow rows in
+      // steps (scrollbar jumps "as if animating open"). Approximation
+      // only: the real measure replaces it on mount
+      if (key.includes(":reasoning:") && document.documentElement.dataset.oshReasoning === "open") return 420
+      return ESTIMATE
+    },
     overscan: 40,
     getItemKey: (index: number) => rowKeys()[index] ?? `row:${index}`,
     initialMeasurementsCache,
+    // grace window after a snapshot restore: while on, measureElement
+    // returns the SNAPSHOT size instead of reading the DOM, so the
+    // instant-markdown fallback cannot override correct heights and the
+    // rich parse cannot flip them back (the reload/maximize drift: every
+    // flip bumps the scroll, compounding with depth, jumping at the end).
+    // The snapshot was captured from the fully-rich layout at the same
+    // width, so real heights EQUAL cached ones - the handoff back to live
+    // measurement (first user input or 2s) moves nothing
+    get useCachedMeasurements() {
+      return cacheGrace()
+    },
   })
+
   // keep the reader's anchor when a row above the viewport is re-measured
   // (the option is a Virtualizer field, not an option in this version).
   // NEVER compensate the row the user just toggled: its growth should extend
@@ -217,6 +265,90 @@ export function VirtualTimeline(props: {
   // the trigger up out of view.
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
     item.key !== getLastToggledRowKey() && item.start < (instance.scrollOffset ?? 0)
+
+  // Stale-size convergence: rows that mount or resize during fast scroll
+  // lose their deferred measurement to the virtualizer's mid-scroll drop
+  // guards, and the ResizeObserver never re-fires without another
+  // transition — the row then keeps its 90px estimate forever while its
+  // real height is hundreds or thousands of px, and every row below it
+  // is positioned inside its content (probe on a live share: 15 rows
+  // kept the estimate mid-pass, 9.3k px of cumulative error). At
+  // scroll-settle no guard applies, so one pass of measureElement over
+  // every mounted row converges the whole layout.
+  let sweepTimer: ReturnType<typeof setTimeout> | undefined
+  // Cached-measurement handoff: tanstack's measureElement returns the
+  // CACHE entry for any direct call while one exists (virtual-core
+  // short-circuits before reading the DOM); only the ResizeObserver
+  // entry path bypasses it, and RO fires solely on an actual height
+  // CHANGE. A row whose height changed while measurement was frozen
+  // (snapshot grace: tool expanded when saved, collapsed on reload)
+  // therefore keeps its stale size forever. Invalidate exactly the
+  // rows whose cache entry disagrees with the DOM: matching entries
+  // survive untouched, so nothing estimates and nothing jiggles.
+  // During the grace window only the LOST-DISCLOSURE class converges
+  // early: a tool/reasoning row that mounts COLLAPSED (trigger present,
+  // no mounted collapsible content - closed content unmounts) has no
+  // async height future, so a large cached-minus-DOM gap is permanently
+  // stale and converging at mount kills the phantom immediately. Every
+  // other row (text parts between fallback and rich markdown, open tool
+  // bodies awaiting pierre's first paint) still has height growth in
+  // flight - the cached size is the FINAL one there, and converging to
+  // the transient DOM height re-introduces blank-then-snap completions
+  // and drags the reload anchor below its target.
+  const convergeRow = (el: HTMLDivElement) => {
+    if (!el.isConnected || el.dataset.index === undefined) return
+    const v = virtualizer as any
+    if (!v.itemSizeCache) return
+    const index = Number(el.dataset.index)
+    if (!Number.isFinite(index)) return
+    const key = virtualizer.options.getItemKey(index)
+    const cached = v.itemSizeCache.get(key) as number | undefined
+    if (cached === undefined) return
+    const delta = Math.abs(cached - el.offsetHeight)
+    if (delta <= 1) return
+    if (cacheGrace() && delta <= 80) return
+    if (cacheGrace()) {
+      // only the collapsed-disclosure row, whose height is final NOW
+      if (cached - el.offsetHeight <= 80) return
+      if (!el.querySelector('[data-component="tool-trigger"]')) return
+      if (el.querySelector('[data-slot="collapsible-content"]')) return
+    }
+    v.itemSizeCache.delete(key)
+    virtualizer.measureElement(el)
+  }
+  const sweep = () => {
+    sweepTimer = undefined
+    for (const { el } of rowEls.values()) {
+      if (el.isConnected && el.dataset.index !== undefined) {
+        convergeRow(el)
+        virtualizer.measureElement(el)
+        measurementCache.set(String(el.dataset.rowKey), el.offsetHeight)
+      }
+    }
+  }
+  const armSweep = (delay = 180) => {
+    if (sweepTimer) clearTimeout(sweepTimer)
+    sweepTimer = setTimeout(sweep, delay)
+  }
+  const measureRowSoon = (key: string) => {
+    // Retry a FIXED window (~30 frames): a measure that lands mid-scroll
+    // is silently dropped by the virtualizer (isScrolling guard), and a
+    // row mid expand/collapse ANIMATION reads "converged" at its
+    // pre-animation height - stopping at first convergence misses the
+    // whole animation, leaving rows below at stale offsets for the
+    // first frames (probe: 79px overlap). Feeding the size every frame
+    // for the animation's duration keeps the layout in step. Rows
+    // outside the virtual window have no item to verify against; the
+    // settle sweep owns those.
+    let tries = 0
+    const tick = () => {
+      const el = rowEls.get(key)?.el
+      if (!el?.isConnected) return
+      virtualizer.measureElement(el)
+      if (++tries < 30) requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  }
 
   // measure through tanstack's own measureElement (it owns the resize
   // observer and writes real heights back per index). A hand-rolled
@@ -297,9 +429,117 @@ export function VirtualTimeline(props: {
     scrollToMessage(target.id, target.behavior, target.force)
   })
 
+  // mass disclosure flips (settings.ts) re-render EVERY mounted row's
+  // content, but the render loop only repositions rows inside the
+  // current window: out-of-window mounted rows keep stale transforms
+  // under grown painted heights and their boxes overlap the viewport
+  // until a range-shifting scroll re-renders them (the post-flip
+  // mangle). Disposing them is safe - the row cache is a scroll
+  // convenience, disclosure state lives in the module map, and
+  // scroll-back remounts rows already measured. Runs post-render (rAF)
+  // so the flip's expansion has landed, then forces a re-measure pass
+  // so the window's transforms and total size refresh in one notify.
+  const onFlip = () => {
+    // capture the reader's anchor BEFORE the flip reflows everything:
+    // a mass collapse shrinks thousands of px above the viewport and the
+    // compensation cascade dies in the reflow freeze, dropping the
+    // reader tens of rows down the list. Re-pin after settle.
+    const el0 = scrollElement
+    let anchorIndex: number | undefined
+    let anchorKey: string | undefined
+    if (el0) {
+      const top = el0.getBoundingClientRect().top
+      // VISUAL order, not map order: rowEls is creation-ordered, and the
+      // first map entry crossing the viewport edge is routinely a stale
+      // out-of-window row (same trap as DOM-order anchor reads)
+      const candidates = [...rowEls.values()]
+        .map((entry) => ({ el: entry.el, r: entry.el.getBoundingClientRect() }))
+        .filter((x) => x.r.height > 0 && x.r.bottom > top + 4)
+        .sort((a, b) => a.r.top - b.r.top)
+      const first = candidates[0]?.el
+      if (first && first.dataset.index !== undefined) {
+        const idx = Number(first.dataset.index)
+        if (Number.isFinite(idx)) {
+          anchorIndex = idx
+          anchorKey = String(first.dataset.rowKey)
+        }
+      }
+    }
+    requestAnimationFrame(() => {
+      if (!rowEls.size) return
+      const windowKeys = new Set(virtualizer.getVirtualItems().map((item) => String(item.key)))
+      for (const [key, entry] of rowEls) {
+        if (windowKeys.has(key)) continue
+        entry.el.remove()
+        entry.dispose()
+        rowEls.delete(key)
+        // re-measured on scroll-back remount; the stale entry would
+        // re-seed the estimate at the pre-flip height
+        measurementCache.delete(key)
+      }
+      virtualizer.measure()
+      // convergence without a scroll nudge: the sweep normally rides on
+      // scroll, but the reader has not scrolled - the flip did
+      armSweep(400)
+      armSweep(1400)
+      if (anchorIndex === undefined || !anchorKey) return
+      let cancelled = false
+      const cancel = () => { cancelled = true }
+      window.addEventListener("wheel", cancel, { once: true, passive: true })
+      window.addEventListener("pointerdown", cancel, { once: true, passive: true })
+      window.addEventListener("keydown", cancel, { once: true, passive: true })
+      // GLUE, not a late pin: re-pinning after the cascade shows the
+      // reader a drift-then-snap. Hold the anchor row at the viewport
+      // top every frame through the whole reflow instead - the position
+      // never visibly moves. scrollToIndex is only a bootstrap for an
+      // anchor that lost its element (estimate sums alone land wrong)
+      const t0 = performance.now()
+      let bootstrapped = false
+      const glue = () => {
+        if (cancelled) return
+        const el = rowEls.get(anchorKey!)?.el
+        if (el && el.isConnected && scrollElement) {
+          const delta = el.getBoundingClientRect().top - scrollElement.getBoundingClientRect().top
+          if (Math.abs(delta) > 1) scrollElement.scrollTop += delta
+        } else if (!bootstrapped && performance.now() - t0 > 250 && scrollElement) {
+          bootstrapped = true
+          virtualizer.scrollToIndex(anchorIndex, { behavior: "auto", align: "start" })
+        }
+        if (performance.now() - t0 < 2600) requestAnimationFrame(glue)
+      }
+      requestAnimationFrame(glue)
+    })
+  }
+  window.addEventListener("osh-flip", onFlip)
+  onCleanup(() => window.removeEventListener("osh-flip", onFlip))
+
   // imperative controls for the parent (focus mode, hotkeys, rail)
   onMount(() => {
     props.onReady?.({ scrollToMessage: (id) => scrollToMessage(id) })
+    // the virtualizer learns the scroll offset ONLY from REAL scroll
+    // events (synthetic dispatchEvent is ignored; scrollOffset starts
+    // null and getScrollOffset falls back to 0 until the first event).
+    // Whatever sets scrollTop before its listener attaches - the snapshot
+    // restore microtask, the browser's own session restoration, a
+    // resize-preserved position - leaves the instance believing offset 0
+    // while the real scrollTop is thousands of px: it renders the TOP
+    // rows over the viewport (the phantom overlay) and every out-of-range
+    // measure is dropped, so nothing self-heals until the first real
+    // scroll. A 1px round-trip (two real events, no visible movement)
+    // forces the sync - retried on a schedule because the adapter
+    // attaches its scroll listener at an unpredictable moment on fast
+    // remounts (a viewport crossing mounts this component mid-resize)
+    const jitter = () => {
+      try {
+        const el = scrollElement
+        if (!el || el.scrollTop <= 40) return
+        const st = el.scrollTop
+        el.scrollTop = st + 1
+        el.scrollTop = st
+      } catch {}
+    }
+    requestAnimationFrame(jitter)
+    for (const ms of [150, 400, 900, 1800]) setTimeout(jitter, ms)
   })
 
   // ---- deep links (see src/deep-link.ts) --------------------------------
@@ -346,12 +586,23 @@ export function VirtualTimeline(props: {
 
   let deepHash = ""
   createEffect(() => {
-    // re-run when rows materialize (data arrival) and on hash changes
+    // re-run when rows materialize (data arrival) and on hash changes.
+    // Once per page load per hash: a widen remount (narrow -> desktop
+    // unmounts this component) re-runs the effect, and re-jumping would
+    // snap a reader who scrolled away back to the link target; a real
+    // navigation or reload (fresh module state) jumps again
     const rows = projection.rows()
     const key = rowKeyFromHash(location.hash)
     if (!key || rows.length === 0) return
     if (deepHash === location.hash) return
-    if (jumpToRowKey(key)) deepHash = location.hash
+    if (consumedDeepLinks.has(mountKey + location.hash)) {
+      deepHash = location.hash
+      return
+    }
+    if (jumpToRowKey(key)) {
+      deepHash = location.hash
+      consumedDeepLinks.add(mountKey + location.hash)
+    }
   })
   onMount(() => {
     const onHash = () => {
@@ -452,10 +703,19 @@ export function VirtualTimeline(props: {
   const onScroll = () => {
     const el = scrollElement
     if (!el) return
+    // keep the virtualizer's tracked offset equal to the REAL scrollTop:
+    // its own scroll listener can die across hidden phases, and a stale
+    // offset freezes the rendered range to the wrong window
+    const v = virtualizer as any
+    if (v.scrollOffset != null && Math.abs((v.scrollOffset as number) - el.scrollTop) > 0.5) {
+      v.scrollOffset = el.scrollTop
+      v.maybeNotify?.()
+    }
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON
     if (atEnd !== pinned()) setPinned(atEnd)
     setScrollTick((n) => n + 1)
     saveSnapshot()
+    armSweep()
   }
 
   // debounced snapshot of measured rows + offset (restores exact layout)
@@ -465,12 +725,30 @@ export function VirtualTimeline(props: {
     saveTimer = setTimeout(() => {
       const el = scrollElement
       if (!el) return
-      writeSnapshot(props.sessionKey, {
+      writeSnapshot(mountKey, {
         items: virtualizer.takeSnapshot() as Snapshot["items"],
         offset: el.scrollTop,
+        width: viewportWidth(),
+        // a bottom-clamped offset carries clamp error into the anchor
+        // delta (the "lands a bit below" reload residue); at-end restores
+        // pin to the end instead of asserting a row. Tolerance is loose:
+        // the clamp can land while content is mid-measure, leaving the
+        // saved position a few dozen px above the then-current end
+        atEnd: el.scrollHeight - el.scrollTop - el.clientHeight <= 48,
+        ...(() => { const a = visualTopAnchor(); return a.key ? { topKey: a.key, topDelta: a.delta } : {} })(),
       })
     }, 200)
   }
+
+  // width changes need NO manual heal here: rows keep natural heights and
+  // tanstack's per-row ResizeObserver re-measures each one as its content
+  // re-wraps (probed: layout is coherent immediately after resize). The
+  // one thing rows cannot heal is a REMOUNT replaying heights measured at
+  // another width - that is what the snapshot width-gate above prevents.
+  // A manual clear+measure here actively broke the layout: it reset the
+  // already-corrected per-row measurements back to estimates, which read
+  // as gapped/overlapping rows until the next scroll-settle sweep
+  // re-measured them.
 
   // follow new content while pinned, but never on the first run when a
   // restored offset exists (that would snap a returning reader to the end)
@@ -480,6 +758,9 @@ export function VirtualTimeline(props: {
     const grew = count > lastCount
     const first = lastCount === 0
     lastCount = count
+    // data refolds (live growth, undo, settings) land rows whose real
+    // heights differ from cached estimates — converge shortly after
+    armSweep(400)
     if (first && restored) return
     if (props.followLive === false) return
     if (!grew || !pinned() || count === 0 || !scrollElement) return
@@ -491,9 +772,19 @@ export function VirtualTimeline(props: {
 
   onCleanup(() => {
     if (saveTimer) clearTimeout(saveTimer)
+    if (sweepTimer) clearTimeout(sweepTimer)
     const el = scrollElement
     if (el && el.scrollHeight > 0) {
-      writeSnapshot(props.sessionKey, { items: virtualizer.takeSnapshot() as Snapshot["items"], offset: el.scrollTop })
+      // same shape as the scroll-path save: the read gate rejects
+      // width-less snapshots, so an unmount-save without width threw the
+      // good scroll-save away and the next mount restored from stale data
+      writeSnapshot(mountKey, {
+        items: virtualizer.takeSnapshot() as Snapshot["items"],
+        offset: el.scrollTop,
+        width: viewportWidth(),
+        atEnd: el.scrollHeight - el.scrollTop - el.clientHeight <= 48,
+        ...(() => { const a = visualTopAnchor(); return a.key ? { topKey: a.key, topDelta: a.delta } : {} })(),
+      })
     }
     if (measurementCache.size > 4000) measurementCache.clear()
   })
@@ -564,6 +855,27 @@ export function VirtualTimeline(props: {
   const rowEls = new Map<string, { el: HTMLDivElement; dispose: () => void }>()
   const ROW_CACHE_CAP = 500
 
+  // the visual-first row intersecting the viewport top, in VISUAL order
+  // (rowEls is creation-ordered; DOM/map order reads a wrong row), plus
+  // its signed offset from the viewport top. Used as the snapshot's
+  // position anchor: heights saved alongside it can carry estimate-
+  // poisoned slots (rows disposed by a mass flip and snapshotted before
+  // remount), and a pixels-only restore then lands on the wrong row;
+  // restoring BY ROW + DELTA is immune to that and reproduces partially-
+  // scrolled positions exactly (a cut row's top belongs above the fold)
+  const visualTopAnchor = (): { key?: string; delta: number } => {
+    const el = scrollElement
+    if (!el) return { delta: 0 }
+    const top = el.getBoundingClientRect().top
+    const candidates = [...rowEls.values()]
+      .map((entry) => ({ el: entry.el, r: entry.el.getBoundingClientRect() }))
+      .filter((x) => x.r.height > 0 && x.r.bottom > top + 4)
+      .sort((a, b) => a.r.top - b.r.top)
+    const first = candidates[0]
+    if (!first) return { delta: 0 }
+    return { key: first.el.dataset.rowKey, delta: Math.round(first.r.top - top) }
+  }
+
   createEffect(() => {
     const vis = items
     const h = host
@@ -578,6 +890,11 @@ export function VirtualTimeline(props: {
           const node = (
             <div
               data-row-key={key}
+              // rows that mount during a mass-disclosure flip (virtualizer
+              // growth while hundreds of panels re-open) snap open with
+              // the rest of the off-screen rows - see settings.ts
+              // markMassDisclosureFlip
+              class={document.documentElement.hasAttribute("data-osh-flip") ? "osh-snap-row" : undefined}
               ref={(el) => {
                 // tanstack's measureElement early-returns when the index
                 // is outside the computed range, and at ref time the range
@@ -586,7 +903,10 @@ export function VirtualTimeline(props: {
                 // skip detached nodes - measuring one reports 0, poisons
                 // the size cache and feeds the measure/remount churn.
                 requestAnimationFrame(() => {
-                  if (el.isConnected) virtualizer.measureElement(el)
+                  if (el.isConnected) {
+                    virtualizer.measureElement(el)
+                    convergeRow(el)
+                  }
                 })
               }}
               style={{
@@ -607,7 +927,22 @@ export function VirtualTimeline(props: {
                   ("exhaustive: absurd") and kills the page on subagent pages. */}
               {(() => {
                 let last: unknown = null
-                return <renderer.Row row={() => ((last = projection.rowByKey().get(key) ?? last) ?? new TimelineRow.TurnGap({ userMessageID: key })) as never} />
+                return (
+                  <renderer.Row
+                    row={() => ((last = projection.rowByKey().get(key) ?? last) ?? new TimelineRow.TurnGap({ userMessageID: key })) as never}
+                    // the kit signals async render completion through this
+                    // (markdown worker done, media loaded, reasoning body
+                    // rendered); the opening reasoning panel handles its
+                    // own reservation in the vendored open handler (the
+                    // row's height must not animate - RO intermediates lag
+                    // the virtualizer a frame), everything else re-measures
+                    // per frame for the animation's duration
+                    onSizeChange={() => {
+                      measureRowSoon(key)
+                      armSweep()
+                    }}
+                  />
+                )
               })()}
             </div>
           ) as HTMLDivElement
@@ -658,7 +993,10 @@ export function VirtualTimeline(props: {
     if (!node) return
     // same detached-node hazard as the ref measure below
     requestAnimationFrame(() => {
-      if (node.isConnected) virtualizer.measureElement(node)
+      if (node.isConnected) {
+        virtualizer.measureElement(node)
+        measurementCache.set(String(node.dataset.rowKey), node.offsetHeight)
+      }
     })
   }
 
@@ -670,11 +1008,111 @@ export function VirtualTimeline(props: {
         if (!el) return
         el.addEventListener("click", (event) => remeasureRow(event.target), true)
         el.addEventListener("toggle", (event) => remeasureRow(event.target), true)
+        // end the measurement grace on DIRECT user input (never on
+        // programmatic scroll events - the cascade itself emits those) or
+        // after 2s, whichever first. Wired for EVERY restored mount,
+        // including one whose saved offset is 0: the grace freezes
+        // measurement at snapshot sizes, and a grace that never ends
+        // freezes streaming rows at their estimates forever
+        if (restored) {
+          const endGrace = () => {
+            setCacheGrace(false)
+            // hand the cached measurements over to live ones: rows whose
+            // height changed while grace held (disclosure lost on reload)
+            // keep stale sizes otherwise - measureElement returns the
+            // cache entry for direct calls, and RO never fires without a
+            // height change. Rows mounting later converge at ref time.
+            for (const { el } of rowEls.values()) convergeRow(el)
+          }
+          const graceTimer = setTimeout(endGrace, 2000)
+          const inputEnds = () => {
+            clearTimeout(graceTimer)
+            endGrace()
+          }
+          el.addEventListener("wheel", inputEnds, { once: true, passive: true })
+          el.addEventListener("touchstart", inputEnds, { once: true, passive: true })
+          el.addEventListener("pointerdown", inputEnds, { once: true, passive: true })
+          const onKey = (e: KeyboardEvent) => {
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) {
+              inputEnds()
+              window.removeEventListener("keydown", onKey)
+            }
+          }
+          window.addEventListener("keydown", onKey)
+          onCleanup(() => {
+            clearTimeout(graceTimer)
+            window.removeEventListener("keydown", onKey)
+          })
+        }
         if (!restored?.offset) return
         // replay the saved position once the snapshot's heights are in place
         queueMicrotask(() => {
           el.scrollTop = restored.offset
           setPinned(el.scrollHeight - el.scrollTop - el.clientHeight <= END_EPSILON)
+          if (restored.atEnd) {
+            // end-pinned restores stay glued to the end (the chase is
+            // idempotent while the grace window holds scrollHeight stable).
+            // ANY direct input cancels the chase - a wheel-only cancel let
+            // touch swipes, scrollbar drags and arrow keys get yanked back
+            // to the bottom on the next timer tick
+            const chase = () => {
+              try {
+                el.scrollTop = el.scrollHeight
+                ;(virtualizer as any).scrollOffset = el.scrollTop
+                ;(virtualizer as any).maybeNotify?.()
+              } catch {}
+            }
+            chase()
+            const timers = [600, 1400, 2600, 4200].map((ms) => setTimeout(chase, ms))
+            const cancel = () => {
+              for (const t of timers) clearTimeout(t)
+              el.removeEventListener("wheel", cancel)
+              el.removeEventListener("touchstart", cancel)
+              el.removeEventListener("pointerdown", cancel)
+              window.removeEventListener("keydown", keyCancel)
+            }
+            const keyCancel = (e: KeyboardEvent) => {
+              if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) cancel()
+            }
+            el.addEventListener("wheel", cancel, { passive: true })
+            el.addEventListener("touchstart", cancel, { passive: true })
+            el.addEventListener("pointerdown", cancel, { passive: true })
+            window.addEventListener("keydown", keyCancel)
+            onCleanup(cancel)
+          } else if (restored.topKey) {
+            // the saved heights can disagree with the real DOM (estimate-
+            // poisoned slots from a mass flip); the offset alone then
+            // restores to the wrong row. Assert the saved ROW + its saved
+            // delta against the live element - with honest heights the
+            // correction is 0. Bounded, cancelled by any direct input
+            let cancelled = false
+            const cancel = () => { cancelled = true }
+            const keyCancel = (e: KeyboardEvent) => {
+              if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) cancel()
+            }
+            el.addEventListener("wheel", cancel, { passive: true })
+            el.addEventListener("touchstart", cancel, { passive: true })
+            el.addEventListener("pointerdown", cancel, { passive: true })
+            window.addEventListener("keydown", keyCancel)
+            const t0 = performance.now()
+            const assertRow = () => {
+              if (cancelled) return
+              const entry = rowEls.get(restored.topKey!)
+              if (entry?.el?.isConnected) {
+                const delta = entry.el.getBoundingClientRect().top - (el.getBoundingClientRect().top + (restored.topDelta ?? 0))
+                if (Math.abs(delta) > 1) el.scrollTop += delta
+              }
+              if (performance.now() - t0 < 1800) requestAnimationFrame(assertRow)
+              else {
+                el.removeEventListener("wheel", cancel)
+                el.removeEventListener("touchstart", cancel)
+                el.removeEventListener("pointerdown", cancel)
+                window.removeEventListener("keydown", keyCancel)
+              }
+            }
+            requestAnimationFrame(assertRow)
+            onCleanup(cancel)
+          }
         })
       }}
       onScroll={(event) => {
@@ -684,16 +1122,20 @@ export function VirtualTimeline(props: {
       onClick={onLinkClick}
       data-transcript-scroll
       data-osh-gutter
-      style={{ "overflow-y": "auto", "min-height": "0", position: "relative" }}
+      style={{ "overflow-y": "auto", "min-height": "0", position: "relative", display: "flex", "flex-direction": "column" }}
     >
       {/* header/footer live in the scroll flow (normal flow, not absolute):
-          the title scrolls away with the transcript and the footer is the
-          last thing in the session — never pinned */}
+          the title scrolls away with the transcript. The scroller is a
+          flex column and the content row grows, so the footer lands at
+          the real bottom even when the transcript is shorter than the
+          viewport (focus mode on a small turn) — and long transcripts
+          overflow exactly as before, the explicit height is the flex
+          base size. */}
       <Show when={props.header}>{props.header}</Show>
       <div
         ref={(el) => (host = el)}
         data-transcript-content
-        style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}
+        style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%", flex: "1 0 auto" }}
       />
       <Show when={props.footer}>{props.footer}</Show>
       {/* ctrl-held link targets: one box per message, never per part */}

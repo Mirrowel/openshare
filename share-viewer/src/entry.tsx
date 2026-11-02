@@ -1,6 +1,7 @@
 // @refresh reload
 import { render } from "solid-js/web"
 import { applySettings, readSettings } from "./settings"
+import "./mem-probe"
 // pre-paint: apply the settings cookie before anything renders (no theme flash)
 const __s = readSettings()
 applySettings(__s)
