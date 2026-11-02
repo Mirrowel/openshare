@@ -9,15 +9,17 @@ import { join } from "node:path"
 const port = Number(process.argv[2]) || 9189
 const lib = await import("./suite-lib.mjs")
 const dir = mkdtempSync(join(tmpdir(), "openshare-ci-smoke-"))
-let worker
 try {
-  worker = await lib.startWorker(dir, { port })
+  const worker = await lib.startWorker(dir, { port })
   const health = await lib.httpGet(`${worker.url}/health`)
   console.log(`[ci-smoke] worker up on ${worker.url} (/health ${health.status})`)
+  await worker.kill()
 } catch (error) {
   console.error(`[ci-smoke] workerd/wrangler failed to boot on this runner:`)
   console.error(error)
   process.exitCode = 1
-} finally {
-  if (worker) await worker.kill()
 }
+// kill() on Linux reaps only the npx wrapper; orphaned esbuild/workerd
+// grandchildren keep the stdio pipes open and the event loop never drains,
+// so the step hangs to its timeout. Exit hard.
+setTimeout(() => process.exit(process.exitCode ?? 0), 1500).unref()
