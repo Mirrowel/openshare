@@ -6,6 +6,7 @@
 //  - auth + enroll + fanout keep their own workers (they assert global
 //    user/token counts or need two isolated backends) on their own ports
 import { mkdtempSync, mkdirSync, cpSync, existsSync, rmSync } from "node:fs"
+import net from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, execFileSync } from "node:child_process"
@@ -70,6 +71,31 @@ const active = requested.length
   : waves
 const needsShared = active.some((w) => w.some((s) => s.reuse))
 
+// CI runners can hold arbitrary localhost ports (the first hosted-runner
+// run met a service on 8789 and the shared worker died on EADDRINUSE).
+// Probe the planned block and slide the WHOLE scheme until it is free -
+// every port reaches the suites through env, so one offset covers all.
+const portFree = (port) =>
+  new Promise((resolveFree) => {
+    const probe = net.createServer()
+    probe.once("error", () => resolveFree(false))
+    probe.once("listening", () => probe.close(() => resolveFree(true)))
+    probe.listen(port, "127.0.0.1")
+  })
+const plannedPorts = (offset) =>
+  active.flat().flatMap((s) => [Number(s.env.OPENSHARE_WORKER_PORT), Number(s.env.OPENSHARE_SERVE_PORT), Number(s.env.OPENSHARE_LLM_PORT)]).concat(SHARED).map((p) => p + offset)
+let offset = 0
+while (!(await Promise.all(plannedPorts(offset).map(portFree))).every(Boolean) && offset < 2000) offset += 400
+if (offset) {
+  console.log(`[matrix] planned port block busy; sliding everything by ${offset}`)
+  for (const w of active) for (const s of w) {
+    s.env.OPENSHARE_WORKER_PORT = String(Number(s.env.OPENSHARE_WORKER_PORT) + offset)
+    s.env.OPENSHARE_SERVE_PORT = String(Number(s.env.OPENSHARE_SERVE_PORT) + offset)
+    s.env.OPENSHARE_LLM_PORT = String(Number(s.env.OPENSHARE_LLM_PORT) + offset)
+  }
+}
+const sharedPort = SHARED + offset
+
 const lib = await import("./suite-lib.mjs")
 const sandbox = mkdtempSync(join(tmpdir(), "openshare-matrix-"))
 let worker = null
@@ -117,12 +143,12 @@ try {
     console.log(`[matrix] provider pre-warm skipped: ${e.message}`)
   }
   if (needsShared) {
-    worker = await lib.startWorker(sandbox, { port: SHARED })
+    worker = await lib.startWorker(sandbox, { port: sharedPort })
     for (const w of active) {
       for (const s of w) {
         if (s.reuse) {
           s.env.OPENSHARE_TEST_WORKER_URL = worker.url
-          s.env.OPENSHARE_WORKER_PORT = String(SHARED)
+          s.env.OPENSHARE_WORKER_PORT = String(sharedPort)
         }
       }
     }
