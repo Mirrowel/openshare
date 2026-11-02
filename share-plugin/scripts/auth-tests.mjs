@@ -371,7 +371,7 @@ try {
     })
     const png = await fetch(`${W1}/api/share/${g39.json.id}/og.png`)
     const buf = Buffer.from(await png.arrayBuffer())
-    ok("T39 og card 200 png", png.status === 200 && (png.headers.get("content-type") ?? "").includes("image/png") && buf.subarray(0, 4).toString("hex") === "89504e47", `${png.status} ${buf.length}b`)
+    ok("T39 og card 200 png", png.status === 200 && (png.headers.get("content-type") ?? "").includes("image/png") && buf.subarray(0, 4).toString("hex") === "89504e47", `${png.status} ${buf.length}b ${buf.subarray(0, 4).toString("hex") === "89504e47" ? "" : String(buf.subarray(0, 200))}`)
     const crawl = await fetch(`${W1}/s/${g39.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })
     const ch = await crawl.text()
     const t = /<meta property="og:title" content="([^"]*)">/.exec(ch)?.[1] ?? ""

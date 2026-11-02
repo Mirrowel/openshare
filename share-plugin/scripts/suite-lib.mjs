@@ -220,6 +220,19 @@ function startMockLLM() {
 
 // --- wrangler dev ---------------------------------------------------------------
 
+/** A tiny viewer-shaped stub both backends serve in suites: the snapshot
+ * endpoint inlines whatever script/css index.html references, so the stub
+ * must actually reference one of each for snapshot tests to be meaningful
+ * (both the [assets] binding and VIEWER_DIR serve from the dir root, so
+ * the files live in an assets/ subfolder exactly like the real dist). */
+function writeViewerStub(dir) {
+  mkdirSync(join(dir, "assets"), { recursive: true })
+  writeFileSync(join(dir, "index.html"), '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <title>openshare suite stub</title>\n  <link rel="stylesheet" href="/assets/stub.css">\n  <script type="module" crossorigin src="/assets/stub.js"></script>\n</head>\n<body>\n  <div id="root"></div>\n</body>\n</html>\n')
+  writeFileSync(join(dir, "assets", "stub.css"), "body{margin:0}\n")
+  writeFileSync(join(dir, "assets", "stub.js"), "console.log('stub viewer')\n")
+  return dir
+}
+
 async function startWorker(suiteDir, opts = {}) {
   const port = Number(opts.port) > 0 ? Number(opts.port) : WORKER_PORT
   const url = `http://127.0.0.1:${port}`
@@ -240,17 +253,7 @@ async function startWorker(suiteDir, opts = {}) {
   const extraVars = Object.entries(opts.vars ?? {}).flatMap(([k, v]) => ["--var", `${k}:${v}`])
   const attempt = async () => {
     await sweepPortIfOccupied(port) // leftover supervisors respawn workerd forever; sweep when occupied
-    const assetsDir = join(suiteDir, "assets")
-    mkdirSync(join(assetsDir, "assets"), { recursive: true })
-    // a tiny viewer-shaped index: the snapshot endpoint inlines whatever
-    // script/css index.html references, so the stub must actually
-    // reference one of each for snapshot tests to be meaningful (the
-    // [assets] binding serves from the dir root, so the files live in an
-    // assets/ subfolder exactly like the real dist)
-    writeFileSync(join(assetsDir, "index.html"), '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <title>openshare suite stub</title>\n  <link rel="stylesheet" href="/assets/stub.css">\n  <script type="module" crossorigin src="/assets/stub.js"></script>\n</head>\n<body>\n  <div id="root"></div>\n</body>\n</html>\n')
-    writeFileSync(join(assetsDir, "assets", "stub.css"), "body{margin:0}\n")
-    writeFileSync(join(assetsDir, "assets", "stub.js"), "console.log('stub viewer')\n")
-
+    const assetsDir = writeViewerStub(join(suiteDir, "assets"))
     const configPath = join(suiteDir, opts.configSuffix ? `wrangler.suite.${opts.configSuffix}.toml` : "wrangler.suite.toml")
     const original = readFileSync(join(dirname(ROOT), "share-worker", "wrangler.toml"), "utf8")
     const config = original
@@ -358,6 +361,10 @@ async function startBunServer(suiteDir, opts = {}) {
         CREATE_TOKEN: opts.createToken ?? CREATE_TOKEN,
         OPENSHARE_DB: db,
         AUTH_MODE: opts.authMode ?? "private",
+        // serve the suite stub like the wrangler workers do: without this
+        // the bun server falls back to ../share-viewer/dist, silently
+        // coupling suite results to whatever the developer last built
+        VIEWER_DIR: writeViewerStub(join(suiteDir, "assets")),
         ...(opts.vars ?? {}),
       },
     },

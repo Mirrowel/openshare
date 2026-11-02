@@ -239,3 +239,7 @@ try {
   if (worker?.kill) worker.kill()
   await new Promise((resolve) => setTimeout(resolve, 300))
 }
+// On Linux the killed workers leave orphaned esbuild/workerd grandchildren
+// holding the stdio pipes open; the event loop never drains and the CI step
+// hangs to its timeout with the report already printed. Exit hard.
+process.exit(process.exitCode ?? 0)

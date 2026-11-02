@@ -72,6 +72,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # suites import the plugin from dist/ and load it into real opencode
+      # instances; without the emit they fail on missing modules
+      - name: Build plugin
+        run: npm run build
+
       # the suites spawn `wrangler dev` with cwd=share-worker; its worker
       # bundle imports @resvg/resvg-wasm, which only resolves from
       # share-worker/node_modules - without this install esbuild fails
