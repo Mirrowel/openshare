@@ -46,7 +46,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { homedir } from "node:os"
 import { createHash } from "node:crypto"
 import { isAbsolute, join } from "node:path"
-import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
+import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, deleteShareOverrides, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
+import { resolveFor } from "./share-settings.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
 import { activeRules, redactItem, type RedactionHit } from "./redact.js"
@@ -92,6 +93,12 @@ export type SessionOpts = {
   authLogin?: string
   authPassword?: string
   modelLabel?: string
+  /** Sticky custom share title: set = the page keeps this title and ignores
+   * session renames; unset = the live session title auto-syncs. */
+  title?: string
+  /** Per-share pause: stop syncing (the spool keeps queueing for backfill)
+   * while the server keeps the page on its last status. */
+  paused?: boolean
 }
 
 type Binding = { id: string; secret: string; rev: number; url: string }
@@ -162,6 +169,9 @@ type SessionState = {
   optOuts: Set<string>
   // manual-mode bookkeeping
   opts: SessionOpts | undefined
+  /** per-share pause flag (resolved from the share-settings tier at
+   * activation and on every opts change) */
+  paused: boolean
   activated: boolean
   wroteBinding: boolean
   /** any remote completed a handshake — used to detect LATER creates
@@ -321,6 +331,8 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
     if (typeof o.authLogin === "string") opts.authLogin = o.authLogin
     if (typeof o.authPassword === "string") opts.authPassword = o.authPassword
     if (typeof o.modelLabel === "string") opts.modelLabel = o.modelLabel
+    if (typeof o.title === "string" && o.title) opts.title = o.title
+    if (o.paused === true) opts.paused = true
   }
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined }
 }
@@ -689,6 +701,9 @@ export function createEngine(deps: EngineDeps): Engine {
     bindingQueried: false,
     optOuts: new Set(),
     opts: undefined,
+    /** per-share pause (share-settings tier): flushes keep queueing into
+     * pending+spool but no frame is sent until the flag clears */
+    paused: false,
     activated: false,
     wroteBinding: false,
     everConnected: false,
@@ -733,6 +748,7 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     st.activated = true
     st.opts = opts
+    st.paused = resolvedFor(st).paused?.value === true
     // re-activation re-backfills the whole session (unshare -> share
     // again): the enqueue dedupe must not skip the returning content
     st.sentHash.clear()
@@ -1182,7 +1198,7 @@ export function createEngine(deps: EngineDeps): Engine {
                 id: r.shareId,
                 url,
                 status: st.lastSentStatus ?? "waiting",
-                gated: (st.opts?.authLogin ?? cfg.authLogin ?? "") !== "",
+                gated: resolvedFor(st, r).auth !== undefined,
               }) + "\n"
             : url + "\n"
         appendFileSync(file, line)
@@ -1200,25 +1216,42 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   let halfAuthWarned = false
-  const authFrame = (st: SessionState) => {
+  /** Three-tier share-settings resolution (general < per-server <
+   * per-share) for one session, scoped to the remote a frame targets. */
+  const resolvedFor = (st: SessionState, r?: { url: string }) => resolveFor(cfg, r?.url, st.sid, st.opts)
+
+  const authFrame = (st: SessionState, r?: { url: string }) => {
     // always send both (empty strings included): attach with empty values
-    // REMOVES protection - an intentional owner action. Session opts
-    // override the global config when set.
-    const login = st.opts?.authLogin ?? cfg.authLogin ?? ""
-    const password = st.opts?.authPassword ?? cfg.authPassword ?? ""
-    // both-or-none: the server builds a gate only from a full pair, so a
-    // half pair silently means "no gate" - refuse to send one and say so
-    if ((login === "") !== (password === "")) {
-      if (!halfAuthWarned) {
-        halfAuthWarned = true
-        logError("read auth needs BOTH a login and a password - gate disabled until fixed")
-      }
-      return { authLogin: "", authPassword: "" }
+    // REMOVES protection - an intentional owner action. Tiers resolve as a
+    // pair-unit; a half pair anywhere means "no gate" server-side.
+    const res = resolvedFor(st, r)
+    if (res.auth) return { authLogin: res.auth.value.login, authPassword: res.auth.value.password }
+    if (res.authHalfPair && !halfAuthWarned) {
+      halfAuthWarned = true
+      logError("read auth needs BOTH a login and a password - gate disabled until fixed")
     }
-    return { authLogin: login, authPassword: password }
+    return { authLogin: "", authPassword: "" }
   }
 
-  const ttlFor = (st: SessionState) => st.opts?.ttlHours ?? cfg.ttlHours
+  const ttlFor = (st: SessionState, r?: { url: string }) => resolvedFor(st, r).ttlHours?.value ?? cfg.ttlHours
+
+  /** The init-create frame for one remote: resolved TTL + read-auth (tiers
+   * scoped to this server), sticky custom title when set, config-set and
+   * meta labels. Shared by every create site so they cannot drift. */
+  const createInit = (st: SessionState, r: { url: string }) => {
+    const res = resolvedFor(st, r)
+    return {
+      op: "init" as const,
+      create: {
+        sessionID: st.sid,
+        ttlHours: ttlFor(st, r),
+        ...authFrame(st, r),
+        ...(res.title ? { title: res.title.value } : {}),
+        ...(cfg.configSet ? { set: cfg.configSet } : {}),
+        ...(metaFor() ? { meta: metaFor() } : {}),
+      },
+    }
+  }
 
   // free-form labels for team directories/admin listings: ${NAME} refs
   // resolve from the process env at send time; unresolved refs stay
@@ -1246,15 +1279,20 @@ export function createEngine(deps: EngineDeps): Engine {
   const applyOpts = (st: SessionState, opts: SessionOpts | undefined) => {
     if (!opts) return
     const prev = st.opts ? JSON.stringify(st.opts) : ""
+    const wasPaused = st.paused
     st.opts = opts
+    st.paused = resolvedFor(st).paused?.value === true
     if (prev === JSON.stringify(opts)) return
     for (const [url, r] of st.remotes) {
       if (!r.shareId || !r.secret || !r.wsReady) continue
-      const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st) }
-      if (st.opts?.ttlHours) attach.ttlHours = st.opts.ttlHours
+      if (st.paused) continue // paused remotes get nothing pushed; unpause drains
+      const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st, r) }
+      const ttl = resolvedFor(st, r).ttlHours?.value
+      if (ttl) attach.ttlHours = ttl
       const sent = wsSend(r, { op: "init", attach })
-      if (sent) logStatus(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlHours ? ` (ttl ${st.opts.ttlHours}h)` : ""}`)
+      if (sent) logStatus(`opts re-synced to ${url.slice(0, 24)}${ttl ? ` (ttl ${ttl}h)` : ""}`)
     }
+    if (wasPaused && !st.paused) drainRemotes(st)
   }
 
   /** Best-effort cleanup of a share we are about to abandon (refused
@@ -1487,9 +1525,9 @@ export function createEngine(deps: EngineDeps): Engine {
       }
 
       if (r.initWasAttach) {
-        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
+        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st, r) } })
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, createInit(st, r))
       }
 
       // handshake deadline: init sent but no ack (silent worker death)
@@ -1689,7 +1727,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, createInit(st, r))
         return
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1701,7 +1739,7 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlHours: ttlFor(st), ...authFrame(st), ...(cfg.configSet ? { set: cfg.configSet } : {}), ...(metaFor() ? { meta: metaFor() } : {}) } })
+        wsSend(r, createInit(st, r))
         return
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected
@@ -1739,7 +1777,7 @@ export function createEngine(deps: EngineDeps): Engine {
       // refusal reason the TUI may be showing
       const ackTtl = typeof frame.ttlHours === "number" ? frame.ttlHours : (typeof frame.ttlDays === "number" ? frame.ttlDays * 24 : undefined)
       if (typeof ackTtl === "number") {
-        const wanted = ttlFor(st)
+        const wanted = ttlFor(st, r)
         const clamp = wanted != null && ackTtl !== wanted ? { requested: wanted, effective: ackTtl } : null
         if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
           st.ttlClamped = clamp
@@ -1753,7 +1791,7 @@ export function createEngine(deps: EngineDeps): Engine {
       // ack-level gate assurance (B2): we asked for a gate (both fields
       // set) but the server reports none - the page is actually public.
       // Once per remote; the next init-ok re-checks after a fix.
-      const wantedGate = (st.opts?.authLogin ?? cfg.authLogin ?? "") !== "" && (st.opts?.authPassword ?? cfg.authPassword ?? "") !== ""
+      const wantedGate = resolvedFor(st, r).auth !== undefined
       if (wantedGate && frame.auth === false && !r.warnedNoGate) {
         r.warnedNoGate = true
         logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`)
@@ -1790,7 +1828,9 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       spoolSave(st, r)
       if (r.pending.length) {
-        for (const f of r.pending) sendSync(r, f)
+        // paused: pending stays queued (unpause drains) — the reconnect
+        // must not empty it behind the flush loop's back
+        if (!st.paused) for (const f of r.pending) sendSync(r, f)
       } else if (st.queue.size) {
         flush(st)
       }
@@ -1942,6 +1982,9 @@ export function createEngine(deps: EngineDeps): Engine {
       // ControlDO has no attach until OUR init completes, and a racing
       // sync dies as "unknown op", losing whole turns on post-drop
       // reconnects. The init-ok handler flushes pending itself.
+      // PAUSED sessions stop here: pending+spool keep accumulating, no
+      // frame leaves the machine until the pause clears (then drainRemotes).
+      if (st.paused) continue
       if (r.ws && !r.wsReady) continue
       if (r.wsReady) {
         for (const cf of fresh) sendSync(r, cf)
@@ -2024,6 +2067,24 @@ export function createEngine(deps: EngineDeps): Engine {
     scheduleSpoolSave(st, r)
   }
 
+  /** Unpause: push everything the pause (or a down socket) queued. Same
+   * send paths flush uses — WS when ready, HTTP fallback otherwise — so a
+   * pause/backfill cycle is exactly a long disconnect/reconnect. */
+  const drainRemotes = (st: SessionState) => {
+    if (st.closed) return
+    let httpWork: Promise<unknown> | undefined
+    for (const r of st.remotes.values()) {
+      if (!r.pending.length) continue
+      if (r.wsReady) {
+        for (const cf of r.pending) sendSync(r, cf)
+        continue
+      }
+      const viaHttp = flushViaHttp(st, r)
+      if (viaHttp) httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp)
+    }
+    if (httpWork) void httpWork.catch((e) => logError("unpause drain error", (e as Error)?.message || e))
+  }
+
   const scheduleFlush = (st: SessionState) => {
     if (st.timer) return
     // sync interval is a rate limit anchored at the PREVIOUS flush: an
@@ -2077,8 +2138,12 @@ export function createEngine(deps: EngineDeps): Engine {
     // content either way until encryption lands). The light path
     // transform applies regardless. Zero-copy when nothing matches.
     {
-      const gate = authFrame(st)
-      const gated = gate.authLogin !== "" && gate.authPassword !== ""
+      // per-server auth tiers can diverge: one ungated destination means
+      // the content leaves redacted (every-remote-gated to skip). Before
+      // any remote exists the tiers alone decide.
+      const gated = st.remotes.size
+        ? [...st.remotes.values()].every((r) => resolvedFor(st, r).auth !== undefined)
+        : resolvedFor(st).auth !== undefined
       const pass = redactItem(entry.item, { rules: redactionRules, home: homeDir, enabled: !gated })
       if (pass.item !== entry.item) entry = { ...entry, item: pass.item as typeof entry.item }
       if (pass.hits.length) {
@@ -3050,6 +3115,9 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           const st = sessions.get(sid)
           if (!st) return
+          // the session is gone: its per-share overrides (config shares
+          // section) must not outlive it
+          deleteShareOverrides(sid)
           chain = chain.then(() => remove(st)).catch((e) => logError("remove error", (e as Error)?.message || e))
         }
       },

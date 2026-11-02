@@ -75,6 +75,10 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
       "authPassword",
       "spoolDir",
       "urlFile",
+      "urlFileFormat",
+      "configSet",
+      "redact",
+      "meta",
       "shareMode",
       "announceStderr",
     ] as Array<keyof ShareConfig>) {
@@ -353,11 +357,12 @@ export async function workerDeleteShare(workerUrl: string, id: string, secret: s
 /** PATCH a live share's settings over REST (#13): immediate effect with
  * no socket required (the engine's attach-sync remains the structural
  * path - this is the same edit pushed now, per server). Auth sends as
- * the both-or-none pair or not at all; ttlHours only when explicit. */
+ * the both-or-none pair or not at all; ttlHours only when explicit;
+ * title:"" clears the custom title; paused toggles the write-pause. */
 export async function patchShareOpts(
   workerUrl: string,
   id: string,
-  opts: { authLogin?: string; authPassword?: string; ttlHours?: number },
+  opts: { authLogin?: string; authPassword?: string; ttlHours?: number; title?: string; paused?: boolean },
   secret: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const body: Record<string, unknown> = { secret }
@@ -366,6 +371,8 @@ export async function patchShareOpts(
     body.authPassword = opts.authPassword
   }
   if (opts.ttlHours !== undefined) body.ttlHours = opts.ttlHours
+  if (opts.title !== undefined) body.title = opts.title
+  if (opts.paused !== undefined) body.paused = opts.paused
   try {
     const res = await fetch(`${workerUrl.replace(/\/$/, "")}/api/share/${id}`, {
       method: "PATCH",

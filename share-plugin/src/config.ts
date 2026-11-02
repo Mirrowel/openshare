@@ -18,11 +18,39 @@
 // Detection is read-only: this plugin NEVER writes tui.json (no
 // selfwiring — the two parts are installed deliberately).
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export type ShareMode = "all" | "manual"
+
+/** Share-facing settings that exist at more than one tier. The resolver
+ * (share-settings.ts) deep-merges: general (top-level config keys) <
+ * per-server (`servers{url}.overrides`) < per-share (the `shares{sid}`
+ * config section — authoritative; the session-binding opts mirror it).
+ * `title` and `paused` exist at the per-share tier only. */
+export type ShareOverrides = {
+  ttlHours?: number
+  authLogin?: string
+  authPassword?: string
+  title?: string
+  paused?: boolean
+}
+
+/** Coerce a raw object into a clean ShareOverrides; undefined fields are
+ * dropped so tiers fall through to whatever lies below. */
+export function normalizeShareOverrides(raw: unknown): ShareOverrides | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const e = raw as Record<string, unknown>
+  const out: ShareOverrides = {}
+  if (typeof e.ttlHours === "number" && Number.isFinite(e.ttlHours) && e.ttlHours > 0) out.ttlHours = Math.floor(e.ttlHours)
+  else if (typeof e.ttlDays === "number" && e.ttlDays > 0) out.ttlHours = Math.floor(e.ttlDays) * 24
+  if (typeof e.authLogin === "string") out.authLogin = e.authLogin
+  if (typeof e.authPassword === "string") out.authPassword = e.authPassword
+  if (typeof e.title === "string") out.title = e.title
+  if (e.paused === true || e.paused === false) out.paused = e.paused
+  return Object.keys(out).length ? out : undefined
+}
 
 /** One share-server membership. Keyed by server URL in the `servers`
  * config group; the entry with `active: true` (or the first) is where
@@ -40,6 +68,9 @@ export type ServerEntry = {
   /** The user DECLINED onboarding for this server (asked once, remembered):
    * shares go out anonymously (public servers only). Cleared by enrolling. */
   anonymous?: boolean
+  /** Per-server share defaults (the middle tier): override the general
+   * ttlHours / read-auth for every share sent to THIS server. */
+  overrides?: ShareOverrides
 }
 
 export type ShareConfig = {
@@ -48,6 +79,12 @@ export type ShareConfig = {
   /** Multi-server memberships (URL -> entry). Legacy workerUrl/createToken
    * synthesize into this group at load; the group is the canonical form. */
   servers?: Record<string, ServerEntry>
+  /** Per-share overrides, keyed by session id — the AUTHORITATIVE
+   * per-share tier of the settings model. Entries are written only when a
+   * per-share override is explicitly set; the session binding opts carry a
+   * mirror so the resolved state travels with the session. Pruned when the
+   * session is deleted. */
+  shares?: Record<string, ShareOverrides>
   debounceMs: number
   completedDelayMs: number
   modelLabel: string
@@ -206,7 +243,7 @@ export function writeCandidates(pluginDir: string, env: NodeJS.ProcessEnv = proc
  * Values of "" count as unset for the credential/path keys. */
 export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"])
-  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode", "servers"])
+  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode", "servers", "shares", "redact", "meta"])
   const sources: Record<string, string> = {}
   const envKeys: Record<string, string | undefined> = {
     workerUrl: env.OPENSHARE_WORKER_URL,
@@ -295,6 +332,8 @@ export function normalizeServers(raw: unknown): Record<string, ServerEntry> | un
     if (typeof e.adminToken === "string" && e.adminToken) entry.adminToken = e.adminToken
     if (e.active === true) entry.active = true
     if (e.anonymous === true) entry.anonymous = true
+    const overrides = normalizeShareOverrides(e.overrides)
+    if (overrides) entry.overrides = overrides
     out[url] = entry
   }
   return Object.keys(out).length ? out : undefined
@@ -374,6 +413,102 @@ export function deleteServerEntry(url: string, target?: string): string | undefi
   }
 }
 
+/** Surgical patch of a server's per-server share defaults. `null` CLEARS
+ * the tier for that server (the general tier applies again); otherwise a
+ * key present in the patch is applied — `undefined` clears that key,
+ * absent keys are untouched. */
+export function saveServerOverrides(url: string, patch: Partial<ShareOverrides> | null, target?: string): string | undefined {
+  if (!url.startsWith("http")) return undefined
+  const path = target ?? configHomePath()
+  if (!path) return undefined
+  try {
+    let previous: Record<string, unknown> = {}
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"))
+      if (!previous || typeof previous !== "object") previous = {}
+    } catch {}
+    const servers = normalizeServers(previous.servers) ?? {}
+    const entry = servers[url] ?? {}
+    // spread semantics: a present-undefined key overwrites (clears) the
+    // existing value; absent keys keep theirs — normalize drops cleared keys
+    const merged = patch === null ? undefined : normalizeShareOverrides({ ...(entry.overrides ?? {}), ...patch })
+    if (merged) entry.overrides = merged
+    else delete entry.overrides
+    servers[url] = entry
+    previous.servers = servers
+    writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+/** Per-share tier persistence (the authoritative record). A key present
+ * in the patch is applied — `undefined` clears it, absent keys untouched;
+ * a session left with zero overrides drops out of the section entirely. */
+export function saveShareOverrides(sessionID: string, patch: Partial<ShareOverrides>, target?: string): string | undefined {
+  if (!sessionID) return undefined
+  const path = target ?? configHomePath()
+  if (!path) return undefined
+  try {
+    let previous: Record<string, unknown> = {}
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"))
+      if (!previous || typeof previous !== "object") previous = {}
+    } catch {}
+    const shares = (previous.shares && typeof previous.shares === "object" ? previous.shares : {}) as Record<string, unknown>
+    const merged = normalizeShareOverrides({ ...(normalizeShareOverrides(shares[sessionID]) ?? {}), ...patch })
+    if (merged) shares[sessionID] = merged
+    else delete shares[sessionID]
+    if (Object.keys(shares).length) previous.shares = shares
+    else delete previous.shares
+    writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+/** Drop a session's per-share overrides entirely — called when the
+ * session itself is deleted (stale entries otherwise accumulate forever). */
+export function deleteShareOverrides(sessionID: string, target?: string): string | undefined {
+  return saveShareOverrides(
+    sessionID,
+    { ttlHours: undefined, authLogin: undefined, authPassword: undefined, title: undefined, paused: undefined },
+    target,
+  )
+}
+
+let liveSharesCache: { mtime: number; at: number; shares: Record<string, ShareOverrides> } | undefined
+
+/** The settings home's `shares` section, fresh: the TUI writes this file
+ * while the engine's init-time config snapshot grows stale, and a stale
+ * snapshot would resurrect overrides the user just cleared. Mtime-guarded
+ * so the common no-change path costs one statSync. The snapshot's own
+ * shares section (e.g. an adjacent CI config) merges UNDER this. */
+export function liveShares(): Record<string, ShareOverrides> {
+  try {
+    const path = configHomePath()
+    if (!path) return {}
+    const mtime = statSync(path).mtimeMs
+    if (liveSharesCache && liveSharesCache.mtime === mtime) return liveSharesCache.shares
+    let shares: Record<string, ShareOverrides> = {}
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8"))
+      if (raw && typeof raw === "object" && raw.shares && typeof raw.shares === "object") {
+        for (const [sid, ov] of Object.entries(raw.shares as Record<string, unknown>)) {
+          const clean = normalizeShareOverrides(ov)
+          if (clean) shares[sid] = clean
+        }
+      }
+    } catch {}
+    liveSharesCache = { mtime, at: Date.now(), shares }
+    return shares
+  } catch {
+    return {}
+  }
+}
+
 /** Coerce an announceStderr value from any layer (enum string, legacy
  * boolean, truthy/falsy word) to the 4-position ladder. */
 function normalizeAnnounce(value: unknown, fallback: "all" | "status" | "url" | "off"): "all" | "status" | "url" | "off" {
@@ -404,6 +539,19 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
       if (key === "servers") {
         const servers = normalizeServers(value)
         if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
+        continue
+      }
+      if (key === "shares") {
+        // per-share tier: per-session deep merge across the file chain
+        // (a nearer file overriding ONE key keeps the rest)
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          for (const [sid, ov] of Object.entries(value as Record<string, unknown>)) {
+            if (typeof sid !== "string" || !sid) continue
+            const clean = normalizeShareOverrides(ov)
+            if (!clean) continue
+            cfg.shares = { ...cfg.shares, [sid]: { ...(cfg.shares?.[sid] ?? {}), ...clean } }
+          }
+        }
         continue
       }
       if (key === "redact") {
