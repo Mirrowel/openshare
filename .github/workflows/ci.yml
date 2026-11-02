@@ -43,3 +43,40 @@ jobs:
 
       - name: Typecheck, build, and verify packed contents
         run: npm run ci
+
+  tests:
+    name: Test suites (quick gate)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: share-plugin/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      # pinned to the tested host minor; suites drive the real CLI
+      # (mock-LLM provider on localhost, XDG-sandboxed, no secrets)
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai@1.19.4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run quick gate
+        env:
+          # 4-vCPU runners: fewer in-flight suites than the local default
+          OPENSHARE_MATRIX_CONCURRENCY: "4"
+          # first-iteration allowance above the local ~55-75s band; tighten
+          # once real runner timings settle
+          OSH_MATRIX_BUDGET_S: "120"
+        run: npm run test:quick
