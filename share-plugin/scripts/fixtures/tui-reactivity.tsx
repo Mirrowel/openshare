@@ -25,9 +25,9 @@ const theme = {
   warning: "#ffff00",
 }
 
-function mockApi(state: { layers: Layer[] }) {
+function mockApi(state: { layers: Layer[] }, kv?: Record<string, unknown>) {
   return {
-    kv: { get: () => undefined, set: () => {} },
+    kv: { get: (_key: string, fallback?: unknown) => (kv && _key in kv ? kv[_key] : fallback), set: () => {} },
     theme: { current: theme },
     mode: { push: () => () => {} },
     keymap: {
@@ -69,9 +69,8 @@ function boxText(box: BoxRenderable): string {
   return text
 }
 
-// normalized by @opentui/core on set (see tui-probe): "#00ff00" ->
-// rgba(0.00, 1.00, 0.00, 1.00)
 const PRIMARY_BG = "rgba(0.00, 1.00, 0.00, 1.00)"
+const PANEL_BG = "rgba(0.07, 0.07, 0.07, 1.00)"
 
 /** DFS indices of boxes carrying the selection highlight. */
 function highlightedIndices(root: { getChildren?: () => unknown[] }): number[] {
@@ -172,6 +171,71 @@ export async function verifyInfoDialogFocusRepaints(): Promise<void> {
     runCommand(state, "close")
     await app.flush()
     if (delivered !== "no") throw new Error(`enter activated the wrong action (got ${JSON.stringify(delivered)}, expected the focused "no")`)
+  } finally {
+    app.renderer.destroy()
+  }
+}
+
+export async function verifyInfoDialogButtonsKeepGeometry(): Promise<void> {
+  const state = { layers: [] as Layer[] }
+  const api = mockApi(state)
+  const actions = [
+    { title: "Share", value: "yes", danger: false },
+    { title: "Cancel", value: "no", danger: false },
+  ]
+  const app = await mount(() => __testInternals.InfoDialog({ api, title: "Share Session", message: "Publish this session?", actions, onDone: () => {} }))
+  try {
+    const buttonRow = (root: { getChildren?: () => unknown[] }) => {
+      const focusedBox = collect(root).find((box) => (box.backgroundColor?.toString?.() ?? "") === PRIMARY_BG)
+      if (!focusedBox) throw new Error("no focused button painted")
+      const parent = collect(root).find((box) => (box.getChildren?.() ?? []).includes(focusedBox))
+      if (!parent) throw new Error("focused button has no row parent")
+      return { parent, buttons: parent.getChildren?.() ?? [] }
+    }
+    const rowBefore = buttonRow(app.renderer.root)
+    const heightsBefore = rowBefore.buttons.map((box) => (box as BoxRenderable).height)
+    if (new Set(heightsBefore).size !== 1) throw new Error(`buttons differ in height in one state: ${heightsBefore.join(",")}`)
+    const rowHeightBefore = (rowBefore.parent as BoxRenderable).height
+    runCommand(state, "focusDown")
+    await app.flush()
+    const rowAfter = buttonRow(app.renderer.root)
+    const heightsAfter = rowAfter.buttons.map((box) => (box as BoxRenderable).height)
+    if (new Set(heightsAfter).size !== 1) throw new Error(`buttons differ in height after switching focus: ${heightsAfter.join(",")}`)
+    if ((rowAfter.parent as BoxRenderable).height !== rowHeightBefore) {
+      throw new Error(`button row reflowed on focus switch (${rowHeightBefore} -> ${(rowAfter.parent as BoxRenderable).height})`)
+    }
+  } finally {
+    app.renderer.destroy()
+  }
+}
+
+export async function verifyMenuWithDividerFitsWithoutScrolling(): Promise<void> {
+  const state = { layers: [] as Layer[] }
+  // compact stored height percent — the exact reported clip: a 6-row menu
+  // plus a divider rendering shorter than its own content
+  const api = mockApi(state, { "openshare.ui-height-percent": 35 })
+  const options = [
+    { title: "Worker URL", value: "key:workerUrl", description: "https://example.com" },
+    { title: "Create token", value: "key:createToken", description: "credential" },
+    { title: "— saved servers —", value: "__divider", divider: true },
+    { title: "https://example.com", value: "server:x", description: "token saved · ACTIVE" },
+    { title: "Connect to a server", value: "server:add", description: "URL (+ access code)" },
+    { title: "Test connection", value: "action:test", description: "probe /health" },
+    { title: "Back", value: "__back" },
+  ]
+  const app = await mount(() => __testInternals.MenuDialog({ api, title: "OpenShare — Servers", options, onDone: () => {} }))
+  try {
+    const boxes = collect(app.renderer.root)
+    const paintedRows = boxes.filter((box) => (box.backgroundColor?.toString?.() ?? "") === PANEL_BG)
+    const optionCount = options.filter((option) => !option.divider).length
+    if (paintedRows.length < optionCount) {
+      throw new Error(`only ${paintedRows.length}/${optionCount} option rows painted — the menu clips its own options`)
+    }
+    const scroll = boxes.find((box) => box.constructor?.name === "ScrollBoxRenderable")
+    if (!scroll) throw new Error("menu list scrollbox not found")
+    if (scroll.scrollHeight > scroll.height) {
+      throw new Error(`list content (${scroll.scrollHeight} rows) exceeds the body (${scroll.height}) — it scrolls instead of expanding`)
+    }
   } finally {
     app.renderer.destroy()
   }

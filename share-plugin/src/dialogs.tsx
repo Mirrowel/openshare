@@ -353,7 +353,19 @@ export function MenuDialog<Value>(props: {
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
   const dimensions = useTerminalDimensions()
-  const listHeight = createMemo(() => cappedHeight(props.options.length, maxRows(props.api, dimensions().height, 12, 4), 4))
+  // Body rule, in PAINTED rows: a divider renders a rule plus a margin row
+  // above and below (3 rows for one option), so budgeting option count makes
+  // menus with separators scroll their own last rows. A small menu expands to
+  // its painted content (≤12 rows, capped by the 75%-of-terminal backdrop
+  // budget) regardless of the stored height percent — the percent setting
+  // tames big dialogs, it must not shrink a 7-row menu. Bigger menus honor
+  // the percent cap.
+  const listHeight = createMemo(() => {
+    const painted = props.options.reduce((rows, option) => rows + (option.divider ? 3 : 1), 0)
+    const { availableRows, targetRows } = dialogMetrics(props.api, dimensions().height, 12, 4)
+    const contentFit = Math.min(painted, 12, availableRows)
+    return cappedHeight(painted, Math.max(targetRows, contentFit), 4)
+  })
   // fixed title column shared by every row (family menuTitleWidth): flex
   // columns stagger per row because flex splits by content, so a computed
   // width is what makes the value/description column align.
@@ -778,21 +790,29 @@ export function InfoDialog(props: { api: TuiPluginApi; title: string; message: s
         </box>
         <box flexDirection="row" gap={1}>
           <For each={actions()}>
-            {(action, index) => (
-              <box
-                paddingLeft={2}
-                paddingRight={2}
-                backgroundColor={index() === focus() ? (action.danger ? theme().error : theme().primary) : undefined}
-                border={index() === focus() ? undefined : true}
-                borderColor={action.danger ? theme().error : theme().textMuted}
-                onMouseOver={() => setFocus(index())}
-                onMouseUp={() => props.onDone(action.value)}
-              >
-                <text fg={index() === focus() ? theme().background : action.danger ? theme().error : theme().textMuted}>
-                  <b>{action.title}</b>
-                </text>
-              </box>
-            )}
+            {(action, index) => {
+              // constant geometry: the border stays on in both states (it
+              // consumes 2 cols + 1 row, so dropping it on focus reflows the
+              // row and stretches the short box against its sibling);
+              // focus is expressed through colors only
+              const focused = () => index() === focus()
+              const tone = () => (action.danger ? theme().error : theme().textMuted)
+              return (
+                <box
+                  paddingLeft={2}
+                  paddingRight={2}
+                  border={true}
+                  backgroundColor={focused() ? (action.danger ? theme().error : theme().primary) : undefined}
+                  borderColor={focused() ? (action.danger ? theme().error : theme().primary) : tone()}
+                  onMouseOver={() => setFocus(index())}
+                  onMouseUp={() => props.onDone(action.value)}
+                >
+                  <text fg={focused() ? theme().background : tone()}>
+                    <b>{action.title}</b>
+                  </text>
+                </box>
+              )
+            }}
           </For>
         </box>
       </box>

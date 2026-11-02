@@ -44,8 +44,10 @@ try {
   const fixture = await import(`${pathToFileURL(output).href}?${Date.now()}`)
   const checks = [
     ["menu selection repaints on up/down", fixture.verifyMenuSelectionRepaints],
+    ["menu with divider fits without scrolling at compact height", fixture.verifyMenuWithDividerFitsWithoutScrolling],
     ["info dialog has a keyboard surface", fixture.verifyInfoDialogKeyboardSurface],
     ["info dialog focus moves and enter activates it", fixture.verifyInfoDialogFocusRepaints],
+    ["info dialog buttons keep geometry across focus switch", fixture.verifyInfoDialogButtonsKeepGeometry],
     ["prompt input round-trips through keys", fixture.verifyPromptInputRoundTrips],
     ["size picker adjusts live", fixture.verifySizePickerAdjusts],
   ]
