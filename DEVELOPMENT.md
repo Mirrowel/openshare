@@ -51,7 +51,7 @@ enforce it: the same auth/enroll suites run against both backends).
 | big (×backends) | scale: ~3k items incl. MB-size parts through sharded storage — full `/data`, zero stuck revs |
 | cli / npm-e2e (on demand) | real `opencode run` with the CI bundle / package; the published npm package by registry spec (`node scripts/npm-e2e.mjs` — no npm alias by design: on-demand only) |
 
-Note what CI actually gates: the GitHub workflow runs typecheck + build + pack dry-run (`npm run ci`) — **no test suites run there** (they need opencode + wrangler + port access). The matrix is a local-before-commit obligation.
+What runs where: CI (`.github/workflows/ci.yml`) runs the **quick gate** on every push/PR — validate (typecheck + build + pack dry-run) then a `tests` job running `npm run test:quick` with the opencode CLI (pinned in the workflow) and wrangler (share-plugin devDependency) on the runner. The full matrix (fanout, enroll shards, big, engine shards) stays a local-before-push obligation: the quick gate covers the critical lanes, the full wave is the pre-release ritual.
 
 Suite rules of the road (all learned from live failures):
 
@@ -67,6 +67,18 @@ Suite rules of the road (all learned from live failures):
 `share-viewer` renders on the vendored **opencode v2 component kit** - a pinned, patched copy of upstream own packages, regenerated deterministically by `npm run vendor`. **[`share-viewer/vendor/VENDOR.md`](share-viewer/vendor/VENDOR.md) is the canonical doc**: what the pin is, the update ritual (check -> bump -> fix -> verify -> compare against the legacy build), why solid-js is vendored, the ordering/guard/import constraints, and the full patch catalogue. The script downloads the pinned commit itself (no local checkout needed; `OPENSHARE_BETA_SRC` overrides), deletes its download cache on success, fails when root package pins disagree with the vendored catalog, and throws at the exact drifted anchor on upstream moves. The `bun install` in `npm run vendor` stays mandatory (bun copies `file:` deps; `scripts/link-vendor.mjs` junctions them so a shared dependency can never exist twice). Provenance per regeneration: `vendor/V2-SOURCE.txt`.
 
 The per-fork catalogue lives in `vendor/VENDOR.md` (kept in step with the script).
+
+**Version-comparison build** (the `/legacy` + `/compare` prefixes): to A/B the
+current viewer against any older build on the same deployment,
+`cd share-viewer && node scripts/build-legacy.mjs --ref <tag|branch|sha>`
+builds that ref in a temp worktree and drops `dist/legacy.html` plus its
+hashed assets next to the current build; then deploy the worker
+(`cd share-worker && npm run deploy`). The worker serves that build verbatim
+under `/legacy/...` and `/compare/...` (e.g. `/compare/s/<id>`) while the
+plain paths keep the current one — the URL alone decides, no cookies. Remove
+it by rebuilding `dist` (no legacy.html) and redeploying. Without the file
+both prefixes 404. Single slot by design (one comparison at a time); the Bun
+server does not carry this route.
 
 **Why solid-js is vendored**: Solid's `cleanNode` walks `node.owned`/`node.cleanups` with live loops; a re-entrant disposal nulls the arrays mid-walk and the next iteration throws `null[i]`, killing the whole reactive flush (a half-updated page with a stuck status, live-caught; opencode itself patches the same defect in its own dependency). `vendor-solid.mjs` patches `cleanNode`/`dispose` to snapshot-loop — 6 lines — and writes TWO variants: `vendor/solid/solid.js` (build) and `vendor/solid/dev.js` (dev server: unminified, dev warnings, readable stack traces); `vite.config.ts` picks by command and pins the exact-match alias `/^solid-js$/` so the bundle uses the patched copy and `node_modules` stays pristine.
 

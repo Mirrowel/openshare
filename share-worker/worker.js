@@ -215,11 +215,12 @@ export default {
       // version-comparison build (wiring, currently dormant): when a
       // second viewer build is deployed as dist/legacy.html (via
       // scripts/build-legacy.mjs in share-viewer), it is served verbatim
-      // under /legacy (the page's own router finds the "s" segment
-      // anywhere in the path, so /legacy/s/<id> etc. work untouched;
-      // in-app navigation drops the prefix). Without that file the
-      // prefix is gone: 404, no SPA fallback.
-      if (req.method === "GET" && (path === "/legacy" || path.startsWith("/legacy/"))) {
+      // under /legacy and /compare (the page's own router finds the "s"
+      // segment anywhere in the path, so /compare/s/<id> etc. work
+      // untouched; in-app navigation drops the prefix). Without that
+      // file the prefixes are gone: 404, no SPA fallback.
+      const isComparePath = (p) => p === "/legacy" || p.startsWith("/legacy/") || p === "/compare" || p.startsWith("/compare/")
+      if (req.method === "GET" && isComparePath(path)) {
         const legacyRes = await env.ASSETS.fetch(new Request(url.origin + "/legacy.html", { method: "GET" }))
         // assets' SPA fallback answers a missing HTML path with index.html
         // (200) and workerd surfaces no etag, so compare the BODIES: equal
