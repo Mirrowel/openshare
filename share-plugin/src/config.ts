@@ -617,20 +617,27 @@ export function tuiLayerPaths(input: { directory?: string; worktree?: string; en
   const envTui = env["OPENCODE_TUI_CONFIG"]
   if (envTui && existsSync(envTui)) paths.push(envTui)
   if (input.directory) {
-    const dir = normalizePath(input.directory)
-    const worktree = input.worktree ? normalizePath(input.worktree) : undefined
+    // case-preserving separator fix only: the walk probes the FILESYSTEM,
+    // and lowercasing the path (fine for spec comparisons) breaks every
+    // lookup on case-sensitive filesystems - a mixed-case project dir
+    // would silently miss its tui.json and flip manual mode to all
+    const fwd = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "")
+    const dir = fwd(input.directory)
+    const worktree = input.worktree ? fwd(input.worktree) : undefined
+    const dirLower = dir.toLowerCase()
     const sane =
       worktree !== undefined &&
       worktree !== "/" &&
       !/^[a-z]:\/$/.test(worktree) &&
-      (dir === worktree || dir.startsWith(`${worktree}/`))
+      (dirLower === worktree.toLowerCase() || dirLower.startsWith(`${worktree.toLowerCase()}/`))
+    const worktreeLower = worktree?.toLowerCase()
     let current: string | undefined = dir
     for (let guard = 0; guard < 64 && current; guard++) {
       for (const name of ["tui.json", ".opencode/tui.json"]) {
         const candidate = `${current}/${name}`
         if (existsSync(candidate) && !paths.includes(candidate)) paths.push(candidate)
       }
-      if (sane && current === worktree) break
+      if (sane && current.toLowerCase() === worktreeLower) break
       const parent = dirname(current)
       if (parent === current) break
       current = parent
