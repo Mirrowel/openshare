@@ -237,6 +237,14 @@ else
 fi
 while IFS= read -r f; do
   [ -z "$f" ] && continue
+  # Count only files that justify releasing that part - the same
+  # RELEASE_PATHS that triggers the workflow - and drop manifests (version
+  # stamps + devDependency churn; the npm gate ignores them too) and docs,
+  # so a CI/docs commit riding along cannot inflate the scope line
+  kit_path_matches "$f" "$RELEASE_RE" || continue
+  case "$f" in
+    */package.json|*/package-lock.json|*/bun.lock|*.md) continue ;;
+  esac
   part="$(kit_part_of "$f")"
   [ -z "$part" ] && continue
   case " $parts_changed " in *" $part "*) ;; *) parts_changed="$parts_changed $part" ;; esac
