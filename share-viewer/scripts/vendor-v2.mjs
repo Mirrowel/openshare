@@ -1021,6 +1021,80 @@ function mainThreadWorker(): Worker {
   }
 }
 
+// vendor fork: subagent cards link to the paired CHILD PROMPT, not just
+// the child session. A child can hold several prompts (later calls,
+// auto-continues); metadata.promptID on the task part resolves the exact
+// one (plugin stamp, with the viewer's old-share text-coverage fallback
+// written onto the same field at fold time). data.tsx's href/navigate
+// signatures gain the optional anchor; the task card passes it through,
+// so plain clicks SPA-navigate and middle/ctrl-click opens the anchored
+// URL.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/context/data.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("anchor?: string")) {
+      const before = s
+      s = s.replace(
+        "export type NavigateToSessionFn = (sessionID: string) => void",
+        "export type NavigateToSessionFn = (sessionID: string, anchor?: string) => void",
+      )
+      s = s.replace(
+        "export type SessionHrefFn = (sessionID: string) => string",
+        "export type SessionHrefFn = (sessionID: string, anchor?: string) => string",
+      )
+      if (s === before) throw new Error("vendor-v2: data.tsx href/navigate type anchors missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+  const t = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(t)) {
+    let s = readFileSync(t, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: the paired child prompt anchors the card's link")) {
+      const A = `    const childSessionId = createMemo(
+      () => metadata().sessionID || taskSession(input().description, data.sessionID, data.store.session),
+    )`
+      if (!s.includes(A)) throw new Error("vendor-v2: task childSessionId memo anchor missing - upstream drifted")
+      s = s.replace(
+        A,
+        A + `
+
+    // openshare fork: the paired child prompt anchors the card's link
+    // (metadata.promptID - plugin stamp, or the viewer's old-share
+    // text-coverage fallback written onto the same field at fold time)
+    const promptAnchor = createMemo(() =>
+      typeof metadata().promptID === "string" ? (metadata().promptID as string) : undefined,
+    )`,
+      )
+      const B = "    const href = createMemo(() => sessionLink(childSessionId(), data.sessionHref))"
+      if (!s.includes(B)) throw new Error("vendor-v2: task href memo anchor missing - upstream drifted")
+      s = s.replace(
+        B,
+        `    const href = createMemo(() => {
+      // openshare fork: sessionHref takes the prompt anchor so
+      // middle/ctrl-click lands on the paired prompt too
+      const id = childSessionId()
+      if (!id) return undefined
+      return data.sessionHref?.(id, promptAnchor())
+    })`,
+      )
+      const C = `    const open = () => {
+      const id = childSessionId()
+
+      if (!id) return
+      data.navigateToSession?.(id)
+    }`
+      if (!s.includes(C)) throw new Error("vendor-v2: task open() anchor missing - upstream drifted")
+      s = s.replace(C, C.replace("data.navigateToSession?.(id)", "data.navigateToSession?.(id, promptAnchor())"))
+      // the metadata schema keeps the promptID field through decoding
+      const E = "    name: optional(Schema.String),\n    provider: optional(Schema.String),\n    sessionID: optional(Schema.String),"
+      if (!s.includes(E)) throw new Error("vendor-v2: toolMetadata schema anchor missing - upstream drifted")
+      s = s.replace(E, E + "\n    promptID: optional(Schema.String),")
+      writeFileSync(s ? t : t, s)
+    }
+  }
+}
+
 // vendor fork: reads no longer MERGE inside a context group. Upstream
 // collapses consecutive reads into one inner array, rendered as the inline
 // CurrentReadToolGroup subtitle row, but our forks bypass that renderer, so

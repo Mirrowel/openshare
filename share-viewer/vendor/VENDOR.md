@@ -135,6 +135,15 @@ idempotently or throws "upstream drifted". Files are under
 - **Grouped task rows label the agent that actually ran**
   (`metadata.agent`, rank-joined plugin-side; `taskAgentName` honors the
   input's agent).
+- **Task cards link to the paired child prompt**: a child session can hold
+  several prompts (later calls, auto-continues), and the card's target is
+  the one THIS call created. `metadata.promptID` on the task part carries
+  it (plugin stamp; the viewer's old-share text-coverage fallback writes
+  the same field at fold time). Three edits: the metadata schema keeps
+  `promptID` through decoding, `data.tsx`'s href/navigate signatures take
+  an optional anchor, and the task card passes it through (middle/ctrl
+  click opens the anchored URL too; live links `#<msgID>`, snapshot links
+  `#n<idx>:<msgID>`).
 - **Per-agent colors**: explore blue, general dark red, then ten distinct
   hues in first-use order, generated past ten so no two types ever share one;
   exposed to CSS as `--osh-agent` on the task card, with `data-running`

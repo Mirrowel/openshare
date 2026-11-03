@@ -142,6 +142,7 @@ const toolMetadata = Schema.decodeUnknownSync(
     name: optional(Schema.String),
     provider: optional(Schema.String),
     sessionID: optional(Schema.String),
+    promptID: optional(Schema.String),
     command: optional(Schema.String),
     shellID: optional(Schema.String),
     status: optional(Schema.String),
@@ -1784,6 +1785,13 @@ ToolRegistry.register({
       () => metadata().sessionID || taskSession(input().description, data.sessionID, data.store.session),
     )
 
+    // openshare fork: the paired child prompt anchors the card's link
+    // (metadata.promptID - plugin stamp, or the viewer's old-share
+    // text-coverage fallback written onto the same field at fold time)
+    const promptAnchor = createMemo(() =>
+      typeof metadata().promptID === "string" ? (metadata().promptID as string) : undefined,
+    )
+
     const title = createMemo(() => taskAgentName(input().agent, data.store.agent) ?? i18n.t("ui.tool.agent.default"))
 
     const background = createMemo(() => {
@@ -1809,14 +1817,20 @@ ToolRegistry.register({
       return (data.store.session_status[id]?.type ?? "idle") !== "idle"
     })
 
-    const href = createMemo(() => sessionLink(childSessionId(), data.sessionHref))
+    const href = createMemo(() => {
+      // openshare fork: sessionHref takes the prompt anchor so
+      // middle/ctrl-click lands on the paired prompt too
+      const id = childSessionId()
+      if (!id) return undefined
+      return data.sessionHref?.(id, promptAnchor())
+    })
     const clickable = createMemo(() => !!(childSessionId() && (data.navigateToSession || href())))
 
     const open = () => {
       const id = childSessionId()
 
       if (!id) return
-      data.navigateToSession?.(id)
+      data.navigateToSession?.(id, promptAnchor())
     }
 
     const navigate = (event: MouseEvent) => {

@@ -48,6 +48,7 @@ import { createHash } from "node:crypto"
 import { isAbsolute, join } from "node:path"
 import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, deleteShareOverrides, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
 import { resolveFor } from "./share-settings.js"
+import { pairPromptID, type PairMsg } from "./task-pairing.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
 import { activeRules, redactItem, type RedactionHit } from "./redact.js"
@@ -2328,6 +2329,70 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
+  /** task/subagent calls get metadata.promptID (the child prompt the call
+   *  created) and that child prompt message gets metadata.toolCallID +
+   *  toolSessionID pointing back at the call - stamped on BOTH sides so
+   *  one surviving side still resolves the pair. The pairing ladder lives
+   *  in task-pairing.ts: an exact-or-coverage text match beats arrival
+   *  timing; the arrival window covers prompts the host transformed past
+   *  recognition (v2 preamble, inlined @files). The viewer anchors
+   *  subagent card links on that exact prompt. */
+  const stampTaskPromptLinks = (bySession: Map<string, IndexedMessage[]>) => {
+    const callsByChild = new Map<string, Array<{ part: any; created: number; parent: IndexedMessage }>>()
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant") continue
+      const content = (m.data as any).content
+      if (!Array.isArray(content)) continue
+      for (const part of content) {
+        if (!part || part.type !== "tool") continue
+        if (part.name !== "task" && part.name !== "subagent") continue
+        if (!part.state || typeof part.id !== "string") continue
+        const childSid = typeof part.state.metadata?.sessionID === "string" ? part.state.metadata.sessionID : undefined
+        if (!childSid) continue
+        const entry = { part, created: Number(part.time?.created ?? 0), parent: m }
+        const list = callsByChild.get(childSid)
+        if (list) list.push(entry)
+        else callsByChild.set(childSid, [entry])
+      }
+    }
+    for (const [childSid, calls] of callsByChild) {
+      const child = bySession.get(childSid)
+      if (!child) continue
+      calls.sort((a, b) => a.created - b.created)
+      const candidates: PairMsg[] = child
+        .filter((c) => c.role === "user" && typeof c.data.id === "string")
+        .map((c) => ({ id: c.data.id as string, created: c.created, text: String(c.data.text ?? "") }))
+      // prompts already back-linked keep their claim; a later call never
+      // re-claims them
+      const claimed = new Set<string>(
+        child
+          .filter((c) => c.role === "user" && typeof (c.data as any).metadata?.toolCallID === "string")
+          .map((c) => String(c.data.id)),
+      )
+      for (const call of calls) {
+        const meta = (call.part.state.metadata ??= {})
+        let promptID = typeof meta.promptID === "string" ? meta.promptID : undefined
+        if (!promptID) {
+          const prompt = typeof call.part.state.input?.prompt === "string" ? call.part.state.input.prompt : undefined
+          const pick = pairPromptID({ partID: call.part.id, created: call.created, prompt }, candidates, claimed)
+          if (!pick) continue
+          meta.promptID = pick
+          promptID = pick
+          reEnqueueMessage(call.parent)
+        }
+        claimed.add(promptID)
+        const target = child.find((c) => String(c.data.id) === promptID)
+        if (!target) continue
+        const dmeta = ((target.data as any).metadata ??= {})
+        if (dmeta.toolCallID !== call.part.id) {
+          dmeta.toolCallID = call.part.id
+          dmeta.toolSessionID = call.parent.sid
+          reEnqueueMessage(target)
+        }
+      }
+    }
+  }
+
   /** file tools get metadata.language (shiki lang id, from the path the
    * call touched). The viewer highlights from this stamp and never
    * guesses; its extension map only covers old shares without one. */
@@ -2455,6 +2520,7 @@ export function createEngine(deps: EngineDeps): Engine {
     for (const list of bySession.values()) list.sort((a, b) => a.created - b.created)
     stampAgentSwitches(bySession)
     stampTaskAgents(bySession)
+    stampTaskPromptLinks(bySession)
     stampFileLanguages()
   }
 

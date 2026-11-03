@@ -59,7 +59,9 @@ function parsePath(): { shareID: string; sub: number | undefined } {
   // `#n<N>` hash because file:// paths cannot be rewritten by pushState
   const emb = (window as any).__MIRROBOT_SNAPSHOT__ as { sessionID?: string } | undefined
   if (emb) {
-    const n = /^n(\d+)$/.exec(location.hash.slice(1))
+    // n<index> routes to the child page; n<index>:<msgID> additionally
+    // anchors its paired prompt (snapshot subagent-card links)
+    const n = /^n(\d+)(?::.+)?$/.exec(location.hash.slice(1))
     return { shareID: emb.sessionID ?? id, sub: n ? Number(n[1]) : undefined }
   }
   return { shareID: id, sub }

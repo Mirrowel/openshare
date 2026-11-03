@@ -22,8 +22,8 @@ import type { ToolEntry } from "./session-data"
 // bundle is what makes subagent rows clickable: the vendored renderer
 // links through data.sessionHref and clicks through data.navigateToSession
 export type VendoredNav = {
-  sessionHref: (id: string) => string | undefined
-  navigateToSession: (id: string) => void
+  sessionHref: (id: string, anchor?: string) => string | undefined
+  navigateToSession: (id: string, anchor?: string) => void
 }
 let currentData: ShareData | undefined
 let currentNav: VendoredNav | undefined

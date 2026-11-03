@@ -630,6 +630,96 @@ function resolveFor(cfg, serverUrl, sessionID, mirror) {
   });
 }
 
+// src/task-pairing.ts
+var ARRIVAL_BACKFILL_MS = 2000;
+var COVERAGE_MIN = 0.75;
+var norm = (s) => s.replace(/\r\n/g, `
+`).trim();
+var normTokens = (s) => s.replace(/\r\n/g, `
+`).replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+function longestRun(a, b, alo, ahi, blo, bhi) {
+  const byLine = new Map;
+  for (let j = blo;j < bhi; j++) {
+    const list = byLine.get(b[j]);
+    if (list)
+      list.push(j);
+    else
+      byLine.set(b[j], [j]);
+  }
+  let best;
+  let bestLen = 0;
+  const run = new Int32Array(bhi - blo + 1);
+  for (let i = ahi - 1;i >= alo; i--) {
+    const js = byLine.get(a[i]);
+    if (!js)
+      continue;
+    for (const j of js) {
+      const len = 1 + (run[j + 1 - blo] ?? 0);
+      run[j - blo] = len;
+      if (len > bestLen) {
+        bestLen = len;
+        best = [i, j, len];
+      }
+    }
+  }
+  return best;
+}
+function matchingBlocks(a, b) {
+  const out = [];
+  const queue = [[0, a.length, 0, b.length]];
+  while (queue.length) {
+    const [alo, ahi, blo, bhi] = queue.pop();
+    const m = longestRun(a, b, alo, ahi, blo, bhi);
+    if (!m || m[2] === 0)
+      continue;
+    out.push(m);
+    queue.push([alo, m[0], blo, m[1]]);
+    queue.push([m[0] + m[2], ahi, m[1] + m[2], bhi]);
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+function promptCoverage(childText, prompt) {
+  const b = norm(prompt);
+  if (!b)
+    return 0;
+  if (norm(childText).includes(b))
+    return 1;
+  const child = normTokens(childText);
+  const want = normTokens(prompt);
+  const total = want.reduce((s, t) => s + t.length + 1, 0);
+  if (!total)
+    return 0;
+  const matched = matchingBlocks(want, child).reduce((s, [wi, , n]) => {
+    let add = 0;
+    for (let k = wi;k < wi + n; k++)
+      add += want[k].length + 1;
+    return s + add;
+  }, 0);
+  return Math.min(1, matched / total);
+}
+function pairPromptID(call, candidates, claimed) {
+  const open = candidates.filter((c) => !claimed.has(c.id));
+  if (open.length === 0)
+    return;
+  const from = call.created - ARRIVAL_BACKFILL_MS;
+  const pool = open.filter((c) => c.created >= from);
+  if (pool.length === 0)
+    return;
+  let textPick;
+  let best = 0;
+  for (const c of pool) {
+    const cov = promptCoverage(c.text, call.prompt ?? "");
+    if (cov > best) {
+      best = cov;
+      textPick = c;
+    }
+  }
+  if (textPick && best >= COVERAGE_MIN)
+    return textPick.id;
+  const after = pool.find((c) => c.created >= call.created);
+  return (after ?? pool[pool.length - 1]).id;
+}
+
 // src/contract.ts
 function messageTombstone(sessionID, messageID) {
   return { type: "message", del: true, sessionID, data: { id: messageID } };
@@ -875,9 +965,9 @@ function compile(patterns) {
 function tildePath(p, home) {
   if (!p || !home || p.length <= home.length)
     return p;
-  const norm = (s) => s.replace(/[\\/]+/g, "/").replace(/\/$/, "");
-  const np = norm(p);
-  const nh = norm(home);
+  const norm2 = (s) => s.replace(/[\\/]+/g, "/").replace(/\/$/, "");
+  const np = norm2(p);
+  const nh = norm2(home);
   if (np === nh)
     return "~";
   if (np.startsWith(nh + "/"))
@@ -2651,6 +2741,64 @@ function createEngine(deps) {
         reEnqueueMessage(m);
     }
   };
+  const stampTaskPromptLinks = (bySession) => {
+    const callsByChild = new Map;
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant")
+        continue;
+      const content = m.data.content;
+      if (!Array.isArray(content))
+        continue;
+      for (const part of content) {
+        if (!part || part.type !== "tool")
+          continue;
+        if (part.name !== "task" && part.name !== "subagent")
+          continue;
+        if (!part.state || typeof part.id !== "string")
+          continue;
+        const childSid = typeof part.state.metadata?.sessionID === "string" ? part.state.metadata.sessionID : undefined;
+        if (!childSid)
+          continue;
+        const entry = { part, created: Number(part.time?.created ?? 0), parent: m };
+        const list = callsByChild.get(childSid);
+        if (list)
+          list.push(entry);
+        else
+          callsByChild.set(childSid, [entry]);
+      }
+    }
+    for (const [childSid, calls] of callsByChild) {
+      const child = bySession.get(childSid);
+      if (!child)
+        continue;
+      calls.sort((a, b) => a.created - b.created);
+      const candidates = child.filter((c) => c.role === "user" && typeof c.data.id === "string").map((c) => ({ id: c.data.id, created: c.created, text: String(c.data.text ?? "") }));
+      const claimed = new Set(child.filter((c) => c.role === "user" && typeof c.data.metadata?.toolCallID === "string").map((c) => String(c.data.id)));
+      for (const call of calls) {
+        const meta = call.part.state.metadata ??= {};
+        let promptID = typeof meta.promptID === "string" ? meta.promptID : undefined;
+        if (!promptID) {
+          const prompt = typeof call.part.state.input?.prompt === "string" ? call.part.state.input.prompt : undefined;
+          const pick = pairPromptID({ partID: call.part.id, created: call.created, prompt }, candidates, claimed);
+          if (!pick)
+            continue;
+          meta.promptID = pick;
+          promptID = pick;
+          reEnqueueMessage(call.parent);
+        }
+        claimed.add(promptID);
+        const target = child.find((c) => String(c.data.id) === promptID);
+        if (!target)
+          continue;
+        const dmeta = target.data.metadata ??= {};
+        if (dmeta.toolCallID !== call.part.id) {
+          dmeta.toolCallID = call.part.id;
+          dmeta.toolSessionID = call.parent.sid;
+          reEnqueueMessage(target);
+        }
+      }
+    }
+  };
   const LANG_BY_EXT = {
     ts: "typescript",
     tsx: "tsx",
@@ -2788,6 +2936,7 @@ function createEngine(deps) {
       list.sort((a, b) => a.created - b.created);
     stampAgentSwitches(bySession);
     stampTaskAgents(bySession);
+    stampTaskPromptLinks(bySession);
     stampFileLanguages();
   };
   const mergeEntry = (st, messageID) => {

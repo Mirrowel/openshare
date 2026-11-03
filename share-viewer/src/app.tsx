@@ -68,9 +68,9 @@ function FullPageView(props: {
   createEffect(() => applyCodeSurface(view()?.codeSurface === true))
   const sessionID = createMemo(() => resolveSessionID(props.source.data(), props.sub()))
   setVendoredData(props.source.data(), {
-    sessionHref: (id) => subHref(props.source, id),
-    navigateToSession: (id) => {
-      const href = subHref(props.source, id)
+    sessionHref: (id, anchor) => subHref(props.source, id, anchor),
+    navigateToSession: (id, anchor) => {
+      const href = subHref(props.source, id, anchor)
       if (!href) return
       scrollMemory.set(location.pathname, window.scrollY)
       window.history.pushState({}, "", href)
@@ -320,9 +320,17 @@ function SessionView(props: {
               // arriving at the parent page with #<messageID> (the
               // turn-anchored return) jumps to that turn
               const hashJump = () => {
-                const id = decodeURIComponent(location.hash.slice(1))
-                if (!id || !userTurns().some((m: any) => m.id === id)) return
-                setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
+                // a snapshot's compound child-route hash carries the sub
+                // page and a prompt anchor (n<index>:<msgID>); only the
+                // message id is a jump target
+                const raw = location.hash.slice(1).replace(/^n\d+:/, "")
+                const id = decodeURIComponent(raw)
+                // a hash may point at any prompt of a burst; the group jumps as one
+                const leader = leaderOf(turnGroups(), id)
+                if (!id || !leader) return
+                // hash navigation is restore navigation (back-to-parent
+                // return, anchor on load) - land instantly, never animate
+                jumpTo(leader.id, true)
               }
               const onHashNav = () => hashJump()
               window.addEventListener("popstate", onHashNav)
@@ -880,9 +888,9 @@ function SessionView(props: {
             }}
             directory={info().directory}
             sessionID={sessionID()}
-            onSessionHref={(id) => subHref(props.source, id)}
-            onNavigateToSession={(id) => {
-              const href = subHref(props.source, id)
+            onSessionHref={(id, anchor) => subHref(props.source, id, anchor)}
+            onNavigateToSession={(id, anchor) => {
+              const href = subHref(props.source, id, anchor)
               if (!href) return
               scrollMemory.set(location.pathname, window.scrollY)
               window.history.pushState({}, "", href)
@@ -903,15 +911,18 @@ function SessionView(props: {
   )
 }
 
-function subHref(source: ReturnType<typeof useShareSource>, childSessionID: string): string | undefined {
+function subHref(source: ReturnType<typeof useShareSource>, childSessionID: string, anchor?: string): string | undefined {
   const d = source.data()
   if (!d) return undefined
   const subs = children(d)
   const hit = subs.find((s) => s.sessionID === childSessionID)
   if (!hit) return undefined
   // a snapshot file cannot rewrite its path: its hrefs are in-page hashes
-  // (middle/ctrl-click then opens the same file at the right sub-page)
-  return isEmbeddedShare() ? `#n${hit.index}` : `/s/${source.shareID}/${hit.index}`
+  // (middle/ctrl-click then opens the same file at the right sub-page);
+  // the prompt anchor rides INSIDE the n-hash (n<index>:<msgID>) because
+  // a fragment cannot hold two hashes
+  if (isEmbeddedShare()) return `#n${hit.index}${anchor ? `:${anchor}` : ""}`
+  return `/s/${source.shareID}/${hit.index}${anchor ? `#${anchor}` : ""}`
 }
 
 // serialize the visible session to markdown (clipboard)
@@ -1052,7 +1063,9 @@ export function App() {
   window.addEventListener("popstate", () => {
     const parts = location.pathname.split("/").filter(Boolean)
     const i = parts.indexOf("s")
-    const hashSub = /^n(\d+)$/.exec(location.hash.slice(1))
+    // n<index> routes to the child page; n<index>:<msgID> additionally
+    // anchors its paired prompt (snapshot subagent-card links)
+    const hashSub = /^n(\d+)(?::.+)?$/.exec(location.hash.slice(1))
     const n = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : hashSub ? Number(hashSub[1]) : undefined
     setSub(n)
     requestAnimationFrame(() => {
@@ -1118,9 +1131,9 @@ export function App() {
                   }}
                   sessionID={source.data()?.sessionID ?? ""}
                   directory={source.data()?.session?.find((s: any) => s.id === source.data()?.sessionID)?.directory ?? ""}
-                  onSessionHref={(id) => subHref(source, id)}
-                  onNavigateToSession={(id) => {
-                    const href = subHref(source, id)
+                  onSessionHref={(id, anchor) => subHref(source, id, anchor)}
+                  onNavigateToSession={(id, anchor) => {
+                    const href = subHref(source, id, anchor)
                     if (!href) return
                     scrollMemory.set(location.pathname, window.scrollY)
                     window.history.pushState({}, "", href)

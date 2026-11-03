@@ -47,9 +47,9 @@ export type TurnDiffSource = {
   load: (input: TurnDiffInput) => void
 }
 
-export type NavigateToSessionFn = (sessionID: string) => void
+export type NavigateToSessionFn = (sessionID: string, anchor?: string) => void
 
-export type SessionHrefFn = (sessionID: string) => string
+export type SessionHrefFn = (sessionID: string, anchor?: string) => string
 
 export type ReadMediaUrlFn = (uri: string, mime: string, signal?: AbortSignal) => Promise<string | undefined>
 
