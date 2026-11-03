@@ -500,6 +500,92 @@ try {
   check("M3: opted-out remote gets nothing more (share stays as-is)", !b2HasPost && b2After.rev === revB2AtOptOut, `rev ${revB2AtOptOut} -> ${b2After.rev}`)
 
   await dispose2?.()
+
+  // M4: task-call <-> child-prompt stamps through the real engine. Two
+  // calls into ONE child (v2 shapes: call 1's prompt arrives behind the
+  // subagent preamble, call 2's verbatim) plus one UNLINKED auto-continue
+  // between them - the stamps must pair each call to its own prompt and
+  // leave the continue unclaimed.
+  const mock3 = makeMockV2Host()
+  const CHILD = "ses_v2mock_child1"
+  const PREAMBLE = "You are a subagent spawned by another session.\n"
+  const CALL1_PROMPT = "review the config and report mistakes"
+  const CALL2_PROMPT = "now verify the build outputs\nline two of the brief"
+  mock3.context.options = { servers: { [WORKER_URL]: { token: CREATE_TOKEN, active: true } } }
+  mock3.store.sessions.set(mock3.SID, { ...mock3.sessionInfo(), metadata: {} })
+  mock3.store.sessions.set(CHILD, {
+    ...mock3.sessionInfo(),
+    id: CHILD,
+    title: "subagent child",
+    agent: "explore",
+    parentID: mock3.SID,
+  })
+  const tCall1 = Date.now() - 50000
+  const tP1 = tCall1 + 400
+  const tCont = tCall1 + 5000
+  const tCall2 = tCall1 + 9000
+  const tP2 = tCall2 + 300
+  mock3.store.messages.set(mock3.SID, [
+    mock3.userMessage(),
+    {
+      ...mock3.assistantMessage("spawned agents"),
+      time: { created: tCall1 },
+      content: [
+        { type: "text", text: "spawned agents" },
+        {
+          type: "tool",
+          id: "tool_task_1",
+          name: "task",
+          state: { status: "completed", input: { prompt: CALL1_PROMPT, description: "first" }, metadata: { sessionID: CHILD } },
+          time: { created: tCall1, completed: tCall1 + 2000 },
+        },
+        {
+          type: "tool",
+          id: "tool_task_2",
+          name: "task",
+          state: { status: "completed", input: { prompt: CALL2_PROMPT, description: "second" }, metadata: { sessionID: CHILD } },
+          time: { created: tCall2, completed: tCall2 + 2000 },
+        },
+      ],
+    },
+  ])
+  mock3.store.messages.set(CHILD, [
+    { id: "msg_child_p1", type: "user", time: { created: tP1 }, text: PREAMBLE + CALL1_PROMPT },
+    { id: "msg_child_cont", type: "user", time: { created: tCont }, text: "continue: summarize findings so far" },
+    { id: "msg_child_p2", type: "user", time: { created: tP2 }, text: CALL2_PROMPT },
+  ])
+  mock3.script(200, mock3.event("session.created"))
+  // the child's messages ride its own content events in a real v2 host -
+  // one synthetic nudge makes the adapter refresh(CHILD) and pull the list
+  mock3.script(300, { ...mock3.event("session.created"), data: { ...mock3.event("session.created").data, sessionID: CHILD } })
+  mock3.script(400, async () => {
+    const flag = { openshare: { enabled: true } }
+    mock3.store.sessions.get(mock3.SID).metadata = { ...flag }
+    return mock3.event("session.metadata.updated", { metadata: flag })
+  })
+  mock3.script(600, { ...mock3.event("session.message.updated"), data: { ...mock3.event("session.message.updated").data, sessionID: CHILD } })
+  const dispose3 = await createV2ServerSetup()(mock3.context)
+  const stamped = await waitFor(async () => {
+    const list = (await adminShares(WORKER_URL)).filter((s) => s.sessionID === mock3.SID)
+    if (list.length !== 1) return false
+    const p = await (await httpGet(`${WORKER_URL}/api/share/${list[0].id}/data`)).json()
+    const findTool = (id) =>
+      (p.data ?? []).flatMap((m) => (m.type === "message" && m.sessionID === mock3.SID ? m.data?.content ?? [] : [])).find((c) => c?.type === "tool" && c.id === id)
+    const t1 = findTool("tool_task_1")
+    const t2 = findTool("tool_task_2")
+    if (!t1?.state?.metadata?.promptID || !t2?.state?.metadata?.promptID) return false
+    const childMsg = (id) => (p.data ?? []).find((m) => m.type === "message" && m.sessionID === CHILD && m.data?.id === id)?.data
+    return { t1, t2, p1: childMsg("msg_child_p1"), cont: childMsg("msg_child_cont"), p2: childMsg("msg_child_p2") }
+  }, "M4: stamps land in the share data", 45000)
+  check("M4: each call pairs its own prompt (preamble tolerated, verbatim exact)",
+    stamped.t1.state.metadata.promptID === "msg_child_p1" && stamped.t2.state.metadata.promptID === "msg_child_p2",
+    `${stamped.t1.state.metadata.promptID} / ${stamped.t2.state.metadata.promptID}`)
+  check("M4: child prompts carry the back-link, the unlinked continue stays unclaimed",
+    stamped.p1?.metadata?.toolCallID === "tool_task_1" && stamped.p1?.metadata?.toolSessionID === mock3.SID
+      && stamped.p2?.metadata?.toolCallID === "tool_task_2"
+      && stamped.cont?.metadata?.toolCallID === undefined,
+    `${stamped.p1?.metadata?.toolCallID ?? "-"} / ${stamped.p2?.metadata?.toolCallID ?? "-"} / cont=${stamped.cont?.metadata?.toolCallID ?? "-"}`)
+  await dispose3?.()
 } catch (error) {
   console.error("SUITE ERROR:", error.message)
   failures.push(`suite-error: ${error.message}`)

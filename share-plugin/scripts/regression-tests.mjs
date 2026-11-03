@@ -323,6 +323,51 @@ try {
   failures.push("config: unit block crashed")
 }
 
+// Task-call -> child-prompt pairing ladder (pure): text coverage with an
+// arrival tiebreaker, no re-claiming, and unpaired when nothing clears
+// the bar (an unanchored card beats a wrong anchor).
+try {
+  const { pairPromptID, promptCoverage } = await import(pathToFileURL(join(here(".."), "dist", "task-pairing.js")).href)
+  const PREAMBLE = "You are a subagent spawned by another session.\n"
+  const t0 = 1_000_000
+  const cands = [
+    { id: "p1", created: t0 + 100, text: PREAMBLE + "review the config file" },
+    // auto-continue, not linked to any call
+    { id: "p_pre", created: t0 + 400, text: "continue: summarize findings so far" },
+    { id: "p2", created: t0 + 1_000, text: "check these files:\n<<<host-inlined file contents>>>\nreport issues" },
+    { id: "p3", created: t0 + 2_000, text: "review the config file" },
+  ].sort((a, b) => a.created - b.created)
+  const claimed = new Set()
+  const pick1 = pairPromptID({ partID: "a", created: t0 + 50, prompt: "review the config file" }, cands, claimed)
+  claimed.add(pick1)
+  const pick2 = pairPromptID({ partID: "b", created: t0 + 900, prompt: "check these files:\nreport issues" }, cands, claimed)
+  claimed.add(pick2)
+  const pick3 = pairPromptID({ partID: "c", created: t0 + 1_900, prompt: "review the config file" }, cands, claimed)
+  claimed.add(pick3)
+  // nothing in the window and no text match: unpaired
+  const pickNone = pairPromptID({ partID: "d", created: t0 + 60_000, prompt: "something else entirely" }, cands, claimed)
+  const ok = pick1 === "p1" && pick2 === "p2" && pick3 === "p3" && pickNone === undefined
+  console.log(`${ok ? "PASS" : "FAIL"} task-pairing: ladder (${[pick1, pick2, pick3, pickNone].join(",")})`)
+  if (!ok) failures.push("task-pairing: ladder")
+
+  // line-alignment coverage: junk around/inside the prompt costs nothing,
+  // spread internal edits cost only their own length, shuffles fail
+  const body = Array.from({ length: 40 }, (_, i) => `step ${i}: examine module${i} and verify outputs`).join("\n")
+  const renamed = body.replaceAll("module", "widget")
+  // 2k lines of host-inlined file content before AND after the prompt
+  const junk = Array.from({ length: 2_000 }, (_, i) => `inlined file line ${i}`).join("\n")
+  const c_inline = promptCoverage(`${junk}\n${body}\n${junk}`, body)
+  const c_renamed = promptCoverage(renamed, body)
+  const c_shuffle = promptCoverage(body.split("\n").reverse().join("\n"), body)
+  const c_pre = promptCoverage(PREAMBLE + body, body)
+  const ok2 = c_inline === 1 && c_renamed >= 0.75 && c_pre === 1 && c_shuffle < 0.75
+  console.log(`${ok2 ? "PASS" : "FAIL"} task-pairing: line alignment (inline=${c_inline} renamed=${c_renamed.toFixed(2)} preamble=${c_pre} shuffled=${c_shuffle.toFixed(2)})`)
+  if (!ok2) failures.push("task-pairing: line alignment")
+} catch (e) {
+  console.log("FAIL task-pairing unit block:", String(e.message || e))
+  failures.push("task-pairing: unit block crashed")
+}
+
 // Wave 3 redaction (pure): detectors fire, markers are stable, user
 // rules extend, tildization is display-only, and CLEAN items pass
 // through zero-copy.
