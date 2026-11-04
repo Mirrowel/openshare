@@ -402,20 +402,20 @@ function FileCard(props: {
               }}
             />
           </Show>
-          <Show when={attempt() === 1} keyed>
-            <Dynamic
-              component={fileComponent as any}
-              mode="text"
-              file={{ name: props.path, contents: props.contents, lang: (props.lang || undefined) as any }}
-              overflow={ov()}
-              media={media() as any}
-              onRendered={() => {
-                syncOutputCards()
-                props.onRendered?.()
-              }}
-            />
-          </Show>
-        </GutterOffset>
+           <Show when={attempt() === 1} keyed>
+             <Dynamic
+               component={fileComponent as any}
+               mode="text"
+               file={{ name: props.path, contents: props.contents, lang: (props.lang || undefined) as any }}
+               overflow={ov()}
+               media={media() as any}
+               onRendered={() => {
+                 syncOutputCards()
+                 props.onRendered?.()
+               }}
+             />
+           </Show>
+         </GutterOffset>
       </div>
     </FileBody>
   )
@@ -643,7 +643,7 @@ const EditTool = (props: ToolProps) => {
           >
             <div data-component="edit-content">
               {/* keyed branch pair: Solid's Dynamic has NO remount API (a
-                  `key` prop is passed through and does nothing: the first card
+                  `key` prop is just passed through and does nothing: the first card
                   of a batch rendered split and the rest stayed unified
                   forever). Distinct <Show keyed> branches actually re-create
                   the File when the mode flips. */}

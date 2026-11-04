@@ -53,12 +53,19 @@
    applications below are OPT-IN per view via html[data-osh-code-surface]
    (conversation applies it; classic and the skins keep their current
    surfaces by default). */
-:root {
-  --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
-  /* the same tint over the page, opaque: the sticky line-number gutter
-     must hide code scrolling under it */
-  --osh-code-solid: color-mix(in oklab, var(--text-base) 7%, var(--background-stronger, var(--background-base)));
-}
+ :root {
+  /* code-surface tint, LIGHT themes only (dark themes read better
+     without it): a darker-but-still-transparent black overlay; dark
+     schemes resolve to fully transparent. light-dark() keys off each
+     theme's color-scheme, so per-theme emission is unnecessary. The
+     solid variant stays opaque - the sticky line-number gutter must
+     hide code scrolling under it */
+  --osh-code-bg: light-dark(color-mix(in oklab, #000 10%, transparent), transparent);
+  --osh-code-solid: light-dark(
+    color-mix(in oklab, #000 10%, var(--background-stronger, var(--background-base))),
+    var(--background-stronger, var(--background-base))
+  );
+ }
 /* the kit sets the highlighter block's background inline */
 html[data-osh-code-surface] [data-component="markdown-code"] pre.shiki {
   background-color: var(--osh-code-bg) !important;
@@ -585,13 +592,13 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
 }
-html[data-osh-code-surface] [data-component="osh-file-body"] {
+/* file-card bodies get the tint in EVERY view (the painted surface is
+   pierre's, so the tint rides the --opencode-diffs-bg hook) */
+[data-component="osh-file-body"] {
   background: var(--osh-code-solid);
-  /* the kit's hook for the diff/gutter background; opaque so scrolled
-     code never shows through the sticky gutter */
   --opencode-diffs-bg: var(--osh-code-solid);
 }
-html[data-osh-code-surface] [data-component="osh-file-body"] diffs-container {
+[data-component="osh-file-body"] diffs-container {
   background-color: transparent;
 }
 html[data-osh-code-surface] .osh-pre {
@@ -1611,19 +1618,23 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 
 /* Code surfaces carry their own syntax hues for the roles the global
    theme renders as greys (keyword/operator/comment = text-weak/base).
-   Token DENSITY already matches editor baselines; without these the
-   cards read near-monochrome. Values come per theme from
-   scripts/build-themes.mjs; the fallbacks mirror the upstream greys for
-   a build that somehow emitted none. Scoped to file cards,
-   preformatted outputs and markdown code blocks only - chrome
-   consumers of the same globals (the thought end-mark, reasoning
-   labels, diff badges) keep the quiet palette. Custom properties
-   inherit through pierre's shadow roots, so one rule covers the
-   rendered spans. */
+    Token DENSITY already matches editor baselines; without these the
+    cards read near-monochrome. Keyword/operator/comment values come per
+    theme from scripts/build-themes.mjs; string/type/constant and every
+    other role keep the KIT's static values so prose inline code, code
+    blocks, thinking panels and file cards render the same color for
+    the same role everywhere. Scoped to file cards, preformatted
+    outputs and markdown code blocks only - chrome consumers of the
+    same globals (the thought end-mark, reasoning labels, diff badges)
+    keep the quiet palette. Custom properties inherit through pierre's
+    shadow roots, so one rule covers the rendered spans. */
 .osh-file-scroll, .osh-pre, [data-transcript-scroll] pre {
   --syntax-keyword: var(--osh-code-keyword, var(--text-weak));
   --syntax-operator: var(--osh-code-operator, var(--text-base));
   --syntax-comment: var(--osh-code-comment, var(--text-weak));
+  /* transparent on dark schemes (see :root): nothing shows */
+  background-color: var(--osh-code-bg) !important;
+  border-radius: 8px;
 }
 
 .osh-file-scroll {
