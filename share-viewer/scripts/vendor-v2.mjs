@@ -1044,16 +1044,15 @@ function mainThreadWorker(): Worker {
   if (existsSync(p)) {
     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("anchor?: string")) {
-      const before = s
-      s = s.replace(
-        "export type NavigateToSessionFn = (sessionID: string) => void",
-        "export type NavigateToSessionFn = (sessionID: string, anchor?: string) => void",
-      )
-      s = s.replace(
-        "export type SessionHrefFn = (sessionID: string) => string",
-        "export type SessionHrefFn = (sessionID: string, anchor?: string) => string",
-      )
-      if (s === before) throw new Error("vendor-v2: data.tsx href/navigate type anchors missing - upstream drifted")
+      // per-anchor assertions: a whole-block comparison passes when only
+      // ONE of the two signatures applied, silently shipping the other
+      // un-typed
+      const a1 = "export type NavigateToSessionFn = (sessionID: string) => void"
+      const a2 = "export type SessionHrefFn = (sessionID: string) => string"
+      if (!s.includes(a1)) throw new Error("vendor-v2: data.tsx NavigateToSessionFn anchor missing - upstream drifted")
+      if (!s.includes(a2)) throw new Error("vendor-v2: data.tsx SessionHrefFn anchor missing - upstream drifted")
+      s = s.replace(a1, "export type NavigateToSessionFn = (sessionID: string, anchor?: string) => void")
+      s = s.replace(a2, "export type SessionHrefFn = (sessionID: string, anchor?: string) => string")
       writeFileSync(p, s)
     }
   }
@@ -1100,7 +1099,41 @@ function mainThreadWorker(): Worker {
       const E = "    name: optional(Schema.String),\n    provider: optional(Schema.String),\n    sessionID: optional(Schema.String),"
       if (!s.includes(E)) throw new Error("vendor-v2: toolMetadata schema anchor missing - upstream drifted")
       s = s.replace(E, E + "\n    promptID: optional(Schema.String),")
-      writeFileSync(s ? t : t, s)
+      // the subagent card anchors to its paired child prompt the same
+      // way (the viewer's fallback writes promptID onto subagent parts)
+      const F = "  const taskHref = createMemo(() => sessionLink(taskId(), data.sessionHref))"
+      if (!s.includes(F)) throw new Error("vendor-v2: subagent taskHref anchor missing - upstream drifted")
+      s = s.replace(
+        F,
+        `  const taskHref = createMemo(() => {
+    // openshare fork: the subagent card anchors to the paired child
+    // prompt like the task card does (plugin promptID stamp or the
+    // viewer's old-share fallback writes it onto this part too).
+    // toolMetadata directly - the \`metadata\` memo is declared further
+    // down and solid memos evaluate eagerly (TDZ)
+    const meta = toolMetadata(props.metadata)
+    const anchor = props.tool === "subagent" && typeof meta.promptID === "string" ? (meta.promptID as string) : undefined
+    return sessionLink(taskId(), data.sessionHref, anchor)
+  })`,
+      )
+      const G = `function sessionLink(id: string | undefined, href?: (id: string) => string | undefined) {
+  if (!id) return undefined
+
+  return href?.(id)
+}`
+      if (!s.includes(G)) throw new Error("vendor-v2: sessionLink anchor missing - upstream drifted")
+      s = s.replace(
+        G,
+        `// openshare fork: optional prompt anchor rides the link hash so the
+// subagent card lands on the paired child prompt (same contract as the
+// task card's sessionHref)
+function sessionLink(id: string | undefined, href?: (id: string, anchor?: string) => string | undefined, anchor?: string) {
+  if (!id) return undefined
+
+  return href?.(id, anchor)
+}`,
+      )
+      writeFileSync(t, s)
     }
   }
 }
@@ -1604,17 +1637,27 @@ $2`,
     if (existsSync(p)) {
       let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: `defer` defaults true")) {
-        const before = s
+        // per-anchor assertions: a whole-block comparison passes when any
+        // SINGLE replace no-ops, silently shipping that site unfixed
+        const D1 = "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean }) {"
+        const D2 = "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady />"
+        const D3 = '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />'
+        const D4 = '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} />'
+        const D5 = '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} />'
+        const D6 = '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n              />'
+        for (const [n, a] of Object.entries({ D1, D2, D3, D4, D5, D6 })) {
+          if (!s.includes(a)) throw new Error(`vendor-v2: message-content defer anchor ${n} missing - upstream drifted`)
+        }
         s = s.replace(
-          "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean }) {",
+          D1,
           "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean; defer?: boolean }) {",
         )
         s = s.replace(
-          "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady />",
+          D2,
           "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady={props.defer !== false} />",
         )
         s = s.replace(
-          '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />',
+          D3,
           '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />',
         )
         // assistant text parts and summaries render the instant
@@ -1624,22 +1667,21 @@ $2`,
         // element in its place, then everything moves" report); the
         // fallback is metrically identical, so the rich swap never reflows
         s = s.replace(
-          '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} />',
+          D4,
           '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} defer={false} />',
         )
         s = s.replace(
-          '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} />',
+          D5,
           '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} defer={false} />',
         )
         s = s.replace(
-          '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n              />',
+          D6,
           '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n                defer={false}\n              />',
         )
         // (a hidden "prewarm" copy while collapsed was tried and deleted:
         // collapsed bodies unmount inside Collapsible.Content, so the
         // prewarm unmounted with them and never prewarmed anything - it
         // was a no-op; defer={false} is the entire snap fix)
-        if (s === before) throw new Error("vendor-v2: message-content anchors missing - upstream drifted")
         writeFileSync(p, s)
       }
 

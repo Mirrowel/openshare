@@ -90,10 +90,13 @@ export function ConversationView(props: ViewProps) {
     window.history.pushState({}, "", `/s/${share}${t ? `#${t.userID}` : ""}`)
     window.dispatchEvent(new PopStateEvent("popstate"))
   }
-  // arriving with #<messageID> jumps to that turn
+  // arriving with #<messageID> jumps to that turn. A snapshot's compound
+  // child-route hash carries the sub page and a prompt anchor
+  // (n<index>:<msgID>) - strip the sub-page prefix (app.tsx's hashJump
+  // does the same)
   createEffect(() => {
     props.sessionID
-    const id = decodeURIComponent(location.hash.slice(1))
+    const id = decodeURIComponent(location.hash.slice(1).replace(/^n\d+:/, ""))
     // a hash may point at any prompt of a burst; the group jumps as one
     const leader = leaderOf(turnGroups(), id)
     if (id && leader) queueMicrotask(() => timeline?.scrollToMessage(leader.id))

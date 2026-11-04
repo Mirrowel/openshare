@@ -54,8 +54,10 @@ function scopeHits(s: SessionSection, query: string, active: Set<SearchScope>): 
   }
   // prompts/responses are always rendered when their section is: no
   // part id is published, so the expansion engine never treats them as
-  // collapsed bodies and jumps resolve through the section instead
-  push("prompts", s.prompt)
+  // collapsed bodies and jumps resolve through the section instead.
+  // EVERY prompt of a burst is searchable (the leader alone dropped
+  // matches that only the 2nd+ prompt carries)
+  for (const p of s.prompts ?? [{ id: "", text: s.prompt }]) push("prompts", p.text)
   push("responses", s.response)
   if (active.has("thinking")) for (const r of s.reasoning) {
     // the kit synthesizes `${messageID}:reasoning:${ordinal}` for

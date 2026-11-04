@@ -521,12 +521,15 @@ function SessionView(props: {
               })
               const searching = createMemo(() => props.search.trim().length > 0)
               // hover previews for the prompt nav: the first text of the
-              // response that follows the prompt (240 chars)
+              // response that follows the prompt (240 chars). Scans to the
+              // GROUP's end - a burst leader is followed by further user
+              // prompts of the same turn before the assistant reply
               const responsePreview = (messageID: string | undefined) => {
                 if (!messageID) return undefined
                 const all = messages()
-                const index = all.findIndex((message) => message.id === messageID)
-                for (let i = index + 1; i < all.length && (all[i] as any)?.type !== "user"; i++) {
+                const group = groupOfLeader(turnGroups(), messageID)
+                if (!group) return undefined
+                for (let i = group.startIdx + 1; i < group.endIdx; i++) {
                   if ((all[i] as any)?.type !== "assistant") continue
                   for (const part of (all[i] as any).content ?? []) {
                     if (part.type === "text" && part.text?.trim()) return part.text.trim().slice(0, 240)
@@ -551,10 +554,6 @@ function SessionView(props: {
               // never enter the DOM. GATED on a real media query: a CSS-hidden
               // duplicate still mounts its own virtualizer and disclosure
               // store, and rows in the hidden copy swallow DOM-first queries.
-              // 900 (not 767): the single-turn surface engages exactly where
-              // the header/narrow-bar mode does - the 768-899 band otherwise
-              // ran the continuous desktop transcript inside a header that
-              // promised the single-turn view (blank/mangled on resize)
               // 900 (not 767): the single-turn surface engages exactly where
               // the header/narrow-bar mode does - the 768-899 band otherwise
               // ran the continuous desktop transcript inside a header that
@@ -901,10 +900,11 @@ function SessionView(props: {
                          </div>
                          </div>
                          <div class="!overflow-hidden osh-narrow-col">
-                        {/* narrow-viewport nav: the "Turn N of M" bar
-                            (PromptNav renders its NarrowBar below md);
-                            the desktop column's instance is CSS-hidden
-                            there, so the mobile branch carries its own */}
+                         {/* narrow-viewport nav: the "Turn N of M" bar
+                             (PromptNav renders its NarrowBar under
+                             900px); the desktop column's instance is
+                             CSS-hidden there, so the mobile branch
+                             carries its own */}
                         <Show when={userTurns().length >= NAV_MIN_TURNS}>
                           <PromptNav
                             only="narrow"
@@ -1130,11 +1130,16 @@ export function App() {
   // afterwards animates normally. The folded message store is keyed by
   // sessionID (an object, not an array), so count via keys; a hard
   // fallback timer in settings.ts guarantees the flag cannot stick.
+  // ONE-SHOT: the flag is gone after the first fire, and re-running the
+  // O(n) count plus a fresh timer per data rev is pure waste
+  let bootCleared = false
   createEffect(() => {
+    if (bootCleared) return
     const d = source.data()
     if (!d) return
     const rows = Object.values(d.message ?? {}).reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0)
     if (!rows) return
+    bootCleared = true
     setTimeout(() => document.documentElement.removeAttribute("data-osh-boot"), 400)
   })
 
@@ -1143,11 +1148,15 @@ export function App() {
   // under the reader mid-rebuild and the browser clamps scroll toward the
   // top. Same capture/reapply as settings changes, driven by data instead:
   // restore the transcript offset AND the window position unless the reader
-  // is following live at the bottom (the effect above owns that).
+  // is following live at the bottom (the effect above owns that). Uses
+  // the same SAME-LAYOUT scroller selection as the settings restore -
+  // after a layout crossing the first scroller in the DOM can be the
+  // wrong document.
   createEffect(() => {
     source.rev()
     const restore = () => {
-      const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
+      const scrollers = [...document.querySelectorAll<HTMLElement>("[data-transcript-scroll]")]
+      const el = scrollers.find((s) => !!s.closest(".osh-narrow-col") === lastTranscriptNarrow)
       if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
     }
     requestAnimationFrame(() => {

@@ -3,6 +3,8 @@
 // prompt. Display stays per-message (every prompt renders its own bubble);
 // only counting surfaces (nav lists, pill, focus mode, search jump lists)
 // count groups, so a 3-prompt burst reads as turn 6, not turns 6-8.
+// views/session-data.ts carries a parallel merge for paged sections - the
+// same consecutive-user rule; keep the two in step.
 
 export type TurnGroup = {
   /** the first prompt of the burst; the group's identity for nav/active */

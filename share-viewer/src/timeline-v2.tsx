@@ -266,6 +266,17 @@ export function VirtualTimeline(props: {
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
     item.key !== getLastToggledRowKey() && item.start < (instance.scrollOffset ?? 0)
 
+  // restore-path detachers (end-chase, row-assert) register here: they
+  // arm inside a queueMicrotask, which has NO solid owner, so an
+  // onCleanup there silently no-ops and the listeners leak on unmount
+  const restoreCleanups: Array<() => void> = []
+  onCleanup(() => {
+    for (const fn of restoreCleanups) {
+      try { fn() } catch {}
+    }
+    restoreCleanups.length = 0
+  })
+
   // Stale-size convergence: rows that mount or resize during fast scroll
   // lose their deferred measurement to the virtualizer's mid-scroll drop
   // guards, and the ResizeObserver never re-fires without another
@@ -275,7 +286,7 @@ export function VirtualTimeline(props: {
   // kept the estimate mid-pass, 9.3k px of cumulative error). At
   // scroll-settle no guard applies, so one pass of measureElement over
   // every mounted row converges the whole layout.
-  let sweepTimer: ReturnType<typeof setTimeout> | undefined
+  let sweepTimer: ReturnType<typeof setTimeout> | undefined // legacy slot cleared on unmount
   // Cached-measurement handoff: tanstack's measureElement returns the
   // CACHE entry for any direct call while one exists (virtual-core
   // short-circuits before reading the DOM); only the ResizeObserver
@@ -301,15 +312,25 @@ export function VirtualTimeline(props: {
     if (!v.itemSizeCache) return
     const index = Number(el.dataset.index)
     if (!Number.isFinite(index)) return
-    const key = virtualizer.options.getItemKey(index)
+    // STALE-INDEX GUARD: cached out-of-window rows keep the data-index
+    // they last rendered with; after any insertion/removal that index
+    // maps to a DIFFERENT key, and an unguarded measure writes this
+    // row's height onto the wrong item. Only trust the pairing when it
+    // still resolves to this row's own key
+    if (virtualizer.options.getItemKey(index) !== el.dataset.rowKey) return
+    const key = el.dataset.rowKey as string
     const cached = v.itemSizeCache.get(key) as number | undefined
     if (cached === undefined) return
     const delta = Math.abs(cached - el.offsetHeight)
     if (delta <= 1) return
-    if (cacheGrace() && delta <= 80) return
     if (cacheGrace()) {
       // only the collapsed-disclosure row, whose height is final NOW
-      if (cached - el.offsetHeight <= 80) return
+      // (no mounted collapsible content): converging it at mount kills
+      // the phantom gap immediately. Every other row (text parts between
+      // fallback and rich markdown, open tool bodies awaiting pierre's
+      // first paint) still has height growth in flight - the cached size
+      // is the FINAL one there
+      if (delta <= 80) return
       if (!el.querySelector('[data-component="tool-trigger"]')) return
       if (el.querySelector('[data-slot="collapsible-content"]')) return
     }
@@ -317,38 +338,71 @@ export function VirtualTimeline(props: {
     virtualizer.measureElement(el)
   }
   const sweep = () => {
-    sweepTimer = undefined
     for (const { el } of rowEls.values()) {
       if (el.isConnected && el.dataset.index !== undefined) {
         convergeRow(el)
-        virtualizer.measureElement(el)
-        measurementCache.set(String(el.dataset.rowKey), el.offsetHeight)
+        // the same stale-index guard applies to the direct measure: a
+        // cached row whose index no longer resolves to its own key must
+        // not be measured at all
+        if (virtualizer.options.getItemKey(Number(el.dataset.index)) === el.dataset.rowKey) {
+          virtualizer.measureElement(el)
+          measurementCache.set(String(el.dataset.rowKey), el.offsetHeight)
+        }
       }
     }
   }
+  // debounced arm for scroll-settle (same-delay re-arms coalesce) plus
+  // independent passes for the flip's two-step convergence (a single
+  // debounced timer made the 400ms pass silently vanish under the later
+  // 1400ms one)
+  const sweepTimers = new Set<ReturnType<typeof setTimeout>>()
+  const scheduleSweep = (delay: number) => {
+    const t = setTimeout(() => {
+      sweepTimers.delete(t)
+      sweep()
+    }, delay)
+    sweepTimers.add(t)
+    return t
+  }
+  let sweepDebounce: ReturnType<typeof setTimeout> | undefined
   const armSweep = (delay = 180) => {
-    if (sweepTimer) clearTimeout(sweepTimer)
-    sweepTimer = setTimeout(sweep, delay)
+    if (sweepDebounce) clearTimeout(sweepDebounce)
+    sweepDebounce = scheduleSweep(delay)
   }
-  const measureRowSoon = (key: string) => {
-    // Retry a FIXED window (~30 frames): a measure that lands mid-scroll
-    // is silently dropped by the virtualizer (isScrolling guard), and a
-    // row mid expand/collapse ANIMATION reads "converged" at its
-    // pre-animation height - stopping at first convergence misses the
-    // whole animation, leaving rows below at stale offsets for the
-    // first frames (probe: 79px overlap). Feeding the size every frame
-    // for the animation's duration keeps the layout in step. Rows
-    // outside the virtual window have no item to verify against; the
-    // settle sweep owns those.
-    let tries = 0
-    const tick = () => {
-      const el = rowEls.get(key)?.el
-      if (!el?.isConnected) return
-      virtualizer.measureElement(el)
-      if (++tries < 30) requestAnimationFrame(tick)
+  const measureRowSoon = (() => {
+    // one in-flight loop per key: every onSizeChange used to start a
+    // fresh 30-frame rAF chain, stacking overlapping loops during
+    // streaming bursts
+    const inflight = new Map<string, () => void>()
+    return (key: string) => {
+      // Retry a FIXED window (~30 frames): a measure that lands mid-scroll
+      // is silently dropped by the virtualizer (isScrolling guard), and a
+      // row mid expand/collapse ANIMATION reads "converged" at its
+      // pre-animation height - stopping at first convergence misses the
+      // whole animation, leaving rows below at stale offsets for the
+      // first frames (probe: 79px overlap). Feeding the size every frame
+      // for the animation's duration keeps the layout in step. Rows
+      // outside the virtual window have no item to verify against; the
+      // settle sweep owns those.
+      inflight.get(key)?.()
+      let tries = 0
+      let stop = false
+      const cancel = () => { stop = true }
+      inflight.set(key, cancel)
+      const tick = () => {
+        if (stop) return
+        const el = rowEls.get(key)?.el
+        if (!el?.isConnected) {
+          inflight.delete(key)
+          return
+        }
+        virtualizer.measureElement(el)
+        if (++tries < 30) requestAnimationFrame(tick)
+        else inflight.delete(key)
+      }
+      requestAnimationFrame(tick)
     }
-    requestAnimationFrame(tick)
-  }
+  })()
 
   // measure through tanstack's own measureElement (it owns the resize
   // observer and writes real heights back per index). A hand-rolled
@@ -444,27 +498,9 @@ export function VirtualTimeline(props: {
     // a mass collapse shrinks thousands of px above the viewport and the
     // compensation cascade dies in the reflow freeze, dropping the
     // reader tens of rows down the list. Re-pin after settle.
-    const el0 = scrollElement
-    let anchorIndex: number | undefined
-    let anchorKey: string | undefined
-    if (el0) {
-      const top = el0.getBoundingClientRect().top
-      // VISUAL order, not map order: rowEls is creation-ordered, and the
-      // first map entry crossing the viewport edge is routinely a stale
-      // out-of-window row (same trap as DOM-order anchor reads)
-      const candidates = [...rowEls.values()]
-        .map((entry) => ({ el: entry.el, r: entry.el.getBoundingClientRect() }))
-        .filter((x) => x.r.height > 0 && x.r.bottom > top + 4)
-        .sort((a, b) => a.r.top - b.r.top)
-      const first = candidates[0]?.el
-      if (first && first.dataset.index !== undefined) {
-        const idx = Number(first.dataset.index)
-        if (Number.isFinite(idx)) {
-          anchorIndex = idx
-          anchorKey = String(first.dataset.rowKey)
-        }
-      }
-    }
+    const anchor = visualTopRow(true)
+    const anchorIndex = anchor.index !== undefined && Number.isFinite(anchor.index) ? anchor.index : undefined
+    const anchorKey = anchor.key
     requestAnimationFrame(() => {
       if (!rowEls.size) return
       const windowKeys = new Set(virtualizer.getVirtualItems().map((item) => String(item.key)))
@@ -479,15 +515,19 @@ export function VirtualTimeline(props: {
       }
       virtualizer.measure()
       // convergence without a scroll nudge: the sweep normally rides on
-      // scroll, but the reader has not scrolled - the flip did
-      armSweep(400)
-      armSweep(1400)
+      // scroll, but the reader has not scrolled - the flip did. Two
+      // INDEPENDENT passes (armSweep debounces, which silently ate the
+      // early pass when both went through it)
+      scheduleSweep(400)
+      scheduleSweep(1400)
       if (anchorIndex === undefined || !anchorKey) return
       let cancelled = false
-      const cancel = () => { cancelled = true }
-      window.addEventListener("wheel", cancel, { once: true, passive: true })
-      window.addEventListener("pointerdown", cancel, { once: true, passive: true })
-      window.addEventListener("keydown", cancel, { once: true, passive: true })
+      const onWheel = () => { cancelled = true }
+      const onPointer = () => { cancelled = true }
+      const onKey = () => { cancelled = true }
+      window.addEventListener("wheel", onWheel, { passive: true })
+      window.addEventListener("pointerdown", onPointer, { passive: true })
+      window.addEventListener("keydown", onKey, { passive: true })
       // GLUE, not a late pin: re-pinning after the cascade shows the
       // reader a drift-then-snap. Hold the anchor row at the viewport
       // top every frame through the whole reflow instead - the position
@@ -495,8 +535,16 @@ export function VirtualTimeline(props: {
       // anchor that lost its element (estimate sums alone land wrong)
       const t0 = performance.now()
       let bootstrapped = false
+      const detach = () => {
+        window.removeEventListener("wheel", onWheel)
+        window.removeEventListener("pointerdown", onPointer)
+        window.removeEventListener("keydown", onKey)
+      }
       const glue = () => {
-        if (cancelled) return
+        if (cancelled) {
+          detach()
+          return
+        }
         const el = rowEls.get(anchorKey!)?.el
         if (el && el.isConnected && scrollElement) {
           const delta = el.getBoundingClientRect().top - scrollElement.getBoundingClientRect().top
@@ -506,6 +554,7 @@ export function VirtualTimeline(props: {
           virtualizer.scrollToIndex(anchorIndex, { behavior: "auto", align: "start" })
         }
         if (performance.now() - t0 < 2600) requestAnimationFrame(glue)
+        else detach()
       }
       requestAnimationFrame(glue)
     })
@@ -516,11 +565,12 @@ export function VirtualTimeline(props: {
   // imperative controls for the parent (focus mode, hotkeys, rail)
   onMount(() => {
     props.onReady?.({ scrollToMessage: (id) => scrollToMessage(id) })
-    // the virtualizer learns the scroll offset ONLY from REAL scroll
-    // events (synthetic dispatchEvent is ignored; scrollOffset starts
-    // null and getScrollOffset falls back to 0 until the first event).
-    // Whatever sets scrollTop before its listener attaches - the snapshot
-    // restore microtask, the browser's own session restoration, a
+    // the virtualizer learns the scroll offset ONLY from scroll events
+    // that reach its listener (scrollOffset starts null and falls back
+    // to 0 until the first one arrives; a synthetic dispatch DOES
+    // update it, but only once the listener exists). Whatever sets
+    // scrollTop before the listener attaches - the snapshot restore
+    // microtask, the browser's own session restoration, a
     // resize-preserved position - leaves the instance believing offset 0
     // while the real scrollTop is thousands of px: it renders the TOP
     // rows over the viewport (the phantom overlay) and every out-of-range
@@ -529,6 +579,7 @@ export function VirtualTimeline(props: {
     // forces the sync - retried on a schedule because the adapter
     // attaches its scroll listener at an unpredictable moment on fast
     // remounts (a viewport crossing mounts this component mid-resize)
+    const jitterTimers: ReturnType<typeof setTimeout>[] = []
     const jitter = () => {
       try {
         const el = scrollElement
@@ -538,8 +589,11 @@ export function VirtualTimeline(props: {
         el.scrollTop = st
       } catch {}
     }
+    jitterTimers.push(setTimeout(jitter, 150), setTimeout(jitter, 400), setTimeout(jitter, 900), setTimeout(jitter, 1800))
     requestAnimationFrame(jitter)
-    for (const ms of [150, 400, 900, 1800]) setTimeout(jitter, ms)
+    onCleanup(() => {
+      for (const t of jitterTimers) clearTimeout(t)
+    })
   })
 
   // ---- deep links (see src/deep-link.ts) --------------------------------
@@ -720,6 +774,16 @@ export function VirtualTimeline(props: {
 
   // debounced snapshot of measured rows + offset (restores exact layout)
   let saveTimer: ReturnType<typeof setTimeout> | undefined
+  // last anchor captured while rows were alive: solid runs cleanups LIFO,
+  // so the row-dispose cleanup (registered later) runs BEFORE the unmount
+  // save below and visualTopAnchor() would find no rows - cache the anchor
+  // on every save and reuse it at unmount
+  let lastAnchor: { key?: string; delta: number } = { delta: 0 }
+  const anchorPayload = () => {
+    const a = visualTopAnchor()
+    if (a.key) lastAnchor = a
+    return lastAnchor.key ? { topKey: lastAnchor.key, topDelta: lastAnchor.delta } : {}
+  }
   const saveSnapshot = () => {
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
@@ -735,7 +799,7 @@ export function VirtualTimeline(props: {
         // the clamp can land while content is mid-measure, leaving the
         // saved position a few dozen px above the then-current end
         atEnd: el.scrollHeight - el.scrollTop - el.clientHeight <= 48,
-        ...(() => { const a = visualTopAnchor(); return a.key ? { topKey: a.key, topDelta: a.delta } : {} })(),
+        ...anchorPayload(),
       })
     }, 200)
   }
@@ -773,6 +837,8 @@ export function VirtualTimeline(props: {
   onCleanup(() => {
     if (saveTimer) clearTimeout(saveTimer)
     if (sweepTimer) clearTimeout(sweepTimer)
+    for (const t of sweepTimers) clearTimeout(t)
+    sweepTimers.clear()
     const el = scrollElement
     if (el && el.scrollHeight > 0) {
       // same shape as the scroll-path save: the read gate rejects
@@ -783,7 +849,9 @@ export function VirtualTimeline(props: {
         offset: el.scrollTop,
         width: viewportWidth(),
         atEnd: el.scrollHeight - el.scrollTop - el.clientHeight <= 48,
-        ...(() => { const a = visualTopAnchor(); return a.key ? { topKey: a.key, topDelta: a.delta } : {} })(),
+        // cached anchor: rows are already disposed by the LIFO cleanup
+        // order, so visualTopAnchor() would read nothing here
+        ...(lastAnchor.key ? { topKey: lastAnchor.key, topDelta: lastAnchor.delta } : {}),
       })
     }
     if (measurementCache.size > 4000) measurementCache.clear()
@@ -863,7 +931,12 @@ export function VirtualTimeline(props: {
   // remount), and a pixels-only restore then lands on the wrong row;
   // restoring BY ROW + DELTA is immune to that and reproduces partially-
   // scrolled positions exactly (a cut row's top belongs above the fold)
-  const visualTopAnchor = (): { key?: string; delta: number } => {
+  // the visual-first row intersecting the viewport top, in VISUAL order
+  // (rowEls is creation-ordered; DOM/map order reads a wrong row), plus
+  // its signed offset from the viewport top. Shared by the snapshot
+  // anchor and the flip's pre-capture; the flip additionally needs the
+  // row's virtualizer index, so it passes withIndex
+  const visualTopRow = (withIndex = false): { key?: string; delta: number; index?: number } => {
     const el = scrollElement
     if (!el) return { delta: 0 }
     const top = el.getBoundingClientRect().top
@@ -873,7 +946,12 @@ export function VirtualTimeline(props: {
       .sort((a, b) => a.r.top - b.r.top)
     const first = candidates[0]
     if (!first) return { delta: 0 }
-    return { key: first.el.dataset.rowKey, delta: Math.round(first.r.top - top) }
+    const idx = withIndex && first.el.dataset.index !== undefined ? Number(first.el.dataset.index) : undefined
+    return { key: first.el.dataset.rowKey, delta: Math.round(first.r.top - top), index: idx }
+  }
+  const visualTopAnchor = (): { key?: string; delta: number } => {
+    const { key, delta } = visualTopRow()
+    return { key, delta }
   }
 
   createEffect(() => {
@@ -1078,7 +1156,7 @@ export function VirtualTimeline(props: {
             el.addEventListener("touchstart", cancel, { passive: true })
             el.addEventListener("pointerdown", cancel, { passive: true })
             window.addEventListener("keydown", keyCancel)
-            onCleanup(cancel)
+            restoreCleanups.push(cancel)
           } else if (restored.topKey) {
             // the saved heights can disagree with the real DOM (estimate-
             // poisoned slots from a mass flip); the offset alone then
@@ -1086,13 +1164,20 @@ export function VirtualTimeline(props: {
             // delta against the live element - with honest heights the
             // correction is 0. Bounded, cancelled by any direct input
             let cancelled = false
-            const cancel = () => { cancelled = true }
-            const keyCancel = (e: KeyboardEvent) => {
-              if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) cancel()
+            const detach = () => {
+              cancelled = true
+              el.removeEventListener("wheel", onIn)
+              el.removeEventListener("touchstart", onIn)
+              el.removeEventListener("pointerdown", onIn)
+              window.removeEventListener("keydown", keyCancel)
             }
-            el.addEventListener("wheel", cancel, { passive: true })
-            el.addEventListener("touchstart", cancel, { passive: true })
-            el.addEventListener("pointerdown", cancel, { passive: true })
+            const onIn = () => detach()
+            const keyCancel = (e: KeyboardEvent) => {
+              if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) detach()
+            }
+            el.addEventListener("wheel", onIn, { passive: true })
+            el.addEventListener("touchstart", onIn, { passive: true })
+            el.addEventListener("pointerdown", onIn, { passive: true })
             window.addEventListener("keydown", keyCancel)
             const t0 = performance.now()
             const assertRow = () => {
@@ -1103,15 +1188,10 @@ export function VirtualTimeline(props: {
                 if (Math.abs(delta) > 1) el.scrollTop += delta
               }
               if (performance.now() - t0 < 1800) requestAnimationFrame(assertRow)
-              else {
-                el.removeEventListener("wheel", cancel)
-                el.removeEventListener("touchstart", cancel)
-                el.removeEventListener("pointerdown", cancel)
-                window.removeEventListener("keydown", keyCancel)
-              }
+              else detach()
             }
             requestAnimationFrame(assertRow)
-            onCleanup(cancel)
+            restoreCleanups.push(detach)
           }
         })
       }}

@@ -961,11 +961,12 @@ html[data-color-scheme="light"] {
      indented text under the rail
    - the body scrolls under a 26rem cap only when the thought actually
      overflows it; the shared per-card drag system (data-osh-out + grip)
-     resizes it
+   resizes it
    Open reserves the FULL height instantly (the vendored open handler
-   writes the final height to --osh-anim-h and suppresses the height
-   transition for two frames) while the panel pours in through its own
-   max-height animation - a CSS height animation on the row itself
+   polls measureWhenReady AFTER the flip and writes the final height to
+   --osh-anim-h, cached on close; the CSS 26rem fallback holds the row
+   meanwhile) while the content's own height transition pours the panel
+   in - a CSS height animation on the row itself
    reports intermediate sizes to the virtualizer's ResizeObserver,
    which positions rows below one frame behind (measured ~60px visible
    overlap mid-animation). Collapse animates the height down (safe
@@ -973,7 +974,8 @@ html[data-color-scheme="light"] {
    `scrollbar-width` on the body would DISABLE the webkit pseudo
    scrollbar entirely (measured in the transcript-scrollbar round) -
    the bar is webkit-only on purpose - and CSS vars inherit downward,
-   so --osh-anim-h is set on the CONTENT element and the panel reads it. */
+   so --osh-anim-h is set on the PART element (it survives the closed-
+   state content unmount) and the content inherits it. */
  [data-component="reasoning-part"] [data-slot="collapsible-content"] {
   height: 0;
   overflow: hidden;
@@ -1105,10 +1107,7 @@ html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="
 }
 /* the clipped fade: ONLY while unread content sits below (scrolled state
    from output-resize); the collapsed max-height-0 panel clips overflow,
-   so closed panels never show it */
-[data-osh-out="think"][data-osh-clipped]::after {
-  content: none;
-}
+    so closed panels never show it */
 [data-osh-out="think"][data-osh-clipped][data-more-down]::after {
   content: "";
   position: absolute;
@@ -1121,7 +1120,7 @@ html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="
 }
 @media (prefers-reduced-motion: reduce) {
   [data-component="reasoning-part"] [data-slot="collapsible-content"],
-  .osh-think-panel {
+  .osh-think-end {
     transition: none !important;
   }
 }

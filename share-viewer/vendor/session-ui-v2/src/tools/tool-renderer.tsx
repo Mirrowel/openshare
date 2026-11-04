@@ -356,10 +356,13 @@ function urls(text: string | undefined) {
   ]
 }
 
-function sessionLink(id: string | undefined, href?: (id: string) => string | undefined) {
+// openshare fork: optional prompt anchor rides the link hash so the
+// subagent card lands on the paired child prompt (same contract as the
+// task card's sessionHref)
+function sessionLink(id: string | undefined, href?: (id: string, anchor?: string) => string | undefined, anchor?: string) {
   if (!id) return undefined
 
-  return href?.(id)
+  return href?.(id, anchor)
 }
 
 function taskSession(
@@ -1394,7 +1397,16 @@ export function ToolDisplay(
     return toolMetadata(props.metadata).sessionID || undefined
   })
 
-  const taskHref = createMemo(() => sessionLink(taskId(), data.sessionHref))
+  const taskHref = createMemo(() => {
+    // openshare fork: the subagent card anchors to the paired child
+    // prompt like the task card does (plugin promptID stamp or the
+    // viewer's old-share fallback writes it onto this part too).
+    // toolMetadata directly - the `metadata` memo is declared further
+    // down and solid memos evaluate eagerly (TDZ)
+    const meta = toolMetadata(props.metadata)
+    const anchor = props.tool === "subagent" && typeof meta.promptID === "string" ? (meta.promptID as string) : undefined
+    return sessionLink(taskId(), data.sessionHref, anchor)
+  })
 
   const taskSubtitle = createMemo(() => {
     if (props.tool !== "subagent") return undefined

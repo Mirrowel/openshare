@@ -1,7 +1,9 @@
 // @refresh reload
 import { render } from "solid-js/web"
 import { applySettings, readSettings } from "./settings"
-import "./mem-probe"
+// the console memory profiler is a dev tool: a static import ships its
+// sampling machinery in the production bundle for nothing
+if (import.meta.env.DEV) import("./mem-probe")
 // pre-paint: apply the settings cookie before anything renders (no theme flash)
 const __s = readSettings()
 applySettings(__s)

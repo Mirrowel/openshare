@@ -366,7 +366,9 @@ export function applySettings(s: OshSettings) {
 let lastMassKeys = ""
 let flipTimer: ReturnType<typeof setTimeout> | undefined
 function markMassDisclosureFlip(s: OshSettings) {
-  const keys = `${s.reasoningOpen}|${s.toolGrouping}|${s.autoExpand?.join(",") ?? ""}`
+  // groupTools participates: changing the custom grouping set re-groups
+  // rows (a structural reflow with the same animation-storm shape)
+  const keys = `${s.reasoningOpen}|${s.toolGrouping}|${s.groupTools?.join(",") ?? ""}|${s.autoExpand?.join(",") ?? ""}`
   if (keys === lastMassKeys) return
   const first = lastMassKeys === ""
   lastMassKeys = keys
@@ -385,7 +387,13 @@ function markMassDisclosureFlip(s: OshSettings) {
   }
   html.setAttribute("data-osh-flip", "")
   if (flipTimer) clearTimeout(flipTimer)
-  flipTimer = setTimeout(() => html.removeAttribute("data-osh-flip"), 700)
+  flipTimer = setTimeout(() => {
+    html.removeAttribute("data-osh-flip")
+    // remove the snap classes with the flag: a later flip would
+    // otherwise re-activate the marker on rows that have since scrolled
+    // into view and silently suppress their animation
+    for (const row of document.querySelectorAll<HTMLElement>(".osh-snap-row")) row.classList.remove("osh-snap-row")
+  }, 700)
 }
 
 /** wipe every saved setting and re-apply the defaults live: same as

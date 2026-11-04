@@ -60,7 +60,9 @@ export function useSessionSections(data: ShareData, sessionID: string): Accessor
     for (const m of msgs as any[]) {
       if (m?.type === "user") {
         // consecutive prompts with nothing between them merge into the
-        // current turn: one burst, one counting unit
+        // current turn: one burst, one counting unit. Same rule as
+        // src/turns.ts buildTurns (the timeline's grouping) - keep the
+        // two in step
         if (current && prevWasUser) {
           current.prompts.push({ id: m.id, text: typeof m.text === "string" ? m.text.trim() : "" })
           prevWasUser = true

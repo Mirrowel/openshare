@@ -5,7 +5,7 @@
 // they never reimplement data handling. The base lays out prompt / ordered
 // entries / response from the shared section model, skin wrappers around
 // each element kind.
-import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, type Component, type JSX, For } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { dismissSearchKey, searchKeyDismissed, searchOwnsDisclosure } from "../search-state"
 import { PromptNav } from "../hover-rail"
@@ -225,7 +225,12 @@ export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: n
       <w.PromptWrap section={p.section} settings={props.settings}>
         <div class="py-2" classList={{ "osh-flat-prompt": props.settings.promptStyle === "flat" }}>
           <Show when={props.skin.promptInBody !== false}>
-            <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{p.section.prompt}</p>
+            {/* every prompt of a burst renders its own bubble (leader
+                first); `prompt` alone dropped the 2nd+ prompts of a
+                parallel burst in every skin */}
+            <For each={p.section.prompts ?? [{ id: "", text: p.section.prompt }]}>
+              {(pr) => <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{pr.text}</p>}
+            </For>
           </Show>
           <MetaLine section={p.section} data={props.data} />
         </div>
