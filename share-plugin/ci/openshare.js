@@ -217,8 +217,8 @@ function resolveServer(cfg) {
   if (cfg.workerUrl)
     servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true };
   if (cfg.servers)
-    for (const [url2, entry] of Object.entries(cfg.servers))
-      servers[url2] = entry;
+    for (const [url, entry] of Object.entries(cfg.servers))
+      servers[url] = entry;
   const urls = Object.keys(servers);
   if (!urls.length)
     return;
@@ -801,7 +801,7 @@ function normalizeV1Message(info, parts) {
   if (info.role === "user") {
     const compaction = parts.find((p) => p?.type === "compaction");
     if (compaction) {
-      const message2 = {
+      const message = {
         id,
         type: "compaction",
         status: "completed",
@@ -810,7 +810,7 @@ function normalizeV1Message(info, parts) {
         recent: "",
         time: { created }
       };
-      return { message: message2 };
+      return { message };
     }
     const text = parts.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join(`
 `);
@@ -965,9 +965,9 @@ function compile(patterns) {
 function tildePath(p, home) {
   if (!p || !home || p.length <= home.length)
     return p;
-  const norm2 = (s) => s.replace(/[\\/]+/g, "/").replace(/\/$/, "");
-  const np = norm2(p);
-  const nh = norm2(home);
+  const norm = (s) => s.replace(/[\\/]+/g, "/").replace(/\/$/, "");
+  const np = norm(p);
+  const nh = norm(home);
   if (np === nh)
     return "~";
   if (np.startsWith(nh + "/"))
@@ -1359,19 +1359,19 @@ function createEngine(deps) {
     if (!raw || typeof raw !== "object")
       return;
     const p = raw;
-    const num2 = (v, d) => {
+    const num = (v, d) => {
       const n = Number(v);
       return Number.isFinite(n) && n >= 0 ? n : d;
     };
     const prev = policyOf(url);
     policyMap.set(url, {
       mode: p.mode === "turn" ? "turn" : "persistent",
-      turnGraceMs: num2(p.turnGraceMs, prev.turnGraceMs),
-      idleDropMs: num2(p.idleDropMs, prev.idleDropMs),
-      finalizeAfterMs: num2(p.finalizeAfterMs, prev.finalizeAfterMs),
-      debounceMinMs: num2(p.debounceMinMs, 0),
-      debounceMaxMs: Math.max(num2(p.debounceMaxMs, Infinity), num2(p.debounceMinMs, 0)),
-      completedDelayMaxMs: num2(p.completedDelayMaxMs, Infinity)
+      turnGraceMs: num(p.turnGraceMs, prev.turnGraceMs),
+      idleDropMs: num(p.idleDropMs, prev.idleDropMs),
+      finalizeAfterMs: num(p.finalizeAfterMs, prev.finalizeAfterMs),
+      debounceMinMs: num(p.debounceMinMs, 0),
+      debounceMaxMs: Math.max(num(p.debounceMaxMs, Infinity), num(p.debounceMinMs, 0)),
+      completedDelayMaxMs: num(p.completedDelayMaxMs, Infinity)
     });
     clampToPolicy();
     if (debugEvents)
@@ -3143,8 +3143,8 @@ function createEngine(deps) {
     if (sessionInfoValue)
       enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid));
     let modelSeen = false;
-    const consume = (messages2) => {
-      for (const message of messages2) {
+    const consume = (messages) => {
+      for (const message of messages) {
         const m = message.info ?? message;
         if (!m || typeof m.id !== "string")
           continue;
@@ -3256,31 +3256,31 @@ function createEngine(deps) {
     const parent = trackChild(sid, info);
     if (mode === "manual") {
       if (parent) {
-        const st3 = sessions.get(parent);
-        if (st3?.activated && !st3.closed) {
+        const st = sessions.get(parent);
+        if (st?.activated && !st.closed) {
           if (info)
-            enqueue(st3, itemFor("session", stripLocalFacts(redact(info)), sid));
+            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
         }
         return;
       }
       const flag = shareFlag(info);
-      const st2 = sessions.get(sid);
+      const st = sessions.get(sid);
       if (flag.enabled) {
-        if (st2?.activated && !st2.closed) {
+        if (st?.activated && !st.closed) {
           if (flag.opts)
-            applyOpts(st2, flag.opts);
+            applyOpts(st, flag.opts);
           if (info)
-            enqueue(st2, itemFor("session", stripLocalFacts(redact(info)), sid));
+            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
           if (t === "session.updated")
-            chain = chain.then(() => refreshOptOuts(st2)).catch(() => {});
+            chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
           return;
         }
         activate(sid, flag.opts, info);
         return;
       }
-      if (st2?.activated && !st2.closed && t === "session.updated") {
+      if (st?.activated && !st.closed && t === "session.updated") {
         log(`share disabled for ${sid} - removing`);
-        chain = chain.then(() => remove(st2)).catch((e) => logError("remove error", e?.message || e));
+        chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
         return;
       }
       return;
@@ -3427,16 +3427,16 @@ function createEngine(deps) {
               chain = chain.then(async () => {
                 if (created.closed)
                   return;
-                const info2 = await sessionInfo(created.client, main);
+                const info = await sessionInfo(created.client, main);
                 verifying.delete(main);
                 if (created.closed)
                   return;
-                const flag = shareFlag(info2);
-                const hasBinding = !!info2?.metadata?.[METADATA_KEY];
-                const createdMs = info2?.time?.created;
+                const flag = shareFlag(info);
+                const hasBinding = !!info?.metadata?.[METADATA_KEY];
+                const createdMs = info?.time?.created;
                 const isPreExisting = typeof createdMs === "number" && createdMs < bootTime;
                 if (debugEvents) {
-                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info2}`);
+                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info}`);
                 }
                 if (isPreExisting && !flag.enabled && !hasBinding) {
                   preExistingRetired.add(main);
@@ -3842,7 +3842,7 @@ var server_default = {
   setup: createV2ServerSetup()
 };
 export {
-  server_default as default,
+  OpenSharePlugin,
   PLUGIN_ID,
-  OpenSharePlugin
+  server_default as default
 };
