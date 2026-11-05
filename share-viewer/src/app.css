@@ -67,6 +67,13 @@
     color-mix(in oklab, #000 10%, var(--background-stronger, var(--background-base))),
     var(--background-stronger, var(--background-base))
   );
+  /* the separator step must be OPAQUE like the body solid it replaces:
+     a transparent tint would composite OVER the body solid and read as a
+     much darker band than the intended one-step lift */
+  --osh-sep-solid: light-dark(
+    color-mix(in oklab, #000 13%, var(--background-stronger, var(--background-base))),
+    var(--background-stronger, var(--background-base))
+  );
  }
 /* the kit sets the highlighter block's background inline */
 html[data-osh-code-surface] [data-component="markdown-code"] pre.shiki {
@@ -652,7 +659,7 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
    fallback would form a custom-property cycle). */
 [data-color-scheme="light"] [data-component="osh-file-body"] diffs-container {
   --text-base: #3f3f3f;
-  --diffs-bg-separator-override: var(--osh-tint-2);
+  --diffs-bg-separator-override: var(--osh-sep-solid);
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(100%, calc(2 * var(--osh-card)));
@@ -1133,11 +1140,19 @@ html[data-osh-flip] .osh-snap-row :where(.tool-collapsible[data-osh-pour]) > [da
 /* the trigger/content gap follows the collapse, rather than disappearing
    later when the content unmounts */
 [data-row-key] .tool-collapsible[data-osh-pour],
-[data-timeline-row] .tool-collapsible[data-osh-pour] {
+[data-timeline-row] .tool-collapsible[data-osh-pour],
+/* reasoning is opted out of the pour machinery but its close must land
+   at the same final geometry: without the gap transition the animated
+   end-state keeps the trigger/content gap that the unmount removes, and
+   the row snaps up 4-8px after the content drops */
+[data-row-key] [data-component="reasoning-part"] .tool-collapsible,
+[data-timeline-row] [data-component="reasoning-part"] .tool-collapsible {
   transition: gap 260ms cubic-bezier(0.32, 0.72, 0.16, 1);
 }
 [data-row-key] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])),
-[data-timeline-row] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])) {
+[data-timeline-row] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])),
+[data-row-key] [data-component="reasoning-part"] .tool-collapsible:not(:has(> [data-slot="collapsible-content"][data-expanded])),
+[data-timeline-row] [data-component="reasoning-part"] .tool-collapsible:not(:has(> [data-slot="collapsible-content"][data-expanded])) {
   gap: 0;
 }
 

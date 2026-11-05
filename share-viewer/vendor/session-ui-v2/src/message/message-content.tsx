@@ -1365,7 +1365,16 @@ export function AssistantReasoningContent(props: {
       setKeepAlive(true)
       measureWhenReady()
     } else {
-      unmountTimer = setTimeout(() => setKeepAlive(false), 420)
+      unmountTimer = setTimeout(() => {
+        setKeepAlive(false)
+        // same compositor-remnant guard as the tool pour close: the last
+        // painted frame of the panel can survive the unmount as a 1px line
+        const row = panelEl?.closest("[data-row-key],[data-timeline-row]") as HTMLElement | undefined
+        if (row) {
+          row.style.opacity = "0.999"
+          requestAnimationFrame(() => row.style.removeProperty("opacity"))
+        }
+      }, 420)
     }
   }, { defer: false }))
   const heading = createMemo(() => (props.streaming ? reasoningHeading(props.content.text) : ""))

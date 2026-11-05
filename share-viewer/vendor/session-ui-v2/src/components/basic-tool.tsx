@@ -183,6 +183,14 @@ export function BasicTool(props: BasicToolProps) {
             setAnimAlive(false)
             pourRoot?.style.removeProperty("--osh-pour-h")
             if (props.defer) setState("ready", false)
+            // the last painted frame of the shrinking box can survive the
+            // unmount as a 1px compositor remnant; one opacity nudge forces
+            // the layer to rebuild (invisible, two frames)
+            const row = pourRoot?.closest("[data-row-key],[data-timeline-row]") as HTMLElement | undefined
+            if (row) {
+              row.style.opacity = "0.999"
+              requestAnimationFrame(() => row.style.removeProperty("opacity"))
+            }
           }, 420)
         }
       },
