@@ -4,6 +4,7 @@ import {
   batch,
   createEffect,
   createMemo,
+  createRenderEffect,
   createSignal,
   createUniqueId,
   For,
@@ -545,8 +546,29 @@ export function CurrentContextToolGroup(props: {
     }
   })
 
+  // openshare fork: closing group bodies stay mounted through BasicTool's
+  // pour, then drop with the content unmount. Declared ABOVE items (the
+  // eager createMemo would hit a TDZ otherwise) and driven by a render
+  // effect on props.open so PROGRAMMATIC closes (disclosure resets, search
+  // expansion) animate the same as click closes; defer:true keeps groups
+  // born closed from mounting their parts.
+  const [closing, setClosing] = createSignal(false)
+  let closingTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => closingTimer && clearTimeout(closingTimer))
+  createRenderEffect(
+    on(
+      () => props.open,
+      (open) => {
+        setClosing(!open)
+        if (closingTimer) clearTimeout(closingTimer)
+        if (!open) closingTimer = setTimeout(() => setClosing(false), 420)
+      },
+      { defer: true },
+    ),
+  )
+
   const items = createMemo(() =>
-    (props.open ? props.parts : []).reduce<
+    (props.open || closing() ? props.parts : []).reduce<
       (SessionMessageAssistantTool[] | Exclude<ContextGroupPart, SessionMessageAssistantTool>)[]
     >((groups, tool) => {
       if (tool.type !== "tool") {

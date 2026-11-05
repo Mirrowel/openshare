@@ -479,6 +479,7 @@ const ReadTool = (props: ToolProps) => {
         icon="glasses"
         hasContent={!!preview() || !!failure() || !!mediaUrl()}
         defer
+        pour={false}
         trigger={() => (
           <FileHeader
             label="Read"
@@ -593,6 +594,7 @@ const EditTool = (props: ToolProps) => {
         icon="code-lines"
         hasContent={!!path() || !!failure()}
         defer
+        pour={false}
         trigger={() => (
           <FileHeader
             label={props.tool === "patch" ? "Patch" : "Edit"}
@@ -694,6 +696,7 @@ const WriteTool = (props: ToolProps) => {
         icon="code-lines"
         hasContent={!!path() && (!!content() || !!failure())}
         defer
+        pour={false}
         trigger={() => (
           <FileHeader
             label="Write"

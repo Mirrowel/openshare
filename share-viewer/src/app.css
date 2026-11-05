@@ -54,13 +54,15 @@
    (conversation applies it; classic and the skins keep their current
    surfaces by default). */
  :root {
-  /* code-surface tint, LIGHT themes only (dark themes read better
-     without it): a darker-but-still-transparent black overlay; dark
-     schemes resolve to fully transparent. light-dark() keys off each
-     theme's color-scheme, so per-theme emission is unnecessary. The
-     solid variant stays opaque - the sticky line-number gutter must
-     hide code scrolling under it */
-  --osh-code-bg: light-dark(color-mix(in oklab, #000 10%, transparent), transparent);
+  /* code-surface tint ladder, LIGHT themes only (dark resolves to
+     transparent/no-op - dark code reads better without it). Three
+     levels so compound surfaces read as a family: body content at the
+     base tint, separator/meta rows one step up, header rows one step
+     more. light-dark() keys off each theme's color-scheme; the solid
+     variants stay opaque where sticky gutters must hide scrolled code */
+  --osh-tint-1: light-dark(color-mix(in oklab, #000 10%, transparent), transparent);
+  --osh-tint-2: light-dark(color-mix(in oklab, #000 13%, transparent), transparent);
+  --osh-tint-3: light-dark(color-mix(in oklab, #000 16%, transparent), transparent);
   --osh-code-solid: light-dark(
     color-mix(in oklab, #000 10%, var(--background-stronger, var(--background-base))),
     var(--background-stronger, var(--background-base))
@@ -68,7 +70,7 @@
  }
 /* the kit sets the highlighter block's background inline */
 html[data-osh-code-surface] [data-component="markdown-code"] pre.shiki {
-  background-color: var(--osh-code-bg) !important;
+  background: var(--osh-tint-1) !important;
   border-color: var(--border-weaker-base);
 }
 
@@ -474,12 +476,52 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   min-width: 0;
 }
 /* titlebar of the unified file card: the controls sit next to the
-   filename (one consistent position across every view) */
+   filename (one consistent position across every view). Dark themes
+   keep the transparent header. LIGHT themes invert it - an ink band
+   (derived from --text-strong, so sepia warms it automatically) with
+   light text and a hairline bottom border: code surfaces read as a
+   deliberate dark-on-light editor card, and gray-on-gray disappears */
 .osh-file-titlebar {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
+  border-radius: 8px 8px 0 0;
+}
+[data-color-scheme="light"] .osh-file-titlebar {
+  background: color-mix(in oklab, var(--text-strong) 93%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--text-strong) 55%, transparent);
+  color: #ececea;
+}
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-muted"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-weaker"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-faint"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-base"] {
+  color: #a6a6a0;
+}
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-strong"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-weak"] {
+  color: #ececea;
+}
+/* the title block sets its OWN colors (var(--text-weaker)) - direct
+   rules beat inherited ones, so the ink band must override them
+   explicitly or the path renders light-on-light */
+[data-color-scheme="light"] .osh-file-titlebar [data-slot="osh-file-title"],
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-dir,
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-icon,
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-sep {
+  color: #a6a6a0;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-name {
+  color: #ececea;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-card-controls button {
+  color: #a6a6a0;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-card-controls button:hover {
+  color: #ececea;
+  border-color: rgba(255, 255, 255, 0.38);
 }
 .osh-pre-wrap {
   position: relative;
@@ -593,7 +635,10 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   width: min(100%, var(--osh-card));
 }
 /* file-card bodies get the tint in EVERY view (the painted surface is
-   pierre's, so the tint rides the --opencode-diffs-bg hook) */
+   pierre's, so the tint rides the --opencode-diffs-bg hook); the
+   collapsed "x unmodified lines" rows sit one tint level up via the
+   separator override so the card reads header / body / context as
+   three related surfaces. Dark keeps pierre's own dark separator mix */
 [data-component="osh-file-body"] {
   background: var(--osh-code-solid);
   --opencode-diffs-bg: var(--osh-code-solid);
@@ -601,8 +646,13 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 [data-component="osh-file-body"] diffs-container {
   background-color: transparent;
 }
-html[data-osh-code-surface] .osh-pre {
-  background: var(--osh-code-bg);
+/* The kit's LIGHT palette makes --text-base a grey; plain code text
+   washes out on the tinted light card. Apply on the shadow host, not
+   through --text-base's own value inside :host (a self-referential
+   fallback would form a custom-property cycle). */
+[data-color-scheme="light"] [data-component="osh-file-body"] diffs-container {
+  --text-base: #3f3f3f;
+  --diffs-bg-separator-override: var(--osh-tint-2);
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(100%, calc(2 * var(--osh-card)));
@@ -827,6 +877,21 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="u
 .osh-dm-btn.osh-dm-starved {
   opacity: 0.5;
 }
+/* on the ink titlebar the kit's selected pill (white raised + near-black
+   text) loses its text to the light-titlebar overrides, so selection
+   renders invisible: invert it instead - translucent white glass on the
+   band, light text - at a specificity above the titlebar text rules */
+[data-color-scheme="light"] .osh-file-titlebar .osh-dm-btn {
+  color: #a6a6a0;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-dm-btn.osh-dm-on {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ececea;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-dm-btn:hover {
+  color: #ececea;
+  background: rgba(255, 255, 255, 0.24);
+}
 
 /* the narrow single-turn column: hidden at 900px+, the same breakpoint as
    the narrow media query and the nav's own bar (768/1024 tailwind steps
@@ -939,13 +1004,25 @@ html[data-color-scheme="light"] {
    a full-width box); 2px column separators; and cells WRAP instead of
    forcing horizontal scroll - a genuinely wide table caps at the card
    width with long tokens breaking inside their column (anywhere, not
-   break-word, so wrapping participates in column sizing) */
+   break-word, so wrapping participates in column sizing). Light themes
+   paint the table on the code-tint ladder: content at the base tint,
+   the header row one step up - the same body/header relationship file
+   cards carry */
 [data-component="markdown-table"] {
   width: fit-content;
   max-width: 100%;
+  background: var(--osh-tint-1);
 }
 [data-component="markdown-table"] table {
   max-width: 100%;
+}
+[data-component="markdown-table"] thead {
+  background: var(--osh-tint-3);
+}
+/* the kit renders th text in its muted grey - unreadable on the tinted
+   light header band */
+[data-color-scheme="light"] [data-component="markdown-table"] th {
+  color: var(--text-strong);
 }
 [data-component="markdown-table"] th,
 [data-component="markdown-table"] td {
@@ -954,6 +1031,13 @@ html[data-color-scheme="light"] {
 [data-component="markdown-table"] th + th,
 [data-component="markdown-table"] td + td {
   border-left: 2px solid var(--v2-border-border-muted);
+}
+/* inline code chips in prose: the base tint, one rank below blocks so
+   they read as code without competing with fenced blocks */
+[data-transcript-scroll] :not(pre) > code {
+  background: var(--osh-tint-1);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
 }
 /* --- reasoning panel -----------------------------------------------------
    The open thinking body is a real panel, not loose markdown under a
@@ -983,18 +1067,24 @@ html[data-color-scheme="light"] {
    the bar is webkit-only on purpose - and CSS vars inherit downward,
    so --osh-anim-h is set on the PART element (it survives the closed-
    state content unmount) and the content inherits it. */
- [data-component="reasoning-part"] [data-slot="collapsible-content"] {
-  height: 0;
-  overflow: hidden;
-  /* cancel the kit's rail inset so the panel rail aligns with the
-     trigger edge (tool cards do the same with their card edge) */
-  padding-inline-start: 0;
-  /* the ROW height animates on open too (like collapse, the other safe
-     direction): rows below track it through the virtualizer's ResizeObserver
-     one frame behind - the panel's clip trails slightly (see max-height
-     below), so that lag lands on empty space, never on text */
-  transition: height 260ms cubic-bezier(0.32, 0.72, 0.16, 1) !important;
-}
+  [data-component="reasoning-part"] [data-slot="collapsible-content"] {
+   height: 0;
+   overflow: hidden;
+   /* cancel the kit's rail inset so the panel rail aligns with the
+      trigger edge (tool cards do the same with their card edge) */
+   padding-inline-start: 0;
+   /* the ROW height animates on open too (like collapse, the other safe
+      direction): rows below track it through the virtualizer's ResizeObserver
+      one frame behind - the panel's clip trails slightly (see max-height
+      below), so that lag lands on empty space, never on text */
+   transition: height 260ms cubic-bezier(0.32, 0.72, 0.16, 1) !important;
+ }
+ [data-component="reasoning-part"] [data-slot="collapsible-content"]:not([data-expanded]) .osh-think-panel {
+   /* the panel's own padding rides the close too - otherwise the row
+      snaps by the padding when the content unmounts at the timer */
+   padding-block: 0;
+   transition: padding 260ms cubic-bezier(0.32, 0.72, 0.16, 1);
+ }
 [data-component="reasoning-part"] [data-slot="collapsible-content"][data-expanded] {
   height: calc(var(--osh-anim-h, 26rem) + 32px);
 }
@@ -1015,8 +1105,40 @@ html[data-color-scheme="light"] {
    lands at final height in one step; nothing animates, nothing feeds
    per-frame intermediate sizes to the virtualizer. */
 html[data-osh-boot] [data-component="reasoning-part"] [data-slot="collapsible-content"],
-html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="collapsible-content"] {
+html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="collapsible-content"],
+html[data-osh-boot] :where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"],
+html[data-osh-flip] .osh-snap-row :where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"] {
   transition: none !important;
+}
+
+/* --- tool card pour -------------------------------------------------------
+   Height motion is for plain tool cards (shell, generic results, groups).
+   File cards deliberately opt out in tool-overrides: their lazy pierre
+   body owns complex content rendering inside a shadow root and uses the
+   kit's original instant mount/unmount instead. No staged heights, forced
+   reflows or held-open body applies to those. The opted-in card content
+   owns a measured --osh-pour-h so height can animate even when the body
+   is mounted at the same frame. */
+:where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"] {
+  height: 0;
+  overflow: hidden;
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0.16, 1) !important;
+}
+:where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"][data-expanded] {
+  height: var(--osh-pour-h, auto);
+  /* the kit sets overflow visible on expanded content - the pour needs
+     the clip */
+  overflow: hidden;
+}
+/* the trigger/content gap follows the collapse, rather than disappearing
+   later when the content unmounts */
+[data-row-key] .tool-collapsible[data-osh-pour],
+[data-timeline-row] .tool-collapsible[data-osh-pour] {
+  transition: gap 260ms cubic-bezier(0.32, 0.72, 0.16, 1);
+}
+[data-row-key] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])),
+[data-timeline-row] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])) {
+  gap: 0;
 }
 
 [data-osh-out="think"] {
@@ -1127,6 +1249,8 @@ html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="
 }
 @media (prefers-reduced-motion: reduce) {
   [data-component="reasoning-part"] [data-slot="collapsible-content"],
+  .tool-collapsible[data-osh-pour] > [data-slot="collapsible-content"],
+  .tool-collapsible[data-osh-pour],
   .osh-think-end {
     transition: none !important;
   }
@@ -1598,13 +1722,25 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 }
 
 /* shell output: the kit's own card (copy control included) at the width we
-   want - hugging its command output, capped so a one-word command does not
-   stretch a full-row empty surface */
+    want - hugging its command output, capped so a one-word command does not
+    stretch a full-row empty surface. Two surfaces mirroring the kit's dark
+    relationship (output area one step above the command strip): flat tints,
+    the card keeps its own square corners and outline - a shell card is
+    chrome, not a loose block */
 [data-row-key] [data-component="bash-output"],
 [data-timeline-row] [data-component="bash-output"] {
-  width: fit-content;
-  min-width: min(60%, 340px);
-  max-width: min(100%, 75vw);
+   width: fit-content;
+   min-width: min(60%, 340px);
+   max-width: min(100%, 75vw);
+}
+[data-component="bash-output"] div pre {
+  background: var(--osh-tint-2) !important;
+  border-radius: 0 !important;
+}
+/* light lost the dark card's outline (the kit's border token is
+   near-invisible on white) - restore dark parity */
+[data-color-scheme="light"] [data-component="bash-output"] {
+  border: 1px solid var(--border-weaker-base);
 }
 
 /* --- output heights, drag resizing and scroll affordances -------------
@@ -1632,8 +1768,13 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   --syntax-keyword: var(--osh-code-keyword, var(--text-weak));
   --syntax-operator: var(--osh-code-operator, var(--text-base));
   --syntax-comment: var(--osh-code-comment, var(--text-weak));
-  /* transparent on dark schemes (see :root): nothing shows */
-  background-color: var(--osh-code-bg) !important;
+}
+/* standalone code surfaces (prose fences, preformatted text blocks):
+   flat base tint on light, soft corners - they are standalone blocks,
+   not chrome-bearing cards */
+.osh-pre,
+[data-transcript-scroll] pre {
+  background: var(--osh-tint-1) !important;
   border-radius: 8px;
 }
 

@@ -1394,6 +1394,8 @@ export function AssistantReasoningContent(props: {
         hasContent
         allowOpenWhilePending
         keepMounted={keepAlive()}
+        // reasoning owns --osh-anim-h, so no second tool-pour timer
+        pour={false}
         hideDetails={!props.content.text.trim()}
         open={open()}
         onOpenChange={(value) => {

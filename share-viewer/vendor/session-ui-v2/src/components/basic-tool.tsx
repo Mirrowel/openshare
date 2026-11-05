@@ -1,6 +1,8 @@
 import {
   createEffect,
   createMemo,
+  createRenderEffect,
+  createSignal,
   For,
   Match,
   on,
@@ -49,6 +51,10 @@ export interface BasicToolProps {
   /** openshare fork: keepMounted keeps the collapsible content MOUNTED
    *  when closed (forceMount) so a collapse animation can run. */
   keepMounted?: boolean
+  /** opt out of the openshare tool-height motion for lazily rendered
+   *  file bodies (read/write/edit), which own complex pierre layout
+   *  inside shadow roots and use the kit's original instant mounting. */
+  pour?: boolean
   rail?: boolean
   onSubtitleClick?: () => void
   onTriggerClick?: JSX.EventHandlerUnion<HTMLElement, MouseEvent>
@@ -116,6 +122,74 @@ export function BasicTool(props: BasicToolProps) {
   const pending = () => props.status === "streaming" || props.status === "running"
   const hasChildren = () => props.hasContent ?? (props.defer ? "children" in props : props.children)
 
+  // openshare fork (tool pour): opted-in plain tool content stays mounted
+  // through collapse so the height transition runs both directions. Lazy
+  // pierre file bodies opt out and keep upstream's immediate unmount.
+  const [animAlive, setAnimAlive] = createSignal(false)
+  let animCloseTimer: ReturnType<typeof setTimeout> | undefined
+  let pourRoot: HTMLElement | undefined
+  const pourContent = () => pourRoot?.querySelector(':scope > [data-slot="collapsible-content"]') as HTMLElement | undefined
+  onCleanup(() => animCloseTimer && clearTimeout(animCloseTimer))
+  createRenderEffect(
+    on(
+      open,
+      (value) => {
+        if (props.pour === false) return
+        if (animCloseTimer) {
+          clearTimeout(animCloseTimer)
+          animCloseTimer = undefined
+        }
+        if (value) {
+          if (!animAlive()) {
+            // stage a newly mounted body at 0 before its release below;
+            // lazy bodies can mount a few frames after the trigger, so the
+            // release retries until content has a real height
+            setAnimAlive(true)
+            pourRoot?.style.setProperty("--osh-pour-h", "0px")
+            let tries = 0
+            const release = () => {
+              const el = pourContent()
+              const h = el?.scrollHeight ?? 0
+              if (h > 0 || ++tries > 36) {
+                if (el && h > 0) {
+                  // Commit the staged zero before the real height: a
+                  // shared mount/release frame cannot start a height
+                  // transition without a committed old style
+                  pourRoot?.style.setProperty("--osh-pour-h", "0px")
+                  void el.offsetHeight
+                  pourRoot?.style.setProperty("--osh-pour-h", `${h}px`)
+                  // Natural height resumes after the pour so later child
+                  // growth and output dragging aren't clipped by this value
+                  animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty("--osh-pour-h"), 300)
+                } else {
+                  pourRoot?.style.removeProperty("--osh-pour-h")
+                }
+                return
+              }
+              requestAnimationFrame(release)
+            }
+            requestAnimationFrame(release)
+            return
+          }
+          setAnimAlive(true)
+          // reopened while the close was still running: the pinned
+          // close-time height must release again or later growth stays
+          // trapped at the old measurement
+          animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty("--osh-pour-h"), 300)
+        } else {
+          const h = pourContent()?.scrollHeight ?? 0
+          if (h > 0) pourRoot?.style.setProperty("--osh-pour-h", `${h}px`)
+          animCloseTimer = setTimeout(() => {
+            setAnimAlive(false)
+            pourRoot?.style.removeProperty("--osh-pour-h")
+            if (props.defer) setState("ready", false)
+          }, 420)
+        }
+      },
+      { defer: false },
+    ),
+  )
+
   const triggerContent = createMemo(() => {
     const value = props.trigger
 
@@ -177,8 +251,9 @@ export function BasicTool(props: BasicToolProps) {
 
         if (!value) {
           cancel()
-          setState("ready", false)
-
+          // File cards keep upstream's immediate lazy-body disposal; plain
+          // tool bodies stay until the collapse has finished
+          if (props.pour === false) setState("ready", false)
           return
         }
 
@@ -194,6 +269,9 @@ export function BasicTool(props: BasicToolProps) {
     if (props.locked && !value) return
     setOpen(value)
   }
+
+  // openshare fork (tool pour): the render effect above owns all staging;
+  // the kit's open handler also keeps its native pending/locked guards
 
   const trigger = () => (
     <div
@@ -268,9 +346,14 @@ export function BasicTool(props: BasicToolProps) {
 
   return (
     <Collapsible
+      ref={(el) => (pourRoot = el)}
       // openshare fork: forceMount is a ROOT prop (kobalte reads it in
-      // CollapsibleRoot.shouldMount); on Content it is silently ignored
-      forceMount={props.keepMounted || undefined}
+      // CollapsibleRoot.shouldMount); on Content it is silently ignored.
+      // animAlive mounts the content through close animations and the
+      // staged pour (see the fork block above); excluded file cards keep
+      // the kit's normal lifecycle
+      forceMount={props.keepMounted || (props.pour !== false ? animAlive() : undefined) || undefined}
+      data-osh-pour={props.pour === false ? undefined : ""}
       open={open()}
       onOpenChange={props.locked ? undefined : handleOpenChange}
       class="tool-collapsible"

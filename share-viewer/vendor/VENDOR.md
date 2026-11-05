@@ -147,12 +147,19 @@ idempotently or throws "upstream drifted". Files are under
   empty bodies and retries on rAF until content lands. A reopen after
   unmount pours in via `@starting-style` on the content height (the
   panel itself renders at natural height and is revealed by the
-  content's clip). Styles live in share-viewer's app.css.
-- **basic-tool.tsx — keepMounted**: a `keepMounted` prop forwarded as
-  `forceMount` on the Collapsible ROOT (kobalte reads it in
-  CollapsibleRoot.shouldMount; on Content it is silently ignored) keeps
-  closed content mounted. Only the reasoning call site passes it; every
-  other tool keeps upstream mount behavior.
+  content's clip). Styles live in share-viewer's app.css. Plain tool cards
+  (shell, groups, generic results, todo) use the same height motion through
+  BasicTool's opt-in `--osh-pour-h` machinery. Pierre-backed read/write/edit
+  cards deliberately pass `pour={false}`: lazy shadow-root bodies return to
+  the kit's immediate mount/unmount with no staging, forced reflows, or
+  held-open close interval. Reasoning also passes `pour={false}` — its own
+  `--osh-anim-h`/keepAlive motion above is the whole animation, so it runs
+  no second height timer.
+- **basic-tool.tsx — scoped mount/motion**: `keepMounted` forwards to
+  `forceMount` on the Collapsible ROOT for reasoning; ordinary tool content
+  also uses it while its 260ms close is running. `pour={false}` removes a
+  file card from all of the tool-height motion. The closing gap transition
+  is restricted to the same opted-in roots via `data-osh-pour`.
 
 ### Tools (tool-renderer.tsx and friends)
 

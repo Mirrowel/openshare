@@ -338,17 +338,26 @@ export function VirtualTimeline(props: {
     virtualizer.measureElement(el)
   }
   const sweep = () => {
+    // read/compare per row and only invoke measureElement for a row whose
+    // cached size is absent or differs: re-measuring every mounted row
+    // issued one virtualizer notification for every unchanged height at
+    // each scroll settle (several thousand redundant updates after a
+    // traversal, and layout work on the browser's main thread)
     for (const { el } of rowEls.values()) {
-      if (el.isConnected && el.dataset.index !== undefined) {
+      if (!el.isConnected || el.dataset.index === undefined) continue
+      const key = el.dataset.rowKey as string
+      if (virtualizer.options.getItemKey(Number(el.dataset.index)) !== key) continue
+      const cached = (virtualizer as any).itemSizeCache?.get(key) as number | undefined
+      if (cached !== undefined && Math.abs(cached - el.offsetHeight) <= 1) continue
+      if (cached !== undefined) {
         convergeRow(el)
-        // the same stale-index guard applies to the direct measure: a
-        // cached row whose index no longer resolves to its own key must
-        // not be measured at all
-        if (virtualizer.options.getItemKey(Number(el.dataset.index)) === el.dataset.rowKey) {
-          virtualizer.measureElement(el)
-          measurementCache.set(String(el.dataset.rowKey), el.offsetHeight)
-        }
+        measurementCache.set(key, (virtualizer as any).itemSizeCache.get(key) ?? el.offsetHeight)
+        continue
       }
+      // no cached slot yet: convergeRow needs one, so use the kit's normal
+      // measurement path then keep the estimate cache in step
+      virtualizer.measureElement(el)
+      measurementCache.set(key, (virtualizer as any).itemSizeCache.get(key) ?? el.offsetHeight)
     }
   }
   // debounced arm for scroll-settle (same-delay re-arms coalesce) plus

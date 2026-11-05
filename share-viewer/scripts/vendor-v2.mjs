@@ -870,25 +870,29 @@ function mainThreadWorker(): Worker {
 // whole line as a saturated band; 0.3 / 0.16 keeps the changed words
 // distinct without turning the card into a colour block.
 {
-  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
-  if (existsSync(p)) {
-    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
-    if (!s.includes("rgb(from var(--v2-green-600) r g b / 0.16)")) {
-      const before = s
-      s = s
-        .replace(
-          "    rgb(from var(--v2-green-600) r g b / 0.2),\n    rgb(from var(--v2-green-600) r g b / 0.4)",
-          "    rgb(from var(--v2-green-600) r g b / 0.16),\n    rgb(from var(--v2-green-600) r g b / 0.3)",
-        )
-        .replace(
-          "    rgb(from var(--v2-red-600) r g b / 0.2),\n    rgb(from var(--v2-red-600) r g b / 0.4)",
-          "    rgb(from var(--v2-red-600) r g b / 0.16),\n    rgb(from var(--v2-red-600) r g b / 0.3)",
-        )
-      if (s === before) throw new Error("vendor-v2: diff emphasis anchor missing - upstream drifted")
-      writeFileSync(p, s)
-    }
-  }
-}
+   const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+   if (existsSync(p)) {
+     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+     if (!s.includes("rgb(from var(--v2-green-600) r g b / 0.16)")) {
+       const before = s
+       s = s
+         .replace(
+           "    rgb(from var(--v2-green-600) r g b / 0.2),\n    rgb(from var(--v2-green-600) r g b / 0.4)",
+           "    rgb(from var(--v2-green-600) r g b / 0.16),\n    rgb(from var(--v2-green-600) r g b / 0.3)",
+         )
+         .replace(
+           "    rgb(from var(--v2-red-600) r g b / 0.2),\n    rgb(from var(--v2-red-600) r g b / 0.4)",
+           "    rgb(from var(--v2-red-600) r g b / 0.16),\n    rgb(from var(--v2-red-600) r g b / 0.3)",
+         )
+       if (s === before) throw new Error("vendor-v2: diff emphasis anchor missing - upstream drifted")
+       writeFileSync(p, s)
+     }
+   }
+ }
+
+// The light-mode text/separator overrides are ordinary outer CSS declarations
+// in app.css targeting `diffs-container`; no :host self referential override is
+// needed here (outer declarations win over the shadow host's normal styles).
 
 // vendor fork: aliasing the library's default theme names. A worker bundle can
 // evaluate its module graph twice (vite dev serves the entry and a plain copy
@@ -1381,8 +1385,8 @@ function sessionLink(id: string | undefined, href?: (id: string, anchor?: string
     // openshare fork: keepMounted keeps the collapsible content MOUNTED
     // when closed (forceMount) - the reasoning panel animates its collapse,
     // which Kobalte otherwise makes impossible by unmounting closed
-    // content. Only the reasoning call site passes it; every other tool
-    // keeps upstream mount behavior.
+    // content. The tool-pour fork below carries the mechanism for every
+    // other tool; reasoning still passes keepMounted explicitly.
     if (!s.includes("openshare fork: keepMounted keeps the collapsible content MOUNTED")) {
       const nl = "\n"
       const must = (cond, what) => {
@@ -1391,7 +1395,7 @@ function sessionLink(id: string | undefined, href?: (id: string, anchor?: string
       let before = s
       s = s.replace(
         ["  locked?: boolean", "  rail?: boolean"].join(nl),
-        ["  locked?: boolean", "  /** openshare fork: keepMounted keeps the collapsible content MOUNTED", "   *  when closed (forceMount) so a collapse animation can run. */", "  keepMounted?: boolean", "  rail?: boolean"].join(nl),
+        ["  locked?: boolean", "  /** openshare fork: keepMounted keeps the collapsible content MOUNTED", "   *  when closed (forceMount) so a collapse animation can run. */", "  keepMounted?: boolean", "  /** opt out of the openshare tool-height motion for lazily rendered", "   *  file bodies (read/write/edit), which own complex pierre layout", "   *  inside shadow roots and use the kit's original instant mounting. */", "  pour?: boolean", "  rail?: boolean"].join(nl),
       )
       must(s !== before, "props decl")
       before = s
@@ -1402,6 +1406,213 @@ function sessionLink(id: string | undefined, href?: (id: string, anchor?: string
       must(s.includes("forceMount={props.keepMounted || undefined}"), "root forceMount")
       writeFileSync(p, s)
     }
+
+    // openshare fork (tool pour): thinking's expand/collapse on plain tool
+    // cards that have ordinary Solid bodies. Pierre-driven file cards opt out:
+    // they retain the kit's direct mounting, so there is no staged height.
+    // The opted-in content mounts at height 0 then releases its measured
+    // height; a close remains mounted for the height transition.
+    if (!s.includes("openshare fork (tool pour)")) {
+      const nl = "\n"
+      const must = (cond, what) => {
+        if (!cond) throw new Error("vendor-v2: tool-pour fork failed (" + what + ") - upstream drifted")
+      }
+      let before = s
+      s = s.replace(
+        "import {\n  createEffect,\n  createMemo,\n  For,",
+        "import {\n  createEffect,\n  createMemo,\n  createRenderEffect,\n  createSignal,\n  For,",
+      )
+      must(s !== before, "createSignal import")
+      before = s
+      s = s.replace(
+        ['  const open = () => props.open ?? state.open',
+         "  const ready = () => state.ready",
+         '  const pending = () => props.status === "streaming" || props.status === "running"',
+         '  const hasChildren = () => props.hasContent ?? (props.defer ? "children" in props : props.children)'].join(nl),
+        ['  const open = () => props.open ?? state.open',
+         "  const ready = () => state.ready",
+         '  const pending = () => props.status === "streaming" || props.status === "running"',
+         '  const hasChildren = () => props.hasContent ?? (props.defer ? "children" in props : props.children)',
+         "",
+         "  // openshare fork (tool pour): opted-in plain tool content stays mounted",
+         "  // through collapse so the height transition runs both directions. Lazy",
+         "  // pierre file bodies opt out and keep upstream's immediate unmount.",
+         "  const [animAlive, setAnimAlive] = createSignal(false)",
+         "  let animCloseTimer: ReturnType<typeof setTimeout> | undefined",
+         "  let pourRoot: HTMLElement | undefined",
+         "  const pourContent = () => pourRoot?.querySelector(':scope > [data-slot=\"collapsible-content\"]') as HTMLElement | undefined",
+         "  onCleanup(() => animCloseTimer && clearTimeout(animCloseTimer))",
+         "  createRenderEffect(",
+         "    on(",
+         "      open,",
+          "      (value) => {",
+          "        if (props.pour === false) return",
+          "        if (animCloseTimer) {",
+          "          clearTimeout(animCloseTimer)",
+         "          animCloseTimer = undefined",
+         "        }",
+         "        if (value) {",
+         "          if (!animAlive()) {",
+         "            // stage a newly mounted body at 0 before its release below;",
+         "            // lazy bodies can mount a few frames after the trigger, so the",
+         "            // release retries until content has a real height",
+         "            setAnimAlive(true)",
+         "            pourRoot?.style.setProperty(\"--osh-pour-h\", \"0px\")",
+         "            let tries = 0",
+         "            const release = () => {",
+         "              const el = pourContent()",
+         "              const h = el?.scrollHeight ?? 0",
+         "              if (h > 0 || ++tries > 36) {",
+         "                if (el && h > 0) {",
+         "                  // Commit the staged zero before the real height: a",
+         "                  // shared mount/release frame cannot start a height",
+         "                  // transition without a committed old style",
+         "                  pourRoot?.style.setProperty(\"--osh-pour-h\", \"0px\")",
+         "                  void el.offsetHeight",
+         "                  pourRoot?.style.setProperty(\"--osh-pour-h\", `${h}px`)",
+         "                  // Natural height resumes after the pour so later child",
+         "                  // growth and output dragging aren't clipped by this value",
+         "                  animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty(\"--osh-pour-h\"), 300)",
+         "                } else {",
+         "                  pourRoot?.style.removeProperty(\"--osh-pour-h\")",
+         "                }",
+         "                return",
+         "              }",
+         "              requestAnimationFrame(release)",
+         "            }",
+         "            requestAnimationFrame(release)",
+         "            return",
+         "          }",
+         "          setAnimAlive(true)",
+         "          // reopened while the close was still running: the pinned",
+         "          // close-time height must release again or later growth stays",
+         "          // trapped at the old measurement",
+         "          animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty(\"--osh-pour-h\"), 300)",
+         "        } else {",
+         "          const h = pourContent()?.scrollHeight ?? 0",
+         "          if (h > 0) pourRoot?.style.setProperty(\"--osh-pour-h\", `${h}px`)",
+         "          animCloseTimer = setTimeout(() => {",
+         "            setAnimAlive(false)",
+         "            pourRoot?.style.removeProperty(\"--osh-pour-h\")",
+         "            if (props.defer) setState(\"ready\", false)",
+         "          }, 420)",
+         "        }",
+         "      },",
+         "      { defer: false },",
+         "    ),",
+         "  )"].join(nl),
+      )
+      must(s !== before, "animAlive block")
+        // "ready" controls the lazy body independently of the content box;
+        // opted-in tools finish closing before it is dropped; file cards
+        // retain the kit's immediate disposal.
+        before = s
+        s = s.replace(
+          ['        if (!value) {',
+           "          cancel()",
+           '          setState("ready", false)',
+           "",
+           "          return",
+           "        }"].join(nl),
+          ['        if (!value) {',
+           "          cancel()",
+           "          // File cards keep upstream's immediate lazy-body disposal; plain",
+           "          // tool bodies stay until the collapse has finished",
+           '          if (props.pour === false) setState("ready", false)',
+           "          return",
+           "        }"].join(nl),
+        )
+        must(s !== before, "defer-ready fork")
+      before = s
+      s = s.replace(
+        ['  const handleOpenChange = (value: boolean) => {',
+         '    if (pending() && !props.allowOpenWhilePending) return',
+         "",
+         "    if (props.locked && !value) return",
+         "    setOpen(value)",
+         "  }"].join(nl),
+        ['  const handleOpenChange = (value: boolean) => {',
+         '    if (pending() && !props.allowOpenWhilePending) return',
+         "",
+         "    if (props.locked && !value) return",
+         "    setOpen(value)",
+         "  }",
+         "",
+         "  // openshare fork (tool pour): the render effect above owns all staging;",
+         "  // the kit's open handler also keeps its native pending/locked guards"].join(nl),
+       )
+       must(s !== before, "native open handler retained")
+      before = s
+      s = s.replace(
+        ['      // openshare fork: forceMount is a ROOT prop (kobalte reads it in',
+         "      // CollapsibleRoot.shouldMount); on Content it is silently ignored",
+         "      forceMount={props.keepMounted || undefined}",
+         "      open={open()}",
+         "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+        ['      ref={(el) => (pourRoot = el)}',
+         "      // openshare fork: forceMount is a ROOT prop (kobalte reads it in",
+         "      // CollapsibleRoot.shouldMount); on Content it is silently ignored.",
+          "      // animAlive mounts the content through close animations and the",
+          "      // staged pour (see the fork block above); excluded file cards keep",
+          "      // the kit's normal lifecycle",
+          "      forceMount={props.keepMounted || (props.pour !== false ? animAlive() : undefined) || undefined}",
+          "      data-osh-pour={props.pour === false ? undefined : \"\"}",
+          "      open={open()}",
+          "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+      )
+      must(s.includes('forceMount={props.keepMounted || (props.pour !== false ? animAlive() : undefined) || undefined}'), "root forceMount file opt-out")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// A tool group's parts list filtered on open; preserving it during the close
+// keeps the group's height animation from dominating an empty body. The
+// closing state sits ABOVE items (createMemo evaluates eagerly - a TDZ
+// otherwise) and is driven by a render effect so programmatic closes
+// (disclosure resets, search expansion) behave like click closes.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (!readFileSync(p, "utf8").includes("openshare fork: closing group bodies")) {
+    const nl = "\n"
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, nl)
+    let before = s
+    s = s.replace(
+      "  createEffect,\n  createMemo,\n  createSignal,",
+      "  createEffect,\n  createMemo,\n  createRenderEffect,\n  createSignal,",
+    )
+    if (s === before) throw new Error("vendor-v2: tool-renderer import anchor missing")
+    before = s
+    s = s.replace(
+      "  const items = createMemo(() =>\n    (props.open ? props.parts : []).reduce<",
+      [
+        "  // openshare fork: closing group bodies stay mounted through BasicTool's",
+        "  // pour, then drop with the content unmount. Declared ABOVE items (the",
+        "  // eager createMemo would hit a TDZ otherwise) and driven by a render",
+        "  // effect on props.open so PROGRAMMATIC closes (disclosure resets, search",
+        "  // expansion) animate the same as click closes; defer:true keeps groups",
+        "  // born closed from mounting their parts.",
+        "  const [closing, setClosing] = createSignal(false)",
+        "  let closingTimer: ReturnType<typeof setTimeout> | undefined",
+        "  onCleanup(() => closingTimer && clearTimeout(closingTimer))",
+        "  createRenderEffect(",
+        "    on(",
+        "      () => props.open,",
+        "      (open) => {",
+        "        setClosing(!open)",
+        "        if (closingTimer) clearTimeout(closingTimer)",
+        "        if (!open) closingTimer = setTimeout(() => setClosing(false), 420)",
+        "      },",
+        "      { defer: true },",
+        "    ),",
+        "  )",
+        "",
+        "  const items = createMemo(() =>",
+        "    (props.open || closing() ? props.parts : []).reduce<",
+      ].join(nl),
+    )
+    if (s === before) throw new Error("vendor-v2: group items anchor missing")
+    writeFileSync(p, s)
   }
 }
 
@@ -1705,7 +1916,7 @@ $2`,
         let before = s
         s = s.replace(
           ["        allowOpenWhilePending", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
-          ["        allowOpenWhilePending", "        keepMounted={keepAlive()}", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
+          ["        allowOpenWhilePending", "        keepMounted={keepAlive()}", "        // reasoning owns --osh-anim-h, so no second tool-pour timer", "        pour={false}", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
         )
         must(s !== before, "keepMounted prop")
         before = s

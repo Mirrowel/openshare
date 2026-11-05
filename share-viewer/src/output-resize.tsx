@@ -44,9 +44,15 @@ function applyCard(card: Element, m: CardState) {
   }
   // scrollbar-aware chrome: the overlay buttons sit flush BESIDE the
   // scrollbar when one renders (classic-scrollbar browsers report its
-  // width here; overlay scrollbars report 0 and buttons sit at the edge)
+  // width here, overlay scrollbars report 0 and buttons sit at the edge).
+  // Assign only on change: writing the same inline custom property still
+  // invalidates the card's style subtree on every observer pass, which
+  // includes every token span in an expanded file card
   const sc = scrollerOf(card)
-  if (sc && card instanceof HTMLElement) card.style.setProperty("--osh-sbw", `${Math.max(0, sc.offsetWidth - sc.clientWidth)}px`)
+  if (sc && card instanceof HTMLElement) {
+    const width = `${Math.max(0, sc.offsetWidth - sc.clientWidth)}px`
+    if (card.style.getPropertyValue("--osh-sbw") !== width) card.style.setProperty("--osh-sbw", width)
+  }
 }
 
 function syncCard(card: Element) {
