@@ -23,6 +23,20 @@ if [ -z "$ref" ]; then
   exit 0
 fi
 
+# A stable promotion can carry zero plugin changes since the last dev
+# publish yet still need npm: the version number itself is new and the
+# dist-tag must move. When the computed release version is not on the
+# registry, publish regardless of what changed - skipping here stranded
+# stable releases while `latest` pointed at the previous line.
+# RELEASE_VERSION is the computed release version (workflow env);
+# NPM_PKG_DIR is the package that ships to npm (repo-root relative).
+if [ -n "${RELEASE_VERSION:-}" ] && [ -n "${NPM_PKG_DIR:-}" ] \
+  && [ -f "$NPM_PKG_DIR/package.json" ] \
+  && ! npm view "$(node -p "require('./$NPM_PKG_DIR/package.json').name")@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+  echo "changed=true" | tee -a "${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
+fi
+
 # The release stamp rewrites every MANIFESTS file (version carriers), so a
 # The release stamp rewrites every MANIFESTS file AND every lockfile's
 # "version" fields, so path-level filtering alone would count every
