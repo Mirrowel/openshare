@@ -161,6 +161,19 @@ kit_any_match() {
   KIT_RE="$1" awk '$0 ~ "^(" ENVIRON["KIT_RE"] ")$" { found = 1 } END { exit found ? 0 : 1 }'
 }
 
+# True when <file>'s diff <ref>..HEAD carries only version-field lines.
+# The release stamp rewrites every manifest and lockfile version field,
+# so a stamp-only change must never arm a release or a publish - only a
+# diff with lines beyond "version" fields counts as real (a dependency
+# move always has them: ranges, resolved URLs, integrity hashes).
+kit_stamp_only() {
+  git diff "$1..HEAD" -- "$2" | awk '
+    /^[+-][^+-]/ { if ($0 !~ /"version"/) { real = 1; exit } }
+    END { exit real ? 0 : 1 }'
+  # awk 0 = has non-version hunks = real change; invert to "stamp only"
+  [ $? -ne 0 ]
+}
+
 # Print which part a file belongs to; empty for root-level files (docs,
 # workflows). The mapping is config-driven: PART_MAP in release-kit.conf
 # lists "path-prefix:part" pairs (list order decides precedence).

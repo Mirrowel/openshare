@@ -153,7 +153,11 @@ jobs:
           TARGET_VERSION: ${{ github.event.inputs.target_version || '' }}
           VERSION_BUMP: ${{ github.event.inputs.version_bump || 'auto' }}
           FORCE_RELEASE: ${{ github.event.inputs.force_release || 'false' }}
-          REQUIRE_RELEVANT_CHANGES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_release != 'true' && 'true' || 'false' }}
+          # Relevance is always required: a branch sync that only carries
+          # release stamps back (manifest/lockfile version fields) must not
+          # arm a release. Real changes in RELEASE_PATHS release as before;
+          # a forced dispatch bypasses via FORCE_RELEASE above.
+          REQUIRE_RELEVANT_CHANGES: 'true'
         run: |
           set -o pipefail # a failed compute must fail the run, not vanish into tee
           bash .github/scripts/compute-version.sh | tee compute.txt

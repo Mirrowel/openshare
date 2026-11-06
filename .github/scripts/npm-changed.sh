@@ -37,18 +37,14 @@ if [ -n "${RELEASE_VERSION:-}" ] && [ -n "${NPM_PKG_DIR:-}" ] \
   exit 0
 fi
 
-# The release stamp rewrites every MANIFESTS file (version carriers), so a
 # The release stamp rewrites every MANIFESTS file AND every lockfile's
 # "version" fields, so path-level filtering alone would count every
 # stamped release as an npm change (the gate publishes forever). A
 # lockfile counts only when its diff carries lines beyond version
-# fields - a real dependency move always does.
+# fields - a real dependency move always does (kit_stamp_only in
+# kit-lib.sh).
 stamp_only_lock() {
-  git diff "$ref..HEAD" -- "$1" | awk '
-    /^[+-][^+-]/ { if ($0 !~ /"version"/) { real = 1; exit } }
-    END { exit real ? 0 : 1 }'
-  # awk 0 = has non-version hunks = real change; invert to "stamp only"
-  [ $? -ne 0 ]
+  kit_stamp_only "$ref" "$1"
 }
 
 changed=false
