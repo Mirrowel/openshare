@@ -10,7 +10,7 @@ import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { pagedFor, setPagedFor, resetAllSettings, type OshSettings } from "./settings"
 import { LineStepper } from "./hover-rail"
-import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
+import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS, PRIMARY_VIEWS } from "./views/registry"
 import type { ViewSettingDef } from "./views/registry"
 import { tryView } from "./views/view-context"
 import { sessionToolNamesOf } from "./views/session-data"
@@ -320,6 +320,27 @@ function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings;
   )
 }
 
+/** one view cell in the picker grid - shared by the core row and the
+ *  more-views group so styling can never drift between them */
+function ViewButton(props: { v: { id: string; label: string }; active: boolean; onUpdate: (patch: Partial<OshSettings>) => void }) {
+  return (
+    <button
+      title={props.v.label}
+      class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer transition-colors duration-150"
+      classList={{
+        "border-icon-strong-base bg-surface-base": props.active,
+        "border-border-weak-base hover:border-border-strong-base bg-transparent": !props.active,
+      }}
+      onClick={() => props.onUpdate({ view: props.v.id })}
+    >
+      <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
+        {viewMark(props.v.id)}
+      </span>
+      <span class="text-12-regular text-text-base truncate">{props.v.label}</span>
+    </button>
+  )
+}
+
 export function SettingsBody(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void
@@ -336,29 +357,33 @@ export function SettingsBody(props: {
     const known = ["bash", "shell", "read", "write", "edit", "patch", "grep", "glob", "list", "task", "todowrite", "webfetch", "websearch"]
     return [...new Set([...known, ...(props.sessionTools ?? [])])].sort()
   }
+  // the more-views group seeds open when the active view lives inside it,
+  // so the current view is never hidden behind its own group; the reader
+  // can still collapse it freely for this panel mount
+  const [moreViewsOpen, setMoreViewsOpen] = createSignal(!PRIMARY_VIEWS.includes(props.settings.view))
   return (
     <div class="flex flex-col gap-1">
       <Section label="view">
         <div class="grid grid-cols-2 gap-1.5">
-          <For each={VIEW_OPTIONS}>
-            {(v) => (
-              <button
-                title={v.label}
-                class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer transition-colors duration-150"
-                classList={{
-                  "border-icon-strong-base bg-surface-base": props.settings.view === v.id,
-                  "border-border-weak-base hover:border-border-strong-base bg-transparent": props.settings.view !== v.id,
-                }}
-                onClick={() => props.update({ view: v.id })}
-              >
-                <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
-                  {viewMark(v.id)}
-                </span>
-                <span class="text-12-regular text-text-base truncate">{v.label}</span>
-              </button>
-            )}
+          <For each={VIEW_OPTIONS.filter((v) => PRIMARY_VIEWS.includes(v.id))}>
+            {(v) => <ViewButton v={v} active={props.settings.view === v.id} onUpdate={props.update} />}
           </For>
         </div>
+        <button
+          type="button"
+          class="mt-1.5 flex w-full items-center justify-between px-2 py-1 text-12-regular text-text-weaker cursor-pointer hover:text-text-base transition-colors duration-150"
+          onClick={() => setMoreViewsOpen(!moreViewsOpen())}
+        >
+          <span>more views</span>
+          <span>{moreViewsOpen() ? "▾" : "▸"}</span>
+        </button>
+        <Show when={moreViewsOpen()}>
+          <div class="grid grid-cols-2 gap-1.5">
+            <For each={VIEW_OPTIONS.filter((v) => !PRIMARY_VIEWS.includes(v.id))}>
+              {(v) => <ViewButton v={v} active={props.settings.view === v.id} onUpdate={props.update} />}
+            </For>
+          </div>
+        </Show>
       </Section>
 
       <Section label="theme">

@@ -65,9 +65,15 @@ export function applyCodeSurface(on: boolean) {
   else delete document.documentElement.dataset.oshCodeSurface
 }
 
-// the settings panel lists classic + reader + every registered view
+// the settings panel lists the two core views flat, then every other view
+// behind a collapsible "more views" group (classic + conversation receive
+// the newest reading features first; the rest are maintained but may lag -
+// see the viewer README). Order here is picker order; PRIMARY_VIEWS is the
+// split.
+export const PRIMARY_VIEWS = ["classic", "conversation"]
 export const VIEW_OPTIONS: { id: string; label: string }[] = [
   { id: "classic", label: "classic" },
+  { id: "conversation", label: "conversation" },
   { id: "reader", label: "reader" },
 ]
 

@@ -60,7 +60,7 @@ cd share-worker && npx wrangler deploy        # Cloudflare (or bun share-server/
 - **Read auth** (optional) — per-share login gates with lockout; write access is a separate lock entirely.
 - **TTL + sweeper** — shares expire on their own; create-time TTL overrides per share.
 - **Branding + link previews** — your deployment's logo, wordmark, accent, background, and rendered OG cards (five styles) from config alone: [worked example](share-worker/branding-example/).
-- **A serious viewer** - twelve reading views on one SDK, every view virtualized to handle multi-thousand-message shares, live search, focus mode, deep links, one-click session export: [the viewer](share-viewer/README.md).
+- **A serious viewer** - twelve reading views on one SDK, every view virtualized to handle multi-thousand-message shares, live search, focus mode, deep links, one-click session export (classic and conversation are the maintained cores; the rest are maintained but may lag on the newest features): [the viewer](share-viewer/README.md).
 - **Offline snapshots** - download a share as ONE self-contained HTML file (viewer, chunks, fonts and the frozen transcript inside it) and open it on any machine with no server, no network, no install. From the page button, from a script (`tools/osh-snapshot.mjs`), or straight from an `opencode export` with no share at all (`tools/osh-snapshot-local.mjs`) - [details](#take-it-with-you-snapshots).
 
 ## Quick start

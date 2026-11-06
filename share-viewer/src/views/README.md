@@ -12,6 +12,14 @@ chrome; a complete skin is still one file registered here). Twelve
 views ship today; this contract is how the nine full-page skins and
 any new one are built.
 
+Maturity: classic and conversation are the two cores — the newest
+reading features land there first. The other ten views are maintained
+and keep working on this SDK, but they render parts of the transcript
+their own way and may lag the cores on newer features (the collapsible
+thinking panel, for example, is core-only today); they receive
+catch-up work as needed. The settings picker groups them behind
+"more views" for the same reason.
+
 ## The whole contract
 
 One file: `src/views/<your-id>.tsx`. You export a `Skin` and register
