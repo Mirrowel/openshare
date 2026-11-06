@@ -257,6 +257,7 @@ jobs:
         id: npm-changed
         env:
           NPM_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_npm || 'false' }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: bash ../.github/scripts/npm-changed.sh
 
       - name: Pack and publish to npm
