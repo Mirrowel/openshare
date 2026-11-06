@@ -128,8 +128,16 @@ export function BasicTool(props: BasicToolProps) {
   const [animAlive, setAnimAlive] = createSignal(false)
   let animCloseTimer: ReturnType<typeof setTimeout> | undefined
   let pourRoot: HTMLElement | undefined
+  // true only across an OPEN->CLOSED transition: the effect below also
+  // runs at mount for every born-closed card, and those must not mark
+  // themselves as closing (no wipe ever ran)
+  let oshWasOpen = false
+  let oshWipeTimer: ReturnType<typeof setTimeout> | undefined
   const pourContent = () => pourRoot?.querySelector(':scope > [data-slot="collapsible-content"]') as HTMLElement | undefined
-  onCleanup(() => animCloseTimer && clearTimeout(animCloseTimer))
+  onCleanup(() => {
+    if (animCloseTimer) clearTimeout(animCloseTimer)
+    if (oshWipeTimer) clearTimeout(oshWipeTimer)
+  })
   createRenderEffect(
     on(
       open,
@@ -139,7 +147,13 @@ export function BasicTool(props: BasicToolProps) {
           clearTimeout(animCloseTimer)
           animCloseTimer = undefined
         }
+        if (oshWipeTimer) {
+          clearTimeout(oshWipeTimer)
+          oshWipeTimer = undefined
+        }
         if (value) {
+          pourRoot?.removeAttribute("data-osh-closing")
+          oshWasOpen = true
           if (!animAlive()) {
             // stage a newly mounted body at 0 before its release below;
             // lazy bodies can mount a few frames after the trigger, so the
@@ -177,10 +191,18 @@ export function BasicTool(props: BasicToolProps) {
           // trapped at the old measurement
           animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty("--osh-pour-h"), 300)
         } else {
-          const h = pourContent()?.scrollHeight ?? 0
+          const wasOpen = oshWasOpen
+          oshWasOpen = false
+          const h = wasOpen ? (pourContent()?.scrollHeight ?? 0) : 0
           if (h > 0) pourRoot?.style.setProperty("--osh-pour-h", `${h}px`)
+          // mark the closing card LATE: the top fade mask only needs to
+          // exist for the sweep's final pixels (the remnant forms there),
+          // and arming at click fades the card top for the whole close
+          if (wasOpen) oshWipeTimer = setTimeout(() => pourRoot?.setAttribute("data-osh-closing", ""), 190)
           animCloseTimer = setTimeout(() => {
             setAnimAlive(false)
+            if (oshWipeTimer) clearTimeout(oshWipeTimer)
+            pourRoot?.removeAttribute("data-osh-closing")
             pourRoot?.style.removeProperty("--osh-pour-h")
             if (props.defer) setState("ready", false)
             // the last painted frame of the shrinking box can survive the

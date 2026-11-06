@@ -1118,6 +1118,16 @@ html[data-osh-flip] .osh-snap-row :where(.tool-collapsible[data-osh-pour]) > [da
   transition: none !important;
 }
 
+/* closing wipe: while a card collapses, a short top fade rides the
+   content. The card's top edge (background meeting page background - the
+   sharpest paint in the box) passes into the transparent zone BEFORE the
+   height reaches 0, so the wipe's final band is see-through and nothing
+   paintable survives the last frames (the residual 1px line) */
+.tool-collapsible[data-osh-closing] > [data-slot="collapsible-content"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+}
+
 /* --- tool card pour -------------------------------------------------------
    Height motion is for plain tool cards (shell, generic results, groups).
    File cards deliberately opt out in tool-overrides: their lazy pierre

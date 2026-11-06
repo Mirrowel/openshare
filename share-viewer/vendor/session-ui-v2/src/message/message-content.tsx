@@ -1341,8 +1341,16 @@ export function AssistantReasoningContent(props: {
     requestAnimationFrame(tick)
   }
   const [keepAlive, setKeepAlive] = createSignal(true)
+  // true only across an OPEN->CLOSED transition: the keepAlive effect runs
+  // at mount for every born-closed panel, and those must not mark
+  // themselves as closing (no wipe ever ran)
+  let oshWasOpen = false
+  let oshWipeTimer: ReturnType<typeof setTimeout> | undefined
   let unmountTimer: ReturnType<typeof setTimeout> | undefined
-  onCleanup(() => unmountTimer && clearTimeout(unmountTimer))
+  onCleanup(() => {
+    if (unmountTimer) clearTimeout(unmountTimer)
+    if (oshWipeTimer) clearTimeout(oshWipeTimer)
+  })
   const i18n = useI18n()
   const [state, setState] = createStore<{ open?: boolean }>({})
   const open = () => props.open ?? state.open ?? props.defaultOpen ?? false
@@ -1357,19 +1365,35 @@ export function AssistantReasoningContent(props: {
       clearTimeout(unmountTimer)
       unmountTimer = undefined
     }
+    if (oshWipeTimer) {
+      clearTimeout(oshWipeTimer)
+      oshWipeTimer = undefined
+    }
     // capture the animated-height target while the body is live, in
     // BOTH branches (load-open measures on the first run; close
     // measures before the unmount releases the body)
     measureTarget()
     if (value) {
+      panelEl?.closest(".tool-collapsible")?.removeAttribute("data-osh-closing")
+      oshWasOpen = true
       setKeepAlive(true)
       measureWhenReady()
     } else {
+      const wasOpen = oshWasOpen
+      oshWasOpen = false
+      // mark the closing panel LATE: the top fade mask only needs to
+      // exist for the sweep's final pixels (the remnant forms there), and
+      // arming at click fades the panel top for the whole close. The root
+      // is captured here, BEFORE the unmount detaches the subtree
+      const closingRoot = wasOpen ? (panelEl?.closest(".tool-collapsible") as HTMLElement | undefined) : undefined
+      if (wasOpen) oshWipeTimer = setTimeout(() => closingRoot?.setAttribute("data-osh-closing", ""), 190)
       unmountTimer = setTimeout(() => {
         setKeepAlive(false)
+        if (oshWipeTimer) clearTimeout(oshWipeTimer)
+        closingRoot?.removeAttribute("data-osh-closing")
         // same compositor-remnant guard as the tool pour close: the last
         // painted frame of the panel can survive the unmount as a 1px line
-        const row = panelEl?.closest("[data-row-key],[data-timeline-row]") as HTMLElement | undefined
+        const row = closingRoot?.closest("[data-row-key],[data-timeline-row]") as HTMLElement | undefined
         if (row) {
           row.style.opacity = "0.999"
           requestAnimationFrame(() => row.style.removeProperty("opacity"))
