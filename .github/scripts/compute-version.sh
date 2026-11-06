@@ -69,7 +69,7 @@ tag_points_at_head() {
 
 release_relevant_changes() {
   local previous_tag="$1"
-  local changed_files
+  local changed_files relevant_files="" f stampable m
   # paths are repo-root-relative, so run git from the monorepo root
   # (PKG_DIR/..) even though the script cd'd into the package dir
   if [ -n "$previous_tag" ]; then
@@ -78,7 +78,31 @@ release_relevant_changes() {
     changed_files="$(git -C .. ls-tree -r --name-only HEAD)"
   fi
 
-  printf '%s\n' "$changed_files" | kit_any_match "$RELEASE_RE"
+  # Release stamps rewrite every manifest and lockfile version field, so
+  # a sync that only carries stamps back into a branch must not arm a
+  # release: stamp-only versions of those files are dropped before the
+  # path match. Anything else (src, docs-in-paths, a manifest with real
+  # dependency lines) counts as before.
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    stampable=false
+    for m in $MANIFESTS; do
+      [ "$f" = "$m" ] && { stampable=true; break; }
+    done
+    case "$f" in
+      */package-lock.json|*/npm-shrinkwrap.json) stampable=true ;;
+    esac
+    if [ "$stampable" = true ] && [ -n "$previous_tag" ] \
+      && kit_stamp_only "$previous_tag" "$f"; then
+      continue
+    fi
+    relevant_files="$relevant_files$f
+"
+  done <<EOF
+$changed_files
+EOF
+
+  printf '%s\n' "$relevant_files" | kit_any_match "$RELEASE_RE"
 }
 
 conventional_bump_since() {
