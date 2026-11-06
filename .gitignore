@@ -5,6 +5,7 @@ package-lock.json.bak
 # builds
 share-plugin/dist/
 share-viewer/dist/
+share-cli/dist/
 share-viewer/node_modules/.vite/
 
 # wrangler
@@ -46,3 +47,15 @@ share-server/openshare.db-*
 *.tsbuildinfo
 npm-debug.log*
 
+
+design.md
+product.md
+upstream-reports/
+example/
+
+# snapshot outputs written by tools/osh-snapshot*.mjs
+openshare-*.html
+*.snapshot.html
+
+share-plugin/scripts/.tui-reactivity-*/
+share-plugin/scripts/.tui-probe/

@@ -153,9 +153,7 @@ try {
   const urlFile = join(sandbox, "share-url.txt")
 
   const variant = { name: "manual", path: PKG }
-  console.log("probe: pre-startServe")
-  const serve = await startServe(variant, sandbox, projectDir, { OPENSHARE_DEBUG_FILE: join(sandbox, "debug.json") })
-  console.log("probe: post-startServe")
+  const serve = await startServe(variant, sandbox, projectDir, { OPENSHARE_DEBUG_FILE: join(sandbox, "debug.json"), OPENSHARE_DEBOUNCE_MS: "300" })
 
   let sid
   let shareId
@@ -163,7 +161,9 @@ try {
   try {
     // S1: dormancy — a full session+prompt cycle with the TUI present
     sid = await createAndPrompt(serve, "manual mode dormancy")
-    await sleep(4000) // give any (wrong) share creation time to surface
+    // at a 300ms debounce, 1.5s is five flush windows: a wrong share would
+    // have long since surfaced
+    await sleep(1500)
     try {
       console.log("plugin debug:", readFileSync(join(sandbox, "debug.json"), "utf8"))
     } catch {
@@ -345,8 +345,8 @@ try {
     }, "S6: override share completes")
     const osession = await (await httpGet(`${serve3.base}/session/${osid}`)).json()
     const ob = osession?.metadata?.openshare
-    // Since the live-caught consent-on-shared-session fix, bindings are
-    // enabled:true in BOTH modes (live <=> url && enabled !== false).
+    // Bindings are enabled:true in BOTH modes (live <=> url && enabled !==
+    // false), so a shared session never re-consents.
     check("S6: all-mode binding carries enabled:true", !!bindingUrlOf(ob) && ob.enabled === true, JSON.stringify(ob))
   } finally {
     await stopServe(serve3);
@@ -396,6 +396,10 @@ try {
       const r = await httpGet(`${WORKER_URL}/api/share/${boundId}/data`)
       return r.ok && (await r.json()).status === "completed"
     }, "S8 setup: bound share completes")
+    // stderr ladder, default position ("all"): the status/banner lines and
+    // the announce lines all print in all-mode (this serve runs default env)
+    const s8Out = preServe1.output()
+    check("S8: default ladder prints banner + live:", /\[openshare\] share mode: /.test(s8Out) && /\[openshare\] live: /.test(s8Out), s8Out.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 3).join(" | "))
     // NOTE: serve is deliberately NOT restarted between the bound-session
     // setup and the dormancy/resume assertions below (restart-attach is
     // S5's contract; merging the two serves saves a full spawn cycle)
@@ -456,11 +460,13 @@ try {
   } // end allmode shard
 
   if (shardRuns("engine")) {
+  const engineA = SHARD === "all" || SHARD === "engine" || SHARD === "engine1"
+  const engineB = SHARD === "all" || SHARD === "engine" || SHARD === "engine2"
+  if (engineA) {
   // S9: undo tombstones — revert marks (viewer hides), the NEXT prompt
   // hard-deletes the reverted range (message.removed / part.removed).
   // The share must PHYSICALLY drop those items: without tombstones the
-  // upsert-only worker keeps them and they reappear when the marker
-  // clears (live-caught in production 2026-10-18).
+  // upsert-only worker keeps them and they reappear when the marker clears.
   {
     const s9Sandbox = join(suiteDir, "undo")
     const s9Project = join(s9Sandbox, "project")
@@ -570,7 +576,7 @@ try {
     }
   }
   // S10: completed debounce — idle between sequential prompts must NOT
-  // flip the share to completed instantly (8s delay here); a genuinely
+  // flip the share to completed instantly (4s delay here); a genuinely
   // finished session settles to completed after the window; a killed
   // process (dispose) flushes the pending completed immediately.
   {
@@ -580,8 +586,45 @@ try {
     const stUrlFile = join(stSandbox, "share-url.txt")
     const stServe = await startServe({ name: "status", path: PKG }, stSandbox, stProject, {
       OPENSHARE_URL_FILE: stUrlFile,
-      OPENSHARE_COMPLETED_DELAY_MS: "8000",
+      OPENSHARE_COMPLETED_DELAY_MS: "4000",
+      // stderr ladder, "url" rung: announce lines stay, status/banner lines
+      // drop (the CI shape: clean logs, scrapeable share URL)
+      OPENSHARE_ANNOUNCE_STDERR: "url",
     })
+    // idle-flush latency serve runs CONCURRENTLY on its own port (the old
+    // serial ordering existed only because both serves shared one port);
+    // its probes are independent of everything below
+    const latSandbox = join(suiteDir, "latency")
+    const latProject = join(latSandbox, "project")
+    mkdirSync(latProject, { recursive: true })
+    const latUrlFile = join(latSandbox, "share-url.txt")
+    const latChain = (async () => {
+      const latServe = await startServe({ name: "latency", path: PKG }, latSandbox, latProject, {
+        OPENSHARE_URL_FILE: latUrlFile,
+        OPENSHARE_DEBOUNCE_MS: "8000",
+        OPENSHARE_COMPLETED_DELAY_MS: "300",
+        // stderr ladder, "status" rung: status/banner lines print, the
+        // share URL never does (the public-CI shape)
+        OPENSHARE_ANNOUNCE_STDERR: "status",
+      }, SERVE_PORT + 8)
+      try {
+        await createAndPrompt(latServe, "latency probe")
+        const latUrl = (await waitFor(() => readUrlFile(latUrlFile), "S10: latency share url")).trim().split("\n").at(-1)
+        const latId = latUrl.split("/").pop()
+        const t0 = Date.now()
+        await waitForShareData(latId, (parsed) => {
+          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.type === "user")
+          return msgs.length ? parsed : undefined
+        }, "S10: turn-end content visible")
+        const latency = Date.now() - t0
+        check("S10: turn-end content flushed immediately (<3s despite 8s interval)", latency < 3000, `${latency}ms`)
+        const latOut = latServe.output()
+        check("S10: ladder status keeps the mode banner", latOut.includes("[openshare] share mode:"), latOut.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 2).join(" | "))
+        check("S10: ladder status never prints the share URL", !latOut.includes("[openshare] live: ") && !latOut.includes("[openshare] url file:"), latOut.split("\n").filter((l) => l.includes("live:")).slice(0, 2).join(" | "))
+      } finally {
+        await stopServe(latServe)
+      }
+    })()
     try {
       const stsid = await createAndPrompt(stServe, "status debounce")
       const sturl = (await waitFor(() => readUrlFile(stUrlFile), "S10: share created")).trim().split("\n").at(-1)
@@ -596,11 +639,16 @@ try {
         )
         return hasResponse ? parsed : undefined
       }, "S10: response parts synced")
-      await sleep(1500)
+      await sleep(900)
       const mid = await (await httpGet(`${WORKER_URL}/api/share/${stid}/data`)).json()
       check("S10: status still live inside the debounce window", mid.status === "live", `status=${mid.status}`)
-      const done = await waitForShareData(stid, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: completed after the window (8s)")
+      const done = await waitForShareData(stid, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: completed after the window (4s)")
       check("S10: settles to completed after the delay", done.status === "completed")
+
+      // ladder at "url": announce lines present, banner/status lines absent
+      const stOut = stServe.output()
+      check("S10: ladder url keeps the live: announce", stOut.includes("[openshare] live: "), stOut.split("\n").filter((l) => l.includes("[openshare]")).slice(0, 3).join(" | "))
+      check("S10: ladder url drops the mode banner", !stOut.includes("[openshare] share mode:"), stOut.split("\n").filter((l) => l.includes("share mode")).slice(0, 2).join(" | "))
 
       // dispose-flush: a GRACEFUL process exit while the 8s pending timer
       // is armed must still land the final completed (the `opencode run`
@@ -655,10 +703,11 @@ try {
       const retried = await waitForShareData(retryId, (parsed) => (parsed.status === "completed" ? parsed : undefined), "S10: recovered retry ends completed")
       check("S10: recovered 429 retry -> completed (not error)", retried.status === "completed", `status=${retried.status}`)
 
-      // terminal error path: mock LLM hard-fails every request; opencode
-      // retries with backoff (~68s for 5 attempts) and the turn dies as
-      // an assistant message with finish:"error" (a 200, not session.error
-      // — live-caught); the share must still say error
+      // terminal error path: mock LLM hard-fails every request with a
+      // NON-retryable 4xx (a 5xx would ride opencode's own retry ladder,
+      // 2+4+8+16+32s); the turn dies immediately as an assistant message
+      // with finish:"error" (a 200, not session.error); the share must
+      // still say error
       const linesBeforeFail = ((await readUrlFile(stUrlFile)) ?? "").trim().split("\n").filter(Boolean).length
       {
         const created = await httpGet(`${stServe.base}/session`, {
@@ -690,36 +739,11 @@ try {
       await stopServe(stServe)
     }
 
-    // idle-flush latency: with a LONG sync interval (8s) the turn-end
-    // batch must still land within ~3s of the prompt returning — the
-    // idle flush, not the interval, delivers turn ends (own serve: the
-    // port rebind kills the previous one, so this runs last)
-    {
-      const latSandbox = join(suiteDir, "latency")
-      const latProject = join(latSandbox, "project")
-      mkdirSync(latProject, { recursive: true })
-      const latUrlFile = join(latSandbox, "share-url.txt")
-      const latServe = await startServe({ name: "latency", path: PKG }, latSandbox, latProject, {
-        OPENSHARE_URL_FILE: latUrlFile,
-        OPENSHARE_DEBOUNCE_MS: "8000",
-        OPENSHARE_COMPLETED_DELAY_MS: "300",
-      })
-      try {
-        await createAndPrompt(latServe, "latency probe")
-        const latUrl = (await waitFor(() => readUrlFile(latUrlFile), "S10: latency share url")).trim().split("\n").at(-1)
-        const latId = latUrl.split("/").pop()
-        const t0 = Date.now()
-        await waitForShareData(latId, (parsed) => {
-          const msgs = parsed.data.filter((i) => i.type === "message" && i.data?.type === "user")
-          return msgs.length ? parsed : undefined
-        }, "S10: turn-end content visible")
-        const latency = Date.now() - t0
-        check("S10: turn-end content flushed immediately (<3s despite 8s interval)", latency < 3000, `${latency}ms`)
-      } finally {
-        await stopServe(latServe)
-      }
-    }
+    // join the concurrent latency/ladder chain (booted above stServe)
+    await latChain
   }
+  } // end engineA
+  if (engineB) {
 
   // S11: turn-scoped sockets (suite worker: 127.0.0.1 -> auto -> turn,
   // TURN_GRACE_MS=2000): settle -> grace -> clean drop; the next prompt
@@ -830,6 +854,70 @@ try {
       await stopServe(s13Serve)
     }
   }
+
+  // S15: per-share pause + backfill. Flipping the share tier's paused
+  // flag stops the ENGINE from syncing (the page freezes at its last rev
+  // while the session keeps taking turns); unpausing drains everything
+  // the pause queued. The metadata PATCH is the exact write the TUI
+  // dashboard makes (the binding mirror; the engine resolves the config
+  // tier above it).
+  {
+    const s15Sandbox = join(suiteDir, "paused")
+    const s15Project = join(s15Sandbox, "project")
+    mkdirSync(s15Project, { recursive: true })
+    const s15UrlFile = join(s15Sandbox, "share-url.txt")
+    const s15Serve = await startServe({ name: "paused", path: PKG }, s15Sandbox, s15Project, { OPENSHARE_URL_FILE: s15UrlFile })
+    try {
+      const sid = await createAndPrompt(s15Serve, "pause probe")
+      const url = (await waitFor(() => readUrlFile(s15UrlFile), "S15: share created")).trim().split("\n").at(-1)
+      const id = url.split("/").pop()
+      const shareJson = async () => (await (await fetch(`${WORKER_URL}/api/share/${id}/data`)).json())
+      const userCount = (p) => p.data.filter((i) => i.type === "message" && i.data?.type === "user").length
+      const base = await waitForShareData(id, (p) => (userCount(p) >= 1 ? p : undefined), "S15: baseline turn visible")
+      const revBase = base.rev
+      const usersBase = userCount(base)
+      const patchOpts = async (optsPatch) => {
+        const info = await (await httpGet(`${s15Serve.base}/session/${sid}`)).json()
+        const md = { ...(info.metadata ?? {}) }
+        const osh = { ...(md.openshare ?? {}), enabled: true }
+        const nextOpts = { ...(osh.opts ?? {}), ...optsPatch }
+        for (const k of Object.keys(nextOpts)) if (nextOpts[k] === undefined) delete nextOpts[k]
+        osh.opts = nextOpts
+        md.openshare = osh
+        await httpGet(`${s15Serve.base}/session/${sid}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ metadata: md }) })
+      }
+      await patchOpts({ paused: true })
+      // the dashboard's other half: the REST PATCH gates the server (v1
+      // hosts do not emit session.updated for metadata-only changes, so
+      // the server-side block is what enforces the freeze; v2 hosts also
+      // stop flushing engine-side)
+      const s15Info = await (await httpGet(`${s15Serve.base}/session/${sid}`)).json()
+      const s15Entry = s15Info?.metadata?.openshare?.servers?.[WORKER_URL]
+      const s15Pause = await fetch(`${WORKER_URL}/api/share/${s15Entry?.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: s15Entry?.secret, paused: true }),
+      })
+      check("S15: pause PATCH ok", s15Pause.ok, `${s15Pause.status}`)
+      await sleep(600) // in-flight syncs settle against the closed gate
+      await promptSession(s15Serve, sid, "turn while paused")
+      await sleep(3000) // past the turn-end flush: the gate must hold
+      const frozen = await shareJson()
+      check("S15: page frozen while paused", frozen.rev === revBase && userCount(frozen) === usersBase, `rev ${frozen.rev} vs ${revBase}, users ${userCount(frozen)} vs ${usersBase}`)
+      await patchOpts({ paused: undefined })
+      const s15Unpause = await fetch(`${WORKER_URL}/api/share/${s15Entry?.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: s15Entry?.secret, paused: false }),
+      })
+      check("S15: unpause PATCH ok", s15Unpause.ok, `${s15Unpause.status}`)
+      const caughtUp = await waitForShareData(id, (p) => (userCount(p) > usersBase && p.rev > revBase ? p : undefined), "S15: backfill after unpause")
+      check("S15: unpause backfilled the paused turn", userCount(caughtUp) > usersBase && caughtUp.rev > revBase, `rev ${caughtUp.rev} vs ${revBase}, users ${userCount(caughtUp)} vs ${usersBase}`)
+    } finally {
+      await stopServe(s15Serve)
+    }
+  }
+  } // end engineB
   } // end engine shard
 } catch (error) {
   console.error("SUITE ERROR:", error.message)

@@ -5,14 +5,14 @@
 // auth — one surface, no duplicated manager); on an unshared session it
 // asks consent and creates the share. /openshare opens settings.
 //
-// LAYER SHAPE (live-caught 2026-10-19): the v1 host keymap gates layers
-// that declare `mode` on the mode stack (resting mode is "base"), so a
-// plugin layer MUST NOT pass mode ("global" made the whole layer
-// unreachable — no palette entries, no slash commands, no shadow) and
-// must not carry undefined-valued command fields. The registration shape
-// is exactly what the proven family plugins use: {commands, bindings},
-// commands with only defined fields, category "OpenShare" (own group,
-// deliberately NOT joined into the shared family palette category).
+// LAYER SHAPE: the v1 host keymap gates layers that declare `mode` on the
+// mode stack (resting mode is "base"), so a plugin layer MUST NOT pass mode
+// ("global" made the whole layer unreachable: no palette entries, no slash
+// commands, no shadow) and must not carry undefined-valued command fields.
+// The registration shape is exactly what the proven family plugins use:
+// {commands, bindings}, commands with only defined fields, category
+// "OpenShare" (own group, deliberately NOT joined into the shared family
+// palette category).
 
 import {
   clearGoneBindingEntries,

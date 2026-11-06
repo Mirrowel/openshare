@@ -47,6 +47,8 @@ export type ViewContextValue = {
   back: () => void
   /** copy this session as markdown to the clipboard */
   copyMarkdown: () => Promise<void>
+  /** download this session as an `opencode import`-ready JSON file */
+  exportSession: () => void
   /** is a subagent (/N) page */
   isSub: () => boolean
   /** virtualization cache prefix for this session mount */

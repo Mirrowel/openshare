@@ -43,3 +43,70 @@ jobs:
 
       - name: Typecheck, build, and verify packed contents
         run: npm run ci
+
+  tests:
+    name: Test suites (quick gate)
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: share-plugin/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      # pinned to the tested host minor; suites drive the real CLI
+      # (mock-LLM provider on localhost, XDG-sandboxed, no secrets)
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai@1.19.4
+
+      - name: Install dependencies
+        run: npm ci
+
+      # suites import the plugin from dist/ and load it into real opencode
+      # instances; without the emit they fail on missing modules
+      - name: Build plugin
+        run: npm run build
+
+      # the suites spawn `wrangler dev` with cwd=share-worker; its worker
+      # bundle imports @resvg/resvg-wasm, which only resolves from
+      # share-worker/node_modules - without this install esbuild fails
+      # with ENOENT and workerd never starts
+      - name: Install worker dependencies
+        working-directory: share-worker
+        run: npm ci
+
+      # workerd's sandbox needs unprivileged user namespaces; Ubuntu 24.04+
+      # runner images restrict them via AppArmor, which stalls wrangler dev
+      # forever at "Starting local server...". May need revisiting when the
+      # runner image changes - the smoke step below fails fast with the real
+      # workerd error if this stops working.
+      - name: Enable unprivileged user namespaces
+        run: |
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+
+      # bounded sanity boot (~1-2 min): proves workerd starts on this
+      # runner before the matrix spends its minutes
+      - name: Smoke boot wrangler dev
+        timeout-minutes: 5
+        run: node scripts/ci-smoke.mjs
+
+      - name: Run quick gate
+        env:
+          # 4-vCPU runners: fewer in-flight suites than the local default
+          OPENSHARE_MATRIX_CONCURRENCY: "4"
+          # runner suites run ~2-4x slower than the local ~55-75s band;
+          # tighten once real runner timings settle
+          OSH_MATRIX_BUDGET_S: "300"
+        run: npm run test:quick

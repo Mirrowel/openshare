@@ -19,6 +19,9 @@ export type ShareDialogSelectOption<Value = string> = {
   danger?: boolean
   /** pending/edited — renders green (v1 menus) */
   edited?: boolean
+  /** inherited/computed value (settings tiers): renders muted so a set
+   * override stands out against what was merely inherited (v1 menus) */
+  dim?: boolean
   /** non-interactive separator row (v1 menus) */
   divider?: boolean
 }

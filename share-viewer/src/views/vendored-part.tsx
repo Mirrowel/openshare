@@ -9,9 +9,7 @@ import { setSubagentData } from "../subagent-map"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
-import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
-import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
-import { FileSSR } from "@opencode/session-ui/file-ssr"
+import { File } from "@opencode/session-ui/file"
 import { sessionStatus, type ShareData } from "../fold"
 import { armToggleAnchor, settleToggleAnchor } from "../toggle-anchor"
 import { claimDisclosure, disclosureOwned, dismissSearchKey, engineClicking, releaseDisclosure, searchKeyDismissed, searchOwnsDisclosure } from "../search-state"
@@ -24,8 +22,8 @@ import type { ToolEntry } from "./session-data"
 // bundle is what makes subagent rows clickable: the vendored renderer
 // links through data.sessionHref and clicks through data.navigateToSession
 export type VendoredNav = {
-  sessionHref: (id: string) => string | undefined
-  navigateToSession: (id: string) => void
+  sessionHref: (id: string, anchor?: string) => string | undefined
+  navigateToSession: (id: string, anchor?: string) => void
 }
 let currentData: ShareData | undefined
 let currentNav: VendoredNav | undefined
@@ -36,8 +34,8 @@ export function setVendoredData(d: ShareData | undefined, nav?: VendoredNav) {
 
 // per-entry open state for composed views. MUST be a reactive STORE, not a
 // Map: Solid cannot track plain Map reads inside JSX, so onOpenChange(false)
-// never re-rendered and rows could not be collapsed again (live-caught on
-// every composed view after the controlled-open change).
+// never re-rendered and rows could not be collapsed again, on every composed
+// view after the controlled-open change.
 const [partOpen, setPartOpen] = createStore<Record<string, boolean | undefined>>({})
 armToggleAnchor()
 
@@ -64,8 +62,7 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
       onSessionHref={currentNav?.sessionHref}
       onNavigateToSession={currentNav?.navigateToSession}
     >
-      <WorkerPoolProvider pools={getWorkerPools()}>
-        <FileComponentProvider component={FileSSR as any}>
+        <FileComponentProvider component={File}>
           <DialogProvider>
             <ToolDisplay
               id={String(props.entry.part?.id ?? props.entry.tool)}
@@ -76,8 +73,8 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
               status={props.entry.status}
               // failed calls must read as failures in every view: ToolDisplay
               // swaps in the error card when status="error" AND error is set
-              // (classic passes the same via currentToolError - live-caught:
-              // reader showed failed reads as ordinary ones)
+              // (classic passes the same via currentToolError, or reader shows
+              // failed reads as ordinary ones)
               error={
                 props.entry.state?.status === "error"
                   ? typeof props.entry.state?.error === "string"
@@ -108,7 +105,6 @@ export function VendoredPart(props: { entry: ToolEntry; settings: OshSettings; d
             />
           </DialogProvider>
         </FileComponentProvider>
-      </WorkerPoolProvider>
     </DataProvider>
   )
 }

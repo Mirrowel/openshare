@@ -51,12 +51,12 @@ const watchdog = setTimeout(() => {
   process.exit(124)
 }, WATCHDOG_MS)
 
-async function runVariant(variant, suiteDir) {
+async function runVariant(variant, suiteDir, servePort) {
   const sandbox = join(suiteDir, variant.name)
   const projectDir = join(sandbox, "project")
   mkdirSync(projectDir, { recursive: true })
 
-  const serve = await startServe(variant, sandbox, projectDir)
+  const serve = await startServe(variant, sandbox, projectDir, {}, servePort)
   const urlFile = join(sandbox, "share-url.txt")
   try {
     const created = await httpGet(`${serve.base}/session`, {
@@ -145,15 +145,19 @@ try {
     { name: "package-dir", path: new URL("../", import.meta.url).href.replace(/\/$/, "") },
   ]
 
-  const results = []
-  for (const variant of variants) {
-    const onDisk = variant.path.startsWith("file://") ? fileURLToPath(variant.path) : variant.path
-    if (!existsSync(onDisk)) throw new Error(`variant ${variant.name} missing: ${variant.path}`)
-    console.log(`running variant: ${variant.name}`)
-    const result = await runVariant(variant, suiteDir)
-    results.push(result)
-    console.log(`  share ${result.shareId} status=${result.normalized.status} items=${result.normalized.items.map((i) => i.type).join(",")}`)
-  }
+  // The three variants are independent (own sandbox, own share), so they
+  // run CONCURRENTLY on disjoint serve ports: the suite's wall clock is
+  // one lifecycle, not three.
+  const results = await Promise.all(
+    variants.map(async (variant, index) => {
+      const onDisk = variant.path.startsWith("file://") ? fileURLToPath(variant.path) : variant.path
+      if (!existsSync(onDisk)) throw new Error(`variant ${variant.name} missing: ${variant.path}`)
+      console.log(`running variant: ${variant.name}`)
+      const result = await runVariant(variant, suiteDir, SERVE_PORT + index * 20)
+      console.log(`  share ${result.shareId} status=${result.normalized.status} items=${result.normalized.items.map((i) => i.type).join(",")}`)
+      return result
+    }),
+  )
 
   const check = (label, ok, detail) => {
     if (ok) console.log(`PASS ${label}`)
@@ -203,7 +207,7 @@ try {
     llm?.close()
   } catch {}
   if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
-  killPortOwners(SERVE_PORT)
+  for (let i = 0; i < 3; i++) killPortOwners(SERVE_PORT + i * 20)
   killPortOwners(LLM_PORT)
 }
 
@@ -225,6 +229,199 @@ try {
   failures.push("contract: messageTombstone import")
 }
 
+
+// config unit gate (pure): OPENSHARE_CONFIG_JSON sits between files and
+// per-key env; urlFileFormat is a known enum; meta caps apply. These run
+// in-process against dist/config.js with env vars set and restored.
+try {
+  const cfgmod = await import(pathToFileURL(join(here(".."), "dist", "config.js")).href)
+  const { loadConfig } = cfgmod
+  const saved = { ...process.env }
+  const sandboxDir = mkdtempSync(join(tmpdir(), "osh-cfg-"))
+  const pluginDir = join(sandboxDir, "plugin")
+  mkdirSync(pluginDir, { recursive: true })
+  // hermetic: dist config reads the real settings home otherwise
+  // (suite rule - importing dist with env effects requires XDG redirect)
+  process.env.XDG_CONFIG_HOME = join(sandboxDir, "xdg")
+  mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true })
+  try {
+    // no config anywhere: CONFIG_JSON supplies everything
+    process.env.OPENSHARE_WORKER_URL = ""
+    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({
+      workerUrl: "https://cfgjson.example",
+      urlFileFormat: "json",
+      meta: { run: "r-${OSH_TEST_RUN}", keep: "x" },
+    })
+    process.env.OSH_TEST_RUN = "42"
+    let cfg = loadConfig(pluginDir)
+    let ok =
+      cfg.workerUrl === "https://cfgjson.example" &&
+      cfg.urlFileFormat === "json" &&
+      cfg.meta?.run === "r-${OSH_TEST_RUN}" && // interpolation is engine-side (metaFor); the loader keeps the literal
+      cfg.meta?.keep === "x"
+    console.log(`${ok ? "PASS" : "FAIL"} config: CONFIG_JSON supplies full config object`)
+    if (!ok) failures.push("config: CONFIG_JSON load")
+    // per-key env BEATS CONFIG_JSON
+    process.env.OPENSHARE_WORKER_URL = "https://env-wins.example"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.workerUrl === "https://env-wins.example"
+    console.log(`${ok ? "PASS" : "FAIL"} config: specific env var beats CONFIG_JSON`)
+    if (!ok) failures.push("config: CONFIG_JSON precedence")
+    // malformed CONFIG_JSON must not throw and must not clear prior layers
+    process.env.OPENSHARE_WORKER_URL = ""
+    process.env.OPENSHARE_CONFIG_JSON = "{broken"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.workerUrl === "" // nothing else configured
+    console.log(`${ok ? "PASS" : "FAIL"} config: malformed CONFIG_JSON tolerated`)
+    if (!ok) failures.push("config: CONFIG_JSON malformed")
+    // urlFileFormat env enum
+    process.env.OPENSHARE_CONFIG_JSON = ""
+    process.env.OPENSHARE_URL_FILE_FORMAT = "json"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.urlFileFormat === "json"
+    delete process.env.OPENSHARE_URL_FILE_FORMAT
+    process.env.OPENSHARE_URL_FILE_FORMAT = "bogus"
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.urlFileFormat === "url" // bogus value ignored, default stays
+    console.log(`${ok ? "PASS" : "FAIL"} config: urlFileFormat enum honored`)
+    if (!ok) failures.push("config: urlFileFormat")
+    // announceStderr ladder: all four enum values honored, legacy
+    // booleans coerce, bogus values fall back to the default position
+    process.env.OPENSHARE_URL_FILE_FORMAT = ""
+    process.env.OPENSHARE_ANNOUNCE_STDERR = "url"
+    cfg = loadConfig(pluginDir)
+    ok = cfg.announceStderr === "url"
+    process.env.OPENSHARE_ANNOUNCE_STDERR = "status"
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.announceStderr === "status"
+    process.env.OPENSHARE_ANNOUNCE_STDERR = "false"
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.announceStderr === "off"
+    process.env.OPENSHARE_ANNOUNCE_STDERR = "bogus"
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.announceStderr === "all"
+    delete process.env.OPENSHARE_ANNOUNCE_STDERR
+    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({ announceStderr: "status" })
+    cfg = loadConfig(pluginDir)
+    ok = ok && cfg.announceStderr === "status"
+    console.log(`${ok ? "PASS" : "FAIL"} config: announceStderr ladder (4 positions + legacy boolean + fallback)`)
+    if (!ok) failures.push("config: announceStderr ladder")
+    // meta caps: non-string values dropped, over-long dropped
+    process.env.OPENSHARE_URL_FILE_FORMAT = ""
+    process.env.OPENSHARE_CONFIG_JSON = JSON.stringify({ meta: { good: "v", bad: 5, long: "y".repeat(501) } })
+    cfg = loadConfig(pluginDir)
+    ok = cfg.meta && cfg.meta.good === "v" && cfg.meta.bad === undefined && cfg.meta.long === undefined
+    console.log(`${ok ? "PASS" : "FAIL"} config: meta normalization caps`)
+    if (!ok) failures.push("config: meta caps")
+  } finally {
+    for (const k of Object.keys(saved)) process.env[k] = saved[k]
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
+    rmSync(sandboxDir, { recursive: true, force: true })
+  }
+} catch (e) {
+  console.log("FAIL config unit block:", String(e.message || e))
+  failures.push("config: unit block crashed")
+}
+
+// Task-call -> child-prompt pairing ladder (pure): text coverage with an
+// arrival tiebreaker, no re-claiming, and unpaired when nothing clears
+// the bar (an unanchored card beats a wrong anchor).
+try {
+  const { pairPromptID, promptCoverage } = await import(pathToFileURL(join(here(".."), "dist", "task-pairing.js")).href)
+  const PREAMBLE = "You are a subagent spawned by another session.\n"
+  const t0 = 1_000_000
+  const cands = [
+    { id: "p1", created: t0 + 100, text: PREAMBLE + "review the config file" },
+    // auto-continue, not linked to any call
+    { id: "p_pre", created: t0 + 400, text: "continue: summarize findings so far" },
+    { id: "p2", created: t0 + 1_000, text: "check these files:\n<<<host-inlined file contents>>>\nreport issues" },
+    { id: "p3", created: t0 + 2_000, text: "review the config file" },
+  ].sort((a, b) => a.created - b.created)
+  const claimed = new Set()
+  const pick1 = pairPromptID({ partID: "a", created: t0 + 50, prompt: "review the config file" }, cands, claimed)
+  claimed.add(pick1)
+  const pick2 = pairPromptID({ partID: "b", created: t0 + 900, prompt: "check these files:\nreport issues" }, cands, claimed)
+  claimed.add(pick2)
+  const pick3 = pairPromptID({ partID: "c", created: t0 + 1_900, prompt: "review the config file" }, cands, claimed)
+  claimed.add(pick3)
+  // nothing in the window and no text match: unpaired
+  const pickNone = pairPromptID({ partID: "d", created: t0 + 60_000, prompt: "something else entirely" }, cands, claimed)
+  const ok = pick1 === "p1" && pick2 === "p2" && pick3 === "p3" && pickNone === undefined
+  console.log(`${ok ? "PASS" : "FAIL"} task-pairing: ladder (${[pick1, pick2, pick3, pickNone].join(",")})`)
+  if (!ok) failures.push("task-pairing: ladder")
+
+  // line-alignment coverage: junk around/inside the prompt costs nothing,
+  // spread internal edits cost only their own length, shuffles fail
+  const body = Array.from({ length: 40 }, (_, i) => `step ${i}: examine module${i} and verify outputs`).join("\n")
+  const renamed = body.replaceAll("module", "widget")
+  // 2k lines of host-inlined file content before AND after the prompt
+  const junk = Array.from({ length: 2_000 }, (_, i) => `inlined file line ${i}`).join("\n")
+  const c_inline = promptCoverage(`${junk}\n${body}\n${junk}`, body)
+  const c_renamed = promptCoverage(renamed, body)
+  const c_shuffle = promptCoverage(body.split("\n").reverse().join("\n"), body)
+  const c_pre = promptCoverage(PREAMBLE + body, body)
+  const ok2 = c_inline === 1 && c_renamed >= 0.75 && c_pre === 1 && c_shuffle < 0.75
+  console.log(`${ok2 ? "PASS" : "FAIL"} task-pairing: line alignment (inline=${c_inline} renamed=${c_renamed.toFixed(2)} preamble=${c_pre} shuffled=${c_shuffle.toFixed(2)})`)
+  if (!ok2) failures.push("task-pairing: line alignment")
+} catch (e) {
+  console.log("FAIL task-pairing unit block:", String(e.message || e))
+  failures.push("task-pairing: unit block crashed")
+}
+
+// Wave 3 redaction (pure): detectors fire, markers are stable, user
+// rules extend, tildization is display-only, and CLEAN items pass
+// through zero-copy.
+try {
+  const { redactItem, activeRules, tildePath } = await import(
+    pathToFileURL(join(here(".."), "dist", "redact.js")).href
+  )
+  const home = process.platform === "win32" ? "C:\\Users\\someone" : "/home/someone"
+  const rules = activeRules(["PROJECT_\\d+_CODE"])
+  const mk = (text) => ({ type: "message", data: { id: "m1", role: "user", content: [{ type: "text", text }] } })
+  const withSecrets = {
+    type: "message",
+    data: {
+      id: "m1", role: "user",
+      content: [{ type: "text", text: `deploy with ghp_${"a".repeat(36)} and AKIA1234567890ABCDEF. API_KEY=live-secret-99. The PROJECT_42_CODE is internal.` }],
+    },
+    // path FIELDS tildize (prose paths deliberately do not)
+    file: `${home}\\proj\\a.ts`,
+  }
+  const pass = redactItem(withSecrets, { rules, home, enabled: true })
+  const flat = JSON.stringify(pass.item)
+  const okR =
+    pass.item !== withSecrets && // deep-cloned, host object untouched
+    flat.includes("[redacted:gh-token]") &&
+    flat.includes("[redacted:aws-key]") &&
+    flat.includes("[redacted:env-secret]") &&
+    flat.includes("[redacted:user]") && // config regex rule fired
+    flat.includes("~/proj/a.ts") && // path FIELD tildized
+    !flat.includes("AKIA1234567890ABCDEF") &&
+    !flat.includes("live-secret-99") &&
+    JSON.stringify(withSecrets).includes("AKIA1234567890ABCDEF") && // original intact
+    JSON.stringify(withSecrets).includes("live-secret-99")
+  console.log(`${okR ? "PASS" : "FAIL"} redact: detectors + user rules + tildization`)
+  if (!okR) failures.push("redact: detectors")
+  const hitKinds = pass.hits.map((h) => h.kind)
+  const okS = hitKinds.includes("gh-token") && hitKinds.includes("user") && pass.hits.length >= 3
+  console.log(`${okS ? "PASS" : "FAIL"} redact: hit ledger carries samples (${hitKinds.join(",")})`)
+  if (!okS) failures.push("redact: ledger")
+  const clean = mk("just normal text about files and paths")
+  const passClean = redactItem(clean, { rules, home, enabled: true })
+  const okZ = passClean.item === clean && passClean.hits.length === 0
+  console.log(`${okZ ? "PASS" : "FAIL"} redact: clean item zero-copy`)
+  if (!okZ) failures.push("redact: zero-copy")
+  const gated = redactItem(withSecrets, { rules, home, enabled: false })
+  const okG = JSON.stringify(gated.item).includes("AKIA1234567890ABCDEF") && gated.item.file === undefined ? true : JSON.stringify(gated.item).includes("AKIA1234567890ABCDEF")
+  console.log(`${okG ? "PASS" : "FAIL"} redact: gated shares keep verbatim`)
+  if (!okG) failures.push("redact: gated verbatim")
+  const okT = tildePath(home + "/x/y.txt", home).startsWith("~") && tildePath("/elsewhere/z", home) === "/elsewhere/z"
+  console.log(`${okT ? "PASS" : "FAIL"} redact: tildePath boundaries`)
+  if (!okT) failures.push("redact: tilde")
+} catch (e) {
+  console.log("FAIL redact block:", String(e.message || e))
+  failures.push("redact: block crashed")
+}
 
 if (failures.length) {
   console.error(`\n${failures.length} failure(s) — suite FAILED`)

@@ -8,6 +8,12 @@ storage, native WebSockets, the built viewer served statically. For VPS
 deployments, self-hosting, or anything that isn't Cloudflare — same
 protocol, same plugin, same auth model.
 
+Every HTTP route the worker exposes exists here with identical
+semantics, including `GET /api/share/:id/snapshot` (self-contained
+offline HTML of a share, read-gated exactly like `/data`). The one
+exception is the worker-only `/legacy` viewer route (a dev comparison
+build; it serves no API).
+
 ## Quick start
 
 From the repo root:
@@ -49,14 +55,16 @@ then the code — you're both hoster and first user).
 |---|---|---|
 | `PORT` | `8787` | listen port |
 | `CREATE_TOKEN` | *(unset)* | root admin token — required for the admin API and legacy root creates. Enrollment is the normal path for users. |
-| `AUTH_MODE` | `private` | `public` = anyone knowing the host may enroll (rate-limited); `private` = access code required |
+| `AUTH_MODE` | `private` | `public` = anonymous creates allowed, enrollment per CODELESS_ONBOARDING; `private` = access code required |
+| `CODELESS_ONBOARDING` | `false` | Public servers: allow minting ACCOUNTS without a code (anonymous creating stays open either way). Worker parity |
 | `OPENSHARE_DB` | `./openshare.db` next to `server.ts` | SQLite file (resolved relative to `server.ts`, not your cwd) |
 | `VIEWER_DIR` | `../share-viewer/dist` | static viewer build |
-| `MAX_TTL_DAYS` | `90` | per-share TTL cap |
+| `MAX_TTL_HOURS` | `2160` (90d) | per-share TTL cap in hours; legacy `MAX_TTL_DAYS` accepted (x24) |
 | `SOCKET_POLICY` | `auto` → `turn` | unlike Cloudflare there is no hibernation — sockets are real fds, so turn-scoped is the sane default here; `persistent` keeps them open |
 | `TURN_GRACE_MS` / `IDLE_DROP_MS` / `FINALIZE_AFTER_MS` / `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` / `COMPLETED_DELAY_MAX_MS` | same as the worker | server policy (delivered in the WS init ack + `/health`) |
-| `DEFAULT_MAX_LIVE_SHARES` / `DEFAULT_MAX_TTL_DAYS` / `DEFAULT_DAILY_CREATES` | `0` (unlimited) | per-token default limits for newly enrolled users |
+| `DEFAULT_MAX_LIVE_SHARES` / `DEFAULT_MAX_TTL_HOURS` / `DEFAULT_DAILY_CREATES` | `0` (unlimited) | per-token default limits for newly enrolled users (legacy `DEFAULT_MAX_TTL_DAYS` accepted) |
 | `BRAND_*` | *(unset)* | viewer skin overrides incl. `BRAND_DESCRIPTION` / `BRAND_OG_TITLE` / `BRAND_OG_IMAGE` (same fields as the worker's `openshare.config.json`, same og/link-preview crawler rewrite — see the worker README) |
+| `OG_STYLE` | `aurora` | link-preview card style (`aurora` / `minimap` / `poster` / `blueprint` / `terminal`) — same renderer as the worker |
 
 ## Identity model
 
@@ -66,9 +74,12 @@ Identical to the worker (see
 activation budgets, per-share secrets, ownership + freeze semantics,
 per-token limits, root `CREATE_TOKEN` as the forever-admin bootstrap.
 
-Admin API: same `/api/admin/*` surface (users, tokens, codes, shares,
-reassign, purge) — drive it with curl or the plugin's TUI admin console
-(`/openshare → Servers → <server> → Admin panel`).
+Admin API: same `/api/admin/*` surface as the worker (users, tokens,
+codes, shares, reassign, single-share freeze/unfreeze, purge) plus the
+same self-service token routes (mint, rotate with label/limits/expiry
+overrides, update, self-delete) and the same private
+`GET /api/share/:id/meta` (admin/owner only, session summaries stamped
+at sync) — drive it all with curl or `share-cli`'s `osh` console.
 
 ## Docker
 
@@ -77,7 +88,7 @@ reassign, purge) — drive it with curl or the plugin's TUI admin console
 docker build -f share-server/Dockerfile -t openshare .
 
 docker run -e CREATE_TOKEN=root-secret -p 8787:8787 -v oshdata:/data openshare
-# health: curl -s http://127.0.0.1:8787/health
+# health: curl -s http://127.0.0.1:8787/health   # version = git describe of the running source
 ```
 
 ## Parity
@@ -86,7 +97,7 @@ The plugin suites run the SAME checks against both backends:
 
 ```sh
 cd ../share-plugin
-npm run test:server-auth     # the 48-check auth suite against bun
+npm run test:server-auth     # the auth suite against bun
 npm run test:server-enroll   # the engine enrollment lifecycle against bun
 ```
 

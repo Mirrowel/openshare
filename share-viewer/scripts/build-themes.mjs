@@ -13,8 +13,8 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-// fileURLToPath decodes %20 etc. — the repo path contains a space, and a
-// raw .pathname keeps the encoding (live-caught: build died on scandir)
+// fileURLToPath decodes %20 etc.: the repo path contains a space, and a raw
+// .pathname keeps the encoding, which kills the build on scandir
 const dist = fileURLToPath(new URL("../dist", import.meta.url))
 const assets = join(dist, "assets")
 const cssFile = readdirSync(assets).find((f) => f.endsWith(".css"))
@@ -56,12 +56,12 @@ if (!light || !dark) {
   process.exit(1)
 }
 
-// light-mode readability floor (owner-caught): the kit's light tier ships
-// --text-weak #8f8f8f (3.5:1) and --text-weaker #c7c7c7 (1.6:1 - meta text
-// nearly invisible on white). Darken both in the EXTRACTED copy so the
-// forced-light block and light-based premades inherit the fix; premades
-// with explicit overrides keep theirs. Throw when upstream changes the
-// values so this never silently stops applying.
+// light-mode readability floor: the kit's light tier ships --text-weak
+// #8f8f8f (3.5:1) and --text-weaker #c7c7c7 (1.6:1, meta text nearly
+// invisible on white). Darken both in the EXTRACTED copy so the forced-light
+// block and light-based premades inherit the fix; premades with explicit
+// overrides keep theirs. Throw when upstream changes the values so this
+// never silently stops applying.
 const patchLight = (s, prop, from, to) => {
   const re = new RegExp(`${prop}:\\s*${from}`)
   if (!re.test(s)) throw new Error(`build-themes: light token drift - ${prop} is no longer ${from}`)
@@ -69,6 +69,35 @@ const patchLight = (s, prop, from, to) => {
 }
 light = patchLight(light, "--text-weak", "#8f8f8f", "#767676")
 light = patchLight(light, "--text-weaker", "#c7c7c7", "#9e9e9e")
+
+// code-surface syntax hues, PER THEME - keyword/operator/comment only.
+// The kit ships these three as text greys (the near-monochrome look);
+// every other token role (string teal, type, constant, primitive,
+// property) keeps the kit's static values UNTOUCHED so prose inline
+// code, code blocks, thinking panels and file cards all render the
+// same color for the same role everywhere. Luminance rule for the dark
+// family: hues sit at the dark theme's brightness in EVERY dark theme
+// - a darker theme darkens the BACKGROUND, never the text. Guarded: if
+// the kit ever stops greying keywords, this throws and the palette
+// decision gets revisited instead of silently masking an upstream
+// change.
+const CODE = {
+  light: { keyword: "#0b5cc4", operator: "#5c6b84", comment: "#5f7a55" },
+  dark: { keyword: "#82aaff", operator: "#8f9bb3", comment: "#7d9077" },
+  // darker: identical hues to dark - only the background steps down
+  darker: { keyword: "#82aaff", operator: "#8f9bb3", comment: "#7d9077" },
+  midnight: { keyword: "#8ab4f8", operator: "#8f9bb3", comment: "#7d9077" },
+  nord: { keyword: "#81a1c1", operator: "#a7b1c2", comment: "#616e88" },
+  mirrobot: { keyword: "#e0af68", operator: "#c8b892", comment: "#857a63" },
+  sepia: { keyword: "#8a5a2b", operator: "#7a6c56", comment: "#8a7a60" },
+}
+const codeVars = (c) =>
+  `--osh-code-keyword:${c.keyword};--osh-code-operator:${c.operator};--osh-code-comment:${c.comment}`
+for (const [name, block] of [["light", light], ["dark", dark]]) {
+  if (!block.includes("--syntax-keyword:var(--text-weak)")) {
+    throw new Error(`build-themes: ${name} syntax palette drift - keyword is no longer grey`)
+  }
+}
 
 // premade themes: base ("dark"|"light") + property overrides
 // (font-family overrides are legitimate theme content; the chrome pins its
@@ -96,6 +125,7 @@ const v2Overrides = (bg, bgLayer, textBase, textMuted, textFaint, border) => ({
 const PREMADES = {
   mirrobot: {
     base: "dark",
+    code: "mirrobot",
     overrides: {
       "--background-base": "#16130f",
       "--background-weak": "#1d1913",
@@ -112,6 +142,7 @@ const PREMADES = {
   },
   midnight: {
     base: "dark",
+    code: "midnight",
     overrides: {
       "--background-base": "#0b0e14",
       "--background-weak": "#10141c",
@@ -123,6 +154,7 @@ const PREMADES = {
   },
   sepia: {
     base: "light",
+    code: "sepia",
     overrides: {
       "--background-base": "#f4ecd8",
       "--background-weak": "#ece1c8",
@@ -132,14 +164,17 @@ const PREMADES = {
       "--text-base": "#4a4034",
       "--text-weak": "#7a6c56",
       "--text-weaker": "#a3947a",
+      // serif UI fits the reading-room tone; mono keeps the base stack
+      "--font-family-sans": "'Iowan Old Style', 'Palatino Linotype', Georgia, serif",
       ...v2Overrides("#f4ecd8", "#ece1c8", "#4a4034", "#7a6c56", "#a3947a", "#d8caae"),
     },
   },
   // darker: the dark theme one step down - the page tone conversation
-  // paints (bg-background-stronger) as an explicit second dark theme,
-  // not a remap (owner directive 2026-10-26; NOT the default)
+  // paints (bg-background-stronger) as an explicit second dark theme, not a
+  // remap, and NOT the default
   darker: {
     base: "dark",
+    code: "darker",
     overrides: {
       "--background-base": "#0a0a0a",
       "--background-weak": "#131313",
@@ -150,6 +185,7 @@ const PREMADES = {
   },
   nord: {
     base: "dark",
+    code: "nord",
     overrides: {
       "--background-base": "#2e3440",
       "--background-weak": "#3b4252",
@@ -157,22 +193,28 @@ const PREMADES = {
       "--background-stronger": "#3b4252",
       "--text-strong": "#eceff4",
       "--text-base": "#d8dee9",
+      // geometric sans on the frost palette (falls back to system-ui)
+      "--font-family-sans": "'Schibsted Grotesk', 'Segoe UI', system-ui, sans-serif",
       ...v2Overrides("#2e3440", "#3b4252", "#d8dee9", "#a7b1c2", "#7e8898", "#434c5e"),
     },
   },
 }
 
 let out = "\n/* === openshare themes (generated by scripts/build-themes.mjs) === */\n"
+// system-mode code hues (no forced theme): the source :root/media blocks
+// are not rewritten in place; these bare blocks define only the new vars
+// and cannot clash with anything upstream
+out += `:root{${codeVars(CODE.light)}}\n@media(prefers-color-scheme:dark){:root{${codeVars(CODE.dark)}}}\n`
 // forced blocks must also pin color-scheme: the v2 kit themes through
 // light-dark() + [data-color-scheme] tokens — without it, forced dark on
 // a light OS renders every kit surface in its light variant
-out += `:root[data-osh-theme="light"]{color-scheme:light;${light}}\n`
-out += `:root[data-osh-theme="dark"]{color-scheme:dark;${dark}}\n`
+out += `:root[data-osh-theme="light"]{color-scheme:light;${codeVars(CODE.light)};${light}}\n`
+out += `:root[data-osh-theme="dark"]{color-scheme:dark;${codeVars(CODE.dark)};${dark}}\n`
 for (const [name, def] of Object.entries(PREMADES)) {
   const base = def.base === "dark" ? dark : light
   const scheme = def.base === "dark" ? "dark" : "light"
   const overrides = Object.entries(def.overrides).map(([k, v]) => `${k}:${v}`).join(";")
-  out += `:root[data-osh-theme="${name}"]{color-scheme:${scheme};${base};${overrides}}\n`
+  out += `:root[data-osh-theme="${name}"]{color-scheme:${scheme};${codeVars(CODE[def.code ?? name])};${base};${overrides}}\n`
 }
 
 writeFileSync(join(assets, cssFile), css + out)

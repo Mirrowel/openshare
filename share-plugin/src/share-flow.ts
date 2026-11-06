@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { loadConfig, moduleDir, configPaths, configHomePath, resolveServer, saveServerEntry, deleteServerEntry, METADATA_KEY, type ShareConfig, type ServerEntry } from "./config.js"
 import { dbg, dbgLog } from "./sidebar.js"
-import { engineTargetUrls, type ClientApi, type SessionInfo, type SessionOpts } from "./core.js"
+import { engineTargetUrls, sessionStatsFor, type ClientApi, type SessionInfo, type SessionOpts } from "./core.js"
 import { queueBindingWrite } from "./binding-queue.js"
 import type { ShareHostApi } from "./tui-host.js"
 
@@ -44,11 +44,10 @@ export function currentConfig(baseDir: string = moduleDir()): ShareConfig {
   return loadConfig(baseDir)
 }
 
-/** Writes the config file. Target rule (owner-directed): the global
- * settings home by default, or an explicit existing file chosen in the
- * TUI — NEVER "first existing in the read chain" (that wrote TUI edits
- * into the tracked adjacent template, live-caught). $comment and foreign
- * keys preserved. */
+/** Writes the config file. Target rule: the global settings home by
+ * default, or an explicit existing file chosen in the TUI, never "first
+ * existing in the read chain" (that writes TUI edits into the tracked
+ * adjacent template). $comment and foreign keys preserved. */
 export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = moduleDir()): { path: string } | undefined {
   const path = target ?? configHomePath()
   if (!path) return undefined
@@ -71,11 +70,15 @@ export function saveConfig(cfg: ShareConfig, target?: string, baseDir: string = 
       "debounceMs",
       "completedDelayMs",
       "modelLabel",
-      "ttlDays",
+      "ttlHours",
       "authLogin",
       "authPassword",
       "spoolDir",
       "urlFile",
+      "urlFileFormat",
+      "configSet",
+      "redact",
+      "meta",
       "shareMode",
       "announceStderr",
     ] as Array<keyof ShareConfig>) {
@@ -169,6 +172,24 @@ export function bindingsOf(info: SessionInfo | undefined): Array<SessionBinding 
 /** Read every live binding for a session (fan-out aware). */
 export async function readBindings(client: ClientApi | undefined, sid: string): Promise<Array<SessionBinding & { server: string; collided?: string }>> {
   return bindingsOf(await getSession(client, sid))
+}
+
+/** Human TTL from hours: "6h", "2d", "90d" (the TUI prompt accepts
+ * these same shapes back). */
+export function fmtHours(hours: number): string {
+  if (!Number.isFinite(hours) || hours <= 0) return "?"
+  if (hours % 24 === 0) return `${Math.floor(hours / 24)}d`
+  return `${Math.floor(hours)}h`
+}
+
+/** Parse "6h" / "2d" / "48" into hours (bare number = hours). */
+export function parseTtlHours(raw: string): number | undefined {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(h|d|hr|hours?|days?)?\s*$/i.exec(raw ?? "")
+  if (!m) return undefined
+  const v = Number(m[1])
+  if (!Number.isFinite(v) || v <= 0) return undefined
+  const unit = (m[2] ?? "h").toLowerCase()
+  return Math.max(1, Math.floor(unit.startsWith("d") ? v * 24 : v))
 }
 
 export function hostOf(url: string): string {
@@ -330,6 +351,39 @@ export async function workerDeleteShare(workerUrl: string, id: string, secret: s
     return res.ok
   } catch {
     return false
+  }
+}
+
+/** PATCH a live share's settings over REST (#13): immediate effect with
+ * no socket required (the engine's attach-sync remains the structural
+ * path - this is the same edit pushed now, per server). Auth sends as
+ * the both-or-none pair or not at all; ttlHours only when explicit;
+ * title:"" clears the custom title; paused toggles the write-pause. */
+export async function patchShareOpts(
+  workerUrl: string,
+  id: string,
+  opts: { authLogin?: string; authPassword?: string; ttlHours?: number; title?: string; paused?: boolean },
+  secret: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const body: Record<string, unknown> = { secret }
+  if (opts.authLogin !== undefined && opts.authPassword !== undefined) {
+    body.authLogin = opts.authLogin
+    body.authPassword = opts.authPassword
+  }
+  if (opts.ttlHours !== undefined) body.ttlHours = opts.ttlHours
+  if (opts.title !== undefined) body.title = opts.title
+  if (opts.paused !== undefined) body.paused = opts.paused
+  try {
+    const res = await fetch(`${workerUrl.replace(/\/$/, "")}/api/share/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    })
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+    return res.ok && json.ok ? { ok: true } : { ok: false, error: json.error ?? `HTTP ${res.status}` }
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || String(e) }
   }
 }
 
@@ -554,12 +608,13 @@ export type FlowResult = { ok: boolean; message: string; url?: string; unconfigu
  * directive — no remembered consent, no silent creates). The dialog
  * carries the live context (server, TTL, gate state) so the decision is
  * informed, not ceremonial. */
-export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlDays?: number; auth: boolean }): Promise<boolean> {
+export async function requestShareConsent(host: ShareHostApi, context?: { server?: string; ttlHours?: number; auth: boolean; counts?: { messages: number; toolCalls: number }; redaction?: { hits: number; samples: string[] } }): Promise<boolean> {
   const lines: string[] = ["Publish this session (and its subagent sessions) to your openshare worker?"]
   if (context) {
     const bits: string[] = []
     if (context.server) bits.push(`server: ${context.server}`)
-    if (context.ttlDays !== undefined) bits.push(`TTL: ${context.ttlDays}d`)
+    if (context.ttlHours !== undefined) bits.push(`TTL: ${fmtHours(context.ttlHours)}`)
+    if (context.redaction && context.redaction.hits > 0) bits.push(`redaction: ${context.redaction.hits} hit(s)`)
     bits.push(`read auth: ${context.auth ? "on" : "off"}`)
     lines.push(bits.join(" - "))
   }
@@ -594,14 +649,22 @@ export async function shareWithConsent(host: ShareHostApi, sessionID: string | u
   }
   const opts = all[0]?.opts
   const server = serverEntries(cfg).find((s) => s.active) ?? serverEntries(cfg)[0] ?? (engineTargetUrls()[0] ? { url: engineTargetUrls()[0] } : undefined)
-  if (
-    !(await requestShareConsent(host, {
-      server: server ? hostOf(server.url) : undefined,
-      ttlDays: opts?.ttlDays ?? cfg.ttlDays,
-      auth: !!(opts?.authLogin ?? cfg.authLogin) && !!(opts?.authPassword ?? cfg.authPassword),
-    }))
-  )
-    return { ok: false, message: "Share cancelled." }
+  {
+    const stats = sessionStatsFor(root)
+    const gated = !!(opts?.authLogin ?? cfg.authLogin) && !!(opts?.authPassword ?? cfg.authPassword)
+    if (
+      !(await requestShareConsent(host, {
+        server: server ? hostOf(server.url) : undefined,
+        ttlHours: opts?.ttlHours ?? cfg.ttlHours,
+        auth: gated,
+        counts: { messages: stats.messages, toolCalls: stats.toolCalls },
+          // redaction only runs on ungated shares (a gated share is
+        // private from casual observers; the ledger reflects that)
+        redaction: gated ? undefined : { hits: stats.redaction.count, samples: stats.redaction.samples.map((h) => `${h.sample} [${h.kind}]`) },
+      }))
+    )
+      return { ok: false, message: "Share cancelled." }
+  }
   return confirmShare(host, root)
 }
 
@@ -621,9 +684,9 @@ export async function confirmShare(host: ShareHostApi, rootSessionID: string): P
   const binding = await waitForBinding(host.client, rootSessionID)
   dbgLog(`confirmShare: waitForBinding -> ${binding?.url ? binding.url : "timeout"}`)
   if (!binding?.url) {
-    // a failed create must NOT leave the flag armed - the engine would
-    // publish LATER with no further consent (live-caught). Disarm now;
-    // re-running /share re-consents.
+    // a failed create must NOT leave the flag armed: the engine would
+    // publish LATER with no further consent. Disarm now; re-running
+    // /share re-consents.
     await clearShareFlag(host.client, rootSessionID)
     const fresh = await readBinding(host.client, rootSessionID)
     const why = fresh?.lastError ? `\nReason: ${fresh.lastError}` : ""

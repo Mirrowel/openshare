@@ -33,7 +33,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const httpGet = async (url, init = {}) => {
   // 30s default: a fresh sandbox's first request spins the instance,
-  // including provider-npm resolution — 8s aborted mid-init (live-caught)
+  // including provider-npm resolution, and 8s aborts mid-init
   return fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 30000) })
 }
 
@@ -220,6 +220,19 @@ function startMockLLM() {
 
 // --- wrangler dev ---------------------------------------------------------------
 
+/** A tiny viewer-shaped stub both backends serve in suites: the snapshot
+ * endpoint inlines whatever script/css index.html references, so the stub
+ * must actually reference one of each for snapshot tests to be meaningful
+ * (both the [assets] binding and VIEWER_DIR serve from the dir root, so
+ * the files live in an assets/ subfolder exactly like the real dist). */
+function writeViewerStub(dir) {
+  mkdirSync(join(dir, "assets"), { recursive: true })
+  writeFileSync(join(dir, "index.html"), '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <title>openshare suite stub</title>\n  <link rel="stylesheet" href="/assets/stub.css">\n  <script type="module" crossorigin src="/assets/stub.js"></script>\n</head>\n<body>\n  <div id="root"></div>\n</body>\n</html>\n')
+  writeFileSync(join(dir, "assets", "stub.css"), "body{margin:0}\n")
+  writeFileSync(join(dir, "assets", "stub.js"), "console.log('stub viewer')\n")
+  return dir
+}
+
 async function startWorker(suiteDir, opts = {}) {
   const port = Number(opts.port) > 0 ? Number(opts.port) : WORKER_PORT
   const url = `http://127.0.0.1:${port}`
@@ -240,10 +253,7 @@ async function startWorker(suiteDir, opts = {}) {
   const extraVars = Object.entries(opts.vars ?? {}).flatMap(([k, v]) => ["--var", `${k}:${v}`])
   const attempt = async () => {
     await sweepPortIfOccupied(port) // leftover supervisors respawn workerd forever; sweep when occupied
-    const assetsDir = join(suiteDir, "assets")
-    mkdirSync(assetsDir, { recursive: true })
-    writeFileSync(join(assetsDir, "index.html"), "<!doctype html><title>openshare suite stub</title>\n")
-
+    const assetsDir = writeViewerStub(join(suiteDir, "assets"))
     const configPath = join(suiteDir, opts.configSuffix ? `wrangler.suite.${opts.configSuffix}.toml` : "wrangler.suite.toml")
     const original = readFileSync(join(dirname(ROOT), "share-worker", "wrangler.toml"), "utf8")
     const config = original
@@ -256,9 +266,9 @@ async function startWorker(suiteDir, opts = {}) {
       "npx",
       ["wrangler", "dev", "--config", configPath, "--port", String(port), "--ip", "127.0.0.1",
         // isolated local state: two suite workers (e.g. private + public
-        // auth modes) sharing the default .wrangler/state are literally
-        // the same store — KV + DOs collide across ports (live-caught in
-        // S14: the "public" worker answered with the private one's users)
+        // auth modes) sharing the default .wrangler/state are literally the
+        // same store, so KV + DOs collide across ports (the "public" worker
+        // answers with the private one's users)
         "--persist-to", join(suiteDir, `wrangler-state-${opts.configSuffix ?? "main"}`),
         "--var", `CREATE_TOKEN:${CREATE_TOKEN}`,
         // suite-tuned server policy: TURN mode forced (wrangler dev runs
@@ -276,6 +286,8 @@ async function startWorker(suiteDir, opts = {}) {
     let output = ""
     child.stdout.on("data", (d) => (output += d))
     child.stderr.on("data", (d) => (output += d))
+    let childGone = false
+    child.on("exit", () => (childGone = true))
     const fail = async (error) => {
       kill()
       await sleep(1500)
@@ -283,13 +295,21 @@ async function startWorker(suiteDir, opts = {}) {
       return new Error(`${error.message}\n--- wrangler output ---\n${output.slice(-4000)}`)
     }
     try {
-      await waitFor(async () => {
+      // fail FAST on bind errors and dead children: polling /health for
+      // the full window on a wrangler that already exited doubles every
+      // boot failure (startWorker retries once on the same port). The
+      // window itself stays generous - cold CI runners spend ~60s+
+      // bundling before the first /health answer.
+      const deadline = Date.now() + 180000
+      for (;;) {
+        if (/Address already in use/.test(output)) throw new Error(`wrangler dev could not bind 127.0.0.1:${port}`)
+        if (childGone) throw new Error(`wrangler dev exited before /health answered`)
         try {
-          return (await httpGet(`${url}/health`)).ok
-        } catch {
-          return false
-        }
-      }, "wrangler dev /health", 90000)
+          if ((await httpGet(`${url}/health`)).ok) break
+        } catch {}
+        if (Date.now() > deadline) throw new Error("timeout waiting for wrangler dev /health")
+        await sleep(200)
+      }
     } catch (error) {
       // workerd children sometimes survive the tree-kill and re-bind the
       // port late; one full sweep + fresh retry resolves it
@@ -301,6 +321,12 @@ async function startWorker(suiteDir, opts = {}) {
   try {
     return await attempt()
   } catch (error) {
+    // the same-port retry exists for orphaned-workerd cleanup (a crashed
+    // child leaves the port swept by killPortOwners, and the fresh boot
+    // succeeds). A HEALTH-POLL TIMEOUT means the child is still alive and
+    // hung - retrying the same port would only collide with it and
+    // surface as a misleading bind error.
+    if (/timeout waiting for wrangler dev \/health/.test(String(error.message))) throw error
     return await attempt()
   }
 }
@@ -313,10 +339,14 @@ async function startBunServer(suiteDir, opts = {}) {
   const url = `http://127.0.0.1:${port}`
   killPortOwners(port)
   const db = join(suiteDir, `bun-${opts.name ?? port}.db`)
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      rmSync(db + suffix, { force: true })
-    } catch {}
+  // keepDb: a restart that must SURVIVE (remote-outage scenarios) skips
+  // the wipe; default wipes so every scenario starts from empty state
+  if (!opts.keepDb) {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        rmSync(db + suffix, { force: true })
+      } catch {}
+    }
   }
   const { child, kill } = spawnTree(
     "bun",
@@ -331,6 +361,10 @@ async function startBunServer(suiteDir, opts = {}) {
         CREATE_TOKEN: opts.createToken ?? CREATE_TOKEN,
         OPENSHARE_DB: db,
         AUTH_MODE: opts.authMode ?? "private",
+        // serve the suite stub like the wrangler workers do: without this
+        // the bun server falls back to ../share-viewer/dist, silently
+        // coupling suite results to whatever the developer last built
+        VIEWER_DIR: writeViewerStub(join(suiteDir, "assets")),
         ...(opts.vars ?? {}),
       },
     },
@@ -376,7 +410,7 @@ let startServeSeq = 0
 // sandbox pays a full npm install (~70s live-measured after the 1.18.31
 // update). The first serve warms it once; every later serve copies the
 // warmed tree in.
-let warmedConfigOpencode = null
+let warmedConfigOpencode = process.env.OPENSHARE_WARMED_CONFIG && existsSync(join(process.env.OPENSHARE_WARMED_CONFIG, "node_modules")) ? process.env.OPENSHARE_WARMED_CONFIG : null
 function portBindable(port) {
   return new Promise((resolve) => {
     const srv = net.createServer()
@@ -432,8 +466,8 @@ function openShareEnv(sandbox, extra = {}) {
   }
 }
 
-async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
-  await sweepPortIfOccupied(SERVE_PORT)
+async function startServe(variant, sandbox, projectDir, extraEnv = {}, servePort = SERVE_PORT) {
+  await sweepPortIfOccupied(servePort)
   const configPath = join(sandbox, "opencode.json")
   writeFileSync(configPath, opencodeConfig(variant, sandbox))
   // hermetic, in three dimensions (all three are required — learned the
@@ -455,16 +489,19 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   mkdirSync(join(sandbox, "xdg-data"), { recursive: true })
   if (warmedConfigOpencode) {
     try {
-      cpSync(warmedConfigOpencode, join(sandbox, "xdg", "opencode"), { recursive: true })
+      // ONLY node_modules: the warm tree may belong to a DIFFERENT sandbox
+      // (concurrent chains in one process), and copying its whole config
+      // home would clobber this sandbox's persisted plugin settings.
+      cpSync(join(warmedConfigOpencode, "node_modules"), join(sandbox, "xdg", "opencode", "node_modules"), { recursive: true })
     } catch {}
   }
   const stateDir = join(sandbox, `xdg-state-${serveSeq}`)
   mkdirSync(stateDir, { recursive: true })
-  if (!(await waitForPortBindable(SERVE_PORT, 30000))) {
-    throw new Error(`[${variant.name}] port ${SERVE_PORT} not bindable before spawn`)
+  if (!(await waitForPortBindable(servePort, 30000))) {
+    throw new Error(`[${variant.name}] port ${servePort} not bindable before spawn`)
   }
 
-  const { child, kill } = spawnTree("opencode", ["serve", "--port", String(SERVE_PORT), "--hostname", "127.0.0.1"], {
+  const { child, kill } = spawnTree("opencode", ["serve", "--port", String(servePort), "--hostname", "127.0.0.1"], {
     cwd: projectDir,
     env: {
       ...process.env,
@@ -479,21 +516,21 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
   let output = ""
   child.stdout.on("data", (d) => (output += d))
   child.stderr.on("data", (d) => (output += d))
-  const base = `http://127.0.0.1:${SERVE_PORT}`
+  const base = `http://127.0.0.1:${servePort}`
   await waitFor(async () => {
     try {
       // /health (NOT /config): 1.18.31 requires the workspace routing
-      // query on /config — bare /config stopped answering ok after an
-      // opencode auto-update (live-caught: every serve spawn "timed out"
-      // while the server was up and fine)
+      // query on /config, and bare /config stops answering ok after an
+      // opencode auto-update (every serve spawn then "times out" while the
+      // server is up and fine)
       return (await httpGet(`${base}/health`)).ok
     } catch {
       return false
     }
   }, `[${variant.name}] opencode serve`, 60000).catch(async (error) => {
     kill()
-    killPortOwners(SERVE_PORT)
-    await waitForPortFree(SERVE_PORT)
+    killPortOwners(servePort)
+    await waitForPortFree(servePort)
     throw new Error(`[${variant.name}] serve failed: ${error.message}\n--- serve output ---\n${output.slice(-4000)}`)
   })
   // warm-up: the FIRST request spins the instance (provider npm install
@@ -505,19 +542,20 @@ async function startServe(variant, sandbox, projectDir, extraEnv = {}) {
     const warmed = join(sandbox, "xdg", "opencode")
     if (existsSync(join(warmed, "node_modules"))) warmedConfigOpencode = warmed
   }
-  return { base, kill, output: () => output, configPath }
+  return { base, kill, output: () => output, configPath, port: servePort }
 }
 
 /** Kills a serve instance and waits for the port to actually free (a
  * half-dead predecessor races its successor's session events). */
 async function stopServe(serve) {
+  const port = serve.port ?? SERVE_PORT
   serve.kill()
   const start = Date.now()
   while (Date.now() - start < 30000) {
-    if (!(await isPortOpen(SERVE_PORT))) break
+    if (!(await isPortOpen(port))) break
     await sleep(100)
   }
-  if (await isPortOpen(SERVE_PORT)) await sweepPortIfOccupied(SERVE_PORT)
+  if (await isPortOpen(port)) await sweepPortIfOccupied(port)
 }
 
 // --- share data normalization ------------------------------------------------------

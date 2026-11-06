@@ -370,7 +370,7 @@ def opencode_export(session_id: str, exe: str) -> dict:
     cmd = [exe] if exe else ["opencode"]
     cmd += ["export", session_id]
     # capture BYTES + decode UTF-8 explicitly: text=True uses the locale
-    # codec on Windows and dies on non-ASCII content (live-caught upstream)
+    # codec on Windows and dies on non-ASCII content
     p = subprocess.run(cmd, capture_output=True, timeout=300)
     if p.returncode != 0:
         sys.exit(f"error: opencode export failed: "

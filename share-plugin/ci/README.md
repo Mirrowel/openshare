@@ -31,9 +31,21 @@ README's [Configuration](../../README.md#configuration)):
 
 ```
 OPENSHARE_WORKER_URL=https://your-host
-OPENSHARE_CREATE_TOKEN=…            # legacy: root token
+OPENSHARE_CREATE_TOKEN=:            # legacy: root token
 OPENSHARE_URL_FILE=share-urls.txt   # each share URL appended + stderr line
 ```
+
+CI conveniences:
+
+- `OPENSHARE_CONFIG_JSON` - the whole config as one env var (same keys as
+  the config file), when mounting a file is awkward. A specific
+  `OPENSHARE_*` var still wins over it.
+- `OPENSHARE_URL_FILE_FORMAT=json` - urlFile lines become
+  `{"id":"…","url":"…","status":"…","gated":false}` objects, one per
+  line, so workflow steps read fields instead of parsing URLs.
+- `meta` in the config stamps free-form labels (env-interpolated, e.g.
+  `"branch": "${GITHUB_REF_NAME}"`) onto every share - visible in the
+  server's admin shares listing.
 
 ```jsonc
 // openshare.config.json — enrollment shape (no root token needed)
@@ -44,22 +56,26 @@ OPENSHARE_URL_FILE=share-urls.txt   # each share URL appended + stderr line
 }
 ```
 
-With no token held, the bundle **enrolls itself** on first contact
-(public servers take anyone; private ones consume the one-time code) and
-persists the token to `~/.config/opencode/openshare.config.json` -
-enroll once, then every run just shares. A revoked token re-enrolls the
-same way; if enrollment is impossible the error lands on stderr and
-sharing stops (no retry storms).
+With no token held the bundle never silently enrolls: a configured
+`code` enrolls with it headlessly (the CI shape — each code use is one
+enrollment); without one, public servers share anonymously (ownerless
+shares under the server's global anonymous caps) and private servers
+refuse with guidance. When enrollment does run, the token persists to
+`~/.config/opencode/openshare.config.json` — enroll once, then every
+run just shares. A revoked token re-enrolls the same way (code
+configured / codeless server); if enrollment is impossible the error
+lands on stderr and sharing stops (no retry storms).
 
 **Ephemeral runners** (GitHub-hosted, containers): do NOT enroll through
 a code - each fresh machine would burn one activation. Ask the hoster
-for a pre-minted registered token (`osk_…`) and pass it via
-`OPENSHARE_CREATE_TOKEN` (or the config's token field) - registered
-tokens skip enrollment entirely and never expire on their own. Point
-`OPENSHARE_CONFIG_DIR` (or mount) the settings home at a cached path
-only if you want the token persisted; env alone is enough. Note:
-revoking that token (when it is the user's last) freezes control of all
-its shares server-side, even ones holding the share secret.
+for a pre-registered token and pass it via `OPENSHARE_CREATE_TOKEN`
+(or the config's token field); registered tokens skip enrollment
+entirely and never expire on their own. A **scoped** token
+(`POST /api/token {"kind":"scoped"}`, minted by any full token) is the
+right credential here: it creates within its limits, reaches only the
+shares it created, and revoking it never freezes the owner's account.
+Point `OPENCODE_CONFIG_DIR` (or mount) the settings home at a cached
+path only if you want the token persisted; env alone is enough.
 
 The bundle also supports **fan-out**: multiple `active` servers in the
 `servers` group each get the session (one urlFile line per server).

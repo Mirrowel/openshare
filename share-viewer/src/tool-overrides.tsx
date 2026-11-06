@@ -19,12 +19,15 @@ import { useFileComponent } from "@opencode/ui/context"
 import { FileIcon } from "@opencode/ui/file-icon"
 import { resolveFileDiff } from "@opencode/session-ui/session-diff"
 import { ToolRegistry, type ToolProps } from "@opencode/session-ui/tools/tool-renderer"
+import { mediaKindFromPath } from "@opencode/session-ui/pierre/media"
 import { diffModeSignal, setDiffMode, overflowSignal, setOutputOverflow, fileOverflowSignal, setFileOverflow } from "./settings"
+import { deepQueryAll, onDeepChange } from "./shadow-dom"
+import { syncOutputCards } from "./output-resize"
 
-/** Per-card overflow toggle (owner directive): on the EXPANDED card body -
- *  never the collapsed trigger row. Wraps vs hidden-scrollbar scroll for
- *  long lines. FILE cards carry a tool prop and write their own tool's
- *  entry (read/write/edit can differ); other surfaces write the global. */
+/** Per-card overflow toggle: on the EXPANDED card body, never the collapsed
+ *  trigger row. Wraps vs hidden-scrollbar scroll for long lines. FILE cards
+ *  carry a tool prop and write their own tool's entry (read/write/edit can
+ *  differ); other surfaces write the global. */
 function OverflowToggle(props: { tool?: "read" | "write" | "edit" }) {
   const wrapping = () => (props.tool ? (fileOverflowSignal()[props.tool] ?? "wrap") === "wrap" : overflowSignal() === "wrap")
   return (
@@ -44,11 +47,50 @@ function OverflowToggle(props: { tool?: "read" | "write" | "edit" }) {
 }
 
 const str = (value: unknown) => (typeof value === "string" ? value : "")
+
+/** Copy the tool's rendered output. Clipboard API first, then a transient
+ *  textarea (the viewer is served over https, but local probes are http). */
+function CopyButton(props: { text: string }) {
+  const [copied, setCopied] = createSignal(false)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => timer && clearTimeout(timer))
+  const copy = async (e: MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(props.text)
+    } catch {
+      const area = document.createElement("textarea")
+      area.value = props.text
+      area.style.position = "fixed"
+      area.style.opacity = "0"
+      document.body.appendChild(area)
+      area.select()
+      try {
+        document.execCommand("copy")
+      } finally {
+        area.remove()
+      }
+    }
+    setCopied(true)
+    timer && clearTimeout(timer)
+    timer = setTimeout(() => setCopied(false), 1200)
+  }
+  return (
+    <button
+      type="button"
+      data-slot="osh-copy"
+      title={copied() ? "copied" : "copy output"}
+      onClick={copy}
+    >
+      {copied() ? "\u2713" : "\u2398"}
+    </button>
+  )
+}
 const basename = (path: string) => path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
-/** a display path: relativized against the session directory when under
- *  it, else the last two segments (live-caught: full absolute paths
- *  stretched rows even for same-folder searches). The session directory
- *  comes from the DataProvider - set by app.tsx from the session item. */
+/** a display path: relativized against the session directory when under it,
+ *  else the last two segments, so full absolute paths do not stretch rows even
+ *  for same-folder searches. The session directory comes from the
+ *  DataProvider (set by app.tsx from the session item). */
 function displayPath(path: string): string {
   let directory: string | undefined
   try {
@@ -90,8 +132,8 @@ function displayPathDir(path: string): string {
   if (!base) return norm(dir)
   if (nd === base) return "."
   if (nd.startsWith(base + "/")) return nd.slice(base.length + 1)
-  // full directory otherwise: the row ellipsizes only when it truly
-  // cannot fit (owner directive 2026-10-26 - no segment collapsing)
+  // full directory otherwise: the row ellipsizes only when it truly cannot
+  // fit (no segment collapsing)
   return norm(dir)
 }
 const countLines = (text: string) => (text ? text.replace(/\n$/, "").split("\n").length : 0)
@@ -131,46 +173,27 @@ function ChangeCounts(props: { adds: number; dels: number }) {
 
 
 
-/** File-card sizing (owner round 2026-10-25): one fixed card width for the
- * whole file family — read, write and unified edit all render at
- * `--osh-card` (30rem); a split diff renders at exactly 2x that, so the
- * first column NEVER changes size when toggling U/S — split only adds the
- * second pane. Widths live in CSS (app.css); JS keeps a single shared
- * measurement of the transcript column for the auto split decision and
- * the "forced split but no room" indicator. The old per-card measurement
+/** File-card sizing: one fixed card width for the whole file family — read,
+ * write and unified edit all render at `--osh-card` (30rem); a split diff
+ * renders at exactly 2x that, so the first column NEVER changes size when
+ * toggling U/S and split only adds the second pane. Widths live in CSS
+ * (app.css); JS keeps a single shared measurement of the transcript column
+ * for the auto split decision and the "forced split but no room" indicator.
+ * Fixed width by construction replaces the old per-card measurement
  * machinery (spring re-checks, per-card ResizeObservers, mono-char canvas
- * math) is gone: card width is stable by construction, so the class of
- * hug-poisons-measurement bugs (a 264px collapsed scroller refusing the
- * split forever) cannot exist. */
-const [colWidth, setColWidth] = createSignal(0)
-let colEl: HTMLElement | undefined
-let colRO: ResizeObserver | undefined
-function trackColumn(el: HTMLElement) {
-  const host =
-    el.closest<HTMLElement>("[data-transcript-content]") ??
-    el.closest<HTMLElement>("[data-transcript-scroll]") ??
-    el
-  if (host === colEl) {
-    if (colRO) setColWidth(host.clientWidth)
-    return
-  }
-  colEl = host
-  colRO?.disconnect()
-  colRO = new ResizeObserver(() => setColWidth(host.clientWidth))
-  colRO.observe(host)
-  setColWidth(host.clientWidth)
-}
+ * math), so the class of hug-poisons-measurement bugs (a 264px collapsed
+ * scroller refusing the split forever) cannot exist. */
 const CARD_W = 480 // px — mirrors --osh-card: 30rem in app.css
-const splitFits = () => colWidth() >= CARD_W * 2 + 24
+const splitFits = (colWidth: () => number) => colWidth() >= CARD_W * 2 + 24
 
 /** effective diff layout: forced unified stays unified; forced split needs
  * the room (falls back unified with the starved indicator); auto splits
  * exactly when the column fits two cards side by side */
-function effectiveDiffMode(): () => "split" | "unified" {
+function effectiveDiffMode(colWidth: () => number): () => "split" | "unified" {
   return createMemo<"split" | "unified">(() => {
     const m = diffModeSignal()
     if (m === "unified") return "unified"
-    return splitFits() ? "split" : "unified"
+    return splitFits(colWidth) ? "split" : "unified"
   })
 }
 
@@ -252,36 +275,32 @@ function errorText(props: ToolProps): string {
 function GutterOffset(props: { start: number; children: JSX.Element }) {
   let root: HTMLDivElement | undefined
   const renumber = () => {
-    if (!root || props.start <= 1) return
-    const shift = props.start - 1
-    for (const cell of root.querySelectorAll("[data-column-number]")) {
+    if (!root) return
+    for (const cell of deepQueryAll(root, "[data-column-number]")) {
       const raw = cell.getAttribute("data-column-number")
       const n = raw == null ? NaN : Number(raw)
       if (!Number.isFinite(n)) continue
-      // idempotent: recompute from the 0-based line index pierre stamps
+      // the offset renumbers from the REAL first line; at start 1 it also
+      // undoes a stale number from a previous slice of the same file
       const idx = Number(cell.getAttribute("data-line-index") ?? "0")
       const next = (Number.isFinite(idx) ? idx : n - 1) + props.start
       if (next === n) continue
       cell.setAttribute("data-column-number", String(next))
-      const text = cell.querySelector("[data-line-number-content]")
+      const text = deepQueryAll(cell, "[data-line-number-content]")[0]
       if (text) text.textContent = String(next)
     }
   }
   const attach = (el: HTMLDivElement) => {
     root = el
-    renumber()
-    const mo = new MutationObserver(() => requestAnimationFrame(renumber))
-    mo.observe(el, { childList: true, subtree: true })
-    onCleanup(() => mo.disconnect())
+    onCleanup(onDeepChange(el, renumber))
   }
   return <div ref={attach}>{props.children}</div>
 }
 
-/** One cold-pool guard: pierre renders PLAIN text if the worker pool has
- * not finished booting when the card mounts, and never re-renders when it
- * does (live-caught intermittency). After the first render settles, if the
- * file has gutter cells but zero colored token spans, remount the File
- * ONCE - the pool is warm by then. */
+/** One cold-pool guard: pierre renders PLAIN text if the worker pool has not
+ * finished booting when the card mounts, and never re-renders when it does.
+ * After the first render settles, if the file has gutter cells but zero
+ * colored token spans, remount the File ONCE - the pool is warm by then. */
 function FileCard(props: {
   path?: string
   contents: string
@@ -289,10 +308,35 @@ function FileCard(props: {
   lineStart?: number
   /** which file tool this card is - drives the PER-TOOL overflow setting */
   tool: "read" | "write"
+  /** plugin-stamped language of the RETURNED RANGE (a read from inside an
+   *  html file's script block is javascript, not html); overrides the
+   *  name-derived language, which cannot know the snippet's context */
+  lang?: string
+  /** ready-made image payload (a v1 attachment data URL) - wins over the
+   *  text contents, which for an image read is just a status line */
+  mediaUrl?: string
   onRendered?: () => void
 }) {
   const fileComponent = useFileComponent()
   const ov = () => fileOverflowSignal()[props.tool] ?? "wrap"
+  // image/svg/audio payloads arrive base64-encoded from the host; the kit's
+  // FileMedia turns the record into a data URL and paints the media itself
+  // (the text viewer stays as the fallback). Without this, reading a PNG
+  // renders a wall of base64.
+  const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml" }
+  const media = () => {
+    const kind = mediaKindFromPath(props.path)
+    if (!kind || !props.path) return undefined
+    // a ready-made image payload (v1 attachment data URL) renders as-is
+    if (props.mediaUrl && /^data:/.test(props.mediaUrl)) return { path: props.path, current: props.mediaUrl }
+    // a payload that is already a data URL passes through as the value
+    // itself (FileMedia accepts a plain string); raw base64 needs the
+    // record form or the URL gets the prefix twice
+    if (/^data:/.test(props.contents)) return { path: props.path, current: props.contents }
+    const mime = MIME[props.path.split(".").pop()!.toLowerCase()]
+    if (!mime) return undefined
+    return { path: props.path, current: { content: props.contents, encoding: "base64", mimeType: mime } }
+  }
   let inner: HTMLDivElement | undefined
   const [attempt, setAttempt] = createSignal(0)
   let retried = false
@@ -302,41 +346,76 @@ function FileCard(props: {
     setTimeout(() => {
       const root = inner
       if (!root) return
-      const cells = root.querySelectorAll("[data-column-number]").length
-      const tokens = root.querySelectorAll("[data-line] span[style]").length
+      // pierre paints inside a shadow root: both counts must look deeper
+      const cells = deepQueryAll(root, "[data-column-number]").length
+      const tokens = deepQueryAll(root, "[data-line] span[style]").length
       if (cells > 0 && tokens === 0) setAttempt(1)
+      // the cap is a LINE COUNT: size --osh-cap to the distance from the
+      // first gutter row to the 21st, so exactly 20 numbered lines show even
+      // when some of them wrap (a px guess lands at 18 because wrapped rows
+      // consume gutter-less height)
+      if (!document.documentElement.hasAttribute("data-osh-cap-set")) {
+        const cells = deepQueryAll(root, "[data-column-number]")
+        if (cells.length >= 21) {
+          const tops = cells.slice(0, 21).map((el) => el.getBoundingClientRect().top)
+          const h = tops[20] - tops[0] + (tops[1] - tops[0])
+          if (h > 40) {
+            document.documentElement.style.setProperty("--osh-cap", `${Math.round(h)}px`)
+            document.documentElement.setAttribute("data-osh-cap-set", "")
+          }
+        }
+      }
     }, 1200)
   }
   return (
     <FileBody title={props.path} tool={props.tool}>
-      <div ref={(el) => (inner = el)} style={{ display: "contents" }}>
+      <div
+        ref={(el) => {
+          inner = el
+          // chevrons/fade depend on the scroll geometry, but pierre lays out
+          // inside a shadow root at its own pace and NO light-DOM mutation
+          // fires when it finishes - re-check the card a few times after
+          // mount so the arrow state settles without a reader scroll
+          const timers = [400, 1200, 3000].map((ms) => window.setTimeout(() => syncOutputCards(), ms))
+          onCleanup(() => timers.forEach((t) => clearTimeout(t)))
+        }}
+        style={{ display: "contents" }}
+      >
         <GutterOffset start={props.lineStart ?? 1}>
           {/* keyed by attempt: Solid's Dynamic has NO remount API (a `key`
-              prop is just passed through) - a distinct <Show keyed> branch
+              prop is just passed through), so a distinct <Show keyed> branch
               is what actually re-creates the File when the cold-pool guard
-              fires (live-caught: the guard never worked before) */}
+              fires. */}
           <Show when={attempt() === 0} keyed>
             <Dynamic
               component={fileComponent as any}
               mode="text"
-              file={{ name: props.path, contents: props.contents }}
+              file={{ name: props.path, contents: props.contents, lang: (props.lang || undefined) as any }}
               overflow={ov()}
+              media={media() as any}
               onRendered={() => {
                 settle()
+                // pierre paints in a shadow root: the clipped/arrow pass
+                // cannot rely on document mutations, so re-run it here
+                syncOutputCards()
                 props.onRendered?.()
               }}
             />
           </Show>
-          <Show when={attempt() === 1} keyed>
-            <Dynamic
-              component={fileComponent as any}
-              mode="text"
-              file={{ name: props.path, contents: props.contents }}
-              overflow={ov()}
-              onRendered={() => props.onRendered?.()}
-            />
-          </Show>
-        </GutterOffset>
+           <Show when={attempt() === 1} keyed>
+             <Dynamic
+               component={fileComponent as any}
+               mode="text"
+               file={{ name: props.path, contents: props.contents, lang: (props.lang || undefined) as any }}
+               overflow={ov()}
+               media={media() as any}
+               onRendered={() => {
+                 syncOutputCards()
+                 props.onRendered?.()
+               }}
+             />
+           </Show>
+         </GutterOffset>
       </div>
     </FileBody>
   )
@@ -347,7 +426,7 @@ function FileCard(props: {
  *  row's right edge. */
 function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; controls?: JSX.Element; children: JSX.Element }) {
   return (
-    <div data-component="osh-file-body" ref={(el) => queueMicrotask(() => trackColumn(el))}>
+    <div data-component="osh-file-body" data-osh-out="file">
       <div class="osh-file-titlebar">
         <Show when={props.title}>
           <FileTitle path={props.title!} />
@@ -357,7 +436,16 @@ function FileBody(props: { title?: string; tool?: "read" | "write" | "edit"; con
           <OverflowToggle tool={props.tool} />
         </div>
       </div>
-      {props.children}
+      {/* capped scroll surface: chevrons mark clipped content instead
+          of a scrollbar (a file body is read, not navigated) */}
+      <div class="osh-file-scroll" data-osh-scroll>
+        {props.children}
+      </div>
+      <span class="osh-file-arrow" data-osh-arrow="up" aria-hidden="true" />
+      <span class="osh-file-arrow" data-osh-arrow="down" aria-hidden="true" />
+      {/* same per-card drag the output surfaces have: temporary height,
+          dblclick resets; chevrons keep marking anything still clipped */}
+      <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
     </div>
   )
 }
@@ -369,6 +457,13 @@ const ReadTool = (props: ToolProps) => {
   const preview = createMemo(() => {
     const meta = (props.metadata as any) ?? {}
     return str(meta.preview) || str(props.output)
+  })
+  // a read of an IMAGE carries the file as a v1 attachment (data URL); the
+  // text output is just "Image read successfully" - render the picture
+  const mediaUrl = createMemo(() => {
+    const list = (props as any).attachments as { mime?: string; url?: string }[] | undefined
+    const hit = (list ?? []).find((a) => typeof a?.url === "string" && a.url.startsWith("data:image/"))
+    return hit?.url
   })
   const failure = createMemo(() => errorText(props))
   const lines = createMemo(() => countLines(preview()))
@@ -382,8 +477,9 @@ const ReadTool = (props: ToolProps) => {
       <BasicTool
         {...props}
         icon="glasses"
-        hasContent={!!preview() || !!failure()}
+        hasContent={!!preview() || !!failure() || !!mediaUrl()}
         defer
+        pour={false}
         trigger={() => (
           <FileHeader
             label="Read"
@@ -400,7 +496,7 @@ const ReadTool = (props: ToolProps) => {
           when={!failure()}
           fallback={<pre class="osh-pre osh-pre-error">{failure()}</pre>}
         >
-          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} onRendered={() => props.onContentRendered?.()} />
+          <FileCard tool="read" path={path()} contents={preview()} lineStart={lineStart()} lang={str((props.metadata as any)?.language)} mediaUrl={mediaUrl()} onRendered={() => props.onContentRendered?.()} />
         </Show>
       </BasicTool>
     </div>
@@ -423,23 +519,61 @@ const EditTool = (props: ToolProps) => {
   const newText = createMemo(() => str((props.input as any).newString))
   const failure = createMemo(() => errorText(props))
   // the host's patch: v1 stamps metadata.filediff, v2 stamps metadata.files
-  const patch = createMemo(() => {
+  const rawPatch = createMemo(() => {
     const meta = (props.metadata as any) ?? {}
     const p1 = meta.filediff?.patch
     if (typeof p1 === "string" && p1) return p1
     const p2 = Array.isArray(meta.files) ? meta.files[0]?.patch : undefined
     return typeof p2 === "string" && p2 ? p2 : undefined
   })
-  const fileDiff = createMemo(() =>
-    patch() != null
-      ? // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
-        (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
-      : undefined,
-  )
-  // fixed card widths (owner round 2026-10-25): the split/unified decision
-  // rides the shared column measurement — no per-card measurement left
-  const effMode = effectiveDiffMode()
-  const starved = () => diffModeSignal() === "split" && !splitFits()
+  // v1 hosts emit node-diff's `Index:`-flavoured unified patch; the current
+  // kit parser only accepts `diff --git` headers and renders nothing for the
+  // Index form (every v1 share's edit cards go blank). Normalize: synthetic
+  // git header, drop the Index/=== preamble lines. The header path comes from
+  // the patch's own `--- a/` line when present, because the tool's filePath
+  // can be absolute and `a//abs/path` is a malformed git header that parses
+  // empty.
+  const patch = createMemo(() => {
+    const raw = rawPatch()
+    if (raw == null) return undefined
+    if (raw.startsWith("diff --git")) return raw
+    const own = raw.match(/^--- "?a\/(.+?)"?(?:\t[\d.]+)?\r?$/m)?.[1]
+    const f = (own ?? path() ?? "file").replace(/\\/g, "/").replace(/^\/+/, "")
+    const body = raw
+      .split("\n")
+      .filter((l) => !(l.startsWith("Index:") || l.startsWith("===")))
+      .join("\n")
+    return `diff --git a/${f} b/${f}\n${body}`
+  })
+  const fileDiff = createMemo(() => {
+    if (patch() == null) return undefined
+    // the kit's own adapter: patch string -> parsed FileDiffMetadata (cached)
+    const fd = (resolveFileDiff as any)({ file: path() ?? "file", patch: patch() })
+    // the plugin stamps the language of the hunk's context (a mid-script
+    // html hunk tokenizes as untyped soup under the html grammar); a diff
+    // whose metadata carries the refined range language needs it forwarded,
+    // the same way the read card forwards FileContents.lang
+    const lang = (props.metadata as any)?.language
+    if (fd && typeof lang === "string") (fd as any).lang = lang
+    return fd
+  })
+  // fixed card widths: the split/unified decision rides this card's own
+  // column measurement (per instance - see useColumnWidth)
+  const [colW, setColW] = createSignal(0)
+  const bindColumn = (el: HTMLDivElement) => {
+    const host =
+      el.closest<HTMLElement>("[data-osh-col]") ??
+      el.closest<HTMLElement>("[data-transcript-content]") ??
+      el.closest<HTMLElement>("main") ??
+      el.parentElement ??
+      el
+    const ro = new ResizeObserver(() => setColW(host.clientWidth))
+    ro.observe(host)
+    setColW(host.clientWidth)
+    onCleanup(() => ro.disconnect())
+  }
+  const effMode = effectiveDiffMode(colW)
+  const starved = () => diffModeSignal() === "split" && !splitFits(colW)
   const stats = createMemo(() => {
     const known = counts(props)
     if (known) return known
@@ -454,12 +588,13 @@ const EditTool = (props: ToolProps) => {
     return { adds, dels }
   })
   return (
-    <div data-component="osh-edit-tool" data-osh-split={effMode() === "split" ? "on" : "off"}>
+    <div data-component="osh-edit-tool" data-osh-split={effMode() === "split" ? "on" : "off"} ref={bindColumn}>
       <BasicTool
         {...props}
         icon="code-lines"
         hasContent={!!path() || !!failure()}
         defer
+        pour={false}
         trigger={() => (
           <FileHeader
             label={props.tool === "patch" ? "Patch" : "Edit"}
@@ -480,9 +615,9 @@ const EditTool = (props: ToolProps) => {
             title={path()}
             tool="edit"
             controls={
-              /* per-card diff mode toggle (writes the global setting) —
+              /* per-card diff mode toggle (writes the global setting);
                  right edge of the card, directly above the wrap/scroll
-                 selector (owner round 2026-10-25) */
+                 selector */
               <div data-slot="osh-diff-mode" role="group" aria-label="diff layout">
                 <button
                   type="button"
@@ -510,10 +645,10 @@ const EditTool = (props: ToolProps) => {
           >
             <div data-component="edit-content">
               {/* keyed branch pair: Solid's Dynamic has NO remount API (a
-                  `key` prop is passed through, does nothing - live-caught:
-                  the first card of a batch rendered split, the rest stayed
-                  unified forever). Distinct <Show keyed> branches actually
-                  re-create the File when the mode flips. */}
+                  `key` prop is just passed through and does nothing: the first card
+                  of a batch rendered split and the rest stayed unified
+                  forever). Distinct <Show keyed> branches actually re-create
+                  the File when the mode flips. */}
               <Show when={effMode() === "split"} keyed>
                 <Dynamic
                   component={fileComponent as any}
@@ -561,6 +696,7 @@ const WriteTool = (props: ToolProps) => {
         icon="code-lines"
         hasContent={!!path() && (!!content() || !!failure())}
         defer
+        pour={false}
         trigger={() => (
           <FileHeader
             label="Write"
@@ -579,11 +715,11 @@ const WriteTool = (props: ToolProps) => {
     </div>
   )
 }
-/** Text-result tools: raw output in a preformatted surface, never
- *  markdown (markdown turned each result line into a paragraph, which is
- *  where the blank-line inflation came from). Subtitle = the search path
- *  RELATIVIZED against the session directory (live-caught: the full
- *  absolute path stretched the row even for files in the same folder). */
+/** Text-result tools: raw output in a preformatted surface, never markdown
+ *  (markdown turns each result line into a paragraph, which is where the
+ *  blank-line inflation comes from). Subtitle = the search path RELATIVIZED
+ *  against the session directory, so a file in the same folder does not
+ *  stretch the row with its full absolute path. */
 const TextResultTool =
   (label: string, icon: string) => (props: ToolProps) => {
     const searchPath = createMemo(() => {
@@ -631,13 +767,62 @@ const TextResultTool =
           </div>
         )}
       >
-        <div class="osh-pre-wrap">
-          <pre data-component="osh-pre" class="osh-pre">{body()}</pre>
+        <div class="osh-pre-wrap" data-osh-out="text">
+          <pre data-component="osh-pre" class="osh-pre" data-osh-scroll>{body()}</pre>
+          <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
+          <CopyButton text={body()} />
           <OverflowToggle />
         </div>
       </BasicTool>
     )
   }
+
+/** Unknown tools (ctx_* helpers, MCP servers, anything the kit never
+ *  registered): the kit's GenericTool prints the raw input and output with no
+ *  card, no copy and no wrap control. Give them the same output surface as
+ *  grep/glob/list so every result reads the same way. */
+const GenericOutputTool = (props: ToolProps) => {
+  const input = createMemo<Record<string, unknown>>(() => (props.input as any) ?? {})
+  const argsSummary = createMemo(() =>
+    Object.entries(input())
+      .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+      .slice(0, 3)
+      .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
+      .join("  "),
+  )
+  const body = createMemo(() => {
+    const out = str(props.output)
+    if (out) return out.replace(/\r\n/g, "\n")
+    const rest = Object.entries(input()).filter(([, v]) => typeof v === "string" && (v as string).length > 60)
+    return rest.length ? rest.map(([k, v]) => `${k}: ${v}`).join("\n") : ""
+  })
+  const label = createMemo(() => String(props.tool ?? "tool").replace(/^osh_/, ""))
+  return (
+    <BasicTool
+      {...props}
+      icon="code-lines"
+      hasContent={!!body()}
+      defer
+      trigger={() => (
+        <div data-slot="basic-tool-tool-info-structured">
+          <div data-slot="basic-tool-tool-info-main">
+            <span data-slot="basic-tool-tool-title">{label()}</span>
+            <Show when={argsSummary()}>
+              {(a) => <span data-slot="basic-tool-tool-arg">{a()}</span>}
+            </Show>
+          </div>
+        </div>
+      )}
+    >
+      <div class="osh-pre-wrap" data-osh-out="text">
+        <pre data-component="osh-pre" class="osh-pre" data-osh-scroll>{body()}</pre>
+        <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />
+        <CopyButton text={body()} />
+        <OverflowToggle />
+      </div>
+    </BasicTool>
+  )
+}
 
 /** `todowrite`: the kit drops it entirely; v1 rendered a checklist. */
 const TodoTool = (props: ToolProps) => {
@@ -684,6 +869,7 @@ ToolRegistry.register({ name: "grep", render: TextResultTool("Grep", "magnifying
 ToolRegistry.register({ name: "glob", render: TextResultTool("Glob", "magnifying-glass-menu") })
 ToolRegistry.register({ name: "list", render: TextResultTool("List", "bullet-list") })
 ToolRegistry.register({ name: "todowrite", render: TodoTool })
+ToolRegistry.register({ name: "*", render: GenericOutputTool })
 // subagent/task stay on the KIT renderer (card, expand, click-through to the
 // child session) - only its LABEL is forked to the real agent name; the map
 // it reads lives in subagent-map.ts (globalThis.__oshAgents)

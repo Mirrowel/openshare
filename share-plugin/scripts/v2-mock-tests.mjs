@@ -14,7 +14,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { sleep, waitFor, httpGet, killPortOwners, bindingUrlOf,
-  killWranglerSuites, startWorker, WORKER_URL, WORKER_PORT,
+  killWranglerSuites, startWorker, startBunServer, CREATE_TOKEN, WORKER_URL, WORKER_PORT,
 } from "./suite-lib.mjs"
 
 const distUrl = (name) => new URL(`../dist/${name}`, import.meta.url).href
@@ -189,11 +189,15 @@ process.env.OPENSHARE_WORKER_URL = WORKER_URL
 process.env.OPENSHARE_CREATE_TOKEN = "suite-create-token"
 process.env.OPENSHARE_DEBOUNCE_MS = "200"
 process.env.OPENSHARE_COMPLETED_DELAY_MS = "300"
+// binding-write coalescer: the multi-remote section asserts the SETTLED
+// two-server binding; the default 30s window would dominate suite time
+process.env.OPENSHARE_BINDING_WRITE_MS = "1500"
 // pinned spool dir: the suite asserts the spool lifecycle (files written
 // while live, cleared on session delete)
 process.env.OPENSHARE_SPOOL_DIR = join(suiteDir, "spool")
 
 let worker
+let bunWorker, bunRestarted
 try {
   worker = await startWorker(suiteDir)
   console.log("worker ready")
@@ -270,6 +274,16 @@ try {
   }, "V1: compaction message passed through")
   check("V1: compaction message passed through", !!compactionArrived, "no compaction message on the share")
   check("V1: model item present (session model fallback)", items.some((i) => i.type === "model"))
+  // Wave 3 data-inventory split: the session item never carries the
+  // machine-local directory (the mock session HAS one), and the public
+  // /data envelope exposes no machine path at all - pmeta stays in the
+  // private block, which an ungated share never serves
+  {
+    const sess = items.find((i) => i.type === "session" && i.data?.id === mock.SID)
+    check("V4: session item carries no directory", sess && !("directory" in (sess.data ?? {})), JSON.stringify(sess?.data ?? null).slice(0, 160))
+    const flatAll = JSON.stringify(body)
+    check("V4a public envelope leaks no machine path", !flatAll.includes("/mock/project") && !flatAll.includes('"pmeta"'), flatAll.slice(0, 200))
+  }
 
   // live content: grown text lands via the debounced re-sync
   await waitFor(async () => {
@@ -312,6 +326,19 @@ try {
   }, "V2: real change still lands through the dedupe")
   const revAfterChange = (await (await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)).json()).rev
   check("V2: real change bumps rev", revAfterChange > revAfterGrow, `${revAfterGrow} -> ${revAfterChange}`)
+
+  // Wave 3 engine-level: secret-bearing content on an UNGATED share - the
+  // redaction pass at enqueue must strip the token before any transport
+  mock.store.messages.get(mock.SID).push(mock.assistantMessage("rotated to ghp_" + "z".repeat(36) + " ok"))
+  mock.emit(mock.event("session.text.ended"))
+  const redactedOk = await waitFor(async () => {
+    const r = await httpGet(`${WORKER_URL}/api/share/${shareId}/data`)
+    if (!r.ok) return false
+    const parsed = await r.json()
+    const flat = JSON.stringify(parsed.data ?? [])
+    return flat.includes("[redacted:gh-token]") && !flat.includes("ghp_zzz") ? parsed : false
+  }, "V3: redaction marker lands, token never does")
+  check("V3: ungated share redacts tokens at enqueue", !!redactedOk, "token leaked or marker missing")
 
   // inbox queue semantics: the host persists the queued prompt's message
   // row mid-turn; the share must NOT surface it until delivered.
@@ -369,6 +396,196 @@ try {
   }
 
   await dispose?.()
+
+  // --- multi-remote engine-edge: two remotes on the scripted bus -----------
+  // fanout-tests drives the same engine through REAL opencode serves;
+  // this lane adds the cases a real turn cannot cheaply hit: a full
+  // outage of ONE remote mid-session (spool accumulates, restart with
+  // the same db must replay and converge) and an opt-out delivered as a
+  // metadata EVENT (the v2 adapter's retirement path - the e2e suite
+  // drives it through the host's metadata PATCH).
+  // Engine fact this section is shaped around: the FIRST binding write
+  // is immediate, later ones are 30s-debounced - so share discovery
+  // reads the ADMIN lists (content is live within seconds), and only
+  // the opt-out mutation waits on the settled binding.
+  const B2_PORT = WORKER_PORT + 10
+  const B2_URL = `http://127.0.0.1:${B2_PORT}`
+  bunWorker = await startBunServer(suiteDir, { port: B2_PORT, name: "v2fan", createToken: CREATE_TOKEN })
+  const adminShares = async (base) =>
+    ((await (await httpGet(`${base}/api/admin/shares`, { headers: { authorization: `Bearer ${CREATE_TOKEN}` } })).json()) ?? { shares: [] }).shares
+  const mock2 = makeMockV2Host()
+  mock2.context.options = {
+    servers: {
+      [WORKER_URL]: { token: CREATE_TOKEN, active: true },
+      [B2_URL]: { token: CREATE_TOKEN, active: true },
+    },
+  }
+  mock2.store.sessions.set(mock2.SID, { ...mock2.sessionInfo(), metadata: {} })
+  mock2.store.messages.set(mock2.SID, [mock2.userMessage(), mock2.assistantMessage("multi initial")])
+  mock2.script(200, mock2.event("session.created"))
+  mock2.script(400, async () => {
+    const flag = { openshare: { enabled: true } }
+    mock2.store.sessions.get(mock2.SID).metadata = { ...flag }
+    return mock2.event("session.metadata.updated", { metadata: flag })
+  })
+  const dispose2 = await createV2ServerSetup()(mock2.context)
+
+  // M1: both remotes create and carry identical content
+  const pair = await waitFor(async () => {
+    const s1 = (await adminShares(WORKER_URL)).filter((s) => s.sessionID === mock2.SID)
+    const s2 = (await adminShares(B2_URL)).filter((s) => s.sessionID === mock2.SID)
+    return s1.length === 1 && s2.length === 1 ? [s1[0].id, s2[0].id] : undefined
+  }, "M1: one share per remote for the session", 45000)
+  const [shareW1, shareB2] = pair
+  const bothBodies = await waitFor(async () => {
+    const r1 = await httpGet(`${WORKER_URL}/api/share/${shareW1}/data`)
+    const r2 = await httpGet(`${B2_URL}/api/share/${shareB2}/data`)
+    if (!r1.ok || !r2.ok) return false
+    const p1 = await r1.json()
+    const p2 = await r2.json()
+    const text = (p) => (p.data ?? []).some((m) => m.type === "message" && (m.data?.content ?? []).some((c) => c?.type === "text" && c?.text === "multi initial"))
+    return text(p1) && text(p2) ? [p1, p2] : false
+  }, "M1: content on both remotes")
+  check("M1: two-remote create parity (scripted bus)", JSON.stringify(bothBodies[0].data.map((i) => i.type)) === JSON.stringify(bothBodies[1].data.map((i) => i.type)))
+
+  // M2: one remote goes DOWN mid-session; the survivor keeps receiving,
+  // the dead remote's spool accumulates; restart on the same db replays
+  // and converges - no loss, no dupe churn
+  bunWorker.kill()
+  killPortOwners(B2_PORT)
+  mock2.store.messages.set(mock2.SID, [mock2.userMessage(), mock2.assistantMessage("outage growth")])
+  mock2.emit(mock2.event("session.text.ended"))
+  await waitFor(async () => {
+    const r = await httpGet(`${WORKER_URL}/api/share/${shareW1}/data`)
+    if (!r.ok) return false
+    const p = await r.json()
+    return (p.data ?? []).some((m) => m.type === "message" && (m.data?.content ?? []).some((c) => c?.type === "text" && c?.text === "outage growth"))
+  }, "M2: survivor received the change while the other remote was down")
+  bunRestarted = await startBunServer(suiteDir, { port: B2_PORT, name: "v2fan", createToken: CREATE_TOKEN, keepDb: true })
+  const caughtUp = await waitFor(async () => {
+    const r = await httpGet(`${B2_URL}/api/share/${shareB2}/data`)
+    if (!r.ok) return false
+    const p = await r.json()
+    return (p.data ?? []).some((m) => m.type === "message" && (m.data?.content ?? []).some((c) => c?.type === "text" && c?.text === "outage growth")) ? p : false
+  }, "M2: restarted remote caught up", 60000)
+  const w1Now = await (await httpGet(`${WORKER_URL}/api/share/${shareW1}/data`)).json()
+  check("M2: outage spool replays on reconnect (parity, no dupe churn)",
+    JSON.stringify(caughtUp.data.map((i) => i.type)) === JSON.stringify(w1Now.data.map((i) => i.type)),
+    `${caughtUp.data.length} vs ${w1Now.data.length}`)
+
+  // M3: per-remote opt-out through a metadata EVENT (the v2 adapter's
+  // retirement path). Needs the settled two-server binding - the
+  // debounced write lands within ~30s of the second remote's init-ok,
+  // which the M1/M2 phases above comfortably cover.
+  const bind2 = await waitFor(() => {
+    const b = mock2.store.sessions.get(mock2.SID)?.metadata?.openshare
+    return bindingUrlOf(b?.servers?.[WORKER_URL]) && bindingUrlOf(b?.servers?.[B2_URL]) ? b : undefined
+  }, "M3 precondition: settled binding carries both remotes", 45000)
+  const currentBinding = JSON.parse(JSON.stringify(bind2))
+  currentBinding.servers[B2_URL] = { ...currentBinding.servers[B2_URL], optedOut: true }
+  mock2.store.sessions.get(mock2.SID).metadata = { openshare: currentBinding }
+  mock2.emit(mock2.event("session.metadata.updated", { metadata: { openshare: currentBinding } }))
+  const revB2AtOptOut = caughtUp.rev
+  mock2.store.messages.set(mock2.SID, [mock2.userMessage(), mock2.assistantMessage("post opt-out growth")])
+  mock2.emit(mock2.event("session.text.ended"))
+  await waitFor(async () => {
+    const r = await httpGet(`${WORKER_URL}/api/share/${shareW1}/data`)
+    if (!r.ok) return false
+    const p = await r.json()
+    return (p.data ?? []).some((m) => m.type === "message" && (m.data?.content ?? []).some((c) => c?.type === "text" && c?.text === "post opt-out growth"))
+  }, "M3: survivor still receives content")
+  await sleepAsync(2000) // grace: with a 200ms debounce a broken retirement would have synced by now
+  const b2After = await (await httpGet(`${B2_URL}/api/share/${shareB2}/data`)).json()
+  const b2HasPost = JSON.stringify(b2After).includes("post opt-out growth")
+  check("M3: opted-out remote gets nothing more (share stays as-is)", !b2HasPost && b2After.rev === revB2AtOptOut, `rev ${revB2AtOptOut} -> ${b2After.rev}`)
+
+  await dispose2?.()
+
+  // M4: task-call <-> child-prompt stamps through the real engine. Two
+  // calls into ONE child (v2 shapes: call 1's prompt arrives behind the
+  // subagent preamble, call 2's verbatim) plus one UNLINKED auto-continue
+  // between them - the stamps must pair each call to its own prompt and
+  // leave the continue unclaimed.
+  const mock3 = makeMockV2Host()
+  const CHILD = "ses_v2mock_child1"
+  const PREAMBLE = "You are a subagent spawned by another session.\n"
+  const CALL1_PROMPT = "review the config and report mistakes"
+  const CALL2_PROMPT = "now verify the build outputs\nline two of the brief"
+  mock3.context.options = { servers: { [WORKER_URL]: { token: CREATE_TOKEN, active: true } } }
+  mock3.store.sessions.set(mock3.SID, { ...mock3.sessionInfo(), metadata: {} })
+  mock3.store.sessions.set(CHILD, {
+    ...mock3.sessionInfo(),
+    id: CHILD,
+    title: "subagent child",
+    agent: "explore",
+    parentID: mock3.SID,
+  })
+  const tCall1 = Date.now() - 50000
+  const tP1 = tCall1 + 400
+  const tCont = tCall1 + 5000
+  const tCall2 = tCall1 + 9000
+  const tP2 = tCall2 + 300
+  mock3.store.messages.set(mock3.SID, [
+    mock3.userMessage(),
+    {
+      ...mock3.assistantMessage("spawned agents"),
+      time: { created: tCall1 },
+      content: [
+        { type: "text", text: "spawned agents" },
+        {
+          type: "tool",
+          id: "tool_task_1",
+          name: "task",
+          state: { status: "completed", input: { prompt: CALL1_PROMPT, description: "first" }, metadata: { sessionID: CHILD } },
+          time: { created: tCall1, completed: tCall1 + 2000 },
+        },
+        {
+          type: "tool",
+          id: "tool_task_2",
+          name: "task",
+          state: { status: "completed", input: { prompt: CALL2_PROMPT, description: "second" }, metadata: { sessionID: CHILD } },
+          time: { created: tCall2, completed: tCall2 + 2000 },
+        },
+      ],
+    },
+  ])
+  mock3.store.messages.set(CHILD, [
+    { id: "msg_child_p1", type: "user", time: { created: tP1 }, text: PREAMBLE + CALL1_PROMPT },
+    { id: "msg_child_cont", type: "user", time: { created: tCont }, text: "continue: summarize findings so far" },
+    { id: "msg_child_p2", type: "user", time: { created: tP2 }, text: CALL2_PROMPT },
+  ])
+  mock3.script(200, mock3.event("session.created"))
+  // the child's messages ride its own content events in a real v2 host -
+  // one synthetic nudge makes the adapter refresh(CHILD) and pull the list
+  mock3.script(300, { ...mock3.event("session.created"), data: { ...mock3.event("session.created").data, sessionID: CHILD } })
+  mock3.script(400, async () => {
+    const flag = { openshare: { enabled: true } }
+    mock3.store.sessions.get(mock3.SID).metadata = { ...flag }
+    return mock3.event("session.metadata.updated", { metadata: flag })
+  })
+  mock3.script(600, { ...mock3.event("session.message.updated"), data: { ...mock3.event("session.message.updated").data, sessionID: CHILD } })
+  const dispose3 = await createV2ServerSetup()(mock3.context)
+  const stamped = await waitFor(async () => {
+    const list = (await adminShares(WORKER_URL)).filter((s) => s.sessionID === mock3.SID)
+    if (list.length !== 1) return false
+    const p = await (await httpGet(`${WORKER_URL}/api/share/${list[0].id}/data`)).json()
+    const findTool = (id) =>
+      (p.data ?? []).flatMap((m) => (m.type === "message" && m.sessionID === mock3.SID ? m.data?.content ?? [] : [])).find((c) => c?.type === "tool" && c.id === id)
+    const t1 = findTool("tool_task_1")
+    const t2 = findTool("tool_task_2")
+    if (!t1?.state?.metadata?.promptID || !t2?.state?.metadata?.promptID) return false
+    const childMsg = (id) => (p.data ?? []).find((m) => m.type === "message" && m.sessionID === CHILD && m.data?.id === id)?.data
+    return { t1, t2, p1: childMsg("msg_child_p1"), cont: childMsg("msg_child_cont"), p2: childMsg("msg_child_p2") }
+  }, "M4: stamps land in the share data", 45000)
+  check("M4: each call pairs its own prompt (preamble tolerated, verbatim exact)",
+    stamped.t1.state.metadata.promptID === "msg_child_p1" && stamped.t2.state.metadata.promptID === "msg_child_p2",
+    `${stamped.t1.state.metadata.promptID} / ${stamped.t2.state.metadata.promptID}`)
+  check("M4: child prompts carry the back-link, the unlinked continue stays unclaimed",
+    stamped.p1?.metadata?.toolCallID === "tool_task_1" && stamped.p1?.metadata?.toolSessionID === mock3.SID
+      && stamped.p2?.metadata?.toolCallID === "tool_task_2"
+      && stamped.cont?.metadata?.toolCallID === undefined,
+    `${stamped.p1?.metadata?.toolCallID ?? "-"} / ${stamped.p2?.metadata?.toolCallID ?? "-"} / cont=${stamped.cont?.metadata?.toolCallID ?? "-"}`)
+  await dispose3?.()
 } catch (error) {
   console.error("SUITE ERROR:", error.message)
   failures.push(`suite-error: ${error.message}`)
@@ -376,6 +593,9 @@ try {
   try {
     worker?.kill()
   } catch {}
+  try { bunWorker?.kill?.() } catch {}
+  try { bunRestarted?.kill?.() } catch {}
+  killPortOwners(WORKER_PORT + 10)
   if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
 }
 

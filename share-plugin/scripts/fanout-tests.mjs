@@ -14,8 +14,10 @@ import {
   waitFor,
   httpGet,
   killWranglerSuites,
+  killPortOwners,
   startMockLLM,
   startWorker,
+  startBunServer,
   startServe,
   stopServe,
   bindingUrlOf,
@@ -24,6 +26,7 @@ import {
   WORKER_URL,
   LLM_PORT,
   PROVIDER,
+  SERVE_PORT,
 } from "./suite-lib.mjs"
 
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url))
@@ -112,61 +115,25 @@ const opts = (extra = {}) => ({
   },
 })
 
-let worker1, worker2, llm, serve
+let worker1, worker2, llm, serve, serve2
 try {
   llm = await startMockLLM()
-  worker1 = await startWorker(suiteDir, { configSuffix: "f1" })
-  worker2 = await startWorker(suiteDir, { port: W2_PORT, configSuffix: "f2" })
+  // server2 runs the portable Bun backend: the ENGINE under test is
+  // backend-agnostic, the boot is ~2s instead of ~10s, and it gives the
+  // matrix standing mixed-backend fan-out coverage (wrangler + bun);
+  // both boots run concurrently (they share no state)
+  const [w1, w2] = await Promise.all([
+    startWorker(suiteDir, { configSuffix: "f1" }),
+    startBunServer(suiteDir, { port: W2_PORT, name: "f2", createToken: CREATE_TOKEN }),
+  ])
+  worker1 = w1
+  worker2 = w2
   console.log("both workers ready")
 
-  // ---- F1: both servers receive the session --------------------------------
-  serve = await startServe({ name: "fanout", path: PKG, options: opts() }, suiteDir, projectDir, { OPENSHARE_URL_FILE: urlFile, OPENSHARE_DEBOUNCE_MS: "300" })
-  const sid = await createAndPrompt(serve, "fanout turn one")
-  await waitFor(async () => {
-    const s = await (await httpGet(`${serve.base}/session/${sid}`)).json()
-    const b = s?.metadata?.openshare
-    const servers = b?.servers ?? {}
-    return bindingUrlOf(servers[WORKER_URL]) && bindingUrlOf(servers[W2_URL]) ? b : undefined
-  }, "F1: binding carries BOTH servers", 60000)
-  check("F1: binding is a v2 map with both servers", true)
-  const b1 = (await adminList(WORKER_URL, "/api/admin/shares")).shares ?? []
-  const b2 = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
-  check("F1: one share on each server", b1.length === 1 && b2.length === 1, `${b1.length}/${b2.length}`)
-  await waitFor(() => urlLines(urlFile).length >= 2, "F1: two announce lines", 30000)
-  check("F1: urlFile carries both URLs", urlLines(urlFile).length === 2, urlLines(urlFile).join(" "))
-
-  const id1 = b1[0].id
-  const id2 = b2[0].id
-  const body1 = await waitFor(async () => {
-    const parsed = await shareBody(WORKER_URL, id1)
-    const types = (parsed?.data ?? []).map((i) => i.type)
-    return parsed?.status === "completed" && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
-  }, "F1: server1 share complete")
-  const body2 = await waitFor(async () => {
-    const parsed = await shareBody(W2_URL, id2)
-    const types = (parsed?.data ?? []).map((i) => i.type)
-    return parsed?.status === "completed" && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
-  }, "F1: server2 share complete")
-  check("F1: both shares carry identical content", JSON.stringify(body1.data.map((i) => i.type)) === JSON.stringify(body2.data.map((i) => i.type)), `${body1.data.length} vs ${body2.data.length}`)
-
-  // ---- F2: a second turn lands on BOTH ------------------------------------
-  await promptSession(serve, sid, "fanout turn two")
-  await waitFor(async () => {
-    const p1 = await shareBody(WORKER_URL, id1)
-    const msgs1 = (p1?.data ?? []).filter((i) => i.type === "message").length
-    return msgs1 >= 4 ? p1 : undefined
-  }, "F2: turn two on server1", 45000)
-  const p2 = await waitFor(async () => {
-    const parsed = await shareBody(W2_URL, id2)
-    const msgs = (parsed?.data ?? []).filter((i) => i.type === "message").length
-    return msgs >= 4 ? parsed : undefined
-  }, "F2: turn two on server2", 45000)
-  check("F2: fan-out sync stays in lockstep", (p2?.data ?? []).filter((i) => i.type === "message").length >= 4)
-
-  // ---- F3: mid-session server join via settings-home write -----------------
-  // (the TUI's "Set active" writes the settings home; the engine's 5s
-  // target refresh picks it up, creates the remote, and the fan-out
-  // backfill mirrors the FULL history — the 0/2/500-message requirement)
+  // ---- F3 prep: the late-join serve boots on its OWN port concurrently
+  // with serve1's F1/F2 track (separate sandbox, XDG home, url file; the
+  // mock LLM is stateless). Its first turn lands while F1/F2 run, hiding
+  // one serve boot + one full turn behind the existing work.
   const serve3sandbox = join(suiteDir, "latejoin")
   mkdirSync(join(serve3sandbox, "project"), { recursive: true })
   const lateUrlFile = join(serve3sandbox, "share-url.txt")
@@ -174,17 +141,85 @@ try {
     createToken: "",
     servers: { [WORKER_URL]: { token: CREATE_TOKEN, active: true } },
   }
+  const [s1, s2] = await Promise.all([
+    startServe({ name: "fanout", path: PKG, options: opts() }, suiteDir, projectDir, { OPENSHARE_URL_FILE: urlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_COMPLETED_DELAY_MS: "300" }),
+    startServe({ name: "late", path: PKG, options: lateOpts }, serve3sandbox, join(serve3sandbox, "project"), { OPENSHARE_URL_FILE: lateUrlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_COMPLETED_DELAY_MS: "300", OPENSHARE_DEBUG_EVENTS: "1" }, SERVE_PORT + 4),
+  ])
+  serve = s1
+  serve2 = s2
+
+  const f1f2 = (async () => {
+    // ---- F1: both servers receive the session ----------------------------
+    const sid = await createAndPrompt(serve, "fanout turn one")
+    await waitFor(async () => {
+      const s = await (await httpGet(`${serve.base}/session/${sid}`)).json()
+      const b = s?.metadata?.openshare
+      const servers = b?.servers ?? {}
+      return bindingUrlOf(servers[WORKER_URL]) && bindingUrlOf(servers[W2_URL]) ? b : undefined
+    }, "F1: binding carries BOTH servers", 60000)
+    check("F1: binding is a v2 map with both servers", true)
+    // session-scoped: the concurrent late-join track legitimately puts its
+    // own share on server1, so counting ALL shares would race it
+    const b1 = ((await adminList(WORKER_URL, "/api/admin/shares")).shares ?? []).filter((s) => s.sessionID === sid)
+    const b2 = ((await adminList(W2_URL, "/api/admin/shares")).shares ?? []).filter((s) => s.sessionID === sid)
+    check("F1: one share per server for the session", b1.length === 1 && b2.length === 1, `${b1.length}/${b2.length}`)
+    await waitFor(() => urlLines(urlFile).length >= 2, "F1: two announce lines", 30000)
+    check("F1: urlFile carries both URLs", urlLines(urlFile).length === 2, urlLines(urlFile).join(" "))
+
+    const id1 = b1[0].id
+    const id2 = b2[0].id
+    const body1 = await waitFor(async () => {
+      const parsed = await shareBody(WORKER_URL, id1)
+      return parsed?.status === "completed" && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
+    }, "F1: server1 share complete")
+    const body2 = await waitFor(async () => {
+      const parsed = await shareBody(W2_URL, id2)
+      return parsed?.status === "completed" && (parsed.data ?? []).some((i) => i.type === "message" && Array.isArray(i.data?.content) && i.data.content.length > 0) ? parsed : undefined
+    }, "F1: server2 share complete")
+    check("F1: both shares carry identical content", JSON.stringify(body1.data.map((i) => i.type)) === JSON.stringify(body2.data.map((i) => i.type)), `${body1.data.length} vs ${body2.data.length}`)
+
+    // ---- F2: a second turn lands on BOTH ----------------------------------
+    await promptSession(serve, sid, "fanout turn two")
+    await waitFor(async () => {
+      const p1 = await shareBody(WORKER_URL, id1)
+      const msgs1 = (p1?.data ?? []).filter((i) => i.type === "message").length
+      return msgs1 >= 4 ? p1 : undefined
+    }, "F2: turn two on server1", 45000)
+    const p2 = await waitFor(async () => {
+      const parsed = await shareBody(W2_URL, id2)
+      const msgs = (parsed?.data ?? []).filter((i) => i.type === "message").length
+      return msgs >= 4 ? parsed : undefined
+    }, "F2: turn two on server2", 45000)
+    check("F2: fan-out sync stays in lockstep", (p2?.data ?? []).filter((i) => i.type === "message").length >= 4)
+    return { sid }
+  })()
+
+  // late-join turn one runs on serve2 while serve1 works F1/F2; the join
+  // below orders the tracks before any cross-track assertion
+  const f3pre = (async () => {
+    const lateSid = await createAndPrompt(serve2, "late join turn one")
+    await waitFor(() => urlLines(lateUrlFile).length >= 1, "F3: first share (server1 only)", 45000)
+    return lateSid
+  })()
+
+  await f1f2
+  const lateSid = await f3pre
   await stopServe(serve)
-  serve = await startServe({ name: "late", path: PKG, options: lateOpts }, serve3sandbox, join(serve3sandbox, "project"), { OPENSHARE_URL_FILE: lateUrlFile, OPENSHARE_DEBOUNCE_MS: "300", OPENSHARE_DEBUG_EVENTS: "1" })
-  const lateSid = await createAndPrompt(serve, "late join turn one")
-  await waitFor(() => urlLines(lateUrlFile).length >= 1, "F3: first share (server1 only)", 45000)
+  serve = serve2
+
+  // ---- F3: mid-session server join via settings-home write -----------------
+  // (the TUI's "Set active" writes the settings home; the engine's 5s
+  // target refresh picks it up, creates the remote, and the fan-out
+  // backfill mirrors the FULL history — the 0/2/500-message requirement)
   const before2 = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
   check("F3: no NEW share on server2 yet (only F1's leftover)", before2.length === 1, String(before2.length))
 
   // activate server2 through the settings home (exactly what the TUI does)
   const homeCfg = join(serve3sandbox, "xdg", "opencode", "openshare.config.json")
   writeFileSync(homeCfg, JSON.stringify({ servers: { [W2_URL]: { token: CREATE_TOKEN, active: true } } }, null, 2))
-  await sleep(7000) // engine target refresh (throttled to 5s) + connect
+  // deterministic signal: the engine logs its fan-out adoption to stderr
+  // (target refresh is throttled to ~5s; poll instead of sleeping past it)
+  await waitFor(() => (serve.output().includes("fan-out set grew") ? true : undefined), "F3: engine adopted server2", 30000)
   await promptSession(serve, lateSid, "late join turn two")
   await waitFor(async () => {
     const shares = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
@@ -209,9 +244,23 @@ try {
     body: JSON.stringify({ metadata: { ...sMeta.metadata, openshare: opted } }),
   })
   const sharesBeforeOptOut = (await adminList(W2_URL, "/api/admin/shares")).shares.length
-  await sleep(8000)
+  // the host's session.updated event carries the binding change to the
+  // engine immediately; retire+socket close is local (<1s) - a short
+  // margin beats the old fixed 8s
+  await sleep(3000)
+  const w1SharesPre = (await adminList(WORKER_URL, "/api/admin/shares")).shares ?? []
+  const w1LatePre = w1SharesPre.find((s) => s.sessionID === lateSid)
+  const w1MsgsBefore = ((await shareBody(WORKER_URL, w1LatePre?.id ?? w1SharesPre[0]?.id))?.data ?? []).filter((i) => i.type === "message").length
   await promptSession(serve, lateSid, "post opt-out turn")
-  await sleep(8000)
+  // positive signal first: server1 received the turn (deterministic poll)
+  await waitFor(async () => {
+    const body = await shareBody(WORKER_URL, w1LatePre?.id ?? w1SharesPre[0]?.id)
+    const msgs = (body?.data ?? []).filter((i) => i.type === "message").length
+    return msgs > w1MsgsBefore ? body : undefined
+  }, "F4: active server received the turn", 45000)
+  // negative grace: with a 300ms debounce a broken opt-out would have
+  // created/synced on server2 long before this point
+  await sleep(2500)
   const sharesAfterOptOut = (await adminList(W2_URL, "/api/admin/shares")).shares ?? []
   check("F4: opted-out server gets NO new share", sharesAfterOptOut.length === sharesBeforeOptOut, `${sharesBeforeOptOut} -> ${sharesAfterOptOut.length}`)
   const w1Shares = (await adminList(WORKER_URL, "/api/admin/shares")).shares ?? []
@@ -229,16 +278,25 @@ try {
     const out = serve?.output?.() ?? ""
     console.log(`--- serve [openshare] tail ---\n${out.split("\n").filter((l) => l.includes("[openshare]")).slice(-30).join("\n")}`)
   } catch {}
+  // backend output matters most on a crash: a died backend explains most
+  // "fetch failed" classes (the suite holds the only captured stderr)
+  for (const [name, w] of [["worker1", worker1], ["worker2(bun)", worker2]]) {
+    try {
+      const o = w?.output?.() ?? ""
+      if (o) console.log(`--- ${name} tail ---\n${o.split("\n").slice(-25).join("\n")}`)
+    } catch {}
+  }
 } finally {
   clearTimeout(watchdog)
   const keep = failures.length > 0
   try { await stopServe(serve) } catch {}
+  try { await stopServe(serve2) } catch {}
   try { llm?.close() } catch {}
   try { worker1?.kill() } catch {}
   try { worker2?.kill() } catch {}
   await sleep(1500)
   killWranglerSuites(WORKER_PORT)
-  killWranglerSuites(W2_PORT)
+  killPortOwners(W2_PORT)
   if (!keep) {
     try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
   } else {

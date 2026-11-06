@@ -27,12 +27,22 @@ jobs:
   cleanup:
     if: github.event_name == 'workflow_dispatch' || github.event.ref_type == 'branch'
     runs-on: ubuntu-latest
-    env:
-      PROTECTED_BRANCHES: "main,master"
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Read protected branches from kit config
+        id: kit
+        shell: bash
+        run: |
+          protected="$(sed -n 's/^PROTECTED_BRANCHES="\?\([^"]*\)"\?/\1/p' .github/scripts/release-kit.conf | head -n1)"
+          echo "protected=${protected:-main,master}" >> "$GITHUB_OUTPUT"
+
       - name: Determine cleanup config
         id: config
         shell: bash
+        env:
+          PROTECTED_BRANCHES: ${{ steps.kit.outputs.protected }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BRANCH_NAME="${{ github.event.inputs.branch_name }}"

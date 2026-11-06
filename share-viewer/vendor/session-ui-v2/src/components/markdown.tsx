@@ -1,4 +1,5 @@
 import { useI18n } from "@opencode/ui/context/i18n"
+import { abort } from "@opencode/util/abort"
 import { checksum } from "@opencode/util/encode"
 import {
   type ComponentProps,
@@ -46,6 +47,7 @@ import {
 import { createMarkdownImages } from "./markdown-image"
 import { createImagePreview } from "./image-preview"
 import { markSessionLinks, setupSessionLinks } from "./markdown-session-links"
+import { markdownClipboardHtml } from "./markdown-clipboard"
 
 type RenderedBlock =
   | (MarkdownCacheEntry & { key: string; mode: Exclude<Block["mode"], "code"> })
@@ -74,6 +76,10 @@ const renderedMarkdown = new WeakMap<
   { renderer: ReturnType<typeof createMarkdownRenderer>; raw: string }
 >()
 
+type InlineCodeCheck = { pending?: Promise<void> }
+
+const inlineCodeChecks = new WeakMap<HTMLDivElement, InlineCodeCheck>()
+
 function escape(text: string) {
   return text
     .replace(/&/g, "&amp;")
@@ -84,12 +90,12 @@ function escape(text: string) {
 }
 
 function fallback(markdown: string) {
-  // openshare fork: paragraph-SHAPED fallback (live-caught "reasoning
-  // snap"): upstream joined everything with <br>, so a paragraph break
-  // (\n\n) rendered as a full blank LINE while the ready markdown uses
-  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready
-  // swap snapped the spacing. Emit real <p> chunks with <br> soft breaks
-  // so the fallback is metrically identical to the parsed result.
+  // openshare fork: paragraph-SHAPED fallback: upstream joined everything
+  // with <br>, so a paragraph break (\n\n) rendered as a full blank LINE
+  // while the ready markdown uses p { margin-bottom: 12px }, visibly tighter,
+  // and the fallback->ready swap snapped the spacing. Emit real <p> chunks
+  // with <br> soft breaks so the fallback is metrically identical to the
+  // parsed result.
   const esc = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
   return esc(markdown)
@@ -234,6 +240,7 @@ function disposeRenderedMarkdown(root: Element) {
   blocks.forEach((block) => {
     renderedMarkdown.get(block)?.renderer.dispose()
     renderedMarkdown.delete(block)
+    inlineCodeChecks.delete(block)
   })
 }
 
@@ -338,6 +345,16 @@ function markCodeLinks(root: HTMLDivElement) {
   }
 }
 
+// Tables scroll inside a rounded frame.
+function wrapTables(root: HTMLDivElement) {
+  root.querySelectorAll("table").forEach((table) => {
+    const wrapper = document.createElement("div")
+    wrapper.dataset.component = "markdown-table"
+    table.replaceWith(wrapper)
+    wrapper.appendChild(table)
+  })
+}
+
 const publicFaviconHost = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
 
 const privateFaviconSuffix = /\.(?:alt|example|internal|invalid|local|localhost|onion|test|ts\.net)$/
@@ -351,14 +368,13 @@ function markExternalLinkFavicons(root: HTMLDivElement) {
 
     if (url.protocol !== "http:" && url.protocol !== "https:") return
 
-    if (url.hostname.toLowerCase() === "github.com") return
-
     const favicon = document.createElement("span")
     favicon.className = "markdown-link-favicon"
     favicon.setAttribute("aria-hidden", "true")
     const host = url.hostname.toLowerCase()
 
-    if (
+    if (host === "github.com") favicon.dataset.github = ""
+    else if (
       publicFaviconHost.test(host) &&
       !privateFaviconSuffix.test(host) &&
       host !== "home.arpa" &&
@@ -398,9 +414,13 @@ function markInlineCode(
   source: HTMLDivElement,
   target: HTMLDivElement,
   live: boolean,
+  signal: AbortSignal,
   localFileExists?: MarkdownLocalFileExists,
 ) {
-  const checked = new Set<string>()
+  const check: InlineCodeCheck = {}
+  inlineCodeChecks.set(target, check)
+  const checked = new Map<string, boolean | Promise<boolean>>()
+  const pending: Promise<void>[] = []
 
   for (const code of source.querySelectorAll<HTMLElement>(":not(pre) > code")) {
     delete code.dataset.inlineCodeKind
@@ -410,18 +430,45 @@ function markInlineCode(
     if (kind === "url") code.dataset.inlineCodeKind = kind
 
     // Code inside a link already goes where the link does.
-    if (kind !== "path" || live || !localFileExists || code.closest("a") || checked.has(text)) continue
+    if (kind !== "path" || live || !localFileExists || code.closest("a")) continue
 
-    checked.add(text)
-    void Promise.resolve(localFileExists(text))
-      .then((exists) => {
-        if (!exists) return
-        target.querySelectorAll<HTMLElement>(":not(pre) > code").forEach((node) => {
-          if (!node.closest("a") && (node.textContent ?? "").trim() === text) node.dataset.inlineCodeKind = "path"
+    const previous = checked.get(text)
+
+    if (previous !== undefined) {
+      if (previous === true) code.dataset.inlineCodeKind = "path"
+
+      continue
+    }
+
+    const exists = localFileExists(text)
+    checked.set(text, exists)
+
+    // Decorate the source before it is inserted or copied into a live Markdown renderer.
+    if (exists === true || exists === false) {
+      if (exists) code.dataset.inlineCodeKind = "path"
+
+      continue
+    }
+
+    pending.push(
+      exists
+        .then((exists) => {
+          if (!exists || signal.aborted || inlineCodeChecks.get(target) !== check) return
+          target.querySelectorAll<HTMLElement>(":not(pre) > code").forEach((node) => {
+            if (!node.closest("a") && (node.textContent ?? "").trim() === text) node.dataset.inlineCodeKind = "path"
+          })
         })
-      })
-      .catch(() => undefined)
+        .catch(() => undefined),
+    )
   }
+
+  if (pending.length === 0) return
+
+  check.pending = Promise.all(pending).then(() => {
+    if (inlineCodeChecks.get(target) === check) inlineCodeChecks.delete(target)
+  })
+
+  return check.pending
 }
 
 function localLinkTarget(target: EventTarget | null) {
@@ -522,6 +569,22 @@ function setupCodeCopy(root: HTMLDivElement, getLabels: () => CopyLabels) {
   }
 }
 
+// Selections that leave this message keep the browser's copy, since surrounding UI may hold hidden content.
+function copySelection(event: ClipboardEvent & { currentTarget: HTMLDivElement }) {
+  const selection = window.getSelection()
+
+  if (event.defaultPrevented || !event.clipboardData || !selection || selection.isCollapsed) return
+  const ranges = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index))
+
+  if (!ranges.every((range) => event.currentTarget.contains(range.commonAncestorContainer))) return
+  event.preventDefault()
+  event.clipboardData.setData("text/plain", selection.toString())
+  event.clipboardData.setData(
+    "text/html",
+    `<meta charset="utf-8">${ranges.map((range) => markdownClipboardHtml(event.currentTarget, range)).join("")}`,
+  )
+}
+
 function initialResult(
   text: string,
   key: string | undefined,
@@ -588,6 +651,8 @@ export function Markdown(
   const lifetime = new AbortController()
   const activeCodeKeys = new Set<string>()
   const completedCode = new Map<string, Extract<RenderedBlock, { mode: "code" }>>()
+  const settledMarkdown = new Map<string, Exclude<RenderedBlock, { mode: "code" }>>()
+  let renderedBlocks: RenderedBlock[] = []
   let streamed = false
 
   const [projection] = createResource(
@@ -662,7 +727,7 @@ export function Markdown(
 
       if (!streamed && initial.ready && initial.text === src.text) return initial
 
-      const base = src.key ?? checksum(src.text)
+      const base = src.key ?? (!streamed ? checksum(src.text) : undefined)
 
       return Promise.all(
         src.projection.blocks.map(async (block, index) => {
@@ -689,34 +754,50 @@ export function Markdown(
             return rendered
           }
 
+          if (block.mode === "full") {
+            const settled = settledMarkdown.get(blockKey)
+
+            if (settled && (settled.src ?? settled.raw) === block.src) {
+              if (key) {
+                const cached = getCachedMarkdown(key)
+
+                if (cached) touchCachedMarkdown(key, cached)
+              }
+
+              return settled
+            }
+          }
+
           const ready = block.mode === "full" ? getReadyMarkdown(block, key) : undefined
+          const entry = ready ?? (await renderCachedMarkdown(block, key, lifetime.signal))
+
+          if (block.mode === "full") {
+            const settled = {
+              key: blockKey,
+              mode: block.mode,
+              ...entry,
+            }
+
+            settledMarkdown.set(blockKey, settled)
+
+            return settled
+          }
 
           return {
             key: blockKey,
             mode: block.mode,
-            ...(ready ?? (await renderCachedMarkdown(block, key, lifetime.signal))),
+            ...entry,
           }
         }),
       )
         .then((blocks) => ({ text: src.text, blocks, ready: true }) satisfies RenderResult)
-        .catch(
-          () =>
-            (lifetime.signal.aborted
-              ? { text: src.text, blocks: [], ready: false }
-              : {
-                  text: src.text,
-                  ready: true,
-                  blocks: [
-                    {
-                      key: base ?? "fallback",
-                      mode: "full" as const,
-                      raw: src.text,
-                      hash: checksum(src.text) ?? "",
-                      html: fallback(src.text),
-                    },
-                  ],
-                }) satisfies RenderResult,
-        )
+        // openshare fork: a failed block is an error, not a silent
+        // plain-text fallback - keep only the aborted case (row unmounted)
+        .catch((error: unknown) => {
+          if (lifetime.signal.aborted) return { text: src.text, blocks: [], ready: false } satisfies RenderResult
+          console.error("[openshare] markdown block failed:", error)
+          throw error
+        })
     },
     { initialValue: initial },
   )
@@ -747,6 +828,7 @@ export function Markdown(
     delete container.dataset.markdownReady
 
     if (content.length === 0) {
+      renderedBlocks = []
       disposeCopyButtons(container)
       disposeRenderedMarkdown(container)
       container.innerHTML = ""
@@ -768,9 +850,23 @@ export function Markdown(
     })
     activeCodeKeys.clear()
     nextCodeKeys.forEach((key) => activeCodeKeys.add(key))
-    content.forEach((block, index) =>
-      updateBlock(container, index, block, labels, !!markdown?.openSession, markdown?.localFileExists),
-    )
+    const sessionLinks = markdown?.sessionTitle
+    const localFileExists = markdown?.localFileExists
+
+    const pending = content.flatMap((block, index) => {
+      const current = container.children[index]
+
+      const check =
+        renderedBlocks[index] === block && current instanceof HTMLDivElement
+          ? inlineCodeChecks.get(current)?.pending
+          : updateBlock(container, index, block, labels, sessionLinks, lifetime.signal, localFileExists)
+
+      return check ? [check] : []
+    })
+
+    renderedBlocks = content
+
+    if (sessionLinks) markSessionLinks(container, sessionLinks)
 
     while (container.children.length > content.length) {
       const child = container.lastElementChild
@@ -803,11 +899,24 @@ export function Markdown(
     if (!faviconCleanup) faviconCleanup = setupExternalLinkFavicons(container)
     container.toggleAttribute("data-local-links", !!markdown?.openLocalFile)
 
-    if (result?.ready && result.text === local.text) container.dataset.markdownReady = ""
+    if (!result?.ready || result.text !== local.text) return
+
+    if (local.streaming || pending.length === 0) {
+      container.dataset.markdownReady = ""
+
+      return
+    }
+
+    // Cold timelines already wait for Markdown readiness before measuring and revealing their content. Include
+    // path classification so the first visible frame uses the final blue-link styling and padding.
+    void Promise.all(pending).then(() => {
+      if (lifetime.signal.aborted || renderedBlocks !== content || result.text !== local.text) return
+      container.dataset.markdownReady = ""
+    })
   })
 
   onCleanup(() => {
-    lifetime.abort()
+    abort(lifetime)
     images?.dispose()
 
     if (copyCleanup) copyCleanup()
@@ -824,6 +933,8 @@ export function Markdown(
     if (streamed) disposeMarkdownProjection(owner)
     activeCodeKeys.forEach(disposeCode)
     completedCode.clear()
+    settledMarkdown.clear()
+    renderedBlocks = []
   })
 
   return (
@@ -836,6 +947,7 @@ export function Markdown(
         [local.class ?? ""]: !!local.class,
       }}
       ref={setRoot}
+      onCopy={copySelection}
       {...others}
     />
   )
@@ -889,7 +1001,8 @@ function updateBlock(
   index: number,
   block: RenderedBlock,
   labels: CopyLabels,
-  sessionLinks: boolean,
+  sessionLinks: ((id: string) => string | undefined) | undefined,
+  signal: AbortSignal,
   localFileExists?: MarkdownLocalFileExists,
 ) {
   const current = container.children[index]
@@ -909,10 +1022,11 @@ function updateBlock(
     // A block that finishes streaming keeps its DOM and the user's selection; only its file paths get checked now.
     if (existing.dataset.markdownMode === "live" && block.mode !== "live") {
       existing.dataset.markdownMode = block.mode
-      markInlineCode(existing, existing, false, localFileExists)
+
+      return markInlineCode(existing, existing, false, signal, localFileExists)
     }
 
-    return
+    return inlineCodeChecks.get(existing)?.pending
   }
 
   const next = existing ?? document.createElement("div")
@@ -927,17 +1041,18 @@ function updateBlock(
 
   if (source === next) disposeCopyButtons(next)
   source.innerHTML = block.html
-  markInlineCode(source, next, block.mode === "live", localFileExists)
+  const pending = markInlineCode(source, next, block.mode === "live", signal, localFileExists)
   markCodeLinks(source)
+  wrapTables(source)
 
-  if (sessionLinks) markSessionLinks(source)
+  if (sessionLinks) markSessionLinks(source, sessionLinks)
   markExternalLinkFavicons(source)
 
   if (rendered) {
     rendered.renderer.update(source.innerHTML, block.mode === "live", rendered.raw !== block.raw)
     rendered.raw = block.raw
 
-    return
+    return pending
   }
 
   if (block.mode === "live") {
@@ -966,17 +1081,19 @@ function updateBlock(
     })
   }
 
-  if (existing) return
+  if (existing) return pending
 
   if (!current) {
     container.appendChild(next)
 
-    return
+    return pending
   }
 
   disposeCopyButtons(current)
   disposeRenderedMarkdown(current)
   current.replaceWith(next)
+
+  return pending
 }
 
 function updateCodeBlock(
@@ -1041,7 +1158,7 @@ function updateCodeBlock(
   wrapper.setAttribute("data-component", "markdown-code")
   applyCodeMetadata(wrapper, block.language)
   const pre = document.createElement("pre")
-  pre.className = "shiki OpenCode"
+  pre.className = "highlights"
   const codeElement = document.createElement("code")
   codeElement.className = `language-${block.language}`
   ;[...block.stable, ...block.unstable].map(createTokenSpan).forEach((span) => codeElement.appendChild(span))

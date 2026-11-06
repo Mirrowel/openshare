@@ -3,7 +3,7 @@
 //
 // Protocol:
 //   HTTP (fallback + curl/testing):
-//     POST   /api/share            {sessionID, ttlDays?, authLogin?, authPassword?}
+//     POST   /api/share            {sessionID, ttlHours? (legacy ttlDays), authLogin?, authPassword?}
 //                                  Bearer CREATE_TOKEN -> {id, secret}
 //     POST   /api/share/:id/sync   {secret, data, status?} -> {ok, rev, status}
 //     GET    /api/share/:id/data   -> {data, status, rev}   (401 authRequired if gated)
@@ -14,7 +14,7 @@
 //     viewer:  GET /api/share/:id/ws — hibernating; auth cookie checked;
 //              pushes {op:"frame", status, rev, items} after every sync
 //     plugin:  GET /api/ws?token=<CREATE_TOKEN> — one socket per process:
-//              init create {sessionID, ttlDays?, authLogin?, authPassword?}
+//              init create {sessionID, ttlHours? (legacy ttlDays), authLogin?, authPassword?}
 //              init attach {id, secret, authLogin?, authPassword?}
 //                 (attach with empty auth values REMOVES the read gate)
 //              sync {items, status?} -> ack {rev}; delete
@@ -55,6 +55,9 @@ const encoder = new TextEncoder()
 // in openshare.config.json (bundled at build); BRAND_* env vars override
 // both — same ENV > file > defaults chain as the plugin config.
 import defaultBrandingFile from "./openshare.config.json"
+// written by `npm run deploy` (tools/write-version.mjs) from the release
+// tags; the committed placeholder reads "dev" for local wrangler runs
+import versionInfo from "./version.json"
 const DEFAULT_BRANDING = {
   name: "",
   logoUrl: "",
@@ -80,30 +83,117 @@ function htmlEscape(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
 }
 
-// index.html with og:/twitter: tags for link-preview crawlers
+function resolveBrandingObj(env) {
+  const b = (field) => {
+    const envKey = "BRAND_" + field.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()
+    return env[envKey] || DEFAULT_BRANDING[field] || ""
+  }
+  return {
+    name: b("name"),
+    logoUrl: b("logoUrl"),
+    wordmarkUrl: b("wordmarkUrl"),
+    linkUrl: b("linkUrl"),
+    accent: b("accent"),
+    faviconUrl: b("faviconUrl"),
+    backgroundUrl: b("backgroundUrl"),
+    description: b("description"),
+    ogTitle: b("ogTitle"),
+    ogImage: b("ogImage"),
+  }
+}
+
+/** Server-built snapshots are opt-in (SNAPSHOT_ENDPOINT=1): one subrequest
+ *  per asset, far beyond the free plan's 50-per-invocation cap. */
+function envSnapshots(env) {
+  return String(env?.SNAPSHOT_ENDPOINT ?? "") === "1"
+}
+// GET /api/share/:id/snapshot - ONE self-contained HTML file: the viewer
+// bundle and every chunk it can reach inlined (see tools/snapshot-builder.mjs), the
+// share frozen as a JSON island. Opens offline in any browser; a
+// point-in-time record that outlives the deployment. Read gate applies
+// exactly as /data: a gated share demands a satisfied viewer session.
+async function serveSnapshot(req, env, url, snap) {
+  const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
+  if (!r.ok) return new Response("viewer assets unavailable", { status: 502 })
+  const readAsset = async (name) => {
+    const a = await env.ASSETS.fetch(new Request(url.origin + "/assets/" + name))
+    return a.ok ? await a.text() : null
+  }
+  const html = await buildSnapshotHtml({ html: await r.text(), island: snap.island, readAsset })
+  const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+  if (url.searchParams.has("download")) headers["content-disposition"] = `attachment; filename="openshare-${snap.id}.html"`
+  return new Response(html, { status: 200, headers })
+}
+
+// index.html with og:/twitter: tags for link previews. /s/<id> pages get
+// PER-SHARE tags (session title + stat line + the rendered card) for
+// UNGATED shares; gated shares and the landing page stay generic — a
+// preview must never leak what a gated share contains.
 async function serveOgIndex(req, env, url) {
   const r = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
   if (!r.ok) return r
   const name = brandingField(env, "name") || "openshare"
   const desc = brandingField(env, "description") || "shared agent sessions, self-hosted"
+  const accent = brandingField(env, "accent") || ""
   const image = brandingField(env, "ogImage") || brandingField(env, "logoUrl") || ""
   const title = brandingField(env, "ogTitle") || `${name} · Open(code)Share`
   const absImage = image && image.startsWith("/") ? url.origin + image : image
+
+  let ogTitle = title
+  let ogDesc = desc
+  let ogImage = absImage
+  let card = absImage ? "summary_large_image" : "summary"
+  const sm = url.pathname.match(/^\/s\/([0-9a-f]{32})/)
+  if (sm) {
+    // per-share card: any failure keeps the deployment-generic tags
+    try {
+      const ogRes = await shareStub(env, sm[1]).fetch("https://do/og")
+      if (ogRes.ok) {
+        const meta = await ogRes.json()
+        ogImage = `${url.origin}/api/share/${sm[1]}/og.png?v=${meta.rev ?? 0}`
+        card = "summary_large_image"
+        if (!meta.gated) {
+          ogTitle = String(meta.title ?? "shared session").slice(0, 96)
+          const s = meta.stats ?? {}
+          const bits = []
+          if (s.turns) bits.push(`${s.turns} turn${s.turns === 1 ? "" : "s"}`)
+          if (s.tools) bits.push(`${s.tools} tool${s.tools === 1 ? "" : "s"}`)
+          if (s.durationMs >= 60000) {
+            const min = Math.round(s.durationMs / 60000)
+            bits.push(min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`)
+          }
+          if (s.model) bits.push(s.model)
+          ogDesc = bits.join(" · ") || desc
+        } else {
+          ogDesc = "Private share — log in to view"
+        }
+      }
+    } catch {}
+  }
   const tags = [
-    `<meta property="og:title" content="${htmlEscape(title)}">`,
-    `<meta property="og:description" content="${htmlEscape(desc)}">`,
+    `<meta property="og:title" content="${htmlEscape(ogTitle)}">`,
+    `<meta property="og:description" content="${htmlEscape(ogDesc)}">`,
     `<meta property="og:site_name" content="${htmlEscape(name)}">`,
-    `<meta name="twitter:card" content="${absImage ? "summary_large_image" : "summary"}">`,
-    `<meta name="twitter:title" content="${htmlEscape(title)}">`,
-    `<meta name="twitter:description" content="${htmlEscape(desc)}">`,
+    `<meta name="twitter:card" content="${card}">`,
+    `<meta name="twitter:title" content="${htmlEscape(ogTitle)}">`,
+    `<meta name="twitter:description" content="${htmlEscape(ogDesc)}">`,
   ]
-  if (absImage) {
-    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(absImage)}">`)
-    tags.push(`<meta name="twitter:image" content="${htmlEscape(absImage)}">`)
+  if (accent) tags.push(`<meta name="theme-color" content="${htmlEscape(accent)}">`)
+  if (ogImage) {
+    tags.splice(3, 0, `<meta property="og:image" content="${htmlEscape(ogImage)}">`)
+    tags.push(`<meta name="twitter:image" content="${htmlEscape(ogImage)}">`)
   }
   const html = (await r.text()).replace(/<head>/i, "<head>\n    " + tags.join("\n    "))
   return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })
 }
+
+import { renderOgPng } from "./og/og-card.js"
+import { buildSnapshotHtml } from "../tools/snapshot-builder.mjs"
+
+// OG card render cache: PNG bytes per share at its rev (bounded LRU-ish;
+// the ?v=<rev> URL makes crawler caches self-busting anyway)
+const ogPngCache = new Map()
+const ogPngHeaders = (rev) => ({ "content-type": "image/png", "cache-control": `public, max-age=300`, "x-og-rev": rev })
 
 export default {
   async fetch(req, env) {
@@ -122,16 +212,75 @@ export default {
       // index.html with og:/twitter: tags injected from the deployment
       // branding. og:title carries the DEPLOYMENT name, never the session
       // title - a link preview must not leak what a share contains.
+      // version-comparison build (wiring, currently dormant): when a
+      // second viewer build is deployed as dist/legacy.html (via
+      // scripts/build-legacy.mjs in share-viewer), it is served verbatim
+      // under /legacy and /compare (the page's own router finds the "s"
+      // segment anywhere in the path, so /compare/s/<id> etc. work
+      // untouched; in-app navigation drops the prefix). Without that
+      // file the prefixes are gone: 404, no SPA fallback.
+      const isComparePath = (p) => p === "/legacy" || p.startsWith("/legacy/") || p === "/compare" || p.startsWith("/compare/")
+      if (req.method === "GET" && isComparePath(path)) {
+        const legacyRes = await env.ASSETS.fetch(new Request(url.origin + "/legacy.html", { method: "GET" }))
+        // assets' SPA fallback answers a missing HTML path with index.html
+        // (200) and workerd surfaces no etag, so compare the BODIES: equal
+        // text means no comparison build is deployed
+        if (legacyRes.ok) {
+          const legacyBody = await legacyRes.clone().text()
+          const idxRes = await env.ASSETS.fetch(new Request(url.origin + "/index.html", { method: "GET" }))
+          const idxBody = idxRes.ok ? await idxRes.text() : ""
+          if (legacyBody !== idxBody) {
+            return new Response(legacyBody, {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+            })
+          }
+        }
+        return json(404, { error: "no comparison build deployed" })
+      }
+
+      // /s/<id>/snapshot - the human spelling of the download: same file,
+      // attachment disposition (the menu links /api/...; this handles a
+      // hand-typed URL)
+      // OFF BY DEFAULT: building it here costs one subrequest per asset
+      // (~1500), far past the free plan's 50-per-invocation cap, and needs
+      // the assembly CPU. Deployments that want the server-side build set
+      // SNAPSHOT_ENDPOINT=1; everyone else uses the viewer's download button
+      // or tools/osh-snapshot.mjs, which fetch static assets (free).
+      const pageSnapshot = envSnapshots(env) ? path.match(/^\/s\/([0-9a-f]+)\/snapshot\/?$/) : null
+      // a disabled endpoint must SAY so: falling through reaches the SPA
+      // fallback and answers 200 with the viewer instead of a 404
+      if (req.method === "GET" && !envSnapshots(env) && /^\/s\/[0-9a-f]+\/snapshot\/?$/.test(path)) {
+        return json(404, { error: "snapshots are disabled on this deployment (set SNAPSHOT_ENDPOINT=1)" })
+      }
+      if (req.method === "GET" && pageSnapshot) {
+        const id = pageSnapshot[1]
+        const token = bearer(req) || cookieToken(req, id)
+        const doUrl = new URL("https://do/snapshot")
+        doUrl.searchParams.set("token", token)
+        const r = await shareStub(env, id).fetch(doUrl)
+        if (!r.ok) return json(r.status, await r.json().catch(() => ({})))
+        const downloadUrl = new URL(url.toString())
+        downloadUrl.searchParams.set("download", "1")
+        return await serveSnapshot(req, env, downloadUrl, { ...(await r.json()), id })
+      }
       if (req.method === "GET" && (path === "/" || path === "/index.html" || path.startsWith("/s/"))) {
         const ua = (req.headers.get("user-agent") || "").toLowerCase()
         if (/(discordbot|discordapp|telegrambot|slackbot|slack-imgproxy|facebookexternalhit|facebookcatalog|whatsapp|twitterbot|x-bot|linkedinbot|pinterestbot|skypeuripreview|snapchat|bluefish|mattermost|gitter|flowdock)/.test(ua)) {
           return await serveOgIndex(req, env, url)
         }
-        return env.ASSETS.fetch(req)
+        // HTML must never be cached: it names hashed chunks that the next
+        // deploy deletes, and a stale index 404s every lazy import (the
+        // assets binding answers missing paths with index.html, so the
+        // failure looked like "chunk is html")
+        const page = await env.ASSETS.fetch(req)
+        const headers = new Headers(page.headers)
+        headers.set("cache-control", "no-store")
+        return new Response(page.body, { status: page.status, headers })
       }
 
       if (path === "/health")
-        return json(200, { ok: true, service: "openshare", policy: resolvePolicy(env), auth: { mode: authMode(env) }, frameAuth: true })
+        return json(200, { ok: true, service: "openshare", version: versionInfo.full, policy: resolvePolicy(env), auth: { mode: authMode(env) }, frameAuth: true, maxTtlHours: clampTtlHours(undefined, env) })
 
       // ---- identity -------------------------------------------------------
       // Enrollment + self-service. The heavy lifting lives in the AuthDO
@@ -153,7 +302,7 @@ export default {
       }
       if (path === "/api/me/settings" && (req.method === "GET" || req.method === "PUT")) {
         const body = req.method === "PUT" ? await req.json().catch(() => ({})) : {}
-        const r = await authCall(env, "/settings", { token: bearer(req), patch: body, maxTtl: clampTtl(undefined, env) })
+        const r = await authCall(env, "/settings", { token: bearer(req), patch: body, maxTtlHours: clampTtlHours(undefined, env) })
         return json(r.status, r.body)
       }
       if (path === "/api/me/shares" && req.method === "GET") {
@@ -161,11 +310,31 @@ export default {
         return json(r.status, r.body)
       }
       if (path === "/api/token/rotate" && req.method === "POST") {
-        const r = await authCall(env, "/rotate", { token: bearer(req) })
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/rotate", { ...body, token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token/update" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/token-update-self", { token: bearer(req), ...body })
         return json(r.status, r.body)
       }
       if (path === "/api/token" && req.method === "DELETE") {
         const r = await authCall(env, "/token-delete", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token" && req.method === "POST") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/token-self-mint", { token: bearer(req), ...body })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token/sets" && req.method === "GET") {
+        const r = await authCall(env, "/token-sets-get", { token: bearer(req) })
+        return json(r.status, r.body)
+      }
+      if (path === "/api/token/sets" && req.method === "PUT") {
+        const body = await req.json().catch(() => ({}))
+        const r = await authCall(env, "/token-sets-put", { token: bearer(req), sets: body.sets })
         return json(r.status, r.body)
       }
 
@@ -191,10 +360,17 @@ export default {
         if (path === "/api/admin/tokens" && req.method === "GET") return json(...(await call("/tokens-get")))
         m = path.match(/^\/api\/admin\/tokens\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/token-revoke:" + m[1])))
+        if (m && req.method === "PATCH") return json(...(await call("/token-update:" + m[1])))
+        m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/sets$/)
+        if (m && req.method === "PUT") return json(...(await call("/token-sets-admin:" + m[1])))
+        m = path.match(/^\/api\/admin\/tokens\/([^/]+)\/freeze-shares$/)
+        if (m && req.method === "POST") return json(...(await call("/freeze-by-token:" + m[1])))
         if (path === "/api/admin/codes" && req.method === "POST") return json(...(await call("/code-create")))
         if (path === "/api/admin/codes" && req.method === "GET") return json(...(await call("/codes-get")))
         m = path.match(/^\/api\/admin\/codes\/([^/]+)$/)
         if (m && req.method === "DELETE") return json(...(await call("/code-disable:" + m[1])))
+        m = path.match(/^\/api\/admin\/codes\/([^/]+)\/revoke-lineage$/)
+        if (m && req.method === "POST") return json(...(await call("/code-lineage-revoke:" + m[1])))
         if (path === "/api/admin/shares" && req.method === "GET") {
           // global list straight from the KV index — the record rides in
           // key metadata (list() returns it inline; no per-key get = no
@@ -221,6 +397,11 @@ export default {
         }
         m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/reassign$/)
         if (m && req.method === "POST") return json(...(await call("/reassign:" + m[1])))
+        m = path.match(/^\/api\/admin\/shares\/([0-9a-f]+)\/(freeze|unfreeze)$/)
+        if (m && req.method === "POST") {
+          const r = await shareStub(env, m[1]).fetch("https://do/set-frozen", { method: "POST", body: JSON.stringify({ frozen: m[2] === "freeze" }) })
+          return json(r.status, await r.json().catch(() => ({})))
+        }
         return json(404, { error: "not found" })
       }
 
@@ -238,22 +419,7 @@ export default {
       }
 
       if (path === "/branding") {
-        const b = (field) => {
-          const envKey = "BRAND_" + field.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()
-          return env[envKey] || DEFAULT_BRANDING[field] || ""
-        }
-        return new Response(JSON.stringify({
-          name: b("name"),
-          logoUrl: b("logoUrl"),
-          wordmarkUrl: b("wordmarkUrl"),
-          linkUrl: b("linkUrl"),
-          accent: b("accent"),
-          faviconUrl: b("faviconUrl"),
-          backgroundUrl: b("backgroundUrl"),
-          description: b("description"),
-          ogTitle: b("ogTitle"),
-          ogImage: b("ogImage"),
-        }), {
+        return new Response(JSON.stringify(resolveBrandingObj(env)), {
           headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
         })
       }
@@ -296,7 +462,7 @@ export default {
       // 404s here instead of waking a Durable Object per guess); the bare
       // POST create keeps its flexible hex suffix (routing convention —
       // the share id is minted server-side)
-      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|)$/)
+      const sm = path.match(/^\/api\/share\/([0-9a-f]+)(\/sync|\/data|\/snapshot|\/og\.png|\/meta|)$/)
       if (!sm) return json(404, { error: "not found" })
       const id = sm[1]
       const op = sm[2]
@@ -308,9 +474,10 @@ export default {
           // root bootstrap: ownerless create (legacy path keeps working)
           return await httpCreate(env, json, await req.json().catch(() => ({})), null, 0)
         }
-        const chk = await authCall(env, "/create-check", { token: auth ?? "" })
+        const rawBody = await req.json().catch(() => ({}))
+        const chk = await authCall(env, "/create-check", { token: auth ?? "", ...(rawBody.set ? { set: rawBody.set } : {}) })
         if (!chk.body?.ok) return json(chk.body?.httpStatus ?? 401, { error: chk.body?.error ?? "bad create token" })
-        return await httpCreate(env, json, await req.json().catch(() => ({})), chk.body.userId ?? null, chk.body.ttlMaxDays ?? 0, chk.body.defaultTtlDays ?? 0)
+        return await httpCreate(env, json, rawBody, chk.body.userId ?? null, chk.body.ttlMaxHours ?? 0, chk.body.defaultTtlHours ?? 0, chk.body.tokenId, chk.body.tokenKind, chk.body.setA ?? null)
       }
 
       if (req.method === "POST" && op === "/sync") {
@@ -323,8 +490,25 @@ export default {
         const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/sync", {
           method: "POST",
-          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, data: body.data ?? [], status: body.status }),
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, data: body.data ?? [], status: body.status }),
         })
+        return json(r.status, await r.json())
+      }
+
+      if (req.method === "GET" && op === "/meta") {
+        // PRIVATE meta (summaries, owner, liveness): root or the share's
+        // owner only. Viewers never see this surface - the page itself is
+        // their whole world; anything else only leaks.
+        const ident = await resolveIdentity(env, req, {})
+        if (!ident.root && !ident.ownerId) return json(403, { ok: false, error: "meta is admin/owner only" })
+        const doUrl = new URL("https://do/meta")
+        if (ident.root) doUrl.searchParams.set("root", "1")
+        else {
+          doUrl.searchParams.set("ownerId", ident.ownerId)
+          if (ident.tokenId) doUrl.searchParams.set("tokenId", ident.tokenId)
+          if (ident.tokenKind) doUrl.searchParams.set("tokenKind", ident.tokenKind)
+        }
+        const r = await shareStub(env, id).fetch(doUrl)
         return json(r.status, await r.json())
       }
 
@@ -344,14 +528,98 @@ export default {
         })
       }
 
+      if (req.method === "GET" && op === "/snapshot" && envSnapshots(env)) {
+        // frozen self-contained HTML of the share as it stands RIGHT NOW;
+        // the read gate applies exactly as /data (cookie or bearer viewer
+        // token for gated shares — no bypass through the snapshot)
+        const token = bearer(req) || cookieToken(req, id)
+        const doUrl = new URL("https://do/snapshot")
+        doUrl.searchParams.set("token", token)
+        const r = await shareStub(env, id).fetch(doUrl)
+        if (!r.ok) return json(r.status, await r.json().catch(() => ({})))
+        return await serveSnapshot(req, env, url, { ...(await r.json()), id })
+      }
+
+      if (req.method === "GET" && op === "/og.png") {
+        // per-share OG card, rendered once per rev (bounded isolate cache;
+        // ?v=<rev> busts Discord's per-URL preview cache)
+        const r = await shareStub(env, id).fetch("https://do/og")
+        if (!r.ok) return new Response("gone", { status: 404 })
+        const ogMeta = await r.json()
+        const cached = ogPngCache.get(id)
+        if (cached && cached.rev === ogMeta.rev) return new Response(cached.bytes, { status: 200, headers: ogPngHeaders(String(ogMeta.rev)) })
+        try {
+          const bytes = await renderOgPng({ title: ogMeta.gated ? undefined : ogMeta.title, status: ogMeta.status, stats: ogMeta.stats ?? {}, branding: resolveBrandingObj(env), style: env.OG_STYLE })
+          ogPngCache.set(id, { rev: ogMeta.rev, bytes })
+          if (ogPngCache.size > 8) ogPngCache.delete(ogPngCache.keys().next().value)
+          return new Response(bytes, { status: 200, headers: ogPngHeaders(String(ogMeta.rev)) })
+        } catch (e) {
+          return json(500, { error: `og render failed: ${e?.message ?? e}` })
+        }
+      }
+
       if (req.method === "DELETE" && op === "") {
         const body = await req.json().catch(() => ({}))
         const ident = await resolveIdentity(env, req, body)
         const r = await shareStub(env, id).fetch("https://do/remove", {
           method: "POST",
-          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root }),
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind }),
         })
         return json(r.status, await r.json())
+      }
+
+      // #13: edit ANY share setting after creation (login/pass, ttl,
+      // meta labels) over REST - the attach-sync path covers live
+      // sockets; this is the general surface. Identity-gated exactly
+      // like sync; scoped tokens reach only their own shares.
+      if (req.method === "PATCH" && op === "") {
+        if (id.length !== 32) return json(404, { error: "not found" })
+        const body = await req.json().catch(() => ({}))
+        const ident = await resolveIdentity(env, req, body)
+        const patch = {}
+        if (body.authLogin !== undefined && body.authPassword !== undefined) {
+          // both-or-none, same as the plugin contract: a half pair is
+          // silently ungated server-side, refuse it at the door
+          if ((body.authLogin === "") !== (body.authPassword === "")) return json(400, { error: "authLogin and authPassword must be set together" })
+          patch.authLogin = String(body.authLogin)
+          patch.authPassword = String(body.authPassword)
+        }
+        if (body.ttlHours !== undefined || body.ttlDays !== undefined) {
+          const h = ttlHoursFrom(body)
+          if (h === undefined) return json(400, { error: "ttlHours must be a positive number of hours" })
+          patch.ttlHours = clampTtlHours(h, env, ident.ttlMaxHours ?? 0)
+        }
+        if (body.meta !== undefined) {
+          if (!body.meta || typeof body.meta !== "object" || Array.isArray(body.meta)) return json(400, { error: "meta must be an object" })
+          const clean = {}
+          let c = 0
+          for (const [k, v] of Object.entries(body.meta)) {
+            if (c >= 20) break
+            if (typeof k === "string" && typeof v === "string" && k.length <= 64 && v.length <= 500) { clean[k] = v; c++ }
+          }
+          patch.custom = clean
+        }
+        // sticky custom title: "" clears (the live session title applies
+        // again); a set title survives session renames
+        if (body.title !== undefined) {
+          if (typeof body.title !== "string") return json(400, { error: "title must be a string" })
+          if (body.title.length > 300) return json(400, { error: "title too long (300 chars max)" })
+          patch.title = body.title
+        }
+        // write-pause usable by the share user (freeze-parity, self-served):
+        // data writes block, the page keeps its last status, the finalize
+        // backstop stands down; PATCH itself stays open so unpause works
+        if (body.paused !== undefined) {
+          if (typeof body.paused !== "boolean") return json(400, { error: "paused must be a boolean" })
+          patch.paused = body.paused
+        }
+        if (!Object.keys(patch).length) return json(400, { error: "nothing to update (authLogin/authPassword, ttlHours, meta, title, paused)" })
+        const r = await shareStub(env, id).fetch("https://do/set-opts", {
+          method: "POST",
+          body: JSON.stringify({ secret: body.secret ?? "", ownerId: ident.ownerId, root: ident.root, tokenId: ident.tokenId, tokenKind: ident.tokenKind, ...patch }),
+        })
+        const out = await r.json().catch(() => ({ ok: false, error: "bad response" }))
+        return json(r.status, out.ok ? { ...out, id } : out)
       }
 
       return json(404, { error: "not found" })
@@ -381,15 +649,56 @@ function randomId() {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")
 }
 
-function clampTtl(days, env, tokenMax = 0) {
-  let max = Number(env.MAX_TTL_DAYS || 90)
-  if (tokenMax > 0) max = Math.min(max, tokenMax)
-  if (days == null || !Number.isFinite(Number(days))) return max
-  return Math.max(1, Math.min(Math.floor(Number(days)), max))
+/** TTL is HOURS-native (Wave 3). Every surface accepts the legacy
+ * days-shaped input converted x24: old plugins, old tokens (limits
+ * stored maxTtlDays), old env vars (MAX_TTL_DAYS / DEFAULT_MAX_TTL_DAYS).
+ * New shapes: ttlHours fields, maxTtlHours limits, MAX_TTL_HOURS /
+ * DEFAULT_MAX_TTL_HOURS vars. Floor is one hour (was one day).
+ * tokenMax is HOURS when tokenMaxUnit!=="days". */
+function clampTtlHours(hours, env, tokenMax = 0, tokenMaxUnit = "hours") {
+  let max = Number(env.MAX_TTL_HOURS || 0) || Math.floor(Number(env.MAX_TTL_DAYS || 90) * 24)
+  if (!Number.isFinite(max) || max < 1) max = 90 * 24
+  if (tokenMax > 0) max = Math.min(max, tokenMaxUnit === "days" ? Math.floor(tokenMax * 24) : tokenMax)
+  if (hours == null || !Number.isFinite(Number(hours))) return max
+  return Math.max(1, Math.min(Math.floor(Number(hours)), max))
+}
+
+/** Accept a create/attach/PATCH body field pair: ttlHours wins, legacy
+ * ttlDays converts. Returns hours | undefined. */
+function ttlHoursFrom(body) {
+  if (body && Number.isFinite(Number(body.ttlHours)) && Number(body.ttlHours) > 0) return Math.floor(Number(body.ttlHours))
+  if (body && Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) return Math.floor(Number(body.ttlDays) * 24)
+  return undefined
+}
+
+// KV key METADATA is capped at 1024 bytes total: an over-budget `custom`
+// object would make the index put throw forever (the share stays visible
+// but the retry loop never ends). Trim to a safe byte budget: values
+// first (60 chars), then drop overflow keys oldest-first.
+function kvCustom(custom, budget = 700) {
+  if (!custom || typeof custom !== "object") return {}
+  const out = {}
+  let used = 0
+  for (const [k, v] of Object.entries(custom)) {
+    if (typeof v !== "string") continue
+    const val = v.length > 60 ? v.slice(0, 57) + "..." : v
+    const cost = k.length + val.length + 8
+    if (used + cost > budget) break
+    out[k] = val
+    used += cost
+  }
+  return out
 }
 
 function authMode(env) {
   return String(env.AUTH_MODE ?? "private").toLowerCase() === "public" ? "public" : "private"
+}
+
+/** Public servers may accept onboarding without an access code only when
+ * this is explicitly enabled (default OFF - anonymous creating stays open
+ * either way; this gate is about minting ACCOUNTS). */
+function codelessOnboarding(env) {
+  return /^(1|true|yes|on)$/i.test(String(env.CODELESS_ONBOARDING ?? "").trim())
 }
 
 async function sha256hex(s) {
@@ -413,24 +722,32 @@ async function authCall(env, route, body) {
   }
 }
 
-async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0) {
+async function httpCreate(env, json, body, ownerId, ttlMax, ownerDefault = 0, tokenId = null, tokenKind = null, setA = null) {
   if (!body.sessionID || typeof body.sessionID !== "string") return json(400, { error: "sessionID required" })
+  // B4 Class A: the token's provisioned set overrides client values
+  if (setA) {
+    if (setA.authLogin !== undefined) { body.authLogin = setA.authLogin; body.authPassword = setA.authPassword ?? "" }
+    if (setA.ttlHours !== undefined) body.ttlHours = setA.ttlHours
+    else if (setA.ttlDays !== undefined) body.ttlDays = setA.ttlDays
+  }
   const newId = randomId()
-  const ttlDays = clampTtl(body.ttlDays ?? (ownerDefault || undefined), env, ttlMax)
+  const ttlHours = clampTtlHours(ttlHoursFrom(body) ?? (ownerDefault || undefined), env, ttlMax)
   const r = await shareStub(env, newId).fetch("https://do/init", {
     method: "POST",
     body: JSON.stringify({
       id: newId,
       sessionID: body.sessionID,
-      ttlDays,
+      ttlHours,
       authLogin: body.authLogin ?? "",
       authPassword: body.authPassword ?? "",
+      ...(body.title ? { title: String(body.title).slice(0, 300) } : {}),
       ownerId,
+      ...(tokenId ? { creatorTokenId: tokenId } : {}),
     }),
   })
   const out = await r.json()
-  if (out.ok && ownerId) await authCall(env, "/register", { userId: ownerId, shareId: newId, sessionID: body.sessionID })
-  if (out.ok) return json(r.status, { ...out, ttlDays })
+  if (out.ok && ownerId) await authCall(env, "/register", { userId: ownerId, shareId: newId, sessionID: body.sessionID, ...(tokenId ? { tokenId } : {}) })
+  if (out.ok) return json(r.status, { ...out, ttlHours })
   return json(r.status, out)
 }
 
@@ -482,7 +799,7 @@ async function resolveIdentity(env, req, body) {
   if (!token) return { ownerId: null, root: false }
   if (env.CREATE_TOKEN && token === env.CREATE_TOKEN) return { ownerId: null, root: true }
   const chk = await authCall(env, "/check", { token })
-  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false }
+  if (chk.body?.kind === "user") return { ownerId: chk.body.userId, root: false, tokenId: chk.body.tokenId, tokenKind: chk.body.tokenKind === "scoped" ? "scoped" : "full", ttlMaxHours: chk.body.ttlMaxHours ?? 0 }
   return { ownerId: null, root: false }
 }
 
@@ -514,6 +831,8 @@ export class ControlDO {
     this.attachSecret = undefined
     this.attachOwner = null
     this.attachRoot = false
+    this.attachTokenId = null
+    this.attachTokenKind = null
     this.token = ""
     this.earlySyncs = [] // syncs that raced init (each webSocketMessage runs concurrently)
     this.earlyBytes = 0 // byte budget beside the count cap (OOM guard)
@@ -532,10 +851,10 @@ export class ControlDO {
   }
 
   // Hibernation: workerd evicts this DO between socket messages and
-  // re-creates the class instance — in-memory attachId does NOT survive.
-  // Restore it from storage before handling any frame, or every post-
-  // eviction sync lands in "unknown op" (live-caught: shares stuck on
-  // "live" with data loss mid-session).
+  // re-creates the class instance, so in-memory attachId does not survive.
+  // Restore it from storage before handling any frame; otherwise a
+  // post-eviction sync lands in "unknown op" and the share stalls on
+  // "live" with data loss mid-session.
   async restoreAttach() {
     if (this.attachId !== undefined) return
     try {
@@ -545,6 +864,8 @@ export class ControlDO {
         this.attachSecret = saved.secret
         this.attachOwner = saved.ownerId ?? null
         this.attachRoot = !!saved.root
+        this.attachTokenId = saved.tokenId ?? null
+        this.attachTokenKind = saved.tokenKind ?? null
       }
     } catch {}
   }
@@ -559,27 +880,33 @@ export class ControlDO {
     return r.json()
   }
 
-  /** Resolve the socket's bearer token to {ownerId, root}. */
+  /** Resolve the socket's bearer token to {ownerId, root, tokenId, tokenKind}. */
   async socketIdentity() {
     const t = this.token ?? ""
     if (t && this.env.CREATE_TOKEN && t === this.env.CREATE_TOKEN) return { ownerId: null, root: true }
     if (!t) return { ownerId: null, root: false }
     const chk = await this.authCall("/check", { token: t })
-    return chk.kind === "user" ? { ownerId: chk.userId, root: false } : { ownerId: null, root: false }
+    return chk.kind === "user"
+      ? { ownerId: chk.userId, root: false, tokenId: chk.tokenId, tokenKind: chk.tokenKind === "scoped" ? "scoped" : "full", ttlMaxHours: chk.ttlMaxHours ?? 0 }
+      : { ownerId: null, root: false }
   }
 
-  /** Credential fields for ShareDO control calls (secret XOR owner XOR root). */
+  /** Credential fields for ShareDO control calls (secret XOR owner XOR root).
+   * tokenId/tokenKind: the write gate lets a SCOPED token touch only the
+   * shares it created; FULL tokens (absent kind) reach all owner shares. */
   attachBody() {
-    return { secret: this.attachSecret ?? "", ownerId: this.attachOwner ?? null, root: !!this.attachRoot }
+    return { secret: this.attachSecret ?? "", ownerId: this.attachOwner ?? null, root: !!this.attachRoot, tokenId: this.attachTokenId, tokenKind: this.attachTokenKind }
   }
 
-  async saveAttach(id, secret, ownerId = null, root = false) {
+  async saveAttach(id, secret, ownerId = null, root = false, tokenId = null, tokenKind = null) {
     this.attachId = id
     this.attachSecret = secret
     this.attachOwner = ownerId
     this.attachRoot = root
+    this.attachTokenId = tokenId
+    this.attachTokenKind = tokenKind
     try {
-      await this.state.storage.put("attach", { id, secret, ownerId, root })
+      await this.state.storage.put("attach", { id, secret, ownerId, root, tokenId, tokenKind })
     } catch {}
   }
 
@@ -588,6 +915,8 @@ export class ControlDO {
     this.attachSecret = undefined
     this.attachOwner = null
     this.attachRoot = false
+    this.attachTokenId = null
+    this.attachTokenKind = null
     this.earlySyncs = []
     this.earlyBytes = 0
     try {
@@ -667,50 +996,75 @@ export class ControlDO {
           let ownerId = null
           let ttlMax = 0
           let ownerDefault = 0
+          let creatorTokenId = null
+          let creatorTokenKind = null
           if (!(this.token && this.env.CREATE_TOKEN && this.token === this.env.CREATE_TOKEN)) {
-            const chk = await this.authCall("/create-check", { token: this.token ?? "" })
+            const chk = await this.authCall("/create-check", { token: this.token ?? "", ...(frame.create.set ? { set: frame.create.set } : {}) })
             if (!chk.ok) return send({ op: "init", ok: false, error: chk.error })
             ownerId = chk.userId ?? null
-            ttlMax = chk.ttlMaxDays ?? 0
-            ownerDefault = chk.defaultTtlDays ?? 0
+            ttlMax = chk.ttlMaxHours ?? 0
+            ownerDefault = chk.defaultTtlHours ?? 0
+            creatorTokenId = chk.tokenId ?? null
+            creatorTokenKind = chk.tokenKind ?? null
+            // B4 Class A: the token's provisioned set overrides the
+            // client's values (hoster policy - the client can still
+            // change them later through the normal owner paths)
+            if (chk.setA) {
+              if (chk.setA.authLogin !== undefined) { frame.create.authLogin = chk.setA.authLogin; frame.create.authPassword = chk.setA.authPassword ?? "" }
+              if (chk.setA.ttlHours !== undefined) frame.create.ttlHours = chk.setA.ttlHours
+              else if (chk.setA.ttlDays !== undefined) frame.create.ttlDays = chk.setA.ttlDays
+            }
           }
           const id = randomId()
-          // explicit ttlDays wins; otherwise the owner's stored default
-          // (PUT /api/me/settings), re-clamped against token+server caps
-          const ttlDays = clampTtl(frame.create.ttlDays ?? (ownerDefault || undefined), this.env, ttlMax)
+          // explicit ttlHours wins (legacy ttlDays converts); otherwise
+          // the owner's stored default, re-clamped against token+server
+          const ttlHours = clampTtlHours(ttlHoursFrom(frame.create) ?? (ownerDefault || undefined), this.env, ttlMax)
+          // free-form labels from the plugin config (B5): string-to-string,
+          // capped, stored under meta.custom and shown in admin listings
+          const custom = {}
+          if (frame.create.meta && typeof frame.create.meta === "object") {
+            let n = 0
+            for (const [mk, mv] of Object.entries(frame.create.meta)) {
+              if (n >= 20) break
+              if (typeof mk === "string" && typeof mv === "string" && mk.length <= 64 && mv.length <= 500) {
+                custom[mk] = mv
+                n++
+              }
+            }
+          }
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/init", {
             method: "POST",
             body: JSON.stringify({
               id,
               sessionID: frame.create.sessionID,
-              ttlDays,
+              ttlHours,
               authLogin: frame.create.authLogin ?? "",
               authPassword: frame.create.authPassword ?? "",
+              ...(frame.create.title ? { title: String(frame.create.title).slice(0, 300) } : {}),
               ownerId,
+              ...(creatorTokenId ? { creatorTokenId } : {}),
+              ...(Object.keys(custom).length ? { custom } : {}),
             }),
           })
           const body = await r.json()
           if (!body.ok) return send({ op: "init", ok: false, error: body.error })
-          if (ownerId) await this.authCall("/register", { userId: ownerId, shareId: id, sessionID: frame.create.sessionID })
-          await this.saveAttach(id, body.secret, ownerId)
+          if (ownerId) await this.authCall("/register", { userId: ownerId, shareId: id, sessionID: frame.create.sessionID, ...(creatorTokenId ? { tokenId: creatorTokenId } : {}) })
+          await this.saveAttach(id, body.secret, ownerId, false, creatorTokenId, creatorTokenKind)
           await this.flushEarlySyncs(send)
-          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlDays, policy: resolvePolicy(this.env) })
+          // auth mirrors what we just sent (the DO builds a gate only
+          // from a full non-empty pair)
+          return send({ op: "init", ok: true, id, secret: body.secret, rev: 0, status: "live", ttlHours, policy: resolvePolicy(this.env), auth: !!(frame.create.authLogin && frame.create.authPassword) })
         }
         if (frame.attach) {
           const ident = await this.socketIdentity()
           // explicit per-session TTL override changing mid-life: clamp it
-          // exactly like create (server cap + the token's maxTtlDays)
+          // exactly like create (server cap + the token's maxTtlDays).
+          // ident already resolved the token's limits - no create-check
+          // here (it burns a daily-create slot)
           let attachTtl
-          const rawTtl = Number(frame.attach.ttlDays)
-          if (Number.isFinite(rawTtl) && rawTtl > 0) {
-            let ttlMax = 0
-            if (ident.ownerId) {
-              try {
-                const chk = await this.authCall("/create-check", { token: this.token ?? "" })
-                ttlMax = chk.ttlMaxDays ?? 0
-              } catch {}
-            }
-            attachTtl = clampTtl(rawTtl, this.env, ttlMax)
+          const rawHours = ttlHoursFrom(frame.attach)
+          if (rawHours !== undefined) {
+            attachTtl = clampTtlHours(rawHours, this.env, ident.ttlMaxHours ?? 0)
           }
           const r = await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(frame.attach.id)).fetch("https://do/attach", {
             method: "POST",
@@ -718,14 +1072,16 @@ export class ControlDO {
               secret: frame.attach.secret ?? "",
               ownerId: ident.ownerId,
               root: ident.root,
+              tokenId: ident.tokenId,
+              tokenKind: ident.tokenKind,
               authLogin: frame.attach.authLogin,
               authPassword: frame.attach.authPassword,
-              ...(attachTtl ? { ttlDays: attachTtl } : {}),
+              ...(attachTtl ? { ttlHours: attachTtl } : {}),
             }),
           })
         const body = await r.json()
         if (!body.ok) return send({ op: "init", ok: false, error: body.error })
-        await this.saveAttach(frame.attach.id, frame.attach.secret, ident.ownerId, ident.root)
+        await this.saveAttach(frame.attach.id, frame.attach.secret, ident.ownerId, ident.root, ident.tokenId, ident.tokenKind)
         await this.flushEarlySyncs(send)
         return send({
             op: "init",
@@ -737,6 +1093,9 @@ export class ControlDO {
             // no `data` payload: the only ControlDO client is the plugin,
             // which backfills from the host and ignores attach data
             policy: resolvePolicy(this.env),
+            // resolved gate state AFTER the attach applied any update -
+            // the plugin warns when it asked for a gate and none exists
+            auth: body.auth === true,
           })
         }
         return send({ op: "init", ok: false, error: "init needs create|attach" })
@@ -937,18 +1296,28 @@ export class ShareDO {
   async renderCache(meta) {
     const rev = meta.rev ?? 0
     if (this._cache && this._cache.rev === rev && this._cache.status === meta.status) return this._cache
-    const items = redactItems(await this.loadItems())
-    // serialize the items ONCE and build both envelopes by concatenation —
+    // serialize the items ONCE and build both envelopes by concatenation -
     // two full serializations held two copies of the same body in isolate
     // memory (up to 2×25MB per ShareDO) and doubled the rebuild CPU
+    const items = redactItems(await this.loadItems(), meta.private)
     const body = JSON.stringify(items)
-    const frameStr = `{"v":2,"op":"frame","status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
-    const dataStr = `{"v":2,"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
+    const titleJson = meta.title ? `"title":${JSON.stringify(meta.title)},` : ""
+    const frameStr = `{"v":2,"op":"frame",${titleJson}"status":${JSON.stringify(meta.status)},"rev":${rev},"items":${body}}`
+    const dataStr = `{"v":2,${titleJson}"data":${body},"status":${JSON.stringify(meta.status)},"rev":${rev}}`
+    // authenticated variant: the private block (per-session machine facts)
+    // rides the envelope tail; built by SPLICING before the final brace so
+    // the shared body serialization is paid once
+    const privJson = meta.private && Object.keys(meta.private).length ? JSON.stringify(meta.private).slice(1, -1) : ""
+    const privData = privJson ? dataStr.slice(0, -1) + `,"private":{${privJson}}}` : dataStr
+    // snapshot island: the boot payload a frozen HTML file feeds the viewer
+    // with (`window.__MIRROBOT_SNAPSHOT__`). `<` is escaped so no string in
+    // the share data can terminate the host <script> element early.
+    const islandStr = JSON.stringify(items).replace(/</g, "\\u003c")
     if (frameStr.length <= MAX_CACHE_JSON) {
-      this._cache = { rev, status: meta.status, frameStr, dataStr }
+      this._cache = { rev, status: meta.status, frameStr, dataStr, privData, islandBody: islandStr, privJson }
       return this._cache
     }
-    return { rev, status: meta.status, frameStr, dataStr }
+    return { rev, status: meta.status, frameStr, dataStr, privData, islandBody: islandStr, privJson }
   }
 
   async fetch(req) {
@@ -969,6 +1338,13 @@ export class ShareDO {
       }
       const pair = new WebSocketPair()
       this.state.acceptWebSocket(pair[1], ["viewer"])
+      // viewer liveness for the private meta surface; write-throttled to
+      // once a minute so reconnect storms cannot churn storage
+      const nowMs = Date.now()
+      if ((meta.lastViewerAt ?? 0) < nowMs - 60000) {
+        meta.lastViewerAt = nowMs
+        this.state.storage.put("meta", meta).catch(() => {})
+      }
       try {
         // `since` handshake: a viewer that just loaded /data at rev N
         // doesn't need the full first frame again. Cases (delta frames
@@ -991,10 +1367,17 @@ export class ShareDO {
         if (Number.isFinite(since) && since === rev) {
           pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: [] }))
         } else if (wantsDelta && Number.isFinite(since) && since >= 0 && since < rev) {
-          const delta = redactItems(await this.itemsSince(since))
+          const delta = redactItems(await this.itemsSince(since), meta.private)
           pair[1].send(JSON.stringify({ op: "frame", rev, status: meta2.status, items: delta, kind: "delta" }))
         } else {
-          pair[1].send((await this.renderCache(meta)).frameStr)
+          // the upgrade 401s unauthenticated viewers on gated shares, so a
+          // gate here means share auth is satisfied: first frame carries
+          // the private block
+          if (meta.auth) {
+            pair[1].send((await this.renderCache(meta)).frameStr.slice(0, -1) + `,"private":${JSON.stringify(meta.private ?? {})}}`)
+          } else {
+            pair[1].send((await this.renderCache(meta)).frameStr)
+          }
         }
       } catch {}
       return new Response(null, { status: 101, webSocket: pair[0] })
@@ -1009,7 +1392,9 @@ export class ShareDO {
       await this.state.storage.put("meta", {
         secret,
         sessionID: body.sessionID,
-        ttlDays: body.ttlDays ?? 90,
+        // sticky custom title: survives session renames once set ("" unset)
+        title: typeof body.title === "string" && body.title ? body.title.slice(0, 300) : undefined,
+        ttlHours: Number(body.ttlHours) > 0 ? Math.floor(Number(body.ttlHours)) : 90 * 24,
         createdAt: now,
         lastActive: now,
         pluginSeen: now,
@@ -1018,6 +1403,11 @@ export class ShareDO {
         ownerId: body.ownerId ?? null,
         frozen: false,
         auth,
+        // which credential created this share (scoped-authority gate,
+        // per-token listings, bulk freeze-by-token)
+        creatorTokenId: body.creatorTokenId ?? null,
+        // free-form labels from the plugin (B5), shown in admin listings
+        custom: body.custom && typeof body.custom === "object" ? body.custom : {},
         tokens: [],
         attempts: { ips: {}, total: 0, lockUntil: 0 },
       })
@@ -1025,7 +1415,7 @@ export class ShareDO {
         // record rides in KV key METADATA — list() returns it inline, so
         // the admin shares view needs no per-key get (KV N+1)
         await this.env.SHARE_INDEX.put(`share:${body.id}`, "", {
-          metadata: { createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null },
+          metadata: { createdAt: now, sessionID: body.sessionID, ownerId: body.ownerId ?? null, custom: kvCustom(body.custom) },
         })
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
       } catch (e) {
@@ -1033,7 +1423,7 @@ export class ShareDO {
         // purge AND the TTL sweeper (permanent orphan). Arm our own alarm
         // to retry the put until it lands (alarm() checks indexRetry).
         console.log("[init] index error (will retry)", e?.message || e)
-        await this.state.storage.put("indexRetry", { id: body.id, sessionID: body.sessionID, ownerId: body.ownerId ?? null, createdAt: now })
+        await this.state.storage.put("indexRetry", { id: body.id, sessionID: body.sessionID, ownerId: body.ownerId ?? null, createdAt: now, custom: kvCustom(body.custom) })
         try {
           await this.state.storage.setAlarm(Date.now() + 5 * 60000)
         } catch {}
@@ -1050,10 +1440,10 @@ export class ShareDO {
 
       // plugin is alive: cancel any pending finalize and note the contact.
       // ORDER MATTERS: persist pluginSeen BEFORE touching the alarm — some
-      // workerd builds throw on setAlarm(null), and a crash before the
-      // put left pluginSeen stale, so the still-armed alarm later marked
-      // healthy shares "interrupted" (live-caught by the auth suite: any
-      // attach-after-drop failed its init entirely).
+      // workerd builds throw on setAlarm(null), and a failure between the
+      // two leaves pluginSeen stale, so the still-armed alarm later marks
+      // healthy shares "interrupted" and every attach-after-drop fails its
+      // init.
       meta.pluginSeen = Date.now()
       // attach = the plugin is actively here; keep TTL from expiring a
       // share out from under a live (if quiet) session
@@ -1100,21 +1490,83 @@ export class ShareDO {
       // explicit per-session TTL override (clamped by the ControlDO against
       // server + token caps): rebase the sweeper deadline. Shortening can
       // legitimately end an old page at once - that is the owner's ask.
-      if (Number.isFinite(Number(body.ttlDays)) && Number(body.ttlDays) > 0) {
-        meta.ttlDays = Math.floor(Number(body.ttlDays))
+      if (Number.isFinite(Number(body.ttlHours)) && Number(body.ttlHours) > 0) {
+        meta.ttlHours = Math.floor(Number(body.ttlHours))
         await this.state.storage.put("meta", meta)
-        console.log("[attach] ttl updated to", meta.ttlDays, "days")
+        console.log("[attach] ttl updated to", meta.ttlHours, "hours")
       }
 
       // no `data` payload: the plugin backfills from the host and never
       // reads attach data (full-set transfer per reconnect was pure
-      // waste — Bun already strips it)
+      // waste - Bun already strips it). `auth` reports the RESOLVED gate
+      // state so the plugin can tell a half-pair no-op from a live gate
+      // (B2: ack-level gate assurance).
       return json(200, {
         ok: true,
         rev: meta.rev ?? 0,
         status: meta.status,
         sessionID: meta.sessionID,
+        auth: !!meta.auth,
       })
+    }
+
+    // REST opts editor (#13): PATCH /api/share/:id forwards here after
+    // identity resolution. Mirrors the attach-sync mutations (auth
+    // rotate/removal, TTL rebase) plus custom-label updates (the KV
+    // index record carries them for admin listings).
+    if (path === "/set-opts" && req.method === "POST") {
+      const body = await req.json()
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: false, error: "share not found" })
+      const gate = this.writeGate(meta, body)
+      if (gate) return json(403, { ok: false, error: gate })
+      if (body.authLogin !== undefined && body.authPassword !== undefined) {
+        const wantAuth = body.authLogin && body.authPassword
+        const sameAuth = wantAuth && meta.auth
+          && meta.auth.loginHash === await pbkdf2(body.authLogin, meta.auth.salt)
+          && meta.auth.passHash === await pbkdf2(body.authPassword, meta.auth.salt)
+        if (wantAuth && !sameAuth) {
+          meta.auth = await this.makeAuth(body.authLogin, body.authPassword)
+          meta.tokens = []
+          meta.attempts = { ips: {}, total: 0, lockUntil: 0 }
+          console.log("[set-opts] auth updated, tokens rotated")
+        } else if (!wantAuth && meta.auth) {
+          meta.auth = null
+          console.log("[set-opts] auth removed (owner action)")
+        }
+      }
+      if (Number.isFinite(Number(body.ttlHours)) && Number(body.ttlHours) > 0) {
+        meta.ttlHours = Math.floor(Number(body.ttlHours))
+        console.log("[set-opts] ttl updated to", meta.ttlHours, "hours")
+      }
+      if (body.custom !== undefined) meta.custom = body.custom ?? {}
+      // sticky custom title: "" clears (live session title applies again).
+      // Root summary + render cache follow so /meta and fresh loads agree.
+      if (body.title !== undefined) {
+        meta.title = body.title === "" ? undefined : String(body.title).slice(0, 300)
+        if (meta.summaries && meta.summaries[meta.sessionID]) {
+          meta.summaries[meta.sessionID].title = meta.title ?? meta.summaries[meta.sessionID].title
+        }
+        this._cache = null
+        console.log("[set-opts] title", meta.title ? "set" : "cleared")
+      }
+      // write-pause (freeze-parity, self-served): data writes reject while
+      // paused; PATCH stays open so the same flag unpauses. No rev bump -
+      // viewers keep the last status and content until the owner resumes.
+      if (body.paused !== undefined) {
+        meta.paused = body.paused === true ? true : undefined
+        console.log("[set-opts] paused", !!meta.paused)
+      }
+      await this.state.storage.put("meta", meta)
+      // keep the KV index record honest when labels changed
+      if (body.custom !== undefined) {
+        try {
+          await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", {
+            metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId, creatorTokenId: meta.creatorTokenId ?? null, custom: kvCustom(meta.custom) },
+          })
+        } catch {}
+      }
+      return json(200, { ok: true, ttlHours: meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24), auth: !!meta.auth, custom: meta.custom ?? {}, title: meta.title ?? "", paused: !!meta.paused })
     }
 
     if (path === "/auth" && req.method === "POST") {
@@ -1175,6 +1627,7 @@ export class ShareDO {
       const tokens = [{ token, expires: now + 7 * 86400000 }, ...(meta.tokens ?? [])].slice(0, 5)
       meta.tokens = tokens
       meta.attempts = attempts
+      meta.lastViewerAt = now
       await this.state.storage.put("meta", meta)
       const cookie = `osh_${this.state.id.name}=${token}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`
       // the router translates this into a real Set-Cookie header
@@ -1204,19 +1657,122 @@ export class ShareDO {
         const since = Number(sinceRaw)
         if (Number.isFinite(since)) {
           if (since === (meta.rev ?? 0)) {
-            return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0 })
+            return json(200, { v: 2, data: [], status: meta.status, rev: meta.rev ?? 0, ...(meta.title ? { title: meta.title } : {}) })
           }
-          return json(200, { v: 2, data: redactItems(await this.itemsSince(since)), status: meta.status, rev: meta.rev ?? 0 })
+          return json(200, { v: 2, data: redactItems(await this.itemsSince(since), meta.private), status: meta.status, rev: meta.rev ?? 0, ...(meta.title ? { title: meta.title } : {}) })
         }
       }
-      return new Response((await this.renderCache(meta)).dataStr, { status: 200, headers: { "content-type": "application/json" } })
+      // a gated share 401s unauthenticated readers above, so reaching here
+      // on a gated share means share auth IS satisfied: serve the private
+      // block (machine-local facts) to exactly these readers
+      return new Response((await this.renderCache(meta))[meta.auth ? "privData" : "dataStr"], { status: 200, headers: { "content-type": "application/json" } })
     }
+
+    if (path === "/snapshot") {
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { error: "gone" })
+      if (meta.auth && !(await this.validToken(url.searchParams.get("token") ?? ""))) {
+        return json(401, { authRequired: true })
+      }
+      const cache = await this.renderCache(meta)
+      const items = await this.loadItems()
+      // root session = the session item without a parent (children of
+      // subagent calls carry parentID); fallback to the first session
+      let sessionID = ""
+      for (const it of items) {
+        if (it.type === "session" && it.data && !it.data.parentID) { sessionID = it.data.id ?? ""; break }
+      }
+      if (!sessionID) {
+        const s = items.find((i) => i.type === "session")
+        sessionID = s?.data?.id ?? ""
+      }
+      // island assembled by concatenation; the body serialization is paid
+      // once inside renderCache. Gated shares reaching here are already
+      // authenticated, so the private block always rides the island.
+      const island = `{"items":${cache.islandBody},"status":${JSON.stringify(meta.status)},"rev":${meta.rev ?? 0},"sessionID":${JSON.stringify(sessionID)}${meta.title ? `,"title":${JSON.stringify(meta.title)}` : ""}${cache.privJson ? `,"private":{${cache.privJson}}` : ""},"branding":${JSON.stringify(resolveBrandingObj(this.env))}}`
+      return json(200, { ok: true, island, status: meta.status, rev: meta.rev ?? 0, sessionID })
+    }
+
+    if (path === "/og") {
+      // per-share embed meta for crawlers: title/stat line only for
+      // UNGATED shares (a link preview must not leak what a gated share
+      // contains — those answer gated:true and the card stays generic)
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: false })
+      const items = redactItems(await this.loadItems(), meta.private)
+      let rootId = ""
+      for (const it of items) if (it.type === "session" && it.data && !it.data.parentID) { rootId = it.data.id ?? ""; break }
+      let title = ""
+      let turns = 0
+      let tools = 0
+      let first = 0
+      let last = 0
+      let model = ""
+      for (const it of items) {
+        if (it.type === "session" && it.data && it.data.id === rootId) title = it.data.title ?? title
+        if (it.type === "model" && it.sessionID === rootId && !model) model = it.data?.name ?? ""
+        if (it.type !== "message" || (rootId && it.sessionID !== rootId)) continue
+        const d = it.data ?? {}
+        const c = d.time?.created ?? 0
+        if (c) {
+          if (!first || c < first) first = c
+          if (c > last) last = c
+        }
+        if (d.type === "user") turns++
+        if (d.type === "assistant" && Array.isArray(d.content)) {
+          for (const part of d.content) if (part?.type === "tool") tools++
+        }
+      }
+      // sticky custom title wins over the live session title
+      if (meta.title) title = meta.title
+      const gated = !!meta.auth
+      return json(200, { ok: true, gated, title: gated ? "" : title || "shared session", status: meta.status, rev: meta.rev ?? 0, stats: gated ? {} : { turns, tools, durationMs: first && last ? last - first : 0, model } })
+    }
+
 
     if (path === "/meta" && req.method === "GET") {
       const meta = await this.state.storage.get("meta")
       if (!meta) return json(404, { error: "not found" })
-      const { secret, auth, tokens, pluginSeen, ...rest } = meta
-      return json(200, { ...rest, auth: auth ? { set: true } : null, tokens: tokens?.length ?? 0, pluginSeen: pluginSeen ?? 0 })
+      // authority resolved by the router (root or owner); the DO compares
+      // against its own records - a scoped token must be the creator.
+      // Paramless calls are DO-internal (status hydration): the router is
+      // the only path in and it always stamps identity, so allow those.
+      if (url.searchParams.has("ownerId") || url.searchParams.has("root")) {
+        if (!url.searchParams.get("root")) {
+          const ownerId = url.searchParams.get("ownerId")
+          const tokenId = url.searchParams.get("tokenId")
+          const scoped = url.searchParams.get("tokenKind") === "scoped"
+          if (scoped ? tokenId !== meta.creatorTokenId : ownerId !== meta.ownerId) {
+            return json(403, { ok: false, error: scoped ? "scoped tokens read meta of shares they created" : "not your share" })
+          }
+        }
+      }
+      const summaries = meta.summaries ?? (await this.backfillSummaries(meta))
+      const ttlH = meta.ttlHours ?? Math.floor((meta.ttlDays ?? 90) * 24)
+      // explicit whitelist, not a blocklist spread: meta carries viewer
+      // lockout state (attempts.ips) and the private facts block, which
+      // have no business leaving the DO
+      return json(200, {
+        ok: true,
+        sessionID: meta.sessionID,
+        title: meta.title ?? null,
+        status: meta.status,
+        rev: meta.rev ?? 0,
+        createdAt: meta.createdAt,
+        lastActive: meta.lastActive,
+        pluginSeen: meta.pluginSeen,
+        lastViewerAt: meta.lastViewerAt,
+        ownerId: meta.ownerId ?? null,
+        creatorTokenId: meta.creatorTokenId ?? null,
+        frozen: !!meta.frozen,
+        paused: !!meta.paused,
+        custom: meta.custom ?? {},
+        summaries,
+        auth: meta.auth ? { set: true } : null,
+        viewerSessions: meta.tokens?.length ?? 0,
+        expiresAt: ttlH > 0 ? (meta.createdAt ?? 0) + ttlH * 3600000 : 0,
+        ttlHours: ttlH,
+      })
     }
 
     if (path === "/plugin-gone" && req.method === "POST") {
@@ -1243,6 +1799,9 @@ export class ShareDO {
       if (!meta) return json(404, { ok: true })
       await this.state.storage.delete("finalizeAt")
       if (meta.status !== "live") return json(200, { ok: true, note: "settled" })
+      // a paused share keeps its last status by design - the backstop
+      // must not flip it to interrupted while the owner holds the pause
+      if (meta.paused) return json(200, { ok: true, note: "paused" })
       const after = resolvePolicy(this.env).finalizeAfterMs
       if ((meta.pluginSeen ?? meta.createdAt ?? 0) + after > Date.now()) {
         return json(200, { ok: true, note: "plugin alive recently" })
@@ -1279,7 +1838,7 @@ export class ShareDO {
     }
 
     // Internal (AuthDO fan-out): freeze/unfreeze a share's edits. Viewing
-    // is unaffected — a frozen share is read-only until unfrozen or TTL.
+    // is unaffected - a frozen share is read-only until unfrozen or TTL.
     if (path === "/set-frozen" && req.method === "POST") {
       const body = await req.json()
       const meta = await this.state.storage.get("meta")
@@ -1287,6 +1846,17 @@ export class ShareDO {
       meta.frozen = !!body.frozen
       await this.state.storage.put("meta", meta)
       console.log("[set-frozen]", this.state.id.name, body.frozen ? "frozen" : "unfrozen")
+      return json(200, { ok: true })
+    }
+
+    // Internal (AuthDO rotate): re-point a scoped token's share at its
+    // successor so rotation never orphans the pages it created
+    if (path === "/set-creator-token" && req.method === "POST") {
+      const body = await req.json()
+      const meta = await this.state.storage.get("meta")
+      if (!meta) return json(404, { ok: true })
+      meta.creatorTokenId = body.tokenId ?? null
+      await this.state.storage.put("meta", meta)
       return json(200, { ok: true })
     }
 
@@ -1301,7 +1871,7 @@ export class ShareDO {
       meta.frozen = false
       await this.state.storage.put("meta", meta)
       try {
-        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", { metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId } })
+        await this.env.SHARE_INDEX.put(`share:${this.state.id.name}`, "", { metadata: { createdAt: meta.createdAt, sessionID: meta.sessionID, ownerId: meta.ownerId, custom: kvCustom(meta.custom) } })
       } catch {}
       return json(200, { ok: true })
     }
@@ -1316,7 +1886,13 @@ export class ShareDO {
   writeGate(meta, body) {
     if (body?.root === true) return ""
     if (body?.secret && body.secret === meta.secret) return meta.frozen ? "frozen" : ""
-    if (body?.ownerId && meta.ownerId && body.ownerId === meta.ownerId) return meta.frozen ? "frozen" : ""
+    if (body?.ownerId && meta.ownerId && body.ownerId === meta.ownerId) {
+      if (meta.frozen) return "frozen"
+      // SCOPED tokens reach only the shares they created; FULL tokens
+      // (absent kind = pre-2a caller) reach every owner share
+      if (body.tokenKind === "scoped") return body.tokenId && body.tokenId === meta.creatorTokenId ? "" : "forbidden"
+      return ""
+    }
     return "forbidden"
   }
 
@@ -1357,6 +1933,11 @@ export class ShareDO {
     if (!meta) return [404, { ok: false, error: "share not found" }]
     const gate = this.writeGate(meta, body)
     if (gate) return [gate === "frozen" ? 403 : 403, { ok: false, error: gate }]
+    // user pause: same effect as a freeze, self-served — data writes stop,
+    // the page keeps its last status. PATCH /set-opts stays open to unpause.
+    if (meta.paused && ((body.data ?? []).length || body.status)) {
+      return [423, { ok: false, error: "share paused" }]
+    }
     const rev = (meta.rev ?? 0) + 1
     // One op per key: first-arrival position, last-arrival action, so the
     // broadcast order can never contradict the storage last-wins result
@@ -1368,8 +1949,57 @@ export class ShareDO {
     // deletes) keep deletions visible to delta readers so an undone
     // message cannot resurrect for a polling viewer.
     const ops = new Map() // shard key -> { shard, it, del }
+    // Wave 3 data-inventory split: pmeta items (machine-local facts:
+    // directory/worktree) never become public item shards - they merge
+    // into meta.private and reach only AUTHENTICATED viewers via the
+    // envelope's private block. A pmeta tombstone drops that session's
+    // entry. Storage stays capped (few hundred bytes per session).
+    let privateDirty = false
+    const priv = meta.private && typeof meta.private === "object" ? { ...meta.private } : {}
+      const rest = []
+    const summaries = meta.summaries && typeof meta.summaries === "object" ? { ...meta.summaries } : {}
+    let summariesDirty = false
     for (const raw of body.data ?? []) {
       const it = fitItem(raw)
+      if (it?.type === "pmeta") {
+        const sid = it.sessionID ?? it.data?.id ?? ""
+        if (it.del) delete priv[sid]
+        else if (sid && it.data && typeof it.data === "object") {
+          const clean = {}
+          for (const [k, v] of Object.entries(it.data)) {
+            if (typeof v === "string" && v.length <= 512 && k.length <= 32) clean[k] = v
+          }
+          priv[sid] = clean
+        }
+        privateDirty = true
+        continue
+      }
+      rest.push(it)
+      // session summaries for the private meta surface: title/agent/
+      // parent/model per session, stamped at write so /meta never scans
+      if (it.type === "session" && it.data && typeof it.data === "object") {
+        const sid = it.sessionID ?? it.data.id ?? ""
+        if (it.del && sid) { delete summaries[sid]; summariesDirty = true }
+        else if (sid) {
+          summaries[sid] = {
+            // a sticky custom title overrides the root session's title in
+            // listings (admin/CLI) the same way it does on the page
+            title: sid === meta.sessionID && meta.title ? meta.title.slice(0, 200) : typeof it.data.title === "string" ? it.data.title.slice(0, 200) : "",
+            agent: typeof it.data.agent === "string" ? it.data.agent : "",
+            parentID: typeof it.data.parentID === "string" ? it.data.parentID : null,
+            model: it.data.model && typeof it.data.model === "object" ? String(it.data.model.id ?? "") : "",
+            version: typeof it.data.version === "string" ? it.data.version : "",
+            updated: Date.now(),
+          }
+          summariesDirty = true
+        }
+      }
+    }
+    if (privateDirty) {
+      meta.private = priv
+      await this.state.storage.put("meta", meta)
+    }
+    for (const it of rest) {
       const key = itemKey(it)
       if (!key) continue
       const shard = "i:" + key
@@ -1390,11 +2020,10 @@ export class ShareDO {
       puts.set(op.shard, op.del ? { d: 1, r: rev, i: op.it } : { r: rev, i: op.it })
       if (op.del && op.it.type === "message" && op.it.data?.id) {
         // cascade ONLY on full-message deletes: opencode's cleanup removes
-        // the message without per-part events, so its legacy v1 part
-        // shards must not linger. Gating on del matters — an unconditional
-        // cascade ran one storage.list per UPSERTED message too (200
-        // sequential lists per backfill chunk, the dominant apply cost;
-        // live-caught in the optimization audit)
+        // the message without per-part events, so its legacy v1 part shards
+        // must not linger. Gating on del matters: an unconditional cascade
+        // also runs one storage.list per upserted message, 200 sequential
+        // lists per backfill chunk, which dominates apply cost.
         cascadePrefixes.push("i:part/" + op.it.data.id + "/")
       }
     }
@@ -1412,11 +2041,44 @@ export class ShareDO {
     meta.lastActive = Date.now()
     meta.pluginSeen = Date.now()
     if (body.status && STATUSES.has(body.status)) meta.status = body.status
+    if (summariesDirty && Object.keys(summaries).length) { meta.summaries = summaries; }
     this._cache = null // rev advanced: render cache is stale
     await this.state.storage.put("meta", meta)
     const batch = [...ops.values()].map((op) => op.it)
-    await this.broadcast({ op: "frame", status: meta.status, rev, items: redactItems(batch) })
+    await this.broadcast({ op: "frame", status: meta.status, rev, items: redactItems(batch, meta.private) })
     return [200, { ok: true, rev, status: meta.status }]
+  }
+
+  /** One-time session summaries for shares created before summaries were
+   *  stamped at write: session shards are few (one per session), so a
+   *  prefix scan is bounded by session count, never message volume. The
+   *  result caches into meta so the scan runs once per share. */
+  async backfillSummaries(meta) {
+    const summaries = {}
+    try {
+      let cursor
+      do {
+        const page = await this.state.storage.list({ prefix: "i:session/", cursor })
+        for (const row of page.values()) {
+          const it = row?.i
+          if (row?.d || it?.type !== "session" || !it.data) continue
+          const sid = it.sessionID ?? it.data.id ?? ""
+          if (!sid) continue
+          summaries[sid] = {
+            title: typeof it.data.title === "string" ? it.data.title.slice(0, 200) : "",
+            agent: typeof it.data.agent === "string" ? it.data.agent : "",
+            parentID: typeof it.data.parentID === "string" ? it.data.parentID : null,
+            model: it.data.model && typeof it.data.model === "object" ? String(it.data.model.id ?? "") : "",
+            version: typeof it.data.version === "string" ? it.data.version : "",
+            updated: 0,
+          }
+        }
+        cursor = page.list_complete ? undefined : page.cursor
+      } while (cursor)
+    } catch {}
+    meta.summaries = summaries
+    await this.state.storage.put("meta", meta)
+    return summaries
   }
 
   async broadcast(frame) {
@@ -1437,7 +2099,7 @@ export class ShareDO {
     const retry = await this.state.storage.get("indexRetry")
     if (retry) {
       try {
-        await this.env.SHARE_INDEX.put(`share:${retry.id}`, "", { metadata: { createdAt: retry.createdAt, sessionID: retry.sessionID, ownerId: retry.ownerId } })
+        await this.env.SHARE_INDEX.put(`share:${retry.id}`, "", { metadata: { createdAt: retry.createdAt, sessionID: retry.sessionID, ownerId: retry.ownerId, custom: kvCustom(retry.custom) } })
         await this.env.SWEEPER.get(this.env.SWEEPER.idFromName("singleton")).fetch("https://sweeper/arm", { method: "POST" })
         await this.state.storage.delete("indexRetry")
       } catch {
@@ -1483,15 +2145,117 @@ function itemKey(item) {
   return
 }
 
-// Session items never leave with their metadata (the plugin stores its
-// share binding — incl. the write secret — in session metadata).
-function redactItems(items) {
+// Machine paths never leave absolute. Every tool path and patch header is
+// rewritten against the session's working folder: inside it -> relative,
+// inside the sharer's home -> "~/...", anything else stays absolute. The
+// folder itself is a private fact (pmeta, or the legacy inline directory)
+// and is stripped from the session item afterwards.
+const PATH_TOOLS = new Set(["read", "write", "edit", "patch", "glob", "grep", "list"])
+const normPath = (s) => String(s).replace(/\\/g, "/").replace(/\/+$/, "")
+function wirePath(value, dir, home) {
+  if (typeof value !== "string" || !value) return value
+  const v = normPath(value)
+  if (dir) {
+    if (v === dir) return "."
+    if (v.startsWith(dir + "/")) return v.slice(dir.length + 1)
+  }
+  if (home) {
+    if (v === home) return "~"
+    if (v.startsWith(home + "/")) return "~/" + v.slice(home.length + 1)
+  }
+  return value
+}
+function wirePatch(patch, dir, home) {
+  if (typeof patch !== "string" || !patch) return patch
+  return patch
+    .split("\n")
+    .map((line) => {
+      if (!(line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git "))) return line
+      let out = line
+      if (dir) out = out.split(dir + "/").join("").split(dir.replace(/\//g, "\\") + "\\").join("")
+      if (home) out = out.split(home + "/").join("~/").split(home.replace(/\//g, "\\") + "\\").join("~\\")
+      // a stripped prefix leaves `a//x` / `b//x` - collapse the seam
+      return out.replace(/([ab]\/)\/+/, "$1")
+    })
+    .join("\n")
+}
+function wireItems(items, facts) {
+  const dirs = new Map()
+  for (const it of items) {
+    if (it?.type === "session" && it.data?.id && typeof it.data.directory === "string") dirs.set(it.data.id, normPath(it.data.directory))
+  }
+  const fallbackDir = facts?.directory ? normPath(facts.directory) : undefined
+  // home: the plugin's private stamp when present; otherwise DERIVE it from
+  // the working folder, so a share made before the stamp still masks the
+  // sharer's user directory instead of printing it
+  const home = facts?.home
+    ? normPath(facts.home)
+    : (() => {
+        const probe = fallbackDir ?? [...dirs.values()][0]
+        if (!probe) return undefined
+        const m = /^([A-Za-z]:\/Users\/[^/]+|\/home\/[^/]+|\/Users\/[^/]+)/.exec(probe)
+        return m ? m[1] : undefined
+      })()
   return items.map((it) => {
-    if (it?.type === "session" && it.data?.metadata) {
-      const { metadata, ...rest } = it.data
-      return { ...it, data: rest }
-    }
-    return it
+    if (it?.type !== "message" || !it.data) return it
+    const dir = dirs.get(it.sessionID) ?? dirs.get(it.data.sessionID) ?? fallbackDir
+    const content = it.data.content
+    if (!Array.isArray(content)) return it
+    let changed = false
+    const next = content.map((part) => {
+      if (!part || part.type !== "tool" || !PATH_TOOLS.has(part.name)) return part
+      const state = part.state
+      if (!state) return part
+      let input = state.input
+      let meta = state.metadata
+      if (input && (typeof input.path === "string" || typeof input.filePath === "string")) {
+        const path = wirePath(input.path, dir, home)
+        const filePath = wirePath(input.filePath, dir, home)
+        if (path !== input.path || filePath !== input.filePath) {
+          input = { ...input, ...(path !== input.path ? { path } : {}), ...(filePath !== input.filePath ? { filePath } : {}) }
+          changed = true
+        }
+      }
+      if (meta) {
+        const patches = []
+        if (meta.filediff && typeof meta.filediff === "object") patches.push(meta.filediff)
+        if (Array.isArray(meta.files)) for (const f of meta.files) if (f && typeof f === "object") patches.push(f)
+        let nextMeta
+        for (const target of patches) {
+          if (typeof target.patch !== "string" || !target.patch) continue
+          const rewritten = wirePatch(target.patch, dir, home)
+          if (rewritten === target.patch) continue
+          nextMeta ??= { ...meta }
+          if (target === meta.filediff) nextMeta.filediff = { ...target, patch: rewritten }
+          else nextMeta.files = meta.files.map((f) => (f === target ? { ...f, patch: rewritten } : f))
+          changed = true
+        }
+        if (nextMeta) meta = nextMeta
+      }
+      if (!changed) return part
+      return {
+        ...part,
+        state: { ...state, ...(input !== state.input ? { input } : {}), ...(meta !== state.metadata ? { metadata: meta } : {}) },
+      }
+    })
+    if (!changed) return it
+    return { ...it, data: { ...it.data, content: next } }
+  })
+}
+
+// Session items never leave with their metadata (the plugin stores its
+// share binding - incl. the write secret - in session metadata).
+function redactItems(items, facts) {
+  return wireItems(items, facts).map((it) => {
+    if (it?.type !== "session" || !it.data) return it
+    const d = it.data
+    if (!d.metadata && d.directory === undefined && d.worktree === undefined) return it
+    // session metadata carries the share binding (incl. the write secret);
+    // directory/worktree are private machine facts (older shares stored them
+    // inline - newer ones only send pmeta, to gated readers). Scrub at read
+    // so no existing share keeps leaking the sharer's filesystem layout.
+    const { metadata, directory, worktree, ...rest } = d
+    return { ...it, data: rest }
   })
 }
 
@@ -1546,6 +2310,10 @@ export class AuthDO {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-frozen", {
               method: "POST", body: JSON.stringify({ frozen: !!job.frozen }),
             })
+          } else if (job.action === "set-creator-token") {
+            await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-creator-token", {
+              method: "POST", body: JSON.stringify({ tokenId: job.tokenId }),
+            })
           } else {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
           }
@@ -1597,7 +2365,7 @@ export class AuthDO {
       } while (uc)
       if (expiredDead.length) {
         const tokens = await this.listPrefix("t:")
-        const aliveUsers = new Set(tokens.filter((t) => !t.revokedAt && !(t.expiresAt && t.expiresAt < now)).map((t) => t.userId))
+        const aliveUsers = new Set(tokens.filter((t) => t.kind !== "scoped" && !t.revokedAt && !(t.expiresAt && t.expiresAt < now)).map((t) => t.userId))
         for (const uid of expiredDead) {
           if (aliveUsers.has(uid)) continue
           const reg = (await this.state.storage.get(`uShares:${uid}`)) ?? []
@@ -1640,11 +2408,19 @@ export class AuthDO {
         case "/user-freeze": return json(...(await this.userFreeze(param === "1", body)))
         case "/user-delete": return json(...(await this.userDelete(param, body)))
         case "/token-mint": return json(...(await this.tokenMint(body)))
+        case "/token-self-mint": return json(...(await this.tokenSelfMint(body)))
+        case "/token-update": return json(...(await this.tokenUpdate(param, body)))
+        case "/token-update-self": return json(...(await this.tokenUpdateSelf(body)))
+        case "/token-sets-get": return json(...(await this.tokenSetsGet(body)))
+        case "/token-sets-put": return json(...(await this.tokenSetsPut(body)))
+        case "/token-sets-admin": return json(...(await this.tokenSetsAdmin(param, body)))
         case "/tokens-get": return json(...(await this.tokensGet()))
         case "/token-revoke": return json(...(await this.tokenRevoke(param)))
         case "/code-create": return json(...(await this.codeCreate(body)))
         case "/codes-get": return json(...(await this.codesGet()))
         case "/code-disable": return json(...(await this.codeDisable(param)))
+        case "/code-lineage-revoke": return json(...(await this.codeLineageRevoke(param)))
+        case "/freeze-by-token": return json(...(await this.freezeByToken(param, body)))
         case "/reassign": return json(...(await this.reassign(param, body)))
         default: return json(404, { ok: false, error: "not found" })
       }
@@ -1667,12 +2443,15 @@ export class AuthDO {
       t.lastUsedAt = Date.now()
       await this.state.storage.put("t:" + t.hash, t)
     }
-    return { kind: "user", userId: t.userId, user: u, token: t }
+    // tokenKind rides every identity: the write gate needs it to tell a
+    // FULL token (any of the owner's shares) from a SCOPED one (only the
+    // shares it created). Absent kind = full (pre-2a records).
+    return { kind: "user", userId: t.userId, user: u, token: t, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full" }
   }
 
   async check(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
-    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label }
+    if (chk.kind === "user") return { kind: "user", userId: chk.userId, label: chk.user.label, tokenId: chk.tokenId, tokenKind: chk.tokenKind, ttlMaxHours: (chk.token.limits.maxTtlHours || 0) || Math.floor((chk.token.limits.maxTtlDays || 0) * 24) }
     return { kind: chk.kind }
   }
 
@@ -1698,8 +2477,15 @@ export class AuthDO {
     const t = chk.token
     const now = Date.now()
     if (t.limits.maxLiveShares > 0) {
-      const shares = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
-      if (shares.length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+      // SCOPED tokens count only their own shares; FULL counts the
+      // user's whole registry
+      if (t.kind === "scoped") {
+        const reg = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
+        if (reg.filter((s) => s.creatorTokenId === t.id).length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+      } else {
+        const shares = (await this.state.storage.get(`uShares:${t.userId}`)) ?? []
+        if (shares.length >= t.limits.maxLiveShares) return { ok: false, error: "max shares reached", httpStatus: 403 }
+      }
     }
     if (t.limits.dailyCreates > 0) {
       const key = `dc:${t.id}:${new Date(now).toISOString().slice(0, 10)}`
@@ -1707,7 +2493,10 @@ export class AuthDO {
       if (n >= t.limits.dailyCreates) return { ok: false, error: "daily create limit reached", httpStatus: 429 }
       await this.state.storage.put(key, n + 1)
     }
-    return { ok: true, userId: t.userId, ttlMaxDays: t.limits.maxTtlDays || 0, defaultTtlDays: Number(chk.user?.settings?.defaultTtlDays) || 0 }
+    // B4: resolve the requested (or default) config set's Class A fields -
+    // applied server-side at create, never transported to the client
+    const set = this.resolveSet(t.sets, body.set)
+    return { ok: true, userId: t.userId, tokenId: t.id, tokenKind: t.kind === "scoped" ? "scoped" : "full", ttlMaxHours: (t.limits.maxTtlHours || 0) || Math.floor((t.limits.maxTtlDays || 0) * 24), defaultTtlHours: (Number(chk.user?.settings?.defaultTtlHours) || 0) || Math.floor((Number(chk.user?.settings?.defaultTtlDays) || 0) * 24), ...(Object.keys(set.classA).length ? { setA: set.classA } : {}) }
   }
 
   // ---- enrollment + lifecycle ----------------------------------------------
@@ -1716,7 +2505,7 @@ export class AuthDO {
     const num = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0 }
     return {
       maxLiveShares: num(this.env.DEFAULT_MAX_LIVE_SHARES),
-      maxTtlDays: num(this.env.DEFAULT_MAX_TTL_DAYS),
+      maxTtlHours: num(this.env.DEFAULT_MAX_TTL_HOURS) || Math.floor(num(this.env.DEFAULT_MAX_TTL_DAYS) * 24),
       dailyCreates: num(this.env.DEFAULT_DAILY_CREATES),
     }
   }
@@ -1727,17 +2516,94 @@ export class AuthDO {
     const one = (v, def) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 0 ? n : def }
     return {
       maxLiveShares: one(input.maxLiveShares, d.maxLiveShares),
-      maxTtlDays: one(input.maxTtlDays, d.maxTtlDays),
+      maxTtlHours: one(input.maxTtlHours, one(input.maxTtlDays, 0) ? Math.floor(one(input.maxTtlDays, 0) * 24) : d.maxTtlHours),
       dailyCreates: one(input.dailyCreates, d.dailyCreates),
     }
   }
 
-  async mint(userId, label, limits) {
+  /** Token expiry from body: expiresInMinutes | expiresInHours |
+   *  expiresInDays (days x24h, hours x60m). Floor is one minute - a
+   *  short-lived CI credential must be mintable for minutes. Returns
+   *  undefined when no field was sent, 0 for an explicit clear, and an
+   *  absolute timestamp otherwise. */
+  normExpiry(body) {
+    if (!(body?.expiresInMinutes || body?.expiresInHours || body?.expiresInDays)) {
+      if (body?.expiresInMinutes === 0 || body?.expiresInHours === 0 || body?.expiresInDays === 0) return 0
+      return undefined
+    }
+    const m = Math.floor(Number(body?.expiresInMinutes))
+    const h = Math.floor(Number(body?.expiresInHours))
+    const d = Math.floor(Number(body?.expiresInDays))
+    const minutes = Number.isFinite(m) && m > 0 ? m : Number.isFinite(h) && h > 0 ? h * 60 : Number.isFinite(d) && d > 0 ? d * 1440 : 0
+    return Date.now() + Math.max(1, minutes) * 60000
+  }
+
+  async mint(userId, label, limits, kind = "full", opts = {}) {
     const value = "osk_" + randomId() + randomId()
     const hash = await sha256hex(value)
-    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: 0 }
+    const rec = { id: "t_" + randomId().slice(0, 10), hash, userId, label: String(label ?? "").slice(0, 64), limits, kind: kind === "scoped" ? "scoped" : "full", sets: {}, createdBy: String(opts.createdBy ?? "admin").slice(0, 24), createdAt: Date.now(), lastUsedAt: 0, revokedAt: 0, expiresAt: Number.isFinite(opts.expiresAt) && opts.expiresAt > Date.now() ? Math.floor(opts.expiresAt) : 0 }
     await this.state.storage.put("t:" + hash, rec)
     return { value, rec }
+  }
+
+  /** Named config sets on a token (B4 keying): one key (token) carries
+   * several named configs; agents pick by name, unspecified = the first
+   * (default) set. Class A fields (authLogin/authPassword/ttlHours) apply
+   * server-side at create and NEVER travel to a client; Class B fields
+   * (modelLabel/shareMode) are fetchable suggestions. Caps mirror the
+   * create-frame validation. */
+  normSets(input) {
+    const out = {}
+    if (!input || typeof input !== "object" || Array.isArray(input)) return out
+    let n = 0
+    for (const [name, raw] of Object.entries(input)) {
+      if (n >= 10) break
+      if (typeof name !== "string" || name.length > 32 || !/^[a-zA-Z0-9_-]+$/.test(name)) continue
+      if (!raw || typeof raw !== "object") continue
+      const set = {}
+      for (const k of ["authLogin", "authPassword"]) {
+        if (typeof raw[k] === "string" && raw[k].length <= 128) set[k] = raw[k]
+      }
+      const ttlH = Math.floor(Number(raw.ttlHours))
+      if (Number.isFinite(ttlH) && ttlH > 0 && ttlH <= 87600) set.ttlHours = ttlH
+      else {
+        const ttl = Math.floor(Number(raw.ttlDays))
+        if (Number.isFinite(ttl) && ttl > 0 && ttl <= 3650) set.ttlHours = ttl * 24
+      }
+      if (typeof raw.modelLabel === "string" && raw.modelLabel.length <= 64) set.modelLabel = raw.modelLabel
+      if (raw.shareMode === "all" || raw.shareMode === "manual") set.shareMode = raw.shareMode
+      if (Object.keys(set).length) { out[name] = set; n++ }
+    }
+    return out
+  }
+
+  /** Resolve the set a create should use and split it by class. Returns
+   * { classA: {...}, classB: {...} } - classA never crosses to a client. */
+  resolveSet(sets, wanted) {
+    const names = Object.keys(sets ?? {})
+    if (!names.length) return { classA: {}, classB: {} }
+    const name = wanted && typeof wanted === "string" && sets[wanted] ? wanted : names[0]
+    const set = sets[name] ?? {}
+    const classA = {}
+    if (set.authLogin !== undefined) classA.authLogin = set.authLogin
+    if (set.authPassword !== undefined) classA.authPassword = set.authPassword
+    if (set.ttlHours !== undefined) classA.ttlHours = set.ttlHours
+    const classB = {}
+    if (set.modelLabel !== undefined) classB.modelLabel = set.modelLabel
+    if (set.shareMode !== undefined) classB.shareMode = set.shareMode
+    return { classA, classB }
+  }
+
+  /** Client-safe view: Class B fields ONLY (never authLogin/authPassword). */
+  setsPublicView(sets) {
+    const out = {}
+    for (const [name, set] of Object.entries(sets ?? {})) {
+      const view = {}
+      if (set.modelLabel !== undefined) view.modelLabel = set.modelLabel
+      if (set.shareMode !== undefined) view.shareMode = set.shareMode
+      if (Object.keys(view).length) out[name] = view
+    }
+    return out
   }
 
   async enroll(body) {
@@ -1752,8 +2618,12 @@ export class AuthDO {
       code = await this.state.storage.get("c:" + (await sha256hex(String(body.code))))
       const invalid = !code || code.disabled || (code.expiresAt && code.expiresAt < now) || (code.activationsLeft !== -1 && code.activationsLeft <= 0)
       if (invalid) return [403, { ok: false, error: "invalid code" }]
-    } else if (mode !== "public") {
-      return [403, { ok: false, error: "code required" }]
+    } else if (mode !== "public" || !codelessOnboarding(this.env)) {
+      // codeless onboarding is a deliberate opt-in even on public
+      // servers (default OFF): anonymous creating stays open, but
+      // ACCOUNTS (escaping the anonymous caps) need a code unless the
+      // hoster says otherwise
+      return [403, { ok: false, error: mode === "public" ? "code required (codeless onboarding disabled)" : "code required" }]
     }
     if (!code) {
       const rl = await this.rateLimit(String(body.ip ?? "unknown"))
@@ -1766,10 +2636,10 @@ export class AuthDO {
     }
     const label = String(body.label ?? "").trim().slice(0, 64)
       || (code ? `${code.label || "invite"}-${code.used}` : "user-" + randomId().slice(0, 4))
-    const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: now, frozen: false, settings: {} }
+    const user = { id: "u_" + randomId().slice(0, 10), label, createdAt: now, frozen: false, settings: {}, ...(code ? { createdByCode: code.id } : {}) }
     await this.state.storage.put("u:" + user.id, user)
-    const token = await this.mint(user.id, label, this.defaultLimits())
-    console.log("[authdo] enrolled", user.id, label, code ? "via code" : "anonymous")
+    const token = await this.mint(user.id, label, this.defaultLimits(), "full", { createdBy: code ? code.id : "enroll" })
+    console.log("[authdo] enrolled", user.id, label, code ? "via code" : "codeless")
     return [200, { ok: true, token: token.value, userId: user.id, label }]
   }
 
@@ -1810,23 +2680,135 @@ export class AuthDO {
   async rotate(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    // limits and expiry are restrictions the minter imposed: a scoped
+    // token rotating itself cannot raise either (label rename is fine)
+    if (chk.tokenKind === "scoped" && (body?.limits !== undefined || this.normExpiry(body) !== undefined)) {
+      return [403, { ok: false, error: "scoped tokens cannot change their own limits or expiry" }]
+    }
     const t = chk.token
     t.revokedAt = Date.now()
     await this.state.storage.put("t:" + t.hash, t)
-    const fresh = await this.mint(t.userId, t.label, t.limits)
-    return [200, { ok: true, token: fresh.value, userId: t.userId }]
+    // successor keeps the class: rotating a scoped token yields a scoped
+    // token (service credential), rotating a full token a full one.
+    // Optional label/limits overrides ride the rotation (unset = keep the
+    // current values); sets always carry over - a rotated credential must
+    // not silently lose its named configs
+    // successor keeps the class and the provenance; optional expiry
+    // override (unset = carry the remaining expiry)
+    const expiry = this.normExpiry(body)
+    const fresh = await this.mint(
+      t.userId,
+      body?.label !== undefined ? body.label : t.label,
+      body?.limits !== undefined ? this.normLimits(body.limits) : t.limits,
+      t.kind === "scoped" ? "scoped" : "full",
+      { createdBy: t.createdBy ?? "rotate", expiresAt: expiry !== undefined ? expiry : t.expiresAt },
+    )
+    const sets = t.sets ?? {}
+    if (Object.keys(sets).length) { fresh.rec.sets = sets; await this.state.storage.put("t:" + fresh.rec.hash, fresh.rec) }
+    // SCOPED authority is keyed by creatorTokenId: transfer the old
+    // token's shares to the successor or rotation orphans its own pages
+    if (t.kind === "scoped") await this.transferCreator(t.id, fresh.rec.id)
+    return [200, { ok: true, token: fresh.value, userId: t.userId, tokenKind: fresh.rec.kind, label: fresh.rec.label, limits: fresh.rec.limits, expiresAt: fresh.rec.expiresAt }]
   }
 
-  /** Revocation kills control (owner directive): a user whose LAST valid
-   * token is gone loses write access to ALL their shares - user token AND
-   * share secret both - until an admin unfreezes/reassigns. Viewing is
-   * never touched. Rotation never lands here (the replacement is minted
-   * before the old token dies). */
+  /** Re-point a retiring scoped token's shares at its successor: registry
+   * entries inline, ShareDO meta via the chunked fan-out. */
+  async transferCreator(oldId, newId) {
+    let uc
+    const targets = []
+    do {
+      const page = await this.state.storage.list({ prefix: "uShares:", cursor: uc })
+      for (const [k, reg] of page) {
+        if (!Array.isArray(reg)) continue
+        let dirty = false
+        for (const s of reg) {
+          if (s.creatorTokenId === oldId) {
+            s.creatorTokenId = newId
+            targets.push(s.id)
+            dirty = true
+          }
+        }
+        if (dirty) await this.state.storage.put(k, reg)
+      }
+      uc = page.list_complete ? undefined : page.cursor
+    } while (uc)
+    if (!targets.length) return
+    const first = targets.slice(0, 35)
+    const rest = targets.slice(35)
+    for (const id of first) {
+      try {
+        await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-creator-token", {
+          method: "POST", body: JSON.stringify({ tokenId: newId }),
+        })
+      } catch {}
+    }
+    if (rest.length) {
+      const q = (await this.state.storage.get("fanoutQueue")) ?? []
+      q.push({ action: "set-creator-token", tokenId: newId, shareIds: rest })
+      await this.state.storage.put("fanoutQueue", q)
+      const cur = await this.state.storage.getAlarm()
+      if (cur === null || cur > Date.now() + 60 * 1000) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+    }
+  }
+
+  /** Self-service mint: only FULL tokens may mint (a scoped credential
+   * must never bootstrap more credentials). Scoped mint target is the
+   * point - CI/agent credentials without account authority. */
+  async tokenSelfMint(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot mint tokens" }]
+    const kind = body.kind === "scoped" ? "scoped" : "full"
+    // sets ride the new token: explicit, else inherit the minter's (a
+    // repo's scoped key is provisioned from its full token)
+    const sets = body.sets !== undefined ? this.normSets(body.sets) : (chk.token.sets ?? {})
+    const t = await this.mint(chk.userId, body.label, this.normLimits(body.limits), kind, { createdBy: chk.tokenId ?? "self", expiresAt: this.normExpiry(body) ?? 0 })
+    if (Object.keys(sets).length) { t.rec.sets = sets; await this.state.storage.put("t:" + t.rec.hash, t.rec) }
+    return [200, { ok: true, token: t.value, id: t.rec.id, userId: chk.userId, kind: t.rec.kind }]
+  }
+
+  /** B4 set fetch: Class B fields only (scoped included - a service
+   * credential reads its own config). Never authLogin/authPassword. */
+  async tokenSetsGet(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    return [200, { ok: true, sets: this.setsPublicView(chk.token.sets) }]
+  }
+
+  /** B4 set provisioning: a FULL token replaces its own sets (Class A
+   * secrets ride here - this is the provisioning surface). */
+  async tokenSetsPut(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot edit sets" }]
+    chk.token.sets = this.normSets(body.sets)
+    await this.state.storage.put("t:" + chk.token.hash, chk.token)
+    return [200, { ok: true, sets: this.setsPublicView(chk.token.sets) }]
+  }
+
+  /** Admin variant: root edits any token's sets by id. */
+  async tokenSetsAdmin(tokenId, body) {
+    const tokens = await this.listPrefix("t:")
+    const t = tokens.find((x) => x.id === tokenId)
+    if (!t) return [404, { ok: false, error: "no such token" }]
+    t.sets = this.normSets(body?.sets)
+    await this.state.storage.put("t:" + t.hash, t)
+    return [200, { ok: true, id: t.id, sets: this.setsPublicView(t.sets) }]
+  }
+
+  /** Revocation kills control: a user whose LAST valid token is gone
+   * loses write access to ALL their shares - user token AND share secret
+   * both - until an admin unfreezes/reassigns. Viewing is never touched.
+   * Rotation never lands here (the replacement is minted before the old
+   * token dies). */
   async freezeIfNoValidTokens(userId) {
     if (!userId) return false
     const tokens = await this.listPrefix("t:")
     const now = Date.now()
-    const alive = tokens.filter((x) => x.userId === userId && !x.revokedAt && !(x.expiresAt && x.expiresAt < now))
+    // only FULL tokens keep the account alive - a user holding nothing
+    // but scoped credentials is dead (scoped = service access, not
+    // ownership)
+    const alive = tokens.filter((x) => x.userId === userId && x.kind !== "scoped" && !x.revokedAt && !(x.expiresAt && x.expiresAt < now))
     if (alive.length) return false
     const reg = (await this.state.storage.get(`uShares:${userId}`)) ?? []
     if (!reg.length) return false
@@ -1848,7 +2830,7 @@ export class AuthDO {
   // ---- self-service ---------------------------------------------------------
 
   tokenView(t) {
-    return { id: t.id, label: t.label, limits: t.limits, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
+    return { id: t.id, label: t.label, limits: t.limits, kind: t.kind === "scoped" ? "scoped" : "full", createdBy: t.createdBy ?? null, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, expiresAt: t.expiresAt }
   }
 
   async me(body) {
@@ -1860,13 +2842,17 @@ export class AuthDO {
   async settings(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    if (chk.tokenKind === "scoped") return [403, { ok: false, error: "scoped tokens cannot edit settings" }]
     const u = chk.user
     const patch = body.patch ?? {}
     const next = { ...(u.settings ?? {}) }
-    if (patch.defaultTtlDays !== undefined) {
-      const n = Math.floor(Number(patch.defaultTtlDays))
-      const max = Math.max(1, Math.floor(Number(body.maxTtl) || 90))
-      next.defaultTtlDays = Number.isFinite(n) && n > 0 ? Math.min(n, max) : max
+    if (patch.defaultTtlDays !== undefined || patch.defaultTtlHours !== undefined) {
+      const rawH = Number.isFinite(Number(patch.defaultTtlHours)) && Number(patch.defaultTtlHours) > 0
+        ? Math.floor(Number(patch.defaultTtlHours))
+        : Math.floor(Number(patch.defaultTtlDays) * 24)
+      const max = Math.max(1, Math.floor(Number(body.maxTtlHours) || 90 * 24))
+      next.defaultTtlHours = Number.isFinite(rawH) && rawH > 0 ? Math.min(rawH, max) : max
+      delete next.defaultTtlDays
     }
     u.settings = next
     await this.state.storage.put("u:" + u.id, u)
@@ -1876,7 +2862,9 @@ export class AuthDO {
   async meShares(body) {
     const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
     if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
-    const reg = (await this.state.storage.get(`uShares:${chk.userId}`)) ?? []
+    let reg = (await this.state.storage.get(`uShares:${chk.userId}`)) ?? []
+    // scoped tokens see ONLY the shares they created
+    if (chk.tokenKind === "scoped") reg = reg.filter((s) => s.creatorTokenId === chk.tokenId)
     // subrequest cap: a /meta DO fetch per share breaks past ~50 on the
     // free tier — resolve statuses for the first 50 (newest listed last),
     // mark the tail unhydrated rather than 500ing the whole call
@@ -1910,7 +2898,9 @@ export class AuthDO {
     const key = `uShares:${body.userId}`
     const reg = (await this.state.storage.get(key)) ?? []
     if (!reg.some((s) => s.id === body.shareId)) {
-      reg.push({ id: body.shareId, sessionID: body.sessionID ?? "", createdAt: Date.now() })
+      // creatorTokenId: which credential made the share - scoped-authority
+      // resolution, per-token listings, and the bulk freeze-by-token op
+      reg.push({ id: body.shareId, sessionID: body.sessionID ?? "", createdAt: Date.now(), ...(body.tokenId ? { creatorTokenId: body.tokenId } : {}) })
       await this.state.storage.put(key, reg.slice(-10000))
     }
     await this.state.storage.put(`shareOwner:${body.shareId}`, body.userId)
@@ -1948,6 +2938,7 @@ export class AuthDO {
         const toks = tokens.filter((t) => t.userId === u.id)
         out.push({
           id: u.id, label: u.label, createdAt: u.createdAt, frozen: !!u.frozen,
+          createdByCode: u.createdByCode ?? null,
           shares: ((await this.state.storage.get(`uShares:${u.id}`)) ?? []).length,
           tokens: toks.length, tokensActive: toks.filter((t) => !t.revokedAt).length,
         })
@@ -2029,12 +3020,14 @@ export class AuthDO {
   async tokenMint(body) {
     const u = await this.state.storage.get("u:" + body?.userId)
     if (!u) return [404, { ok: false, error: "no such user" }]
-    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits))
-    return [200, { ok: true, token: t.value, id: t.rec.id, userId: u.id }]
+    const t = await this.mint(u.id, body?.label, this.normLimits(body?.limits), body?.kind === "scoped" ? "scoped" : "full", { createdBy: "admin", expiresAt: this.normExpiry(body) ?? 0 })
+    const sets = this.normSets(body?.sets)
+    if (Object.keys(sets).length) { t.rec.sets = sets; await this.state.storage.put("t:" + t.rec.hash, t.rec) }
+    return [200, { ok: true, token: t.value, id: t.rec.id, userId: u.id, kind: t.rec.kind }]
   }
 
   async tokensGet() {
-    const tokens = (await this.listPrefix("t:")).map((t) => ({ ...this.tokenView(t), userId: t.userId, revoked: !!t.revokedAt }))
+    const tokens = (await this.listPrefix("t:")).map((t) => ({ ...this.tokenView(t), userId: t.userId, createdBy: t.createdBy ?? null, revoked: !!t.revokedAt }))
     return [200, { ok: true, tokens }]
   }
 
@@ -2046,6 +3039,46 @@ export class AuthDO {
     await this.state.storage.put("t:" + t.hash, t)
     const frozen = await this.freezeIfNoValidTokens(t.userId)
     return [200, { ok: true, frozen }]
+  }
+
+  /** Edit a token's label and limits (rename, re-scope). Class, user and
+   *  revocation state never change here - rotating or revoking are the
+   *  lifecycle moves. Authority: a full token edits ANY of its own user's
+   *  tokens (scoped included); a scoped token edits only itself.
+   *  The admin route passes any tokenId with no bearer. */
+  async tokenUpdate(tokenId, body) {
+    if (!tokenId) return [400, { ok: false, error: "token id required" }]
+    const bearerChk = body?.token ? await this.checkToken(String(body.token)) : null
+    const tokens = await this.listPrefix("t:")
+    const t = tokens.find((x) => x.id === tokenId)
+    if (!t) return [404, { ok: false, error: "no such token" }]
+    if (t.revokedAt) return [400, { ok: false, error: "token is revoked" }]
+    if (bearerChk) {
+      if (bearerChk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+      const mine = t.userId === bearerChk.userId
+      const self = t.id === bearerChk.token?.id
+      if (!mine || (bearerChk.tokenKind === "scoped" && !self)) {
+        return [403, { ok: false, error: bearerChk.tokenKind === "scoped" ? "scoped tokens can only edit themselves" : "not your token" }]
+      }
+      // self-escalation guard: a scoped token may rename itself but never
+      // lift its own limits or extend its own life
+      if (bearerChk.tokenKind === "scoped" && (body?.limits !== undefined || this.normExpiry(body) !== undefined)) {
+        return [403, { ok: false, error: "scoped tokens cannot change their own limits or expiry" }]
+      }
+    }
+    if (body?.label !== undefined) t.label = String(body.label).slice(0, 64)
+    if (body?.limits !== undefined) t.limits = this.normLimits(body.limits)
+    const expiry = this.normExpiry(body)
+    if (expiry !== undefined) t.expiresAt = expiry
+    await this.state.storage.put("t:" + t.hash, t)
+    return [200, { ok: true, token: this.tokenView(t) }]
+  }
+
+  async tokenUpdateSelf(body) {
+    const chk = await this.checkToken(typeof body.token === "string" ? body.token : "")
+    if (chk.kind !== "user") return [401, { ok: false, error: "invalid token" }]
+    const id = body.tokenId && String(body.tokenId) !== chk.token.id ? String(body.tokenId) : chk.token.id
+    return this.tokenUpdate(id, { ...body, token: body.token })
   }
 
   async codeCreate(body) {
@@ -2079,6 +3112,74 @@ export class AuthDO {
     c.disabled = true
     await this.state.storage.put("c:" + c.hash, c)
     return [200, { ok: true }]
+  }
+
+  /** Code-lineage kill-switch: revoke EVERY token of EVERY user that this
+   * code onboarded, freezing each (no valid full token left -> D5 fan-out
+   * per user). The code itself is disabled so it cannot onboard anyone
+   * else. Viewing is untouched - shares stay readable to TTL. */
+  async codeLineageRevoke(codeId) {
+    const codes = await this.listPrefix("c:")
+    const c = codes.find((x) => x.id === codeId)
+    if (!c) return [404, { ok: false, error: "no such code" }]
+    c.disabled = true
+    await this.state.storage.put("c:" + c.hash, c)
+    const tokens = await this.listPrefix("t:")
+    let uc
+    const affected = []
+    do {
+      const page = await this.state.storage.list({ prefix: "u:", cursor: uc })
+      for (const [, u] of page) if (u?.createdByCode === codeId) affected.push(u.id)
+      uc = page.list_complete ? undefined : page.cursor
+    } while (uc)
+    let revoked = 0
+    let frozen = 0
+    for (const uid of affected) {
+      for (const t of tokens.filter((x) => x.userId === uid && !x.revokedAt)) {
+        t.revokedAt = Date.now()
+        await this.state.storage.put("t:" + t.hash, t)
+        revoked++
+      }
+      if (await this.freezeIfNoValidTokens(uid)) frozen++
+    }
+    console.log("[authdo] code-lineage revoke", codeId, `(${affected.length} users, ${revoked} tokens)`)
+    return [200, { ok: true, users: affected.length, revoked, frozen, codeDisabled: true }]
+  }
+
+  /** Bulk op: freeze every share a specific token created (scoped or
+   * full) without touching the rest of the owner's shares. Rides the
+   * chunked set-frozen fan-out. Rotation never lands here. */
+  async freezeByToken(tokenId, body) {
+    const frozen = body?.frozen === false ? false : true
+    let uc
+    const targets = []
+    do {
+      const page = await this.state.storage.list({ prefix: "uShares:", cursor: uc })
+      for (const [, reg] of page) {
+        if (!Array.isArray(reg)) continue
+        for (const s of reg) if (s.creatorTokenId === tokenId) targets.push(s.id)
+      }
+      uc = page.list_complete ? undefined : page.cursor
+    } while (uc)
+    if (!targets.length) return [404, { ok: false, error: "no shares created by that token" }]
+    const first = targets.slice(0, 35)
+    const rest = targets.slice(35)
+    for (const id of first) {
+      try {
+        await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/set-frozen", {
+          method: "POST", body: JSON.stringify({ frozen }),
+        })
+      } catch {}
+    }
+    if (rest.length) {
+      const q = (await this.state.storage.get("fanoutQueue")) ?? []
+      q.push({ action: "set-frozen", frozen, shareIds: rest })
+      await this.state.storage.put("fanoutQueue", q)
+      const cur = await this.state.storage.getAlarm()
+      if (cur === null || cur > Date.now() + 60 * 1000) await this.state.storage.setAlarm(Date.now() + 60 * 1000)
+    }
+    console.log("[authdo] freeze-by-token", tokenId, `(${targets.length} shares${rest.length ? `, ${rest.length} queued` : ""})`)
+    return [200, { ok: true, shares: targets.length, queued: rest.length }]
   }
 
   async reassign(shareId, body) {
@@ -2226,7 +3327,7 @@ export class SweeperDO {
             continue
           }
           const meta = await r.json()
-          const ttlMs = (meta.ttlDays ?? 90) * 24 * 3600 * 1000
+          const ttlMs = ((meta.ttlHours ?? 90 * 24) || Math.floor((meta.ttlDays ?? 90) * 24)) * 3600 * 1000
           if ((meta.lastActive ?? 0) + ttlMs < Date.now()) {
             await this.env.SHARE_DO.get(this.env.SHARE_DO.idFromName(id)).fetch("https://do/remove-all", { method: "POST" })
             budget--

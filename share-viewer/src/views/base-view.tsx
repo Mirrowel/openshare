@@ -5,7 +5,7 @@
 // they never reimplement data handling. The base lays out prompt / ordered
 // entries / response from the shared section model, skin wrappers around
 // each element kind.
-import { Show, createEffect, createMemo, createSignal, type Component, type JSX } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, type Component, type JSX, For } from "solid-js"
 import { WindowedEntries, WindowedSections } from "../section-window"
 import { dismissSearchKey, searchKeyDismissed, searchOwnsDisclosure } from "../search-state"
 import { PromptNav } from "../hover-rail"
@@ -14,6 +14,7 @@ import { findParentTurn } from "../parent-link"
 import { viewSupportsPaged } from "./registry"
 import { ViewProvider, type ViewContextValue } from "./view-context"
 import { copySessionMarkdown } from "../copy-markdown"
+import { downloadSessionExport } from "../export-session"
 import { Markdown } from "@opencode/session-ui/markdown"
 import { MetaLine } from "./meta-line"
 import { VendoredPart } from "./vendored-part"
@@ -45,8 +46,7 @@ export type Skin = {
   id: string
   /** false when the skin renders the prompt itself (cinema's slugline,
    *  teletype's wire headline): base-view then renders ONLY the meta line
-   *  inside PromptWrap - without this the prompt text appears twice
-   *  (live-caught on cinema/teletype) */
+   *  inside PromptWrap, or the prompt text appears twice */
   promptInBody?: boolean
   wrappers: SkinWrappers
   // content column class (layout identity)
@@ -225,7 +225,12 @@ export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: n
       <w.PromptWrap section={p.section} settings={props.settings}>
         <div class="py-2" classList={{ "osh-flat-prompt": props.settings.promptStyle === "flat" }}>
           <Show when={props.skin.promptInBody !== false}>
-            <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{p.section.prompt}</p>
+            {/* every prompt of a burst renders its own bubble (leader
+                first); `prompt` alone dropped the 2nd+ prompts of a
+                parallel burst in every skin */}
+            <For each={p.section.prompts ?? [{ id: "", text: p.section.prompt }]}>
+              {(pr) => <p class="text-14-medium text-text-strong whitespace-pre-wrap break-words">{pr.text}</p>}
+            </For>
           </Show>
           <MetaLine section={p.section} data={props.data} />
         </div>
@@ -299,6 +304,7 @@ export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: n
     status: () => props.source.status(),
     back: () => back(),
     copyMarkdown: () => copySessionMarkdown(props.data, props.sessionID),
+    exportSession: () => downloadSessionExport(props.data as never, props.sessionID, info()?.title),
     isSub: () => isSub(),
     cachePrefix,
   }
@@ -345,10 +351,9 @@ export function BaseSessionView(props: ViewProps & { skin: Skin; navMinTurns?: n
           {/* PromptNav: ALWAYS present with >1 prompt - the sidebar column
               or the floating pill, never neither (the pill is not
               removable). Rendered INSIDE the flex row so the sidebar
-              variant sits beside the scroller; the pill variant is fixed
-              and ignores flow. children MUST be undefined for Nav-less
-              skins (a <Show> element is always truthy - the empty-popover
-              bug, live-caught twice). */}
+              a text root with text children is not hostable through the slot
+              machinery (the host throws while embedding the payload). Every
+              proven consumer returns a box-rooted tree. */}
           <Show when={visible().length >= (props.navMinTurns ?? 2)}>
             <PromptNav
               only="desktop"

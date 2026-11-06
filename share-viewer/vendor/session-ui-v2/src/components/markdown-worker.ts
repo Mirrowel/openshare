@@ -66,13 +66,78 @@ const projectTransport = createWorkerTransport<Extract<MarkdownWorkerRequest, { 
   },
 })
 
+// openshare fork: workers unavailable (file:// snapshots) -> the same
+// markdown module runs in-page behind a Worker-shaped shim; identical
+// output, no worker (see scripts/vendor-v2.mjs)
+function mainThreadWorker(): Worker {
+  type Listener = (event: { data: MarkdownWorkerResponse }) => void
+  const listeners: Listener[] = []
+  const queue: MarkdownWorkerRequest[] = []
+  let real: { handleMessage: (event: any) => unknown; __setMarkdownReply: (fn: Listener) => void } | undefined
+  let dead = false
+  let onmessage: Listener | null = null
+  const emit: Listener = (event) => {
+    for (const listener of [...listeners]) listener(event)
+  }
+  void import("./markdown.worker-main").then((m) => {
+    if (dead) return
+    m.__setMarkdownReply((data: unknown) => emit({ data } as { data: MarkdownWorkerResponse }))
+    real = m as any
+    for (const request of queue.splice(0)) void (m.handleMessage as any)({ data: request })
+  })
+  const fake = {
+    postMessage: (request: MarkdownWorkerRequest) => {
+      if (real) void real.handleMessage({ data: request })
+      else queue.push(request)
+    },
+    addEventListener: (_type: string, listener: Listener) => {
+      listeners.push(listener)
+    },
+    removeEventListener: (_type: string, listener: Listener) => {
+      const index = listeners.indexOf(listener)
+      if (index >= 0) listeners.splice(index, 1)
+    },
+    terminate: () => {
+      dead = true
+      real = undefined
+    },
+    get onmessage() {
+      return onmessage
+    },
+    set onmessage(listener: Listener | null) {
+      if (onmessage) {
+        const index = listeners.indexOf(onmessage)
+        if (index >= 0) listeners.splice(index, 1)
+      }
+      onmessage = listener
+      if (listener) listeners.push(listener)
+    },
+    onerror: null,
+    dispatchEvent: () => false,
+  }
+  return fake as unknown as Worker
+}
+
+// openshare fork: getWorker() THROWS synchronously once the worker is
+// known-unavailable (offline snapshot files run from file://, where
+// Worker construction throws SecurityError). The exports below turn
+// that throw into a normal promise rejection so consumers take their
+// fallback paths instead of the render boundary dying mid-effect.
+function workerOrNull(): Worker | null {
+  try {
+    return getWorker()
+  } catch {
+    return null
+  }
+}
+
 export function parseMarkdown(text: string, signal: AbortSignal) {
-  if (signal.aborted) return Promise.reject(new MarkdownWorkerDisposedError())
+  if (signal.aborted) return Promise.reject(markdownWorkerDisposed)
   const instance = getWorker()
   const id = ++nextID
 
   const abort = () => {
-    parses.get(id)?.reject(new MarkdownWorkerDisposedError())
+    parses.get(id)?.reject(markdownWorkerDisposed)
     parses.delete(id)
   }
 
@@ -87,6 +152,7 @@ export function parseMarkdown(text: string, signal: AbortSignal) {
 }
 
 export function projectMarkdown(key: string, text: string, live: boolean) {
+  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))
   getWorker()
   const id = ++nextID
 
@@ -101,12 +167,13 @@ export function disposeMarkdownProjection(key: string) {
   projects.forEach((request, id) => {
     if (request.key !== key) return
     projects.delete(id)
-    request.reject(new MarkdownWorkerDisposedError())
+    request.reject(markdownWorkerDisposed)
   })
   worker?.postMessage({ type: "dispose", key } satisfies MarkdownWorkerRequest)
 }
 
 export function highlightStreamingCode(key: string, text: string, language: string, complete = false) {
+  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))
   getWorker()
   const id = ++nextID
   latest.set(key, id)
@@ -129,12 +196,16 @@ export function disposeStreamingCode(key: string) {
   pending.forEach((request, id) => {
     if (request.key !== key) return
     pending.delete(id)
-    request.reject(new MarkdownWorkerDisposedError())
+    request.reject(markdownWorkerDisposed)
   })
   worker?.postMessage({ type: "dispose", key } satisfies MarkdownWorkerRequest)
 }
 
 export class MarkdownWorkerDisposedError extends Error {}
+
+// Made once: disposal rejects from inside a Solid cleanup, and a new error there would record that stack and keep the
+// whole disposing batch alive for as long as the rejected promise is reachable.
+export const markdownWorkerDisposed = new MarkdownWorkerDisposedError()
 
 export class MarkdownWorkerSupersededError extends Error {}
 
@@ -145,12 +216,19 @@ function getWorker() {
 
   if (disabled) throw new MarkdownWorkerUnavailableError(disabled.message)
 
-  try {
-    worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })
-  } catch (error) {
-    disabled = error instanceof Error ? error : new Error(String(error))
-    throw new MarkdownWorkerUnavailableError(disabled.message)
+  // offline snapshot files and data: module pages cannot run workers
+  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) {
+    worker = mainThreadWorker()
+  } else {
+    try {
+      worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })
+    } catch {
+      worker = mainThreadWorker()
+    }
   }
+  if (!worker) throw new MarkdownWorkerUnavailableError("markdown worker unavailable")
+
+
 
   worker.onmessage = (event: MessageEvent<MarkdownWorkerResponse>) => {
     if (event.data.type === "parse") {
@@ -226,7 +304,7 @@ function getWorker() {
     pending.delete(event.data.id)
 
     if (!keys.has(key)) {
-      result.reject(new MarkdownWorkerDisposedError())
+      result.reject(markdownWorkerDisposed)
       transport.complete(key, event.data.id)
 
       return

@@ -6,13 +6,73 @@
 // Deliberate unification (owner-approved direction: skins are reskins of
 // classic, not full rebuilds): the status presentation converges on one
 // token-mapped tone instead of 9 divergent color maps.
-import { Show, type JSX } from "solid-js"
+import { Show, type JSX, createSignal } from "solid-js"
+import { Popover } from "@kobalte/core/popover"
 import { useView } from "./view-context"
+import { isEmbeddedShare } from "../data-source"
+import { downloadSnapshot } from "../download-snapshot"
 import { Icon } from "@opencode/ui/icon"
 import { Mark } from "@opencode/ui/logo"
 
 export const OPENSHARE_REPO = "https://github.com/Mirrowel/OpenShare"
 
+/** the transcript action menu: one trigger, three outcomes - copy as
+ *  markdown, export the session (opencode import file), download a frozen
+ *  snapshot of the share. The snapshot item disappears inside a snapshot
+ *  (there is no server to ask and it already IS one). Core takes plain
+ *  callbacks so classic's chrome (outside any ViewContext) can use it. */
+export function TranscriptMenuCore(props: {
+  shareID: string
+  onCopyMarkdown: () => void
+  onExport: () => void
+  onSnapshot?: () => void
+  noSnapshot?: boolean
+}) {
+  const item =
+    "w-full flex items-center gap-2 px-2.5 py-2 text-left text-12-regular text-text-base hover:bg-surface-base-hover bg-transparent border-none cursor-pointer no-underline"
+  return (
+    <Popover gutter={6} placement="bottom-end">
+      <Popover.Trigger
+        class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
+        title="transcript actions"
+        aria-label="transcript actions"
+      >
+        <Icon name="download" size="small" />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content class="z-50 w-52 rounded-lg border border-border-weak-base bg-background-base shadow-lg py-1">
+          <button class={item} onClick={() => props.onCopyMarkdown()}>
+            <Icon name="copy" size="small" />
+            <span>Copy as markdown</span>
+          </button>
+          <button class={item} onClick={() => props.onExport()}>
+            <Icon name="download" size="small" />
+            <span>Export session</span>
+          </button>
+          <Show when={!props.noSnapshot && !isEmbeddedShare() && props.onSnapshot}>
+            <button class={item} onClick={() => void props.onSnapshot?.()}>
+              <Icon name="download" size="small" />
+              <span>Download snapshot</span>
+            </button>
+          </Show>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover>
+  )
+}
+
+/** the ViewContext flavor used by every skin header */
+export function TranscriptMenu() {
+  const view = useView()
+  return (
+    <TranscriptMenuCore
+      shareID={view.source.shareID}
+      onCopyMarkdown={() => void view.copyMarkdown()}
+      onExport={() => view.exportSession()}
+      onSnapshot={() => downloadSnapshot(view.source.shareID, view.source.branding())}
+    />
+  )
+}
 /** brand-aware mark: configured image or nothing (moved here from app.tsx
  *  so reader's header can share it without an app↔reader import cycle) */
 export function BrandMark(props: { branding: { logoUrl?: string }; class?: string }) {
@@ -82,10 +142,10 @@ export function SkinHeader(props: {
 }) {
   const view = useView()
   return (
-    // the flex layout is ALWAYS applied (a skin forgetting `flex
-    // items-center justify-between` in its class once stacked the
-    // clusters as plain divs - live-caught on casefile); skin classes
-    // only carry height/padding/border/background/font identity
+    // the flex layout is ALWAYS applied (a skin that forgets `flex
+    // items-center justify-between` in its class stacks the clusters as plain
+    // divs); skin classes only carry height/padding/border/background/font
+    // identity
     <header class={`${props.class ?? "h-9 px-4 self-stretch bg-background-base border-b border-border-weak-base relative z-30"} flex items-center justify-between gap-3`}>
       <div class={props.leadClass ?? "flex items-center gap-2 min-w-0"}>
         <Show when={view.isSub()}>
@@ -127,13 +187,7 @@ export function SkinHeader(props: {
             BaseSessionView) - left of copy-markdown in every skin */}
         {props.searchControl}
         <Show when={!props.noCopy}>
-          <button
-            class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
-            title="copy session as markdown"
-            onClick={() => void view.copyMarkdown()}
-          >
-            <Icon name="copy" size="small" />
-          </button>
+          <TranscriptMenu />
         </Show>
         <Show when={!props.noGithub}>
           <a href={OPENSHARE_REPO} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
@@ -157,7 +211,7 @@ export function SkinFooter(props: {
   const view = useView()
   const b = () => view.source.branding()
   return (
-    <div class={props.class ?? "px-6 py-6 flex items-center justify-between text-12-mono text-text-weaker select-none"}>
+    <div data-osh-footer class={props.class ?? "px-6 py-6 flex items-center justify-between text-12-mono text-text-weaker select-none"}>
       <div class="flex items-center gap-2 min-w-0">
         <Show when={b().logoUrl}>
           <img src={b().logoUrl} alt="" class="h-3 rounded-sm" />

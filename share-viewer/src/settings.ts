@@ -2,6 +2,15 @@
 // entry.tsx to set html[data-osh-theme] / text size without a flash.
 import { createSignal } from "solid-js"
 
+// set before any render: panels born open during page boot (settings
+// default-open, snapshot-remembered) must NOT pour in - the animation is
+// for live user actions; a booting page should arrive at its final
+// layout statically. app.tsx clears the flag once data has rendered and
+// settled; the fallback timer here guarantees it can never stick (a
+// stuck flag suppresses every reasoning transition for the page's life).
+document.documentElement.setAttribute("data-osh-boot", "")
+setTimeout(() => document.documentElement.removeAttribute("data-osh-boot"), 3000)
+
 export type OshSettings = {
   view: string
   theme: "system" | "light" | "dark" | "darker" | "mirrobot" | "midnight" | "sepia" | "nord"
@@ -13,8 +22,8 @@ export type OshSettings = {
     *  ...). Absent key = continuous (default). */
    pagedByView?: Record<string, boolean>
    /** prompt navigation state: the floating pill (default) or the sidebar
-    *  column; one of the two is ALWAYS present with >1 prompt - the pill
-    *  is never fully removable (owner round 2026-10-25) */
+    *  column; one of the two is ALWAYS present with more than one prompt, so
+    *  the pill is never fully removable */
    promptNav: "pill" | "sidebar"
   /** sidebar width in px (drag-resized; clamped 160-400) */
   turnNavWidth?: number
@@ -51,10 +60,10 @@ export type OshSettings = {
    * outputs (shell, grep, glob, list); the file tools carry their own
    * per-tool choice in fileOverflow. */
   outputOverflow: "wrap" | "scroll"
-  /** per-tool overflow for the FILE tools (read/write/edit+patch), each
-   * wrap or scroll independently - e.g. diffs can pan while reads wrap
-   * (owner round 2026-10-26). Defaults wrap; a cookie with an explicit
-   * outputOverflow: "scroll" migrates all three to scroll. */
+  /** per-tool overflow for the FILE tools (read/write/edit+patch), each wrap
+   * or scroll independently, so diffs can pan while reads wrap. Defaults
+   * wrap; a cookie with an explicit outputOverflow: "scroll" migrates all
+   * three to scroll. */
   fileOverflow: { read: "wrap" | "scroll"; write: "wrap" | "scroll"; edit: "wrap" | "scroll" }
   /** how user prompts render everywhere: right-aligned bubble (default)
    * or flat text like the reader skin */
@@ -77,8 +86,8 @@ export type OshSettings = {
   rowPromptLines: number
   rowResponseLines: number
   /** file-tool card width in rem (text cards; split diffs render at 2x,
-   *  viewport-capped) - applied live as --osh-card on <html> */
-  cardWidth: number
+    *  viewport-capped) - applied live as --osh-card on <html> */
+   cardWidth: number
 }
 
 export const SETTINGS_DEFAULTS: OshSettings = {
@@ -101,8 +110,7 @@ export const SETTINGS_DEFAULTS: OshSettings = {
   toolGrouping: "off",
   groupTools: ["read", "glob", "grep", "list"],
   groveThinking: "left",
-  // wrap is the default (owner round 2026-10-25); saved cookies keep
-  // their explicit choice
+  // wrap is the default; saved cookies keep their explicit choice
   outputOverflow: "wrap",
   fileOverflow: { read: "wrap", write: "wrap", edit: "wrap" },
   promptStyle: "bubble",
@@ -183,11 +191,11 @@ export function writeSettings(s: OshSettings) {
   document.cookie = `${COOKIE}=${encodeURIComponent(JSON.stringify(s))}; Path=/; Max-Age=31536000; SameSite=Lax`
 }
 
-/** the paged/continuous choice FOR A VIEW, in PAGED terms (owner round
- *  2026-10-24: the toggle is now "Paged mode", ON = paged; default OFF =
- *  continuous). Migrates the old continuousByView storage; views that do
- *  not support paging (ViewEntry.paged === false) are always continuous
- *  regardless of any stored choice. */
+/** the paged/continuous choice FOR A VIEW, in PAGED terms: the toggle is
+ *  "Paged mode", ON = paged, default OFF = continuous. Migrates the old
+ *  continuousByView storage; views that do not support paging
+ *  (ViewEntry.paged === false) are always continuous regardless of any
+ *  stored choice. */
 export function pagedFor(s: OshSettings, view: string, supportsPaged = true): boolean {
   if (!supportsPaged) return false
   const paged = s.pagedByView?.[view]
@@ -341,6 +349,51 @@ export function applySettings(s: OshSettings) {
   // at the value, split diffs at 2x, both viewport-capped)
   const cardWidth = Math.max(20, Math.min(80, s.cardWidth ?? 40))
   html.style.setProperty("--osh-card", `${cardWidth}rem`)
+  markMassDisclosureFlip(s)
+}
+
+/* Mass disclosure toggles ("expanded reasoning", auto-expand, grouping)
+ * re-open or re-close every panel at once. Hundreds of simultaneous
+ * height animations feed the virtualizer per-frame measures and the
+ * layout goes incoherent mid-storm (heals only on the next scroll
+ * settle). Outside the viewport the animation buys nothing, so those
+ * rows snap: apply() marks every off-screen row BEFORE the re-render,
+ * and rows mounting during the flip (virtualizer growth) inherit the
+ * snap from the flip flag in the row mount. Panels the reader can
+ * actually see keep their pour animation. The flag is time-boxed -
+ * after it clears, snap classes are inert CSS-wise and scroll-into-view
+ * behavior is unchanged. */
+let lastMassKeys = ""
+let flipTimer: ReturnType<typeof setTimeout> | undefined
+function markMassDisclosureFlip(s: OshSettings) {
+  // groupTools participates: changing the custom grouping set re-groups
+  // rows (a structural reflow with the same animation-storm shape)
+  const keys = `${s.reasoningOpen}|${s.toolGrouping}|${s.groupTools?.join(",") ?? ""}|${s.autoExpand?.join(",") ?? ""}`
+  if (keys === lastMassKeys) return
+  const first = lastMassKeys === ""
+  lastMassKeys = keys
+  if (first) return
+  const html = document.documentElement
+  // the timeline disposes its out-of-window mounted rows on this event:
+  // a mass toggle re-renders EVERY mounted row's content (panels open),
+  // but only in-window rows get repositioned - out-of-window rows keep
+  // stale transforms under grown painted heights and overlap the
+  // viewport until a scroll-shift re-ranges (the post-flip mangle)
+  window.dispatchEvent(new CustomEvent("osh-flip"))
+  const viewport = window.innerHeight
+  for (const row of document.querySelectorAll<HTMLElement>("[data-row-key]")) {
+    const rect = row.getBoundingClientRect()
+    if (rect.top > viewport + 64 || rect.bottom < -64) row.classList.add("osh-snap-row")
+  }
+  html.setAttribute("data-osh-flip", "")
+  if (flipTimer) clearTimeout(flipTimer)
+  flipTimer = setTimeout(() => {
+    html.removeAttribute("data-osh-flip")
+    // remove the snap classes with the flag: a later flip would
+    // otherwise re-activate the marker on rows that have since scrolled
+    // into view and silently suppress their animation
+    for (const row of document.querySelectorAll<HTMLElement>(".osh-snap-row")) row.classList.remove("osh-snap-row")
+  }, 700)
 }
 
 /** wipe every saved setting and re-apply the defaults live: same as

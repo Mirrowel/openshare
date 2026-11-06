@@ -10,6 +10,7 @@
 // vendor patches). The segment fallback below covers OLD shares that
 // predate the stamp - computed once per fold, never at render time.
 import type { ShareData } from "./fold"
+import { pairPromptID } from "./task-pairing"
 
 type SubagentInfo = { agent?: string; title?: string }
 
@@ -86,6 +87,7 @@ export function setSubagentData(data: ShareData | undefined): void {
   // 1. authoritative stamps: metadata.agent on task tool calls
   // 2. collect unstamped calls for the old-share fallback
   const unstamped: Array<{ id: string; child: string; created: number; part: unknown }> = []
+  const promptUnstamped: Array<{ id: string; child: string; created: number; prompt?: string; part: any }> = []
   for (const messages of Object.values(data.message)) {
     for (const message of messages as any[]) {
       if (message?.type !== "assistant" || !Array.isArray(message.content)) continue
@@ -97,10 +99,24 @@ export function setSubagentData(data: ShareData | undefined): void {
         const stamped = typeof part.state?.metadata?.agent === "string" ? part.state.metadata.agent : undefined
         if (stamped && child) writeAgent(part, stamped)
         else if (child) unstamped.push({ id, child, created: Number(part.time?.created ?? 0), part })
+        // prompt link: the part stamp wins; the message back-link
+        // (metadata.toolCallID on the child's user messages) resolves the
+        // rest; whatever remains runs the text-coverage fallback below
+        if (child) {
+          if (typeof part.state?.metadata?.promptID === "string") continue
+          promptUnstamped.push({
+            id,
+            child,
+            created: Number(part.time?.created ?? 0),
+            prompt: typeof part.state?.input?.prompt === "string" ? part.state.input.prompt : undefined,
+            part,
+          })
+        }
       }
     }
   }
   if (unstamped.length) fallbackAgentsForCalls(unstamped, data)
+  fallbackPromptLinks(promptUnstamped, data)
 
   for (const session of data.session) {
     if (!session.parentID) continue
@@ -114,6 +130,49 @@ export function setSubagentData(data: ShareData | undefined): void {
       }
     }
     infos.set(session.id, { agent, title: session.title })
+  }
+}
+
+/** OLD-SHARE FALLBACK for the prompt link: resolve each unstamped call to
+ *  a child prompt via the back-link stamps first, then text coverage -
+ *  and write the resolved id onto the part (state.metadata.promptID) so
+ *  the card's href reads one field in every case. A wrong pair is worse
+ *  than none: sub-threshold matches stay unstamped and the card lands on
+ *  the child page unanchored. */
+function fallbackPromptLinks(
+  calls: Array<{ id: string; child: string; created: number; prompt?: string; part: any }>,
+  data: ShareData,
+): void {
+  if (!calls.length) return
+  const byChild = new Map<string, typeof calls>()
+  for (const call of calls) {
+    const list = byChild.get(call.child)
+    if (list) list.push(call)
+    else byChild.set(call.child, [call])
+  }
+  for (const [child, list] of byChild) {
+    list.sort((a, b) => a.created - b.created)
+    const messages = ((data.message[child] ?? []) as any[]).slice().sort((a, b) => {
+      return Number(a?.time?.created ?? 0) - Number(b?.time?.created ?? 0)
+    })
+    const candidates = messages
+      .filter((m) => m?.type === "user" && typeof m?.id === "string")
+      .map((m) => ({ id: m.id as string, created: Number(m.time?.created ?? 0), text: String(m.text ?? "") }))
+    // the message back-link stamps resolve their calls without the ladder
+    const byToolCall = new Map<string, string>()
+    for (const m of messages) {
+      const tc = m?.metadata?.toolCallID
+      if (m?.type === "user" && typeof tc === "string" && typeof m.id === "string") byToolCall.set(tc, m.id)
+    }
+    const claimed = new Set<string>(byToolCall.values())
+    for (const call of list) {
+      const viaStamp = byToolCall.get(call.id)
+      const pick = viaStamp ?? pairPromptID({ created: call.created, prompt: call.prompt }, candidates, claimed)
+      if (!pick) continue
+      claimed.add(pick)
+      const meta = ((call.part.state ??= {}).metadata ??= {})
+      meta.promptID = pick
+    }
   }
 }
 

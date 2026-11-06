@@ -53,15 +53,31 @@
    applications below are OPT-IN per view via html[data-osh-code-surface]
    (conversation applies it; classic and the skins keep their current
    surfaces by default). */
-:root {
-  --osh-code-bg: color-mix(in oklab, var(--text-base) 7%, transparent);
-  /* the same tint over the page, opaque: the sticky line-number gutter
-     must hide code scrolling under it */
-  --osh-code-solid: color-mix(in oklab, var(--text-base) 7%, var(--background-stronger, var(--background-base)));
-}
+ :root {
+  /* code-surface tint ladder, LIGHT themes only (dark resolves to
+     transparent/no-op - dark code reads better without it). Three
+     levels so compound surfaces read as a family: body content at the
+     base tint, separator/meta rows one step up, header rows one step
+     more. light-dark() keys off each theme's color-scheme; the solid
+     variants stay opaque where sticky gutters must hide scrolled code */
+  --osh-tint-1: light-dark(color-mix(in oklab, #000 10%, transparent), transparent);
+  --osh-tint-2: light-dark(color-mix(in oklab, #000 13%, transparent), transparent);
+  --osh-tint-3: light-dark(color-mix(in oklab, #000 16%, transparent), transparent);
+  --osh-code-solid: light-dark(
+    color-mix(in oklab, #000 10%, var(--background-stronger, var(--background-base))),
+    var(--background-stronger, var(--background-base))
+  );
+  /* the separator step must be OPAQUE like the body solid it replaces:
+     a transparent tint would composite OVER the body solid and read as a
+     much darker band than the intended one-step lift */
+  --osh-sep-solid: light-dark(
+    color-mix(in oklab, #000 13%, var(--background-stronger, var(--background-base))),
+    var(--background-stronger, var(--background-base))
+  );
+ }
 /* the kit sets the highlighter block's background inline */
 html[data-osh-code-surface] [data-component="markdown-code"] pre.shiki {
-  background-color: var(--osh-code-bg) !important;
+  background: var(--osh-tint-1) !important;
   border-color: var(--border-weaker-base);
 }
 
@@ -187,9 +203,8 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   line-height: var(--line-height-large, 1.5);
 }
 
-/* task/subagent cards: NO outline (owner round 2026-10-26 - the
-   rectangle goes, the rounded background stays; see .osh-task-wrap
-   block for the full hint treatment) */
+/* task/subagent cards: NO outline (the rectangle goes, the rounded
+   background stays; see .osh-task-wrap block for the full hint treatment) */
 
 /* tool output blocks keep v1 breathing room below */
 [data-component="tool-output"] {
@@ -229,21 +244,20 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 [data-row-key] [data-component="tool-output"] {
   content-visibility: visible;
 }
-/* Scroll containment: NONE by default (owner rule) - the browser default
-   captures the wheel only when a surface actually scrolls in that
-   direction and chains to the page otherwise. Horizontal-only scrollers
-   (the split diff) contain their X axis so trackpad sideways never nudges
-   the page, while vertical wheel always chains. Live-caught: blanket
-   `overscroll-behavior: contain` on tool surfaces locked page scroll even
-   when nothing could scroll (read/edit/shell locked, write - never in the
-   list - worked). */
+/* Scroll containment: NONE by default - the browser default captures the
+   wheel only when a surface actually scrolls in that direction and chains
+   to the page otherwise. Horizontal-only scrollers (the split diff) contain
+   their X axis so trackpad sideways never nudges the page, while vertical
+   wheel always chains. Blanket `overscroll-behavior: contain` on tool
+   surfaces locks page scroll even when nothing can scroll: read, edit and
+   shell bodies locked it, while write (never in that list) worked. */
 /* --- reading rhythm ---------------------------------------------------
    Row spacing lives HERE, keyed by the data-timeline-spacing attribute the
    kit's Frame already emits. Never via tailwind classes forked into the
    vendor tree: arbitrary classes there are never generated (kit CSS is
-   prebuilt upstream; the viewer's tailwind does not scan vendor/) -
-   live-caught when every spacing fork silently did nothing AND removed
-   upstream's pt-2/pt-4, collapsing the transcript into soup.
+   prebuilt upstream; the viewer's tailwind does not scan vendor/), so a
+   spacing fork silently does nothing while also removing upstream's
+   pt-2/pt-4 and collapsing the transcript into soup.
    Upstream emits BOTH its pt-2/pt-4 classes and the data-timeline-spacing
    attribute; these UNLAYERED rules win the cascade over tailwind's
    @layer utilities regardless of specificity (app.css @source-scans the
@@ -297,7 +311,8 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
    bottom margin collapse into one 10px gap. The markdown-code wrapper
    hugs as well - the copy button anchors to its corner and would
    otherwise float at the column's far edge. */
-[data-timeline-row] [data-component="text-part"] pre {
+[data-timeline-row] [data-component="text-part"] pre,
+[data-timeline-row] [data-component="reasoning-part"] pre {
   margin: 10px 0 0;
   width: fit-content;
   min-width: 18rem;
@@ -305,7 +320,8 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-[data-timeline-row] [data-component="text-part"] [data-component="markdown-code"] {
+[data-timeline-row] [data-component="text-part"] [data-component="markdown-code"],
+[data-timeline-row] [data-component="reasoning-part"] [data-component="markdown-code"] {
   width: fit-content;
   min-width: 18rem;
   max-width: min(100%, 68rem);
@@ -325,9 +341,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
 
 /* Rails live on the ROW WRAPPER (tool-part-wrapper), never on the inner
    trigger: the kit renders reasoning through a nested BasicTool, so a
-   trigger-level rule indented thoughts TWICE and leaked into group
-   children (the "Used N" slide, live-caught). 1px hairline, not a colored
-   stripe. Tool rows step in 14px; thought rows sit at 6px with no rail. */
+   trigger-level rule indents thoughts TWICE and leaks into group children
+   (the "Used N" slide). 1px hairline, not a colored stripe. Tool rows step
+   in 14px; thought rows sit at 6px with no rail. */
 [data-timeline-row] [data-component="tool-part-wrapper"],
 [data-row-key] [data-component="tool-part-wrapper"],
 .osh-entries [data-component="tool-part-wrapper"] {
@@ -384,12 +400,11 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   overflow-wrap: anywhere;
   max-height: 32rem;
   overflow: auto;
-  /* NO overscroll-behavior here, ever: `contain` on a box that is a
-     scroll container in Y (overflow:auto) blocks vertical wheel chaining
-     EVEN WHEN NOTHING CAN SCROLL (live-caught: grep bodies locked page
-     scroll in both overflow modes). The browser default chains exactly
-     per the owner rule - capture only when the surface actually scrolls
-     vertically. The split diff keeps its X-only contain. */
+  /* NO overscroll-behavior here, ever: `contain` on a box that is a scroll
+     container in Y (overflow:auto) blocks vertical wheel chaining EVEN WHEN
+     NOTHING CAN SCROLL. The browser default already chains correctly, so
+     containment belongs only on surfaces that actually scroll vertically.
+     The split diff keeps its X-only contain. */
 }
 .osh-pre-error {
   color: var(--syntax-diff-delete);
@@ -413,6 +428,9 @@ html[data-osh-toolinfo="off"] [data-component="reasoning-part"] [data-slot="basi
   color: var(--syntax-keyword, oklch(0.75 0.11 290));
   font-style: normal;
 }
+/* The thought mark: ONE glyph for the reasoning trigger and the panel's
+   closing mark (a skin overriding either rule retargets both). Text
+   glyph, not an image - inherits the surrounding font/color. */
 [data-row-key] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"]::before,
 [data-timeline-row] [data-component="reasoning-part"] [data-slot="basic-tool-tool-title"]::before {
   content: "✦ ";
@@ -465,27 +483,105 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   min-width: 0;
 }
 /* titlebar of the unified file card: the controls sit next to the
-   filename (one consistent position across every view) */
+   filename (one consistent position across every view). Dark themes
+   keep the transparent header. LIGHT themes invert it - an ink band
+   (derived from --text-strong, so sepia warms it automatically) with
+   light text and a hairline bottom border: code surfaces read as a
+   deliberate dark-on-light editor card, and gray-on-gray disappears */
 .osh-file-titlebar {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
+  border-radius: 8px 8px 0 0;
+}
+[data-color-scheme="light"] .osh-file-titlebar {
+  background: color-mix(in oklab, var(--text-strong) 93%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--text-strong) 55%, transparent);
+  color: #ececea;
+}
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-muted"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-weaker"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-faint"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-base"] {
+  color: #a6a6a0;
+}
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-strong"],
+[data-color-scheme="light"] .osh-file-titlebar [class*="text-weak"] {
+  color: #ececea;
+}
+/* the title block sets its OWN colors (var(--text-weaker)) - direct
+   rules beat inherited ones, so the ink band must override them
+   explicitly or the path renders light-on-light */
+[data-color-scheme="light"] .osh-file-titlebar [data-slot="osh-file-title"],
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-dir,
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-icon,
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-sep {
+  color: #a6a6a0;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-file-name {
+  color: #ececea;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-card-controls button {
+  color: #a6a6a0;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-card-controls button:hover {
+  color: #ececea;
+  border-color: rgba(255, 255, 255, 0.38);
 }
 .osh-pre-wrap {
   position: relative;
-  /* outputs HUG their content (owner directive): a plain block fills the
-     row width - the toggle floated to the far-right edge of the page and
-     short outputs showed a wide empty surface (live-caught on grep; the
-     kit's bash-output width:100% did the same to shell). Cap applies. */
+  /* room for both controls (copy + wrap) so a short output does not run
+     them over the text; min-height stays hugging - an empty result is not
+     stretched to a fixed box */
+  min-width: 15rem;
+  padding-right: 0;
+  /* outputs HUG their content: a plain block fills the row width, which
+     floats the toggle to the far-right edge of the page and leaves short
+     outputs as a wide empty surface (the kit's bash-output width:100% does
+     the same to shell). The cap applies. */
   width: fit-content;
   max-width: min(100%, 75vw);
 }
-.osh-pre-wrap [data-slot="osh-overflow-toggle"] {
+/* output-card overlay buttons (copy, wrap toggle) in the shell's ghost
+   language: borderless, transparent, hidden until the card is hovered,
+   with a background bleed so text scrolling under them softens instead
+   of colliding. They sit flush BESIDE the scrollbar when one renders
+   (--osh-sbw, stamped by output-resize) instead of over it. */
+.osh-pre-wrap [data-slot="osh-overflow-toggle"],
+.osh-pre-wrap [data-slot="osh-copy"] {
   position: absolute;
   top: 4px;
-  right: 4px;
+  right: calc(var(--osh-sbw, 0px) + 2px);
+  border: none;
+  background: transparent;
+  color: var(--text-weaker);
+  opacity: 0;
 }
+.osh-pre-wrap [data-slot="osh-copy"] {
+  right: calc(var(--osh-sbw, 0px) + 24px);
+}
+.osh-pre-wrap:hover [data-slot="osh-copy"],
+.osh-pre-wrap:hover [data-slot="osh-overflow-toggle"],
+.osh-pre-wrap [data-slot="osh-copy"]:focus-visible,
+.osh-pre-wrap [data-slot="osh-overflow-toggle"]:focus-visible {
+  opacity: 0.9;
+}
+.osh-pre-wrap [data-slot="osh-copy"]::before,
+.osh-pre-wrap [data-slot="osh-overflow-toggle"]::before {
+  content: "";
+  position: absolute;
+  inset: -3px -4px -3px -20px;
+  z-index: -1;
+  background: var(--surface-base);
+  mask-image:
+    linear-gradient(to right, transparent, #000 18px),
+    linear-gradient(transparent, #000 5px, #000 calc(100% - 5px), transparent);
+  mask-composite: intersect;
+  pointer-events: none;
+}
+[data-slot="osh-copy"],
 [data-slot="osh-overflow-toggle"] {
   flex: none;
   width: 20px;
@@ -493,16 +589,14 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-weaker-base);
   border-radius: 5px;
-  background: var(--surface-raised-base);
   color: var(--text-weaker);
   font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
   cursor: pointer;
-  opacity: 0.55;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, color 120ms ease;
 }
-[data-slot="osh-overflow-toggle"]:hover {
+.osh-pre-wrap [data-slot="osh-copy"]:hover,
+.osh-pre-wrap [data-slot="osh-overflow-toggle"]:hover {
   opacity: 1;
   color: var(--text-strong);
 }
@@ -528,7 +622,7 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
   flex: none;
   color: var(--text-weaker);
 }
-/* --- file-card sizing (owner round 2026-10-25) --------------------------
+/* --- file-card sizing --------------------------------------------------
    ONE fixed card width for the whole file family: read, write and
    unified edit all render at --osh-card (30rem); a split diff renders at
    exactly 2x, so the first column NEVER changes size when toggling
@@ -538,8 +632,8 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
    pierre scroller used to poison the measurement and refuse the split
    forever). */
 :root {
-  /* +20% (owner round 2026-10-26): unified/text file cards render wider;
-     split = 2x the same token, still viewport-capped */
+  /* unified/text file cards render wider; split = 2x the same token, still
+     viewport-capped */
   /* file-card width; applySettings overrides live from the cardWidth
      setting (rem) - this is the pre-paint default */
   --osh-card: 40rem;
@@ -547,17 +641,25 @@ html[data-osh-tool-info="off"] [data-slot="osh-tool-dir"] {
 [data-component="osh-file-body"] {
   width: min(100%, var(--osh-card));
 }
-html[data-osh-code-surface] [data-component="osh-file-body"] {
+/* file-card bodies get the tint in EVERY view (the painted surface is
+   pierre's, so the tint rides the --opencode-diffs-bg hook); the
+   collapsed "x unmodified lines" rows sit one tint level up via the
+   separator override so the card reads header / body / context as
+   three related surfaces. Dark keeps pierre's own dark separator mix */
+[data-component="osh-file-body"] {
   background: var(--osh-code-solid);
-  /* the kit's hook for the diff/gutter background; opaque so scrolled
-     code never shows through the sticky gutter */
   --opencode-diffs-bg: var(--osh-code-solid);
 }
-html[data-osh-code-surface] [data-component="osh-file-body"] diffs-container {
+[data-component="osh-file-body"] diffs-container {
   background-color: transparent;
 }
-html[data-osh-code-surface] .osh-pre {
-  background: var(--osh-code-bg);
+/* The kit's LIGHT palette makes --text-base a grey; plain code text
+   washes out on the tinted light card. Apply on the shadow host, not
+   through --text-base's own value inside :host (a self-referential
+   fallback would form a custom-property cycle). */
+[data-color-scheme="light"] [data-component="osh-file-body"] diffs-container {
+  --text-base: #3f3f3f;
+  --diffs-bg-separator-override: var(--osh-sep-solid);
 }
 [data-component="osh-edit-tool"][data-osh-split="on"] [data-component="osh-file-body"] {
   width: min(100%, calc(2 * var(--osh-card)));
@@ -593,15 +695,26 @@ html[data-osh-code-surface] .osh-pre {
   max-width: min(100%, 75vw);
 }
 html[data-osh-overflow="scroll"] .osh-pre,
-html[data-osh-overflow="scroll"] [data-component="tool-output"],
+html[data-osh-overflow="scroll"] [data-component="tool-output"] {
+  /* the base rule wraps unconditionally, so scroll mode never scrolled:
+     a card that still wrapped horizontally had nothing to scroll */
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  /* thin, never none: `scrollbar-width: none` hid the VERTICAL bar too, so a
+     long result lost its "more below" cue the moment scroll mode was on.
+     Only the horizontal bar is suppressed, where the pseudo exists. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.4)) transparent;
+}
 html[data-osh-overflow="scroll"] [data-slot="bash-scroll"] {
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-html[data-osh-overflow="scroll"] .osh-pre::-webkit-scrollbar,
-html[data-osh-overflow="scroll"] [data-component="tool-output"]::-webkit-scrollbar,
-html[data-osh-overflow="scroll"] [data-slot="bash-scroll"]::-webkit-scrollbar {
+html[data-osh-overflow="scroll"] .osh-pre::-webkit-scrollbar:horizontal,
+html[data-osh-overflow="scroll"] [data-component="tool-output"]::-webkit-scrollbar:horizontal,
+html[data-osh-overflow="scroll"] [data-slot="bash-scroll"]::-webkit-scrollbar:horizontal {
   display: none;
 }
 html[data-osh-overflow="wrap"] .osh-pre,
@@ -612,15 +725,86 @@ html[data-osh-overflow="wrap"] [data-slot="bash-scroll"] {
   overflow-x: hidden;
 }
 
+/* --- prompt bubble + meta row (parity with the pre-update viewer) --------
+   The kit update moved the bubble one surface up (layer-02) and shrank the
+   metadata line to 12px faint with the whole footer fading in on hover.
+   Keep both as the older viewer rendered them: the darker bubble surface and
+   a 13px body-coloured meta line, always visible. */
+:root body [data-timeline-row] [data-component="user-message"] [data-slot="user-message-text"],
+:root body [data-timeline-row] .osh-content [data-component="user-message"] [data-slot="user-message-text"] {
+  background: var(--v2-background-bg-layer-01);
+}
+/* both footers keep the kit's hover reveal; only their type is pinned so the
+   prompt footer and the assistant-turn footer read as one family */
+:root body [data-timeline-row] [data-slot="text-part-copy-wrapper"],
+:root body [data-row-key] [data-slot="text-part-copy-wrapper"],
+:root body [data-slot="text-part-meta"] {
+  font-size: 13px;
+  color: var(--text-weak);
+}
+/* The hover footer is a 20px box (kit) holding 13px text; at 13/16 the
+   descenders sit hard against the box edge and the last line reads as cut
+   off. Give the box its natural height and a hair of slack, and reserve 2px
+   under any text part that owns a footer so the hover line never touches
+   the next row. */
+:root body [data-slot="text-part-copy-wrapper"] {
+  height: auto;
+  min-height: 20px;
+  padding-bottom: 2px;
+}
+/* Same slack for the PROMPT footer: the kit gives it a fixed 20px box
+   (scaled by --user-run-meta) holding 13px text, which clipped the line
+   under the prompt the same way. Natural height + 2px always, and the
+   meta/wrap take the 18px line box the assistant footer uses. */
+:root body [data-slot="user-message-copy-wrapper"] {
+  height: auto;
+  min-height: calc(20px * var(--user-run-meta, 1));
+  padding-bottom: 2px;
+}
+:root body [data-slot="user-message-meta-wrap"],
+:root body [data-slot="user-message-meta"] {
+  line-height: 18px;
+}
+:root body [data-component="user-message"]:has([data-slot="user-message-copy-wrapper"]) {
+  padding-bottom: 2px;
+}
+:root body [data-slot="text-part-meta"] {
+  line-height: 18px;
+}
+:root body [data-component="text-part"]:has([data-slot="text-part-copy-wrapper"]) {
+  padding-bottom: 2px;
+}
+:root body [data-slot="text-part-meta"] :where(span, time) {
+  font-size: 13px;
+  color: var(--text-weak);
+}
+:root body [data-timeline-row] [data-slot="user-message-meta-wrap"],
+:root body [data-timeline-row] [data-slot="user-message-meta-tail"],
+:root body [data-timeline-row] [data-slot="user-message-meta"],
+:root body [data-timeline-row] [data-slot="user-message-meta-label"],
+:root body [data-timeline-row] [data-slot="user-message-meta-item"] {
+  font-size: 13px;
+  color: var(--text-weak);
+  opacity: 1;
+}
+
+/* The shell command was monospace after the kit update, which widened every
+   row by roughly a quarter and read heavier than the rest of the trigger
+   line. Keep it on the sans face like the other tool titles. */
+:root body [data-timeline-row] [data-slot="shell-submessage-value"],
+:root body [data-row-key] [data-slot="shell-submessage-value"] {
+  font-family: var(--font-family-sans);
+}
+
 /* --- prompt style: bubble (default) or flat ------------------------------
    Flat unhooks the kit's right-aligned chat bubble at the ROW level:
    every user message renders full-width at the left with an accent
-   chevron marker and medium weight. Row+body both forced (the kit has
-   two user-message variants and a body-only override left half of them
-   right-bound, owner-caught); !important because the kit's own rules
-   are :root[data-color-scheme] body [attr] [attr] (4 attributes).
-   No background band: the marker alone distinguishes a prompt
-   (owner round 2026-10-25). Unlayered so it beats the kit's @layer. */
+   chevron marker and medium weight. Row and body both forced (the kit has
+   two user-message variants, and a body-only override leaves half of them
+   right-bound); !important because the kit's own rules are
+   :root[data-color-scheme] body [attr] [attr] (4 attributes). No background
+   band: the marker alone distinguishes a prompt. Unlayered so it beats the
+   kit's @layer. */
 html[data-osh-prompts="flat"] body [data-component="user-message"] {
   justify-content: flex-start !important;
   align-items: flex-start !important;
@@ -700,6 +884,31 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="u
 .osh-dm-btn.osh-dm-starved {
   opacity: 0.5;
 }
+/* on the ink titlebar the kit's selected pill (white raised + near-black
+   text) loses its text to the light-titlebar overrides, so selection
+   renders invisible: invert it instead - translucent white glass on the
+   band, light text - at a specificity above the titlebar text rules */
+[data-color-scheme="light"] .osh-file-titlebar .osh-dm-btn {
+  color: #a6a6a0;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-dm-btn.osh-dm-on {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ececea;
+}
+[data-color-scheme="light"] .osh-file-titlebar .osh-dm-btn:hover {
+  color: #ececea;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* the narrow single-turn column: hidden at 900px+, the same breakpoint as
+   the narrow media query and the nav's own bar (768/1024 tailwind steps
+   left a 768-899 band where the desktop column hid but the narrow column
+   was display:none too - nothing rendered) */
+@media (min-width: 900px) {
+  .osh-narrow-col {
+    display: none;
+  }
+}
 
 /* --- conversation layout: row only at 900px+ -----------------------------
    TurnNav switches to its sidebar at 900px; the container must flip to
@@ -775,9 +984,9 @@ html[data-osh-prompts="flat"] body [data-component="user-message"] [data-slot="u
 }
 
 /* --- light-mode readability floor ----------------------------------------
-   The kit's light tokens ship --text-weaker at 1.6:1 on white (meta text
-   nearly invisible - owner-caught). Forced themes carry the fix from
-   build-themes.mjs; this rule covers SYSTEM-light (no forced block). */
+   The kit's light tokens ship --text-weaker at 1.6:1 on white, so meta text
+   is nearly invisible. Forced themes carry the fix from build-themes.mjs;
+   this rule covers SYSTEM-light (no forced block). */
 html[data-color-scheme="light"] {
   --text-weak: #767676;
   --text-weaker: #9e9e9e;
@@ -797,6 +1006,285 @@ html[data-color-scheme="light"] {
      applied), and a reserved gutter is what makes a thumb press a REAL
      scrollbar press that can never start a text selection under it */
   scrollbar-gutter: stable;
+}
+/* Markdown tables: the frame hugs the table (narrow tables don't stretch
+   a full-width box); 2px column separators; and cells WRAP instead of
+   forcing horizontal scroll - a genuinely wide table caps at the card
+   width with long tokens breaking inside their column (anywhere, not
+   break-word, so wrapping participates in column sizing). Light themes
+   paint the table on the code-tint ladder: content at the base tint,
+   the header row one step up - the same body/header relationship file
+   cards carry */
+[data-component="markdown-table"] {
+  width: fit-content;
+  max-width: 100%;
+  background: var(--osh-tint-1);
+}
+[data-component="markdown-table"] table {
+  max-width: 100%;
+}
+[data-component="markdown-table"] thead {
+  background: var(--osh-tint-3);
+}
+/* the kit renders th text in its muted grey - unreadable on the tinted
+   light header band */
+[data-color-scheme="light"] [data-component="markdown-table"] th {
+  color: var(--text-strong);
+}
+[data-component="markdown-table"] th,
+[data-component="markdown-table"] td {
+  overflow-wrap: anywhere;
+}
+[data-component="markdown-table"] th + th,
+[data-component="markdown-table"] td + td {
+  border-left: 2px solid var(--v2-border-border-muted);
+}
+/* inline code chips in prose: the base tint, one rank below blocks so
+   they read as code without competing with fenced blocks */
+[data-transcript-scroll] :not(pre) > code {
+  background: var(--osh-tint-1);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+/* --- reasoning panel -----------------------------------------------------
+   The open thinking body is a real panel, not loose markdown under a
+   clamp. Design language (matches the tool cards' geometry):
+   - a 2px left rail at the TRIGGER's left edge marks the element's span
+     (the kit's rail inset is cancelled so rail x = trigger x, exactly
+     where a tool card's edge sits); the text keeps its inset inside
+   - the bottom is scroll-state aware: while content sits below, a soft
+     fade marks the cut (the output cards' clipped-content language);
+     at the scroll end the closing hairline fades in, completing the
+     bracket. Non-overflowing thoughts have neither - they read as plain
+     indented text under the rail
+   - the body scrolls under a 26rem cap only when the thought actually
+     overflows it; the shared per-card drag system (data-osh-out + grip)
+   resizes it
+   Open reserves the FULL height instantly (the vendored open handler
+   polls measureWhenReady AFTER the flip and writes the final height to
+   --osh-anim-h, cached on close; the CSS 26rem fallback holds the row
+   meanwhile) while the content's own height transition pours the panel
+   in - a CSS height animation on the row itself
+   reports intermediate sizes to the virtualizer's ResizeObserver,
+   which positions rows below one frame behind (measured ~60px visible
+   overlap mid-animation). Collapse animates the height down (safe
+   direction: rows below only ever see a gap). Two more traps:
+   `scrollbar-width` on the body would DISABLE the webkit pseudo
+   scrollbar entirely (measured in the transcript-scrollbar round) -
+   the bar is webkit-only on purpose - and CSS vars inherit downward,
+   so --osh-anim-h is set on the PART element (it survives the closed-
+   state content unmount) and the content inherits it. */
+  [data-component="reasoning-part"] [data-slot="collapsible-content"] {
+   height: 0;
+   overflow: hidden;
+   /* cancel the kit's rail inset so the panel rail aligns with the
+      trigger edge (tool cards do the same with their card edge) */
+   padding-inline-start: 0;
+   /* the ROW height animates on open too (like collapse, the other safe
+      direction): rows below track it through the virtualizer's ResizeObserver
+      one frame behind - the panel's clip trails slightly (see max-height
+      below), so that lag lands on empty space, never on text */
+   transition: height 260ms cubic-bezier(0.32, 0.72, 0.16, 1) !important;
+ }
+ [data-component="reasoning-part"] [data-slot="collapsible-content"]:not([data-expanded]) .osh-think-panel {
+   /* the panel's own padding rides the close too - otherwise the row
+      snaps by the padding when the content unmounts at the timer */
+   padding-block: 0;
+   transition: padding 260ms cubic-bezier(0.32, 0.72, 0.16, 1);
+ }
+[data-component="reasoning-part"] [data-slot="collapsible-content"][data-expanded] {
+  height: calc(var(--osh-anim-h, 26rem) + 32px);
+}
+/* a reopen after the unmount MOUNTS the content already expanded; without
+   this it would appear at full height in one frame. @starting-style gives
+   the first frame height 0, so the same transition pours it in and rows
+   below track it exactly like an in-place expand */
+@starting-style {
+  [data-component="reasoning-part"] [data-slot="collapsible-content"][data-expanded] {
+    height: 0;
+  }
+}
+/* Static mounts: panels born open during page boot (settings
+   default-open, snapshot-remembered) and rows outside the viewport
+   during a mass-disclosure flip snap to their final height - the pour
+   animation is for panels the reader can actually see change. With the
+   transition suppressed, the @starting-style height:0 first frame
+   lands at final height in one step; nothing animates, nothing feeds
+   per-frame intermediate sizes to the virtualizer. */
+html[data-osh-boot] [data-component="reasoning-part"] [data-slot="collapsible-content"],
+html[data-osh-flip] .osh-snap-row [data-component="reasoning-part"] [data-slot="collapsible-content"],
+html[data-osh-boot] :where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"],
+html[data-osh-flip] .osh-snap-row :where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"] {
+  transition: none !important;
+}
+
+/* closing wipe: while a card collapses, a short top fade rides the
+   content. The card's top edge (background meeting page background - the
+   sharpest paint in the box) passes into the transparent zone BEFORE the
+   height reaches 0, so the wipe's final band is see-through and nothing
+   paintable survives the last frames (the residual 1px line) */
+.tool-collapsible[data-osh-closing] > [data-slot="collapsible-content"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+}
+
+/* --- tool card pour -------------------------------------------------------
+   Height motion is for plain tool cards (shell, generic results, groups).
+   File cards deliberately opt out in tool-overrides: their lazy pierre
+   body owns complex content rendering inside a shadow root and uses the
+   kit's original instant mount/unmount instead. No staged heights, forced
+   reflows or held-open body applies to those. The opted-in card content
+   owns a measured --osh-pour-h so height can animate even when the body
+   is mounted at the same frame. */
+:where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"] {
+  height: 0;
+  overflow: hidden;
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0.16, 1) !important;
+}
+:where(.tool-collapsible[data-osh-pour]) > [data-slot="collapsible-content"][data-expanded] {
+  height: var(--osh-pour-h, auto);
+  /* the kit sets overflow visible on expanded content - the pour needs
+     the clip */
+  overflow: hidden;
+}
+/* the trigger/content gap follows the collapse, rather than disappearing
+   later when the content unmounts */
+[data-row-key] .tool-collapsible[data-osh-pour],
+[data-timeline-row] .tool-collapsible[data-osh-pour],
+/* reasoning is opted out of the pour machinery but its close must land
+   at the same final geometry: without the gap transition the animated
+   end-state keeps the trigger/content gap that the unmount removes, and
+   the row snaps up 4-8px after the content drops */
+[data-row-key] [data-component="reasoning-part"] .tool-collapsible,
+[data-timeline-row] [data-component="reasoning-part"] .tool-collapsible {
+  transition: gap 260ms cubic-bezier(0.32, 0.72, 0.16, 1);
+}
+[data-row-key] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])),
+[data-timeline-row] .tool-collapsible[data-osh-pour]:not(:has(> [data-slot="collapsible-content"][data-expanded])),
+[data-row-key] [data-component="reasoning-part"] .tool-collapsible:not(:has(> [data-slot="collapsible-content"][data-expanded])),
+[data-timeline-row] [data-component="reasoning-part"] .tool-collapsible:not(:has(> [data-slot="collapsible-content"][data-expanded])) {
+  gap: 0;
+}
+
+[data-osh-out="think"] {
+  --osh-out-h: 26rem;
+}
+.osh-think-panel {
+  position: relative;
+  margin-top: 2px;
+  /* NO max-height of its own: the CONTENT's animated height plus its
+     overflow clip produce the pour (the panel renders at natural height
+     and is revealed as the content grows); the body inside keeps the
+     --osh-out-h cap */
+  padding: 2px 12px 6px 16px;
+}
+/* the rail: constant 2px width (a border would animate its width and
+   snap at the end), transparent-leaning, dissolving toward the bottom
+   where the closing mark takes over the bracket */
+.osh-think-panel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 22px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--v2-border-border-muted) 80%, transparent),
+    color-mix(in srgb, var(--v2-border-border-muted) 55%, transparent) 70%,
+    transparent
+  );
+  pointer-events: none;
+}
+/* the closing mark: gradient lines part around the thought icon and a
+   quiet mono label - the lines emerge from nothing at the outer ends.
+   Shown when no unread content sits below (at the scroll end, or a
+   thought that never overflowed); while more content sits below, the
+   clipped fade (below) owns the bottom instead */
+.osh-think-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 22px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+.osh-think-end-line {
+  flex: 1;
+  height: 1px;
+}
+.osh-think-end-line:first-child {
+  background: linear-gradient(to right, transparent, var(--v2-border-border-muted));
+}
+.osh-think-end-line:last-child {
+  background: linear-gradient(to left, transparent, var(--v2-border-border-muted));
+}
+.osh-think-end-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-weaker);
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.02em;
+}
+.osh-think-end-label::before {
+  content: "✦ ";
+  font-size: 11px;
+}
+[data-osh-out="think"]:not([data-more-down]) .osh-think-end {
+  opacity: 1;
+}
+.osh-think-panel .osh-think-body {
+  overflow-y: auto;
+  padding-right: 4px;
+  /* NO blanket contain (the tool-round trap): `contain` on a Y scroll
+     container blocks wheel chaining to the page EVEN WHEN nothing can
+     scroll - an expanded non-overflowing thought locked page scroll */
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar {
+  width: 5px;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar-thumb {
+  background: var(--border-weak-base);
+  border-radius: 3px;
+}
+.osh-think-panel .osh-think-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-weaker);
+}
+/* the clipped fade: ONLY while unread content sits below (scrolled state
+   from output-resize); the collapsed max-height-0 panel clips overflow,
+    so closed panels never show it */
+[data-osh-out="think"][data-osh-clipped][data-more-down]::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 10px;
+  bottom: 20px;
+  height: 26px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--v2-background-bg-base));
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-component="reasoning-part"] [data-slot="collapsible-content"],
+  .tool-collapsible[data-osh-pour] > [data-slot="collapsible-content"],
+  .tool-collapsible[data-osh-pour],
+  .osh-think-end {
+    transition: none !important;
+  }
+}
+/* transcript bottom breathing room ONLY where no footer sits at the end
+   of the scroller (any of the footer variants carries data-osh-footer);
+   footer-bearing surfaces keep their footer's own spacing */
+[data-transcript-scroll]:not(:has([data-osh-footer])) {
+  padding-bottom: 3rem;
 }
 [data-transcript-scroll]::-webkit-scrollbar {
   width: 12px;
@@ -875,10 +1363,10 @@ html[data-color-scheme="light"] {
   color: var(--openshare-accent, var(--accent, var(--text-strong)));
 }
 /* entry slots are transparent under skins that need direct grid children
-   (grove's 2-column turn body; atlas's sheet grid - without this the
-   wrapper divs become the grid's direct children, auto-placement
-   alternates them across columns and the rail lands inline before the
-   first station - live-caught); everywhere else they are plain blocks */
+   (grove's 2-column turn body; atlas's sheet grid: without this the wrapper
+   divs become the grid's direct children, auto-placement alternates them
+   across columns and the rail lands inline before the first station);
+   everywhere else they are plain blocks */
 [data-view="grove"] .osh-entry-slot,
 [data-view="atlas"] .osh-entry-slot {
   display: contents;
@@ -901,8 +1389,8 @@ html[data-color-scheme="light"] {
 /* The kit's expanded tool-group header is position:sticky (its own scroll
    flow). Inside our absolutely-positioned virtualized rows the sticky
    context is the group wrapper, so the header floats with the viewport
-   until the group ends and pins over the last tool call (live-caught).
-   Neutralize - the virtualizer already keeps geometry correct. */
+   until the group ends and pins over the last tool call. Neutralize: the
+   virtualizer already keeps geometry correct. */
 [data-timeline-row] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"],
 [data-row-key] [data-component="collapsed-tool-group"] > .tool-collapsible > [data-slot="collapsible-trigger"][aria-expanded="true"] {
   position: static;
@@ -920,6 +1408,11 @@ html[data-color-scheme="light"] {
   border: none;
   outline: none;
 }
+/* the subagent name is a scan target, not a label washed into the body text;
+   its color follows the agent type when the card carries one */
+.osh-task-wrap [data-component="task-tool-title"] {
+  color: var(--osh-agent, var(--v2-text-text-accent));
+}
 .osh-task-wrap::after {
   content: "";
   position: absolute;
@@ -928,7 +1421,8 @@ html[data-color-scheme="light"] {
   bottom: 0;
   height: 1px;
   border-radius: 1px;
-  background: var(--openshare-accent, var(--icon-strong-base));
+  /* the underline follows the agent type when the card carries one */
+  background: var(--osh-agent, var(--openshare-accent, var(--icon-strong-base)));
   transform: scaleX(0);
   transform-origin: center;
   transition: transform 180ms ease-out;
@@ -1146,17 +1640,16 @@ mark.osh-search-hit.osh-search-hit-active {
 
 
 /* glob/grep/list rows inside a context group render through the kit's
-   special compact branch (a bare tool-trigger, no BasicTool wrapper) -
-   every other group child gets BasicTool's padding, these rendered flush
-   left (live-caught: Glob missing the group indent). Match the indent. */
+   special compact branch (a bare tool-trigger, no BasicTool wrapper), while
+   every other group child gets BasicTool's padding; without this they
+   render flush left and lose the group indent. Match the indent. */
 [data-slot="context-tool-group-item"] > [data-component="tool-trigger"] {
   margin-left: 12px;
 }
 
 /* reasoning fallback (defer=false renders plain text instantly, rich
    markdown swaps in when the worker finishes): match the markdown's
-   typography so the swap is invisible instead of a visible "snap"
-   (live-caught: line spacing changed on arrival) */
+   typography so the swap is invisible instead of a visible spacing snap */
 [data-component="reasoning-part"] [data-slot="collapsible-content"] > pre,
 .osh-reasoning-fallback {
   font-size: 14px;
@@ -1166,10 +1659,10 @@ mark.osh-search-hit.osh-search-hit-active {
 }
 
 /* Toggle anchoring: the browser may not pick scroll anchors INSIDE
-   collapsible bodies - growing content (a diff accordion opening near the
-   top) then pushed its own title up out of view (live-caught). With no
-   anchor inside the growing subtree, growth extends downward and the
-   viewport stays. Close-side compensation lives in toggle-anchor.ts. */
+   collapsible bodies, so growing content (a diff accordion opening near the
+   top) can push its own title up out of view. With no anchor inside the
+   growing subtree, growth extends downward and the viewport stays.
+   Close-side compensation lives in toggle-anchor.ts. */
 [data-slot="collapsible-content"],
 [data-slot="collapsible-content"] * {
   overflow-anchor: none;
@@ -1182,13 +1675,13 @@ mark.osh-search-hit.osh-search-hit-active {
   white-space: nowrap;
 }
 
-/* the prompt-rail margin (owner round 2026-10-25, classic view only):
-   content text starts at indent + the row's own 24px padding; the pill
-   spans 8-38px at the viewport edge. 0.75x = 18px puts the first text at
-   42px - pill right (38) + 4px clearance, no free space beyond it */
+/* the prompt-rail margin (classic view only): content text starts at
+   indent + the row's own 24px padding; the pill spans 8-38px at the
+   viewport edge. 0.75x = 18px puts the first text at 42px - pill right
+   (38) + 4px clearance, no free space beyond it */
 .osh-indent {
-  /* pill mode: the capsule clears the floating pill (measured: text at
-     35px, pill right 28 -> 7px gap; owner round 2026-10-27) */
+  /* pill mode: the capsule clears the floating pill (text at 35px, pill
+     right edge 28px, so a 7px gap) */
   padding-left: 11px !important;
 }
 /* sidebar mode: the sidebar-to-content gap is HALVED to 14px (owner
@@ -1208,9 +1701,9 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
 /* HoverRail v4: floating pill (no gutter column). Popover opens only
    from the pill, scale+slide in from it, 150ms. Rest opacity is inline
    (0.4 rest / 1 near). */
-/* the popover is vertically CENTERED on the pill (owner round 2026-10-25:
-   bottom-aligned read as detached); the translateY lives INSIDE the
-   keyframes so the entry animation never fights the centering */
+/* the popover is vertically CENTERED on the pill (bottom-aligned reads as
+   detached); the translateY lives INSIDE the keyframes so the entry
+   animation never fights the centering */
 @keyframes osh-rail-pop-in {
   from {
     opacity: 0;
@@ -1229,12 +1722,411 @@ html[data-osh-nav="sidebar"] .osh-indent .md\:px-6 {
   border-color: var(--border-strong-base) !important;
 }
 
-/* shell output card hugs too (the kit hardcodes width:100% on
-   bash-output - a short command rendered a full-row empty surface,
-   live-caught) */
+/* the capsule is ONE box at every count with ONE number size: fixed width
+   and height, numbers in fixed line boxes - crossing turn 10 changes
+   nothing. Three-digit sessions are the rare exception: the glyph alone
+   steps down to fit the same box. */
+.osh-rail-pill {
+  width: 24px;
+  padding-block: 14px;
+}
+.osh-rail-pill .osh-pill-num {
+  font-size: 14px;
+  height: 16px;
+  line-height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.osh-rail-pill .osh-pill-track {
+  height: 42px;
+}
+.osh-rail-pill[data-osh-pill-digits="3"] .osh-pill-num {
+  font-size: 12px;
+  letter-spacing: -0.05em;
+}
+
+/* shell output: the kit's own card (copy control included) at the width we
+    want - hugging its command output, capped so a one-word command does not
+    stretch a full-row empty surface. Two surfaces mirroring the kit's dark
+    relationship (output area one step above the command strip): flat tints,
+    the card keeps its own square corners and outline - a shell card is
+    chrome, not a loose block */
 [data-row-key] [data-component="bash-output"],
 [data-timeline-row] [data-component="bash-output"] {
-  width: fit-content;
-  min-width: min(60%, 340px);
-  max-width: min(100%, 75vw);
+   width: fit-content;
+   min-width: min(60%, 340px);
+   max-width: min(100%, 75vw);
+}
+[data-component="bash-output"] div pre {
+  background: var(--osh-tint-2) !important;
+  border-radius: 0 !important;
+}
+/* light lost the dark card's outline (the kit's border token is
+   near-invisible on white) - restore dark parity */
+[data-color-scheme="light"] [data-component="bash-output"] {
+  border: 1px solid var(--border-weaker-base);
+}
+
+/* --- output heights, drag resizing and scroll affordances -------------
+   One behavior set for every output surface: shell, text results, generic
+   tools and file bodies. `--osh-out-h` is the per-card height set by
+   dragging the bottom grip. */
+/* The cap is a line count, not a width: FileCard measures pierre's real
+   line pitch on first paint and sets `--osh-cap` to 20 lines, falling back
+   to 32rem when no measurement lands (reduced motion, no cards). */
+:root { --osh-cap: 32rem; }
+
+/* Code surfaces carry their own syntax hues for the roles the global
+   theme renders as greys (keyword/operator/comment = text-weak/base).
+    Token DENSITY already matches editor baselines; without these the
+    cards read near-monochrome. Keyword/operator/comment values come per
+    theme from scripts/build-themes.mjs; string/type/constant and every
+    other role keep the KIT's static values so prose inline code, code
+    blocks, thinking panels and file cards render the same color for
+    the same role everywhere. Scoped to file cards, preformatted
+    outputs and markdown code blocks only - chrome consumers of the
+    same globals (the thought end-mark, reasoning labels, diff badges)
+    keep the quiet palette. Custom properties inherit through pierre's
+    shadow roots, so one rule covers the rendered spans. */
+.osh-file-scroll, .osh-pre, [data-transcript-scroll] pre {
+  --syntax-keyword: var(--osh-code-keyword, var(--text-weak));
+  --syntax-operator: var(--osh-code-operator, var(--text-base));
+  --syntax-comment: var(--osh-code-comment, var(--text-weak));
+}
+/* standalone code surfaces (prose fences, preformatted text blocks):
+   flat base tint on light, soft corners - they are standalone blocks,
+   not chrome-bearing cards */
+.osh-pre,
+[data-transcript-scroll] pre {
+  background: var(--osh-tint-1) !important;
+  border-radius: 8px;
+}
+
+.osh-file-scroll {
+  max-height: var(--osh-out-h, var(--osh-cap));
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.osh-file-scroll::-webkit-scrollbar { display: none; }
+/* chevrons on the file card's right edge: only while there is more */
+.osh-file-arrow {
+  position: absolute;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  display: none;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-raised-base, var(--background-base));
+  color: var(--text-weak);
+  box-shadow: 0 0 0 1px var(--border-weaker-base);
+  pointer-events: none;
+  z-index: 4;
+}
+.osh-file-arrow::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-left: 1.5px solid currentColor;
+  border-top: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(1px, 1px);
+}
+.osh-file-arrow[data-osh-arrow="up"] { top: 36px; }
+.osh-file-arrow[data-osh-arrow="down"] { bottom: 8px; }
+.osh-file-arrow[data-osh-arrow="down"]::before { transform: rotate(225deg) translate(1px, 1px); }
+[data-osh-out="file"][data-more-down] .osh-file-arrow[data-osh-arrow="down"],
+[data-osh-out="file"][data-more-up] .osh-file-arrow[data-osh-arrow="up"] { display: grid; }
+/* text results share the file card's cap and scroll inside it */
+.osh-pre {
+  max-height: var(--osh-out-h, var(--osh-cap));
+}
+
+/* --- drag resizing, scrollbars and the clipped fade ------------------- */
+[data-osh-out] {
+  position: relative;
+}
+[data-osh-out] [data-osh-scroll] {
+  max-height: var(--osh-out-h, var(--osh-cap));
+}
+[data-osh-out="shell"] [data-osh-scroll] {
+  /* the kit's own default is 240px; keep it for shell until dragged */
+  max-height: var(--osh-out-h, 240px);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.45)) transparent;
+}
+[data-osh-out="shell"] [data-osh-scroll]::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+[data-osh-out="shell"] [data-osh-scroll]::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-osh-out="shell"] [data-osh-scroll]::-webkit-scrollbar-thumb {
+  background: var(--border-strong-base, rgba(128, 128, 128, 0.45));
+  border-radius: 999px;
+}
+/* text results: thin bar too, but only while the body is tall enough */
+[data-osh-out="text"] [data-osh-scroll] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong-base, rgba(128, 128, 128, 0.4)) transparent;
+}
+.osh-out-grip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+  z-index: 3;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.osh-out-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 3px;
+  width: 30px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border-weak-base, rgba(128, 128, 128, 0.3));
+}
+[data-osh-out]:hover .osh-out-grip::after,
+[data-osh-out][data-osh-resizing] .osh-out-grip::after {
+  background: var(--openshare-accent, var(--icon-strong-base));
+}
+[data-osh-out][data-osh-resizing] {
+  user-select: none;
+}
+/* the clipped fade belongs to shell and text cards only: a file card marks
+   clipping with chevrons, and the fade paints a dark band over its last
+   lines; the thinking panel runs its own scroll-state fade below */
+[data-osh-out]:not([data-osh-out="file"]):not([data-osh-out="think"])[data-osh-clipped]::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 9px;
+  bottom: 1px;
+  height: 30px;
+  border-radius: 0 0 6px 6px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--v2-background-bg-base));
+}
+/* the file card scrolls without a bar; its chevrons say more is there */
+[data-osh-out="file"]::after {
+  content: none !important;
+}
+/* --- deep links -------------------------------------------------------- */
+/* ctrl held: ONE box per message marks the link target. A message is many
+   absolutely-positioned rows, so the boxes are computed and painted in an
+   overlay (see timeline-v2); rows only borrow the copy cursor. */
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="user-message:"],
+html[data-osh-linkmode] [data-transcript-scroll] [data-row-key^="assistant-part:"] {
+  cursor: copy;
+}
+.osh-link-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.osh-link-box {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border: 1px dashed color-mix(in oklab, var(--openshare-accent, #e0af68) 55%, transparent);
+  border-radius: 8px;
+  transition: border-color 120ms ease-out;
+}
+.osh-link-overlay:hover .osh-link-box {
+  border-style: solid;
+  border-color: color-mix(in oklab, var(--openshare-accent, #e0af68) 80%, transparent);
+}
+
+/* a deep-link target flashes long enough to be noticed while scrolling */
+.osh-deep-flash {
+  animation: osh-deep-flash 2.4s ease-out;
+  border-radius: 8px;
+}
+@keyframes osh-deep-flash {
+  0%,
+  40% {
+    box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--osh-accent, #e0af68) 65%, transparent);
+    background: color-mix(in oklab, var(--osh-accent, #e0af68) 10%, transparent);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px transparent;
+    background: transparent;
+  }
+}
+
+/* copy feedback bubble */
+.osh-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 8px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface-raised-base, #222);
+  border: 1px solid var(--border-weak-base, rgba(128, 128, 128, 0.25));
+  color: var(--text-strong);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 90;
+}
+.osh-toast[data-on="true"] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* --- tool gallery hover showcase --------------------------------------
+   The gallery renders hover-only affordances statically: a card wrapped in
+   [data-osh-preview-hover] gets the same treatments :hover would apply, so
+   the chevron, the underline and the copy controls are visible in a
+   screenshot as well as live. */
+[data-osh-preview-hover] .osh-task-wrap::after,
+html[data-osh-preview-hover] .osh-task-wrap::after {
+  transform: scaleX(1);
+}
+/* the chevron reveal is hover-nested in the kit; show it statically too */
+[data-osh-preview-hover] .osh-task-wrap [data-component="task-tool-card"] [data-component="task-tool-action"],
+html[data-osh-preview-hover] .osh-task-wrap [data-component="task-tool-card"] [data-component="task-tool-action"] {
+  width: 16px;
+  margin-inline-start: 2px;
+  opacity: 1;
+  transform: none;
+}
+[data-osh-preview-hover] [data-slot="user-message-copy-wrapper"],
+[data-osh-preview-hover] [data-slot="text-part-copy-wrapper"],
+[data-osh-preview-hover] [data-slot="bash-copy"],
+[data-osh-preview-hover] [data-slot="user-message-run-actions"],
+html[data-osh-preview-hover] [data-slot="user-message-copy-wrapper"],
+html[data-osh-preview-hover] [data-slot="text-part-copy-wrapper"],
+html[data-osh-preview-hover] [data-slot="bash-copy"],
+html[data-osh-preview-hover] [data-slot="user-message-run-actions"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-osh-preview-hover] .osh-out-grip::after,
+html[data-osh-preview-hover] .osh-out-grip::after {
+  background: var(--openshare-accent, var(--icon-strong-base));
+}
+
+/* --- subagent "running" animation -------------------------------------
+   A soft sweep crosses the card while a thin glow rides the bottom edge.
+   Both pseudos travel the same distance over the same duration with the
+   same easing, so they move as one; the sweep starts fully outside the card
+   (-115% of its own width) so nothing pops in, and the color follows the
+   agent type (--osh-agent, set by the vendored task renderer). The gallery
+   renders a plain variant for A/B behind data-osh-subanim="plain". */
+@keyframes osh-sweep {
+  from { transform: translateX(-115%); }
+  to { transform: translateX(235%); }
+}
+.osh-task-wrap [data-component="task-tool-card"][data-running] {
+  position: relative;
+  overflow: hidden;
+}
+.osh-task-wrap [data-component="task-tool-card"][data-running]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--osh-agent, var(--openshare-accent, #7aa2f7)) 13%, transparent),
+    transparent
+  );
+  animation: osh-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation-delay: var(--osh-phase, 0s);
+  will-change: transform;
+  pointer-events: none;
+}
+.osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 45%;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--osh-agent, var(--openshare-accent, #7aa2f7)),
+    transparent
+  );
+  animation: osh-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation-delay: var(--osh-phase, 0s);
+  will-change: transform;
+  pointer-events: none;
+}
+/* phase-lock restart (subagent-motion): the attribute kills both
+   animations for two frames so the shared --osh-phase delay applies on
+   the restart, keeping every visible card on one timeline */
+.osh-task-wrap[data-osh-relock] [data-component="task-tool-card"][data-running]::after,
+.osh-task-wrap[data-osh-relock] [data-component="task-tool-card"][data-running]::before {
+  animation: none;
+}
+/* offscreen running cards cost frames for nothing: the motion module pauses
+   them (IntersectionObserver toggles data-osh-off on the wrap) */
+.osh-task-wrap[data-osh-off] [data-component="task-tool-card"][data-running]::after,
+.osh-task-wrap[data-osh-off] [data-component="task-tool-card"][data-running]::before {
+  animation-play-state: paused;
+}
+[data-osh-subanim="plain"] .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
+[data-osh-subanim="plain"] .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+  animation: none;
+  content: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .osh-task-wrap [data-component="task-tool-card"][data-running]::after,
+  .osh-task-wrap [data-component="task-tool-card"][data-running]::before {
+    animation: none;
+  }
+}
+
+/* --- offline snapshot file bodies (file:// cannot start pierre's workers) */
+.osh-offline-body {
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 20px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.osh-offline-line {
+  display: flex;
+  gap: 10px;
+  white-space: pre;
+  min-width: max-content;
+}
+.osh-offline-num {
+  flex: none;
+  width: 3.5ch;
+  text-align: right;
+  color: var(--text-weaker);
+  user-select: none;
+}
+.osh-offline-text {
+  flex: 1;
+  color: var(--text-base);
+}
+.osh-offline-add .osh-offline-text {
+  color: var(--syntax-diff-add, #7fd88f);
+}
+.osh-offline-del .osh-offline-text {
+  color: var(--syntax-diff-delete, #e06c75);
+}
+.osh-offline-hunk .osh-offline-text {
+  color: var(--text-weaker);
 }

@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     branches:
-      - main
       - master
       - dev
       - alpha
@@ -14,10 +13,35 @@ on:
       - share-plugin/README.md
       - share-plugin/LICENSE
       - share-plugin/openshare.config.json
-      - share-plugin/ci/openshare.js
+      - share-plugin/ci/**
       - share-plugin/package.json
       - share-plugin/package-lock.json
       - share-plugin/tsconfig*.json
+      - share-worker/worker.js
+      - share-worker/og/**
+      - share-worker/openshare.config.json
+      - share-worker/wrangler.toml
+      - share-worker/package.json
+      - share-server/server.ts
+      - share-server/Dockerfile
+      - share-server/package.json
+      - share-viewer/src/**
+      - share-viewer/public/**
+      - share-viewer/scripts/**
+      - share-viewer/vendor/**
+      - share-viewer/index.html
+      - share-viewer/vite.config.ts
+      - share-viewer/package.json
+      - share-viewer/package-lock.json
+      - share-viewer/bun.lock
+      - share-cli/src/**
+      - share-cli/build.mjs
+      - share-cli/tsconfig.json
+      - share-cli/package.json
+      - share-cli/package-lock.json
+      - share-cli/README.md
+      - tools/*.mjs
+      - tools/view-export.py
   workflow_dispatch:
     inputs:
       channel:
@@ -53,13 +77,31 @@ on:
         required: false
         type: boolean
         default: false
+      force_npm:
+        description: "Publish to npm even when no plugin files changed since the last publish"
+        required: false
+        type: boolean
+        default: false
+      release_notes:
+        description: "Manual release notes - replaces the generated commit list (header and footer stay)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Compute the version and compose the notes without publishing anything"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   id-token: write
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.channel || github.ref_name }}
+  # key on the BRANCH: same-branch dispatches with different channel inputs
+  # would otherwise publish in parallel and then both write back onto the
+  # same branch - a guaranteed rebase conflict after publish
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -67,9 +109,106 @@ defaults:
     working-directory: share-plugin
 
 jobs:
+  kit:
+    name: Read release kit config
+    runs-on: ubuntu-latest
+    outputs:
+      gate: ${{ steps.conf.outputs.gate }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Read kit config
+        id: conf
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          gate="$(sed -n 's/^RELEASE_GATE="\?\([^"]*\)"\?/\1/p' .github/scripts/release-kit.conf | head -n1)"
+          echo "gate=${gate:-off}" >> "$GITHUB_OUTPUT"
+
+  version:
+    name: Compute release version
+    runs-on: ubuntu-latest
+    needs: kit
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+      repo_stamped: ${{ steps.version.outputs.repo_stamped }}
+      channel: ${{ steps.version.outputs.channel }}
+      npm_tag: ${{ steps.version.outputs.npm_tag }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compute release version
+        id: version
+        working-directory: ${{ github.workspace }}
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_CHANNEL: ${{ github.event.inputs.channel || '' }}
+          TARGET_VERSION: ${{ github.event.inputs.target_version || '' }}
+          VERSION_BUMP: ${{ github.event.inputs.version_bump || 'auto' }}
+          FORCE_RELEASE: ${{ github.event.inputs.force_release || 'false' }}
+          REQUIRE_RELEVANT_CHANGES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_release != 'true' && 'true' || 'false' }}
+        run: |
+          set -o pipefail # a failed compute must fail the run, not vanish into tee
+          bash .github/scripts/compute-version.sh | tee compute.txt
+          repo_version="$(node -p "require('./share-plugin/package.json').version")"
+          computed="$(sed -n 's/^version=//p' compute.txt)"
+          if [ "$repo_version" = "$computed" ]; then
+            echo "repo_stamped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "repo_stamped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dry-run summary
+        if: steps.version.outputs.should_release == 'true' && inputs.dry_run == true
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          {
+            echo "## Release dry run"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Computed version | \`${{ steps.version.outputs.version }}\` |"
+            echo "| Channel | \`${{ steps.version.outputs.channel }}\` |"
+            echo "| Repo pre-stamped | ${{ steps.version.outputs.repo_stamped }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  gate-approve:
+    name: Approval gate
+    # RELEASE_GATE=on pauses versioned (latest channel) releases in the
+    # `release` environment for a human approval - the run shows the
+    # computed version before npm moves. Dev-channel builds and dry runs
+    # never pause. One-time repo setup: create the `release` environment
+    # (Settings > Environments) and add reviewers.
+    if: needs.kit.outputs.gate == 'on' && needs.version.outputs.should_release == 'true' && needs.version.outputs.channel == 'latest' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    needs: [kit, version]
+    environment: release
+    # no checkout in this job; the workflow-level working-directory points
+    # at a directory that does not exist here, so step shells must run from
+    # the repo root or they fail to spawn
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Approved
+        run: |
+          echo "Release ${{ needs.version.outputs.version }} approved."
+
   release:
     name: Build, publish, and release
     runs-on: ubuntu-latest
+    needs: [version, gate-approve]
+    # gate-approve is skipped when the gate is off / dev channel / dry run:
+    # a skipped dependency must not stop the release.
+    if: always() && needs.version.outputs.should_release == 'true' && (needs.gate-approve.result == 'success' || needs.gate-approve.result == 'skipped')
 
     steps:
       - name: Checkout
@@ -93,53 +232,81 @@ jobs:
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@latest
 
-      - name: Check release intent
-        run: npm run release:intent:check
-
-      - name: Compute release version
-        id: version
+      - name: Stamp release version
+        if: inputs.dry_run != true
         working-directory: ${{ github.workspace }}
-        env:
-          RELEASE_BRANCH: ${{ github.ref_name }}
-          RELEASE_CHANNEL: ${{ github.event.inputs.channel || '' }}
-          TARGET_VERSION: ${{ github.event.inputs.target_version || '' }}
-          VERSION_BUMP: ${{ github.event.inputs.version_bump || 'auto' }}
-          FORCE_RELEASE: ${{ github.event.inputs.force_release || 'false' }}
-          REQUIRE_RELEVANT_CHANGES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_release != 'true' && 'true' || 'false' }}
-        run: bash .github/scripts/compute-version.sh
-
-      - name: No release needed
-        if: steps.version.outputs.should_release != 'true'
-        run: echo "No releasable changes detected for stable channel."
-
-      - name: Apply computed package version
-        if: steps.version.outputs.should_release == 'true'
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+        run: |
+          node .github/scripts/release-stamp.mjs "${{ needs.version.outputs.version }}"
+          cd share-plugin && npm version "${{ needs.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Typecheck, build, and verify package contents
-        if: steps.version.outputs.should_release == 'true'
         run: npm run ci:package
 
       - name: Check npm version
-        if: steps.version.outputs.should_release == 'true'
         id: npm-version
         run: |
-          if npm view "$(node -p "require('./package.json').name")@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+          if npm view "$(node -p "require('./package.json').name")@${{ needs.version.outputs.version }}" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to npm
-        if: steps.version.outputs.should_release == 'true' && steps.npm-version.outputs.exists != 'true'
+      - name: Determine npm publish need
+        # Only some parts ship to npm; releases caused by other parts tag the
+        # system version but skip the publish (npm version numbers gap).
+        id: npm-changed
+        env:
+          NPM_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_npm || 'false' }}
+        run: bash ../.github/scripts/npm-changed.sh
+
+      - name: Pack and publish to npm
+        id: npm-publish
+        if: inputs.dry_run != true && steps.npm-changed.outputs.changed == 'true'
         env:
           # Trusted Publishing uses GitHub OIDC. Avoid setup-node token auth so
           # npm does not try to publish with an absent/placeholder NODE_AUTH_TOKEN.
           NODE_AUTH_TOKEN: ""
-        run: npm publish --provenance --access public --tag "${{ steps.version.outputs.npm_tag }}"
+        run: |
+          # Pack once: the archive attached to the GitHub release is the
+          # exact one npm serves. Publish only when the version is not on
+          # npm yet - a re-run after a publish keeps the asset without
+          # attempting a republish.
+          TGZ="$(npm pack --silent)"
+          echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.npm-version.outputs.exists }}" = "true" ]; then
+            echo "::notice::$TGZ is already on npm (re-run) - attaching the packed archive only"
+            exit 0
+          fi
+          # the publish's own exit code is the success signal; no post-publish
+          # registry read verifies it (npm's read index lags the write by
+          # minutes and false-fails runs). One tolerated failure: a re-run
+          # inside that lag window sees the version absent in the pre-check
+          # while the registry primary already holds it - npm rejects the
+          # republish, which means the version IS on npm: success.
+          if npm publish --provenance --access public --tag "${{ needs.version.outputs.npm_tag }}" "./$TGZ" > /tmp/npm-publish.log 2>&1; then
+            cat /tmp/npm-publish.log
+          elif grep -qi "cannot publish over" /tmp/npm-publish.log; then
+            cat /tmp/npm-publish.log
+            echo "::notice::version already on npm (re-run inside the registry read-lag window) - continuing"
+          else
+            cat /tmp/npm-publish.log
+            exit 1
+          fi
+
+      - name: Record npm publish point
+        # npm-latest marks the newest published commit; the next release
+        # compares plugin paths against it to decide publishing again. Fires
+        # whenever this release published (or found its version already
+        # published with no tag recorded - e.g. a resumed run).
+        if: inputs.dry_run != true && steps.npm-changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f npm-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/npm-latest
 
       - name: Install git-cliff
-        if: steps.version.outputs.should_release == 'true'
+        if: inputs.release_notes == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -153,47 +320,123 @@ jobs:
           sudo mv git-cliff-*/git-cliff /usr/local/bin/
 
       - name: Prepare git-cliff config
-        if: steps.version.outputs.should_release == 'true'
+        if: inputs.release_notes == ''
         working-directory: ${{ github.workspace }}
         run: sed -i "s|{{ repository_url }}|https://github.com/${GITHUB_REPOSITORY}|g" .github/cliff.toml
 
       - name: Generate release notes
-        if: steps.version.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
-          RELEASE_CHANNEL: ${{ steps.version.outputs.channel }}
-          NPM_TAG: ${{ steps.version.outputs.npm_tag }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_TAG: v${{ needs.version.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.version.outputs.previous_tag }}
+          RELEASE_CHANNEL: ${{ needs.version.outputs.channel }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+          NPM_PUBLISHED: ${{ steps.npm-changed.outputs.changed }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: bash ../.github/scripts/generate-release-notes.sh
 
+      - name: Notes preview (dry run)
+        if: inputs.dry_run == true
+        shell: bash
+        run: cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check GitHub release
-        if: steps.version.outputs.should_release == 'true'
+        if: inputs.dry_run != true
         id: github-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+          if gh release view "v${{ needs.version.outputs.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub release
-        if: steps.version.outputs.should_release == 'true' && steps.github-release.outputs.exists != 'true'
+        if: inputs.dry_run != true && steps.github-release.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           FLAGS=""
-          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+          if [ "${{ needs.version.outputs.prerelease }}" = "true" ]; then
             FLAGS="--prerelease"
           else
             FLAGS="--latest"
           fi
-          gh release create "${{ steps.version.outputs.tag }}" \
+          gh release create "v${{ needs.version.outputs.version }}" \
             --target "$GITHUB_SHA" \
-            --title "${{ steps.version.outputs.tag }}" \
+            --title "v${{ needs.version.outputs.version }}" \
             --notes-file release-notes.md \
             $FLAGS
+
+      - name: Build viewer dist
+        # The built viewer for offline snapshot tooling: consumers without a
+        # local checkout fetch the zip from the release instead of dist from
+        # git (hashed assets churn every rebuild; dist is never committed).
+        if: inputs.dry_run != true
+        working-directory: share-viewer
+        run: |
+          npm ci
+          npm run build
+          cd dist
+          zip -r -q "$GITHUB_WORKSPACE/viewer-dist-${{ needs.version.outputs.version }}.zip" .
+
+      - name: Build osh console
+        # The admin console as one self-contained file (ink + react
+        # bundled; Node 20+): runs directly, no install and no checkout
+        # needed.
+        if: inputs.dry_run != true
+        working-directory: share-cli
+        run: |
+          npm ci
+          npm run build
+          cp dist/osh.mjs "$GITHUB_WORKSPACE/osh-${{ needs.version.outputs.version }}.mjs"
+
+      - name: Attach release artifacts
+        # viewer-dist zip + the CI single-file bundle always; the plugin tgz
+        # only when this release published a plugin (the asset is then
+        # byte-identical to the npm tarball - it IS the packed archive).
+        if: inputs.dry_run != true
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ needs.version.outputs.version }}"
+          ASSETS=("$GITHUB_WORKSPACE/viewer-dist-$VER.zip" "$GITHUB_WORKSPACE/osh-$VER.mjs")
+          cp "share-plugin/ci/openshare.js" "$GITHUB_WORKSPACE/openshare-ci-$VER.js"
+          ASSETS+=("$GITHUB_WORKSPACE/openshare-ci-$VER.js")
+          TGZ="${{ steps.npm-publish.outputs.tgz }}"
+          if [ -z "$TGZ" ] && [ "${{ steps.npm-version.outputs.exists }}" = "true" ]; then
+            # re-run after a recorded publish: the gate went hollow (npm
+            # already holds this version) so nothing was packed - pack now
+            # so the archive ships with the release anyway
+            TGZ="$(cd share-plugin && npm pack --silent)"
+          fi
+          if [ -n "$TGZ" ] && [ -f "share-plugin/$TGZ" ]; then
+            cp "share-plugin/$TGZ" "$GITHUB_WORKSPACE/$TGZ"
+            ASSETS+=("$GITHUB_WORKSPACE/$TGZ")
+          fi
+          gh release upload "v$VER" "${ASSETS[@]}" --clobber
+
+      - name: Sync version back to the branch
+        # Authoritative write-back: every release (stable and dev channels)
+        # records its version on the branch - VERSION (base) + all manifests
+        # (full) - so files, tags, and npm always agree. [skip ci] stops the
+        # stamp commit from re-triggering this workflow (it touches
+        # paths-filtered files). A locally staged tip (`release-kit.sh stage`)
+        # already matches and makes this a no-op.
+        if: inputs.dry_run != true && needs.version.outputs.repo_stamped != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config user.name "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          branch="${{ github.ref_name }}"
+          manifests="$(sed -n 's/^MANIFESTS="\([^"]*\)"/\1/p' .github/scripts/release-kit.conf)"
+          # the ci bundle is a tracked build artifact carrying the version;
+          # the earlier build steps regenerate it after the stamp
+          git add VERSION $manifests share-plugin/package-lock.json share-plugin/ci/openshare.js
+          git commit -m "[skip ci] release: ${{ needs.version.outputs.version }}" --allow-empty
+          git pull --rebase --autostash origin "$branch"
+          git push origin "$branch"

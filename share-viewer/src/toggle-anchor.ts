@@ -1,8 +1,7 @@
-// Toggle anchoring (owner round 2026-10-24): opening a tool/thought near
-// the top pushed its title UP (Chrome's scroll anchoring picked an anchor
-// INSIDE the growing body), and closing a tall block whose bottom passed
-// the viewport clamped scrollTop and flung the view up ("the bigger the
-// element, the more it pushes you up").
+// Toggle anchoring. Opening a tool/thought near the top pushed its title UP
+// (Chrome's scroll anchoring picked an anchor INSIDE the growing body), and
+// closing a tall block whose bottom passed the viewport clamped scrollTop and
+// flung the view up.
 //
 // Two mechanisms:
 // 1. CSS: overflow-anchor:none inside collapsible bodies (app.css) - the
@@ -20,10 +19,10 @@ let armed = false
 
 /** the virtualizer row key of the row the user last toggled (captured at
  *  click time from the trigger's [data-row-key] ancestor). tanstack's
- *  size-compensation must SKIP this row: compensating the row the user
- *  is expanding scrolls by its growth delta and shoves its own trigger
- *  up out of view (the near-the-top expansion bug - live-caught). The
- *  key TTLs after 1.5s so genuine later re-measures behave normally. */
+ *  size-compensation must SKIP this row: compensating the row the user is
+ *  expanding scrolls by its growth delta and shoves its own trigger up out of
+ *  view. The key TTLs after 1.5s so genuine later re-measures behave
+ *  normally. */
 let lastToggledRowKey: string | undefined
 let lastToggledAt = 0
 
@@ -56,11 +55,11 @@ export function armToggleAnchor() {
 
 /** call right after a disclosure state write triggered by a user click.
  *  COMPOSED views only (the virtualized path is tanstack's). Runs ONE
- *  correction, delayed past Kobalte's expand/collapse spring (~300ms) -
- *  an earlier double-rAF settle pinned the trigger against a transient
- *  spring-bounce delta and scrolled by it (live-caught flicker +
- *  pushed-up titles; headless automation skips springs and never saw
- *  it). Measuring once after the spring lands is bounce-proof. */
+ *  correction, delayed past Kobalte's expand/collapse spring (~300ms): an
+ *  earlier double-rAF settle pinned the trigger against a transient
+ *  spring-bounce delta and scrolled by it, which flickered and pushed titles
+ *  up (headless automation skips springs and never shows it). Measuring once
+ *  after the spring lands is bounce-proof. */
 export function settleToggleAnchor() {
   const trigger = lastTrigger
   const wasTop = lastViewportTop

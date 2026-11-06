@@ -43,7 +43,7 @@ function clock(at?: number): string {
   })
 }
 
-export function InfoPanel(props: { data: ShareData; sessionID: string; source?: { status(): string; shareID: string; rev(): number } }) {
+export function InfoPanel(props: { data: ShareData; sessionID: string; view: string; source?: { status(): string; shareID: string; rev(): number } }) {
   const status = () => { try { return props.source?.status() ?? "?" } catch { return "?" } }
   const shareId = () => { try { return props.source?.shareID ?? "?" } catch { return "?" } }
   const rev = () => { try { return String(props.source?.rev?.() ?? 0) } catch { return "0" } }
@@ -81,19 +81,16 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; source?: 
           <div class="flex flex-col gap-1">
             <Group label="identity">
               <Row label="title" value={String(info()?.title ?? "untitled").slice(0, 60)} />
-              <Row label="session" value={info()?.id ?? props.sessionID} />
-              <Show when={info()?.parentID}>
-                <Row label="parent" value={String(info().parentID)} />
-              </Show>
               <Row label="status" value={status()} />
               <Row label="version" value={info()?.version ? `v${info().version}` : "?"} />
               <Row label="model" value={sessionModelLabel(props.data, props.sessionID) || "?"} />
               <Row label="provider" value={(info()?.model as any)?.providerID ?? "?"} />
-              <Show when={info()?.directory}>
-                <Row label="worktree" value={String(info().directory)} />
+              <Show when={info()?.directory || (info() as any)?.worktree}>
+                <Row label="directory" value={String(info()?.directory ?? (info() as any)?.worktree)} />
               </Show>
               <Row label="share" value={shareId()} />
               <Row label="sync rev" value={rev()} />
+              <Row label="viewer" value={__OSH_FULL__} />
             </Group>
             <Group label="counts">
               <Row label="prompts" value={fmt(usage().prompts)} />
@@ -119,9 +116,10 @@ export function InfoPanel(props: { data: ShareData; sessionID: string; source?: 
                 <Row label="duration" value={dur()} />
               </Show>
             </Group>
-            {/* view-scoped extras (atlas registers legend + coordinates
-                here - one info surface, owner round 2026-10-24 night) */}
-            <Show when={getInfoExtra()}>
+            {/* view-scoped extras: only the ACTIVE view's registration
+                renders (atlas's legend + coordinates), never a leak from a
+                statically imported view module */}
+            <Show when={getInfoExtra(props.view)}>
               {(extra) => <Dynamic component={extra()} />}
             </Show>
           </div>

@@ -2,12 +2,36 @@ import { defineConfig } from "vite"
 import solid from "vite-plugin-solid"
 import tailwindcss from "@tailwindcss/vite"
 import path from "node:path"
+import { execSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 
 // Client-only build of the upstream share page. Two data modes at runtime
 // (see src/data-source.ts): live worker (polls /api/share/:id/data) and
 // embedded (window.__MIRROBOT_SNAPSHOT__ set by the local server).
+
+// build identity from the files the build ships with: the package manifest
+// (stamped by the release kit at every release) is the source of truth;
+// git only contributes the commit sha and is never required.
+function buildVersion() {
+  let version = "unknown"
+  try {
+    version = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8")).version ?? "unknown"
+  } catch {}
+  const date = new Date().toISOString().slice(0, 10)
+  let rev = ""
+  try {
+    rev = execSync("git rev-parse --short HEAD", { cwd: __dirname, stdio: ["ignore", "pipe", "ignore"] }).toString().trim()
+  } catch {}
+  const full = [version, date, rev].filter(Boolean).join(" · ") || "unknown"
+  return { version, full }
+}
+const ver = buildVersion()
 export default defineConfig(({ command }) => ({
   plugins: [solid(), tailwindcss()],
+  define: {
+    __OSH_VERSION__: JSON.stringify(ver.version),
+    __OSH_FULL__: JSON.stringify(ver.full),
+  },
   // solid-js resolves to the VENDORED copy carrying the cleanNode
   // re-entrant-disposal hardening (scripts/vendor-solid.mjs); node_modules
   // stays pristine and the patch is reproducible from `npm run vendor`.
@@ -39,6 +63,8 @@ export default defineConfig(({ command }) => ({
     include: ["@pierre/diffs", "lru_map"],
   },
   server: {
-    fs: { allow: [path.resolve(__dirname), path.resolve(__dirname, "vendor")] },
+    // tools/snapshot-builder.mjs is the one snapshot builder shared by the
+    // worker, the Bun server and this page's download button
+    fs: { allow: [path.resolve(__dirname), path.resolve(__dirname, "vendor"), path.resolve(__dirname, "..", "tools"), path.resolve(__dirname, "..", "share-worker")] },
   },
 }))

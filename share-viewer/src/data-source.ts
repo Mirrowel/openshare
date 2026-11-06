@@ -44,6 +44,9 @@ export type Source = {
   authState: () => { busy?: boolean; message?: string; retryAfterMs?: number }
   auth: (login: string, password: string) => Promise<void>
   branding: () => Branding
+  /** Sticky custom share title set by the owner (root page override);
+   *  undefined = no override, the live session title applies. */
+  title?: () => string | undefined
 }
 
 function parsePath(): { shareID: string; sub: number | undefined } {
@@ -51,15 +54,31 @@ function parsePath(): { shareID: string; sub: number | undefined } {
   const i = parts.indexOf("s")
   const id = i >= 0 && parts[i + 1] ? parts[i + 1] : (parts.at(-1) ?? "")
   const sub = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : undefined
+  // a snapshot file lives at file://<path> — the URL carries NO share id
+  // (the filename would leak in as one) and subagent pages move to a
+  // `#n<N>` hash because file:// paths cannot be rewritten by pushState
+  const emb = (window as any).__MIRROBOT_SNAPSHOT__ as { sessionID?: string } | undefined
+  if (emb) {
+    // n<index> routes to the child page; n<index>:<msgID> additionally
+    // anchors its paired prompt (snapshot subagent-card links)
+    const n = /^n(\d+)(?::.+)?$/.exec(location.hash.slice(1))
+    return { shareID: emb.sessionID ?? id, sub: n ? Number(n[1]) : undefined }
+  }
   return { shareID: id, sub }
 }
 
 let brandingCache: Branding | null = null
+
+/** True when the page booted from an embedded snapshot island (file:// or
+ * downloaded HTML): the path cannot change, so navigation rides hashes. */
+export function isEmbeddedShare(): boolean {
+  return typeof window !== "undefined" && !!(window as any).__MIRROBOT_SNAPSHOT__
+}
 async function fetchBranding(): Promise<Branding> {
   if (brandingCache) return brandingCache
   try {
     // no force-cache: a stale /branding can point at assets the new deploy
-    // deleted (live-caught — the logo 404'd invisibly for a whole session)
+    // deleted, which 404s the logo invisibly
     const r = await fetch("/branding", { cache: "no-store" })
     if (r.ok) brandingCache = (await r.json()) as Branding
   } catch {}
@@ -74,7 +93,7 @@ export function useShareSource(): Source {
   const embedded = (import.meta.env.DEV && new URLSearchParams(location.search).has("demo")
     ? demoSnapshot
     : (window as any).__MIRROBOT_SNAPSHOT__) as
-    | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string }
+    | { items: { type: string; data?: any; sessionID?: string }[]; sessionID: string; status?: string; branding?: Branding; private?: Record<string, Record<string, string>> }
     | undefined
 
   const [items, setItems] = createSignal<Map<string, any>>(new Map())
@@ -84,18 +103,24 @@ export function useShareSource(): Source {
   const [needsAuth, setNeedsAuth] = createSignal(false)
   const [authState, setAuthState] = createSignal<{ busy?: boolean; message?: string; retryAfterMs?: number }>({})
   const [brand, setBrand] = createSignal<Branding>({})
+  // Wave 3 private block: per-session machine facts (directory/worktree)
+  // that ride the envelope tail for authenticated readers of gated shares
+  const [priv, setPriv] = createSignal<Record<string, Record<string, string>> | undefined>(undefined)
+  // owner-set sticky title (envelope `title`): overrides the root page's
+  // header once set; subagent pages always use their own session titles
+  const [shareTitle, setShareTitle] = createSignal<string | undefined>(undefined)
 
-  fetchBranding().then(setBrand).catch(() => {})
+  if (embedded?.branding) setBrand(embedded.branding) // snapshot island carries its deployment's branding; the fetch is dead offline
+  else fetchBranding().then(setBrand).catch(() => {})
 
   const merge = (incoming: any[]) => {
     setItems((prev) => {
       // SMART SYNC: a no-op update (identical poll, empty since-frame,
       // re-delivery of the same item objects) must NOT produce a new Map
-      // identity - the whole render chain keys off items() and a fresh
-      // identity refolds + rebuilds every visible row (live-caught as
-      // "tools close on their own, like on a timer" while the 5s poll
-      // fallback ran). Only a real change (new/different item, or a
-      // tombstone that actually deletes) creates the next container.
+      // identity, because the whole render chain keys off items() and a fresh
+      // identity refolds and rebuilds every visible row (tools close on their
+      // own, on the poll interval). Only a real change (new or different item,
+      // or a tombstone that actually deletes) creates the next container.
       if (!incoming || incoming.length === 0) return prev
       let changed = false
       const next = new Map(prev)
@@ -122,12 +147,11 @@ export function useShareSource(): Source {
   }
 
   // FULL-SET replace: /data responses and a WS socket's first frame carry
-  // the COMPLETE live item set - they must prune keys the server no
-  // longer has. A merge-only consumer keeps items deleted while its
-  // socket was down, so an undone turn resurrected on every reconnect
-  // until a hard reload (live-caught). Deltas (WS delta frames, poll
-  // since-responses) keep using merge() - they carry tombstone markers
-  // for what was deleted.
+  // the COMPLETE live item set, so they must prune keys the server no longer
+  // has. A merge-only consumer keeps items deleted while its socket was
+  // down, and an undone turn resurrects on every reconnect until a hard
+  // reload. Deltas (WS delta frames, poll since-responses) keep using
+  // merge(): they carry tombstone markers for what was deleted.
   const replaceFull = (incoming: any[]) => {
     setItems((prev) => {
       const next = new Map<string, any>()
@@ -153,7 +177,11 @@ export function useShareSource(): Source {
 
   if (embedded) {
     merge(embedded.items ?? [])
-    setStatus("cached")
+    // snapshot freezes the share's real terminal status; the demo fixture
+    // keeps its historic "cached"
+    setStatus(embedded.status ?? "cached")
+    if (embedded.private) setPriv(embedded.private)
+    if ((embedded as any).title) setShareTitle((embedded as any).title)
     const all = () => Array.from(items().values())
     const sessionID = () => embedded.sessionID
     // memoized fold: data() was a plain function called many times per
@@ -174,11 +202,13 @@ export function useShareSource(): Source {
       authState,
       auth: async () => {},
       branding: brand,
+      title: shareTitle,
     }
   }
   return liveSource({
-    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull,
+    shareID, sub, items, status, rev, error, needsAuth, authState, brand, merge, replaceFull, priv, setPriv,
     setItems, setStatus, setRev, setError, setNeedsAuth, setAuthState, setBrand,
+    shareTitle, setShareTitle,
     all: () => Array.from(items().values()),
     sessionID: () => {
       for (const it of Array.from(items().values())) if (it.type === "session" && !it.data?.parentID) return it.data.id as string
@@ -232,6 +262,8 @@ function liveSource(ctx: any): Source {
       // until a hard reload.
       if (isFirst && frame.kind !== "delta" && (frame.items ?? []).length > 0) replaceFull(frame.items)
       else merge(frame.items ?? [])
+      if (frame.private) ctx.setPriv?.(frame.private)
+      if (typeof frame.title === "string") ctx.setShareTitle?.(frame.title)
       setRev(frame.rev ?? 0)
       if (frame.status === "gone") {
         setStatus("gone")
@@ -301,12 +333,14 @@ function liveSource(ctx: any): Source {
       } else {
         replaceFull(body.data ?? [])
       }
+      if (body.private) ctx.setPriv?.(body.private)
+      if (typeof body.title === "string") ctx.setShareTitle?.(body.title)
       setRev(body.rev ?? 0)
       setStatus(body.status ?? "live")
     } catch (e) {
       // a swallowed flush exception leaves the page half-updated forever
-      // (live-caught: status stuck at its initial value while items
-      // rendered) - always visible
+      // (status stuck at its initial value while items render), so the catch
+      // is always visible
       console.warn("[openshare] data tick failed:", e)
       // transient; WS or the next tick recovers
     }
@@ -365,7 +399,7 @@ function liveSource(ctx: any): Source {
   const all = ctx.all
   // memoized fold (see the local-source twin): one fold per change epoch
   // instead of one per call site per update
-  const dataMemo = createMemo(() => fold(all(), ctx.sessionID(), shareID, status()))
+  const dataMemo = createMemo(() => fold(all(), ctx.sessionID(), shareID, status(), ctx.priv?.()))
   return {
     mode: "live" as const,
     shareID,
@@ -379,5 +413,6 @@ function liveSource(ctx: any): Source {
     authState,
     auth,
     branding: brand,
+    title: ctx.shareTitle,
   }
 }

@@ -27,7 +27,7 @@ cd share-worker
 npx wrangler kv namespace create KV                        # YOUR namespace — replace the id in wrangler.toml
 npx wrangler secret put CREATE_TOKEN                       # root admin token (treat like a password)
 npx wrangler deploy
-curl -s https://<your-worker>.workers.dev/health           # {"ok":true,"service":"openshare","policy":{...},"auth":{"mode":"private"}}
+curl -s https://<your-worker>.workers.dev/health           # {"ok":true,"service":"openshare","version":"v0.2.1-59-gb82360b","policy":{...},"auth":{"mode":"private"}}
 ```
 
 Vars (`AUTH_MODE`, `SOCKET_POLICY`, TTL caps, branding…) are `[vars]` in
@@ -44,7 +44,7 @@ The worker owns the connection rules; the plugin clamps itself into these on con
 | `TURN_GRACE_MS` | `120000` | Turn mode: after a turn settles the socket stays warm this long (typing time for the next prompt), then drops cleanly. Any activity cancels; the next event reconnects on demand and the spool replays the gap. |
 | `IDLE_DROP_MS` | `600000` | Turn mode: no-signal fallback (hosts that never emit idle). |
 | `FINALIZE_AFTER_MS` | `300000` | Plugin socket died WITHOUT a goodbye (kill -9, crash, power cut): after this long the share settles to `interrupted` (never `completed` - the run's truth is unknown). DO alarm on socket close; the daily sweeper backstops silent deaths where even the close never surfaced. Reconnects cancel it. |
-| `MAX_TTL_DAYS` | `90` | Per-share TTL cap (per-token `maxTtlDays` caps below this; the user's `defaultTtlDays` setting is clamped to it). |
+| `MAX_TTL_HOURS` | `2160` (90d) | Per-share TTL cap, **hours-native** (per-token `maxTtlHours` caps below this; the user's `defaultTtlHours` setting is clamped to it). Legacy `MAX_TTL_DAYS` / `maxTtlDays` / `defaultTtlDays` / `ttlDays` inputs are all accepted and converted x24; the floor is 1 hour. |
 | `ANON_CREATE_HOURLY` | `100` | Public mode: global cap on anonymous (ownerless) share creations per rolling hour, ALL anonymous visitors combined. Each create costs a Durable Object + one KV write. |
 | `DEBOUNCE_MIN_MS` / `DEBOUNCE_MAX_MS` | `1000` / `60000` | Allowed client sync interval (the clamp window). |
 | `COMPLETED_DELAY_MAX_MS` | `60000` | Allowed client completed-delay. |
@@ -151,32 +151,42 @@ mark + version), **footer** = brand wordmark image or styled text
 description, **accent** = status dot, login card, prompt-rail marker,
 agent-switch name.
 
-### Link previews (og: tags)
+### Link previews (og: tags + rendered cards)
 
-Crawler user-agents (Discordbot, TelegramBot, Slackbot, WhatsApp,
-Twitterbot, ...) never run the SPA, so the worker serves them
-`index.html` with `og:`/`twitter:` tags injected from the branding:
-`og:title` = `ogTitle` (or `name · Open(code)Share` — the
-**deployment** identity, never a session title; a link preview must
-not leak what a share contains), `og:description` = `description`,
-`og:image` = `ogImage` (absolute URL **or** a root-relative path,
-resolved against the deployment origin; falls back to `logoUrl`). `/s/*` and `/` are
-in `run_worker_first` for this; regular browsers pass straight through
-to the static assets, and the viewer injects the same tags client-side
-as a fallback.
+Two mechanisms, both deployment-branded, both leak-proof for gated shares:
+
+- **Crawler tags** — crawler user-agents (Discordbot, TelegramBot,
+  Slackbot, WhatsApp, Twitterbot, ...) never run the SPA, so the worker
+  serves them `index.html` with `og:`/`twitter:` tags injected from the
+  branding: `og:title` = `ogTitle` (or `name · Open(code)Share` — the
+  **deployment** identity; public share pages swap in the session
+  title, gated pages never do), `og:description` =
+  `description`, `og:image` = the per-share card below (or `ogImage` /
+  `logoUrl`). `/s/*` and `/` are in `run_worker_first` for this; regular
+  browsers pass straight through to the static assets, and the viewer
+  injects the same tags client-side as a fallback.
+- **Per-share cards** — `GET /api/share/:id/og.png` (1200x630 PNG,
+  rendered once per rev into a bounded isolate cache; resvg-wasm with
+  embedded Inter subsets, OFL): deployment wordmark + accent, session
+  title, status pill, stat line (turns · tools · duration · model).
+  Gated shares render the GENERIC card ("Private share — log in to
+  view") with no title and no stats — a preview never leaks what a
+  gated share contains. `?v=<rev>` in the served og:image URL busts
+  Discord's per-URL preview cache.
+
+Five card styles, selected by the `OG_STYLE` var (`aurora` default;
+`minimap`, `poster`, `blueprint`, `terminal` the alternatives; unknown
+values fall back to `aurora`): a gradient glass panel, a turn strip, a
+paper poster, a spec sheet, an editor window. Sample renders of every
+state: `example/og-samples/`.
 
 ## Viewer settings (cookie)
 
 The gear in the header (or Ctrl+K, in every view) opens the settings
 panel — persisted in a `osh_settings` cookie, applied pre-paint (no
-theme flash). The canonical list of settings (theme, view, paged mode
-per view, prompt rail, follow-live, text sizes, diff layout, reasoning
-auto-open, auto-expand tools, long-line scroll/wrap, background image,
-search) lives in one place: the
-[viewer README](../share-viewer/README.md#what-the-page-does). Defaults:
-system theme, continuous scroll, nothing auto-expanded.
-
-Header extras: copy session as markdown, `j`/`k` prompt navigation.
+theme flash). Every setting, its default, and the cookie shape live in
+one place: [CONFIGURATION.md §5](../CONFIGURATION.md) (behavior notes:
+[viewer README](../share-viewer/README.md)).
 
 ## Read auth (optional, casual-eyes resistance)
 
@@ -188,7 +198,8 @@ share-locked 24h). Credentials are sent on create AND attach: resuming
 retroactively applies/updates them; empty-on-resume removes protection
 (intentional owner action — write access is separately keyed).
 
-**Write access is a different lock**: creating shares requires a valid
+**Write access is a different lock**: on a private server, creating
+shares requires a valid
 identity (user token or the root bootstrap), writing (sync/delete)
 requires the owner's token or the per-share secret held only by the
 plugin that created it. A URL plus valid login still cannot write a
@@ -208,40 +219,84 @@ rest):
 - **Users** — anyone the hoster lets in. Full control of their OWN
   shares, tokens and settings; nothing else.
 
-**Enrollment** (`POST /api/enroll`): a **public** server (`AUTH_MODE =
-"public"`) issues a user token to anyone who knows the hostname
-(per-IP rate limit); a **private** server (default) additionally
-requires an **access code** (`osc_…`) minted by the admin with an
-activation budget — 1 for a personal invite, `-1` unlimited for a team
-code. Each activation burns one use and issues `osk_…`. Holding a valid
-token lets you rotate (`POST /api/token/rotate`) without a code,
-forever — tokens are long-lived by design (the OAuth-ish part without
-the refresh churn).
+**Enrollment** (`POST /api/enroll`): a code mints a user PLUS their
+first **full** token (one activation = one user). Private servers
+(default) require an **access code** (`osc_…`) minted by the admin
+with an activation budget — 1 for a personal invite, `-1` unlimited
+for a team code. Public servers also require a code unless
+`CODELESS_ONBOARDING` is enabled (default OFF — anonymous CREATING
+stays open on public regardless; the gate is about minting ACCOUNTS).
+Holders of any valid token mint more tokens without a code
+(`POST /api/token`, full tokens only). Holding a valid token lets you
+rotate (`POST /api/token/rotate`) without a code, forever — tokens
+are long-lived by design (the OAuth-ish part without the refresh
+churn).
 
-**Ownership**: every share records its owner. Control ops accept the
+**Ownership**: every share created by an enrolled user records its
+owner; root-bootstrap and anonymous public creates are ownerless
+(secret-only control, never frozen). Control ops accept the
 owner's valid token **or** the per-share secret while the owner is in
 good standing. **Freezing a user** severs BOTH paths on all their
 shares at once (a valid secret no longer writes; viewing is unaffected
 until TTL) — the kill switch for leaked identities. Unfreeze and
 reassign-to-another-user are the admin rescue paths. Revoking a single
-token only invalidates that token.
+token only invalidates that token — unless it was the user's last valid
+full token, which triggers the freeze above.
+
+**Token classes** (both stay `osk_:` - the server knows the class):
+- **full** (default) - the account credential: creates, syncs any of
+  the owner's shares, mints/revokes tokens, edits settings. ONLY full
+  tokens keep the account alive.
+- **scoped** - a service credential (CI/agents), minted by a full
+  token (`POST /api/token {kind:"scoped"}`): creates within its own
+  limits, syncs/deletes/lists ONLY the shares it created (every share
+  stamps `creatorTokenId`), self-rotates (successor inherits the
+  scope), and nothing else. A scoped rotation TRANSFERS its shares to
+  the successor - rotation never orphans the pages it made.
 
 Per-token limits (enforced server-side at create): `maxLiveShares`,
-`maxTtlDays`, `dailyCreates` (0 = unlimited; defaults via
-`DEFAULT_*` vars). Default-limit knobs users may change themselves:
-`GET`/`PUT /api/me/settings` — `defaultTtlDays` (clamped by the
-server; applied at create when the request omits `ttlDays`, the
+`maxTtlHours`, `dailyCreates` (0 = unlimited; defaults via
+`DEFAULT_*` vars; scoped tokens count only their own shares). Default-limit knobs users may change themselves:
+`GET`/`PUT /api/me/settings` — `defaultTtlHours` (clamped by the
+server; applied at create when the request omits `ttlHours`, the
 explicit value always wins).
 
 Self-service: `GET /api/me`, `GET /api/me/shares`,
-`GET`/`PUT /api/me/settings`, `POST /api/token/rotate`,
-`DELETE /api/token` (self-revoke). **Revocation freezes control**: when a
-user's last valid token is revoked (self or admin) — or they all expire —
+`GET`/`PUT /api/me/settings` (full tokens only), `POST /api/token`
+(self-mint full/scoped; full tokens only), `POST /api/token/rotate`,
+`POST /api/token/update` (rename/re-limit a token; see below),
+`DELETE /api/token` (self-revoke).
+
+`POST /api/token/rotate {label?, limits?}` — the successor keeps the
+token's class, named config sets, and (unless overridden) label and
+limits; a scoped rotation transfers its shares to the successor. A scoped
+token rotating itself may override `label` but never `limits` (they are
+the restriction its minter imposed).
+
+`POST /api/token/update {tokenId?, label?, limits?}` — edit a token in
+place: rename, change limits. A full token edits any of its own user's
+tokens (scoped included); a scoped token edits only itself, label only.
+Omitting `tokenId` targets the bearer itself. Class, user, and revocation
+state never change here (rotate or revoke are the lifecycle moves).
+
+Token provenance and expiry: every token records `createdBy` (the
+minting admin, the enroll code id, or the self-minting token id - the
+`GET /api/admin/tokens` list and `/api/me` expose it), and mint/update
+accept `expiresInMinutes` | `expiresInHours` | `expiresInDays`
+(days x24h, hours x60m, floor **one minute** - short-lived CI
+credentials; `0` clears the expiry). Scoped tokens can never change
+their own expiry (that would be extending their own life). `users-get`
+reports each user's `createdByCode`, so code → users → tokens → shares
+is one visible chain.
+
+**Revocation freezes control**: when a
+user's last valid FULL token is revoked (self or admin) — or they all
+expire —
 every share that user created turns read-only for EVERYONE holding its
 secret too (both write paths reject with `frozen`); viewing continues to
 TTL, and only the admin can unfreeze or reassign. Rotation never
 triggers this (the replacement is minted first). An `init` attach may
-also carry `ttlDays` (explicit per-session override only): clamped like
+also carry `ttlHours` (explicit per-session override only; legacy `ttlDays` converts): clamped like
 create and applied to the live share — the plugin sends it when the
 session's TTL override changes mid-life.
 
@@ -251,19 +306,34 @@ Admin API (Bearer `CREATE_TOKEN`):
 - `POST /api/admin/users/:id/freeze` · `/unfreeze`
 - `DELETE /api/admin/users/:id {mode?}` — default freezes; `{"mode":
   "delete"}` also removes every share and token
-- `POST /api/admin/tokens {userId, label?, limits?}` · `GET
-  /api/admin/tokens` · `DELETE /api/admin/tokens/:id`
+- `POST /api/admin/tokens {userId, label?, limits?, kind?}` · `GET
+  /api/admin/tokens` · `DELETE /api/admin/tokens/:id` ·
+  `PATCH /api/admin/tokens/:id {label?, limits?}` (rename/re-limit any
+  token)
+  - `POST /api/admin/tokens/:id/freeze-shares` — bulk-freeze just the
+    shares that token created (scoped blast radius without touching the
+    owner's other shares; rotation never does this)
 - `POST /api/admin/codes {label, activations, ttlHours?}` · `GET
   /api/admin/codes` · `DELETE /api/admin/codes/:id` (disable)
-- `GET /api/admin/shares` (global, with ownerId)
+  - `POST /api/admin/codes/:id/revoke-lineage` — kill switch: revokes
+    EVERY token of EVERY user that code onboarded (freezing each),
+    disables the code. Users record `createdByCode`.
+- `GET /api/admin/shares` (global, with ownerId; entries carry any
+  `custom` labels the plugin stamped at create)
 - `POST /api/admin/shares/:id/reassign {userId}`
+- `POST /api/admin/shares/:id/freeze` · `/unfreeze` - freeze ONE share
+  (a leaked secret on a single page without freezing the account):
+  writes reject with `frozen`, viewing continues until TTL
 - `DELETE /api/share/:id` — root may delete any share directly (the
   TUI admin console uses this)
 - `POST /api/admin/purge` — removes EVERY share; details in
   [Worker API](#worker-api) below
 
-`GET /health` reports `auth.mode` (`public`/`private`) next to the
-socket policy so clients adapt without config.
+`version` in `/health` is the exact `git describe` of the source the worker
+was deployed from (`npm run deploy` writes it from the release tags; a
+local `wrangler dev` reads the committed `dev` placeholder).
+
+`GET /health` reports `auth.mode` (`public`/`private`) next to thesocket policy so clients adapt without config.
 
 Migration: shares created with the bare `CREATE_TOKEN` bearer are
 ownerless (secret-only control, never frozen) — the legacy plugin
@@ -273,9 +343,9 @@ config keeps working unchanged.
 
 Child sessions (`info.parentID`) route into the parent's share. URLs:
 `/s/<id>` main, `/s/<id>/1`, `/2`, ... subagents ordered by first task
-appearance. Task rows link to the sub-page (new tab by default — a
-sender-side pref; in-page switching preserves scroll). Sub-pages render
-the same view bound to the child session, with their own
+appearance. Task rows link to the sub-page (a plain click switches
+in-page, preserving scroll; ctrl/cmd-click opens a new tab). Sub-pages
+render the same view bound to the child session, with their own
 title/version/model.
 
 ## Worker API
@@ -298,6 +368,12 @@ title/version/model.
   applied, so only that chunk retires from the client's spool. The token
   may also arrive as a first `auth` frame instead of the query string
   (keeps it out of proxy logs; `/health` advertises `frameAuth`).
+  The init create frame may carry `meta` (free-form string labels, max
+  20 keys / 64-char names / 500-char values) - stored on the share and
+  shown in the admin shares listing. The init **ack carries
+  `auth: true|false`** - the share's resolved read-gate state after the
+  exchange - so a client that asked for a gate can detect a half-pair
+  no-op instead of assuming protection.
 - Tombstones: a sync item may carry `del: true` (`{type:"message",
   del:true, data:{id}}` / part variant) — the worker deletes the keyed
   item and broadcasts the tombstone so live viewers drop it. Message
@@ -309,11 +385,57 @@ title/version/model.
   server-side),
   `POST /api/share/:id/sync` (secret or Bearer owner token; bodies over
   8 MB are refused before parsing),
+  `POST /api/share/:id/auth {login, password}` (viewer login for a gated
+  share; rate-limited, returns the 7-day session cookie),
+  `GET /api/share/:id/meta` (**private**: root or the share's owner
+  only - viewers and strangers get 403; the page itself is a viewer's
+  whole world. Carries status/rev, per-session summaries
+  `{title, agent, parentID, model}` stamped at sync (old shares
+  backfill once), gate state, viewer-session count, `pluginSeen`,
+  `lastViewerAt` (viewer-liveness, throttled to one stamp/minute),
+  `expiresAt`/`ttlHours`, `ownerId`, `creatorTokenId`, custom labels),
   `GET /api/share/:id/data` (accepts `?since=<rev>`: empty `data` array
-  when the rev is unchanged, only the items touched since otherwise —
-  same three-case semantics as the WS handshake minus the delta
-  announcement, since the response is always a fresh set to merge),
-  `POST /api/share/:id/auth`, `DELETE /api/share/:id`
+  when `since >= rev` (unchanged, or the server rewound/recreated — the
+  client prunes), only the items touched since when `since < rev`),
+
+  **Non-browser consumers**: on `*.workers.dev` domains Cloudflare's
+  bot management can answer script-like user agents (python-requests,
+  bare curl) with error 1010 "Access denied" instead of JSON. Fix by
+  moving the API to a custom domain with a WAF skip rule for `/api/*`,
+  disabling Bot Fight Mode on the zone, or sending a browser-like
+  `User-Agent` header,
+
+  `GET /api/share/:id/snapshot` and `GET /s/:id/snapshot` (ONE
+  self-contained HTML file: the viewer, every chunk it can reach and the
+  provider sprite inlined, the share frozen as a JSON island, a boot
+  script that turns the chunks into Blob modules; opens offline in any
+  browser as a point-in-time record. The read gate applies exactly as
+  `/data` - a gated share demands a satisfied viewer session (login
+  cookie or bearer viewer token), no bypass. `?download=1` adds an
+  attachment disposition. **Off by default**: set `SNAPSHOT_ENDPOINT=1`
+  to serve it. The build costs one subrequest per asset (~1500) plus the
+  assembly CPU, which the free plan (50 subrequests, 10 ms) cannot pay;
+  prefer the viewer's download button, `tools/osh-snapshot.mjs` (any share,
+  CI-friendly) or `tools/osh-snapshot-local.mjs` (a plain `opencode
+  export`, no share at all): they fetch the same static assets through the
+  CDN and assemble locally - free and unlimited on every plan),
+- `PATCH /api/share/:id` (#13) — edit ANY share setting after creation:
+  body `{secret|Bearer owner, authLogin+authPassword (both-or-none),
+  ttlHours (legacy ttlDays), meta, title, paused}`; a credential change rotates viewer tokens; `title:""`
+  clears back to the live session title (a set title survives session
+  renames and wins on the page envelope, OG card and admin listings);
+  `paused:true` is freeze-parity self-served — data writes reject with 423,
+  the page keeps its last status, the finalize backstop stands down, and
+  the same PATCH unpauses. Identity-gated exactly like sync (scoped tokens
+  reach only their own shares)
+- `GET|PUT /api/token/sets` and `PUT /api/admin/tokens/:id/sets` — named
+  config sets on a token: Class A (authLogin/authPassword/ttlHours)
+  applies server-side at create and never appears in a client response;
+  Class B (modelLabel/shareMode) is the fetchable suggestion view. Creates
+  carry an optional `set` name; unset = the token's first set. Mints
+  accept inline `sets` and inherit the minter's when omitted.
+- `GET /api/share/:id/og.png` — the per-share OG card. Rendering, gating
+  and style selection: [Link previews](#link-previews-og-tags--rendered-cards) above.
 - `GET /branding` — the deployment's resolved skin (name, logoUrl,
   wordmarkUrl, linkUrl, accent, faviconUrl, backgroundUrl, description,
   ogTitle, ogImage; all optional — absent = neutral default; see
@@ -325,30 +447,16 @@ title/version/model.
   to DO storage — survives hibernation eviction); AuthDO singleton
   (users/tokens/codes/registry; freeze denormalized onto each ShareDO so
   the write gate rejects locally); SweeperDO daily alarm
-  deletes shares idle beyond their own ttlDays (create-time override,
-  capped at MAX_TTL_DAYS).
+  deletes shares idle beyond their own ttlHours (create-time override,
+  capped at MAX_TTL_HOURS).
 
 ## Plugin config
 
-The plugin lives in `share-plugin/` (see its README). Three artifacts:
-`ci/openshare.js` (single file, always share-all — the CI bundle),
-`dist/server.js` (package server; share-all unless the TUI is
-registered), `dist/tui.js` (package TUI; its presence flips the server
-to manual mode with per-session opt-in via `/share`).
-
-The full config contract (precedence chain, every key, env vars,
-recipes) is documented once, in the [root README's Configuration
-section](../README.md#configuration). Short version: `OPENSHARE_*` env
-beats files; the `servers` group is the canonical multi-server form;
-`workerUrl`/`createToken` is the legacy single-server shorthand.
-
-Manual mode stores the opt-in in session metadata
-(`metadata.openshare = { v: 2, enabled: true, opts? }`; per-session
-opts: ttlDays, authLogin, authPassword, modelLabel) next to the
-per-server binding map `servers: {url: {id, secret, rev, url}}`
-(legacy flat `{id, secret, rev, url}` bindings migrate at read); flag
-removal deletes the share on every server. The key is stripped from all
-synced data (worker strips session metadata on read paths as well).
+The plugin lives in `share-plugin/` — its README covers the three
+artifacts (`ci/openshare.js`, `dist/server.js`, `dist/tui.js`) and the
+TUI surface. The full config contract (precedence chain, every key,
+env vars, recipes) is documented once in
+[CONFIGURATION.md](../CONFIGURATION.md).
 
 ## Local viewing (agent-side)
 

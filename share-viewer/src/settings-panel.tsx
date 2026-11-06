@@ -1,17 +1,16 @@
 // The settings panel. Product register: earned familiarity, restrained
-// color, one control vocabulary. The CONTENT (SettingsBody) is separate
-// from the classic chrome's gear+popover (SettingsPanel) so views can
-// embed it inside their own drawers and overlays without inheriting
-// popover positioning. Sections are collapsible, collapsed by default
-// except single-control ones. The open state lives at module level: a
-// settings change can rebuild the header subtree (live-caught) and the
-// panel must persist through it.
+// color, one control vocabulary. The CONTENT (SettingsBody) is separate from
+// the classic chrome's gear+popover (SettingsPanel) so views can embed it
+// inside their own drawers and overlays without inheriting popover
+// positioning. Sections are collapsible, collapsed by default except
+// single-control ones. The open state lives at module level so it survives a
+// header subtree rebuild.
 import { createSignal, For, Show } from "solid-js"
 import { Icon } from "@opencode/ui/icon"
 import type { JSX } from "solid-js"
 import { pagedFor, setPagedFor, resetAllSettings, type OshSettings } from "./settings"
 import { LineStepper } from "./hover-rail"
-import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS } from "./views/registry"
+import { viewSupportsPaged, viewMark, VIEW_SETTINGS, VIEW_OPTIONS, PRIMARY_VIEWS } from "./views/registry"
 import type { ViewSettingDef } from "./views/registry"
 import { tryView } from "./views/view-context"
 import { sessionToolNamesOf } from "./views/session-data"
@@ -25,7 +24,7 @@ export const togglePanel = () => setPanelOpen((v) => !v)
 export const closePanel = () => setPanelOpen(false)
 
 // section expansion persists across panel remounts (a settings change can
-// rebuild the whole subtree - live-caught - and sections must not reset)
+// rebuild the whole subtree, and sections must not reset)
 const [expandedMap, setExpandedMap] = createSignal<Record<string, boolean>>({})
 
 // panel scroll position persists across the same rebuilds
@@ -143,12 +142,11 @@ function Section(props: { label: string; children: JSX.Element; alwaysOpen?: boo
   )
 }
 
-/** multi-position lever: label row, then a horizontal track with a
- *  sliding knob and one mark per position. Clicking the track (or a
- *  mark) moves the knob (animated); the current value renders beside
- *  the label and swaps with a fade-slide when it changes. Replaces
- *  Segmented for 2-3 position choices where the value should name
- *  itself (owner round 2026-10-26). */
+/** multi-position lever: label row, then a horizontal track with a sliding
+ *  knob and one mark per position. Clicking the track (or a mark) moves the
+ *  knob (animated); the current value renders beside the label and swaps with
+ *  a fade-slide when it changes. Replaces Segmented for 2-3 position choices
+ *  where the value should name itself. */
 export function Lever<T extends string>(props: {
   label: string
   value: T
@@ -322,6 +320,27 @@ function ViewSettingControl(props: { def: ViewSettingDef; settings: OshSettings;
   )
 }
 
+/** one view cell in the picker grid - shared by the core row and the
+ *  more-views group so styling can never drift between them */
+function ViewButton(props: { v: { id: string; label: string }; active: boolean; onUpdate: (patch: Partial<OshSettings>) => void }) {
+  return (
+    <button
+      title={props.v.label}
+      class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer transition-colors duration-150"
+      classList={{
+        "border-icon-strong-base bg-surface-base": props.active,
+        "border-border-weak-base hover:border-border-strong-base bg-transparent": !props.active,
+      }}
+      onClick={() => props.onUpdate({ view: props.v.id })}
+    >
+      <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
+        {viewMark(props.v.id)}
+      </span>
+      <span class="text-12-regular text-text-base truncate">{props.v.label}</span>
+    </button>
+  )
+}
+
 export function SettingsBody(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void
@@ -338,29 +357,33 @@ export function SettingsBody(props: {
     const known = ["bash", "shell", "read", "write", "edit", "patch", "grep", "glob", "list", "task", "todowrite", "webfetch", "websearch"]
     return [...new Set([...known, ...(props.sessionTools ?? [])])].sort()
   }
+  // the more-views group seeds open when the active view lives inside it,
+  // so the current view is never hidden behind its own group; the reader
+  // can still collapse it freely for this panel mount
+  const [moreViewsOpen, setMoreViewsOpen] = createSignal(!PRIMARY_VIEWS.includes(props.settings.view))
   return (
     <div class="flex flex-col gap-1">
       <Section label="view">
         <div class="grid grid-cols-2 gap-1.5">
-          <For each={VIEW_OPTIONS}>
-            {(v) => (
-              <button
-                title={v.label}
-                class="flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer transition-colors duration-150"
-                classList={{
-                  "border-icon-strong-base bg-surface-base": props.settings.view === v.id,
-                  "border-border-weak-base hover:border-border-strong-base bg-transparent": props.settings.view !== v.id,
-                }}
-                onClick={() => props.update({ view: v.id })}
-              >
-                <span class="text-12-mono text-text-weaker w-4 text-center shrink-0">
-                  {viewMark(v.id)}
-                </span>
-                <span class="text-12-regular text-text-base truncate">{v.label}</span>
-              </button>
-            )}
+          <For each={VIEW_OPTIONS.filter((v) => PRIMARY_VIEWS.includes(v.id))}>
+            {(v) => <ViewButton v={v} active={props.settings.view === v.id} onUpdate={props.update} />}
           </For>
         </div>
+        <button
+          type="button"
+          class="mt-1.5 flex w-full items-center justify-between px-2 py-1 text-12-regular text-text-weaker cursor-pointer hover:text-text-base transition-colors duration-150"
+          onClick={() => setMoreViewsOpen(!moreViewsOpen())}
+        >
+          <span>more views</span>
+          <span>{moreViewsOpen() ? "▾" : "▸"}</span>
+        </button>
+        <Show when={moreViewsOpen()}>
+          <div class="grid grid-cols-2 gap-1.5">
+            <For each={VIEW_OPTIONS.filter((v) => !PRIMARY_VIEWS.includes(v.id))}>
+              {(v) => <ViewButton v={v} active={props.settings.view === v.id} onUpdate={props.update} />}
+            </For>
+          </div>
+        </Show>
       </Section>
 
       <Section label="theme">
@@ -616,13 +639,12 @@ export function SettingsPanel(props: {
   )
 }
 
-/** The ONE skin settings surface (owner directive: no bespoke centered
- *  modals): a gear button + an ANCHORED popover under it (top-8 right-0,
- *  opaque, scroll-preserving). letterpress/terminal/cinema each shipped a
- *  centered fixed modal - "settings show up in the middle of the page"
- *  (live-caught); every skin now uses this instead.
- *  Inside a view it self-sources sessionTools from the ViewContext, so
- *  the auto-expand picker lists this share's mcp/custom tools everywhere. */
+/** The ONE skin settings surface: a gear button plus an ANCHORED popover
+ *  under it (top-8 right-0, opaque, scroll-preserving). Bespoke centered
+ *  fixed modals put settings in the middle of the page, so every skin uses
+ *  this instead.
+ *  Inside a view it self-sources sessionTools from the ViewContext, so the
+ *  auto-expand picker lists this share's mcp/custom tools everywhere. */
 export function SkinSettingsPopover(props: {
   settings: OshSettings
   update: (patch: Partial<OshSettings>) => void

@@ -1,25 +1,118 @@
 // Vendor the opencode v2 (beta) UI kit into share-viewer/vendor.
 // Deterministic + re-runnable; records the source git rev for provenance.
 //
-//   node scripts/vendor-v2.mjs
+//   node scripts/vendor-v2.mjs          regenerate vendor/ at the PIN below
+//   node scripts/vendor-v2.mjs --check  dry-run the port against the PIN
+//                                       (no repo file is touched)
 //
-// Sources (c:\tools\opencode-beta, recorded in vendor/V2-SOURCE.txt):
+// THE PIN is the whole point: vendor/ is a committed, pinned copy of
+// upstream (like a library version in package.json), patched by this
+// script. The pin is a full commit sha of anomalyco/opencode's dev branch;
+// the script downloads EXACTLY that from GitHub, caches it briefly, and
+// deletes the cache again once the port succeeds (kept only on failure, for
+// debugging; older cache entries are always removed). A local checkout is
+// NOT needed - OPENSHARE_BETA_SRC=<path> overrides the download for working
+// against a checkout (documented in VENDOR.md), but the ambient checkout is
+// never read implicitly again, and the override must sit exactly at the PIN
+// (git HEAD == PIN.ref) so no random tree state can become the vendored
+// source; --force-src opts out for deliberate experiments.
+//
+// Sources (per VENDOR.md - the patch catalogue lives there):
 //   packages/session-ui  -> vendor/session-ui-v2  (@opencode/session-ui)
 //   packages/ui          -> vendor/ui-v2          (@opencode/ui)
 //   packages/client      -> vendor/client-v2      (@opencode/client, types only)
 //   packages/util        -> vendor/util-v2        (@opencode/util, path+encode)
 //
 // Stories/tests are excluded (storybook/test deps are not vendored).
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync as writeFileImpl, existsSync, readdirSync, statSync } from "node:fs"
 import { join, dirname } from "node:path"
+import { tmpdir, homedir } from "node:os"
 import { execSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const SRC = process.env.OPENSHARE_BETA_SRC ?? "c:/tools/opencode-beta"
+const DRY = process.argv.includes("--check")
 
-const rev = execSync("git log -1 --format=%H", { cwd: SRC }).toString().trim()
-const describe = execSync("git describe --tags", { cwd: SRC }).toString().trim()
+const REAL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const ROOT = DRY ? mkdtempSync(join(tmpdir(), "osh-vendor-check-")) : REAL_ROOT
+const writeFileSync = writeFileImpl
+
+/** THE PIN. Bump this one line to update the vendored kit; every patch
+ *  block below then either re-applies or throws "upstream drifted" at the
+ *  exact spot that needs adapting (VENDOR.md describes the ritual). */
+const PIN = {
+  repo: "anomalyco/opencode",
+  ref: "c1b5f1b416c2bff799a4be6a75d640e9ba28d42f", // dev head, 2026-10-29
+}
+
+const CACHE_ROOT = join(homedir(), "AppData", "Local", "openshare", "vendor-src")
+
+/** Resolve the source tree for the PIN: an explicit OPENSHARE_BETA_SRC
+ *  checkout wins (documented override); otherwise download the pinned
+ *  commit tarball from GitHub into the cache, reusing an existing download
+ *  of the same sha. Returns { src, fromDownload, cacheDir? }. */
+async function resolveSource() {
+  const override = process.env.OPENSHARE_BETA_SRC
+  if (override) {
+    if (!existsSync(join(override, "packages/session-ui"))) {
+      console.error(`vendor-v2: OPENSHARE_BETA_SRC checkout has no packages/session-ui: ${override}`)
+      process.exit(1)
+    }
+    // the override must sit exactly at the PIN: an ambient checkout left on
+    // another branch, a stale tip or a detached experiment must never become
+    // the vendored source
+    let head = ""
+    try {
+      head = execSync("git rev-parse HEAD", { cwd: override, encoding: "utf8" }).trim()
+    } catch {
+      head = ""
+    }
+    if (!head || (head !== PIN.ref && !process.argv.includes("--force-src"))) {
+      const got = head ? head.slice(0, 10) : "not a git repo"
+      console.error(`vendor-v2: OPENSHARE_BETA_SRC must sit at the PIN ${PIN.ref.slice(0, 10)} - it is at ${got}`)
+      console.error(`vendor-v2: sync it:  git -C <checkout> fetch origin && git -C <checkout> checkout ${PIN.ref}`)
+      console.error(`vendor-v2: deliberate experiment:  add --force-src`)
+      process.exit(1)
+    }
+    return { src: override, fromDownload: false }
+  }
+  const cacheDir = join(CACHE_ROOT, PIN.ref)
+  const findSrc = () => {
+    if (!existsSync(cacheDir)) return undefined
+    // reuse: either a prior rename or the as-extracted GitHub top dir
+    for (const e of readdirSync(cacheDir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue
+      if (existsSync(join(cacheDir, e.name, "packages/session-ui"))) return join(cacheDir, e.name)
+    }
+    return undefined
+  }
+  const cached = findSrc()
+  if (cached) return { src: cached, fromDownload: true, cacheDir }
+  rmSync(CACHE_ROOT, { recursive: true, force: true }) // never keep older pins
+  mkdirSync(cacheDir, { recursive: true })
+  const url = `https://codeload.github.com/${PIN.repo}/tar.gz/${PIN.ref}`
+  console.log(`vendor-v2: fetching pin ${PIN.ref.slice(0, 10)} from ${url}`)
+  const res = await fetch(url)
+  if (!res.ok) {
+    console.error(`vendor-v2: download failed (${res.status} ${res.statusText})`)
+    process.exit(1)
+  }
+  const bundle = join(cacheDir, "src.tar.gz")
+  writeFileSync(bundle, Buffer.from(await res.arrayBuffer()))
+  execSync(`tar -xzf "${bundle}" -C "${cacheDir}"`, { stdio: "inherit" })
+  rmSync(bundle, { force: true })
+  const src = findSrc()
+  if (!src) {
+    console.error("vendor-v2: tarball layout unexpected - no packages/session-ui after extract")
+    process.exit(1)
+  }
+  return { src, fromDownload: true, cacheDir }
+}
+
+// resolve the source, then run the port; the download cache is deleted on
+// SUCCESS (both real and --check runs) and kept only when the port throws
+const { src: SRC, fromDownload, cacheDir } = await resolveSource()
+const rev = fromDownload ? PIN.ref : execSync("git log -1 --format=%H", { cwd: SRC }).toString().trim()
+const describe = fromDownload ? `${PIN.repo}@${PIN.ref.slice(0, 10)}` : execSync("git describe --tags", { cwd: SRC }).toString().trim()
 console.log(`vendoring from ${SRC} @ ${describe}`)
 
 const EXCLUDE = /\.(stories|test)\.[ttsx]+$/
@@ -72,31 +165,37 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/projection.ts")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     const fail = (what) => {
       throw new Error(`vendor-v2: projection fork anchor missing (${what}) - upstream drifted`)
     }
-    const nl = s.includes("\r\n") ? "\r\n" : "\n"
+    const nl = "\n"
     const patch = (from, to, what) => {
       const next = s.replace(from, to)
       if (next === s) fail(what)
       s = next
     }
 
-    // openshare fork: row rhythm between messages. ONE guarded unit - the
-    // old two-guard encoding silently skipped the whole fork when the module
-    // var insert ran first (live-caught: spacing "fixed" repeatedly while
-    // the built bundle ran upstream spacing; regen restored the var but not
-    // the fork). All anchors throw, so upstream drift is loud.
+    // openshare fork: row rhythm between messages. ONE guarded unit: a
+    // two-guard encoding silently skips the whole fork when the module var
+    // insert runs first, leaving the built bundle on upstream spacing while
+    // regen restores the var and not the fork. All anchors throw, so upstream
+    // drift is loud.
     if (!s.includes("openshare fork: each segment call starts")) {
       patch(
         /(^import \{ TimelineRow[^\r\n]*\r?\n)/m,
         "$1\n// openshare module: segment marker\nlet openshareSegmentStart = false\n// openshare fork: was the last pushed AssistantPart row a tool row? drives\n// the tool->tool message-break suppression (pure-tool message clusters)\nlet opensharePrevRowTool = false\n",
         "segment marker",
       )
+      // insert at the head of appendAssistantSegment; older revs guard
+      // thoughtOnly segments first (the marker arms AFTER the guard,
+      // matching the tested behavior exactly), newer revs have no guard
       patch(
-        /(const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{\r?\n {6}if \(thoughtOnly\) return)\r?\n/,
-        "$1\n\n      // openshare fork: each segment call starts a NEW assistant message -\n      // its first row gets the \"message\" break (consumed by appendGroups)\n      openshareSegmentStart = true\n",
+        /(const appendAssistantSegment = \(messages: SessionMessageAssistant\[\]\) => \{\r?\n)( {6}if \(thoughtOnly\) return\r?\n)?/,
+        (m, head, guard) =>
+          head +
+          (guard ?? "") +
+          "      // openshare fork: each segment call starts a NEW assistant message -\n      // its first row gets the \"message\" break (consumed by appendGroups)\n      openshareSegmentStart = true\n\n",
         "segment marker set",
       )
       patch(
@@ -261,7 +360,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: todos render in the transcript")) {
       const before = s
       s = s.replace(
@@ -274,19 +373,571 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: file-change tools never merge with each other inside a
-// context group (owner directive 2026-10-24: grouping groups individual
-// tools; edit/write/patch each render as their own expandable card - the
-// merged CurrentFileToolGroup showed one aggregate row for N edits with
-// broken expansion). Literal anchors; throws on upstream drift.
+// vendor fork: NO silent degradation. A markdown block that fails is an
+// error, not a quiet plain-text swap: the reason is logged with its stack
+// and the failure reaches the render boundary, which shows the trace.
+// (The projection fetcher is left upstream-exact for the same reason.)
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: a failed block is an error")) {
+      const before = s
+      const anchor = [
+        "        .catch(",
+        "          () =>",
+        "            (lifetime.signal.aborted",
+        "              ? { text: src.text, blocks: [], ready: false }",
+        "              : {",
+        "                  text: src.text,",
+        "                  ready: true,",
+        "                  blocks: [",
+        "                    {",
+        '                      key: base ?? "fallback",',
+        '                      mode: "full" as const,',
+        "                      raw: src.text,",
+        '                      hash: checksum(src.text) ?? "",',
+        "                      html: fallback(src.text),",
+        "                    },",
+        "                  ],",
+        "                }) satisfies RenderResult,",
+        "        )",
+      ].join("\n")
+      const replacement = [
+        "        // openshare fork: a failed block is an error, not a silent",
+        "        // plain-text fallback - keep only the aborted case (row unmounted)",
+        "        .catch((error: unknown) => {",
+        "          if (lifetime.signal.aborted) return { text: src.text, blocks: [], ready: false } satisfies RenderResult",
+        '          console.error("[openshare] markdown block failed:", error)',
+        "          throw error",
+        "        })",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: markdown.tsx settled-block fallback anchor missing - upstream drifted")
+      s = s.replace(anchor, replacement)
+      if (s === before) throw new Error("vendor-v2: markdown.tsx error-for-fallback fork failed")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor copy: the markdown worker module, importable on the main thread.
+// Offline snapshot files (file://) cannot spawn workers, so the same
+// module runs in-page behind a Worker-shaped shim: the handler is exported
+// and replies route through a bound callback instead of self.postMessage.
+{
+  const src = join(ROOT, "vendor/session-ui-v2/src/components/markdown.worker.ts")
+  const out = join(ROOT, "vendor/session-ui-v2/src/components/markdown.worker-main.ts")
+  if (existsSync(src)) {
+    let s = readFileSync(src, "utf8").replace(/\r\n/g, "\n")
+    const onMessage = "self.onmessage = (event: MessageEvent<MarkdownWorkerRequest>) => {"
+    if (!s.includes(onMessage)) throw new Error("vendor-v2: markdown worker onmessage anchor missing - upstream drifted")
+    s = s.replace(onMessage, "export const handleMessage = (event: MessageEvent<MarkdownWorkerRequest>) => {")
+    const postFn = "function post(response: MarkdownWorkerResponse) {\n  self.postMessage(response)\n}"
+    if (!s.includes(postFn)) throw new Error("vendor-v2: markdown worker post anchor missing - upstream drifted")
+    s = s.replace(
+      postFn,
+      "let __oshMarkdownReply: ((response: MarkdownWorkerResponse) => void) | undefined\nexport function __setMarkdownReply(fn: (response: MarkdownWorkerResponse) => void) {\n  __oshMarkdownReply = fn\n}\nfunction post(response: MarkdownWorkerResponse) {\n  if (__oshMarkdownReply) __oshMarkdownReply(response)\n}",
+    )
+    writeFileSync(
+      out,
+      "// @ts-nocheck - openshare vendored copy of markdown.worker.ts for\n// MAIN-THREAD use (generated by scripts/vendor-v2.mjs)\n" + s,
+    )
+  }
+}
+
+// vendor fork: the markdown worker's unavailable-throw is synchronous —
+// parseMarkdown/projectMarkdown/highlightStreamingCode must REJECT so
+// consumers take their fallback paths instead of the render boundary
+// dying mid-effect (offline snapshot files run from file://, where
+// Worker construction throws SecurityError).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown-worker.ts")
+  if (existsSync(p)) {
+    // normalize to LF: the guard insert anchors on a literal \n line, and
+    // upstream files are CRLF — a missed replace wrote the call-site
+    // patches WITHOUT the guard (half-applied fork, typecheck-caught)
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: getWorker() THROWS synchronously")) {
+      const before = s
+      const helper = `// openshare fork: workers unavailable (file:// snapshots) -> the same
+// markdown module runs in-page behind a Worker-shaped shim; identical
+// output, no worker (see scripts/vendor-v2.mjs)
+function mainThreadWorker(): Worker {
+  type Listener = (event: { data: MarkdownWorkerResponse }) => void
+  const listeners: Listener[] = []
+  const queue: MarkdownWorkerRequest[] = []
+  let real: { handleMessage: (event: any) => unknown; __setMarkdownReply: (fn: Listener) => void } | undefined
+  let dead = false
+  let onmessage: Listener | null = null
+  const emit: Listener = (event) => {
+    for (const listener of [...listeners]) listener(event)
+  }
+  void import("./markdown.worker-main").then((m) => {
+    if (dead) return
+    m.__setMarkdownReply((data: unknown) => emit({ data } as { data: MarkdownWorkerResponse }))
+    real = m as any
+    for (const request of queue.splice(0)) void (m.handleMessage as any)({ data: request })
+  })
+  const fake = {
+    postMessage: (request: MarkdownWorkerRequest) => {
+      if (real) void real.handleMessage({ data: request })
+      else queue.push(request)
+    },
+    addEventListener: (_type: string, listener: Listener) => {
+      listeners.push(listener)
+    },
+    removeEventListener: (_type: string, listener: Listener) => {
+      const index = listeners.indexOf(listener)
+      if (index >= 0) listeners.splice(index, 1)
+    },
+    terminate: () => {
+      dead = true
+      real = undefined
+    },
+    get onmessage() {
+      return onmessage
+    },
+    set onmessage(listener: Listener | null) {
+      if (onmessage) {
+        const index = listeners.indexOf(onmessage)
+        if (index >= 0) listeners.splice(index, 1)
+      }
+      onmessage = listener
+      if (listener) listeners.push(listener)
+    },
+    onerror: null,
+    dispatchEvent: () => false,
+  }
+  return fake as unknown as Worker
+}
+
+`
+      s = s.replace("export function parseMarkdown(text: string, signal: AbortSignal) {\n", helper + "export function parseMarkdown(text: string, signal: AbortSignal) {\n")
+      // workers unavailable -> main-thread instead of unavailable errors
+      // workers unavailable -> main-thread instead of unavailable errors.
+      // The shim MUST get the same onmessage handler as a real worker: the
+      // handler is attached after this block, so the shim path has to fall
+      // through instead of returning early (it never received a single reply).
+      const workerTry = `  try {\n    worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })\n  } catch (error) {`
+      const snapshotTry =
+        '  // offline snapshot files and data: module pages cannot run workers\n' +
+        '  if (location.protocol === "file:" || (typeof window !== "undefined" && (window as any).__MIRROBOT_SNAPSHOT__)) {\n' +
+        '    worker = mainThreadWorker()\n' +
+        '  } else {\n' +
+        '    try {\n' +
+        '      worker = new Worker(new URL("./markdown.worker.ts", import.meta.url), { type: "module" })\n' +
+        '    } catch {\n' +
+        '      worker = mainThreadWorker()\n' +
+        '    }\n' +
+        '  }\n' +
+        '  if (!worker) throw new MarkdownWorkerUnavailableError("markdown worker unavailable")\n'
+      if (s.includes(workerTry)) s = s.replace(workerTry, snapshotTry)
+      const catchAnchor = `    disabled = error instanceof Error ? error : new Error(String(error))\n    throw new MarkdownWorkerUnavailableError(disabled.message)\n  }`
+      if (s.includes(catchAnchor)) s = s.replace(catchAnchor, "")
+      const guard = `// openshare fork: getWorker() THROWS synchronously once the worker is\n// known-unavailable (offline snapshot files run from file://, where\n// Worker construction throws SecurityError). The exports below turn\n// that throw into a normal promise rejection so consumers take their\n// fallback paths instead of the render boundary dying mid-effect.\nfunction workerOrNull(): Worker | null {\n  try {\n    return getWorker()\n  } catch {\n    return null\n  }\n}\n\n`
+      s = s.replace("export function parseMarkdown(text: string, signal: AbortSignal) {\n", guard + "export function parseMarkdown(text: string, signal: AbortSignal) {\n")
+      s = s.replace(
+        /  if \(signal\.aborted\) return Promise\.reject\(new MarkdownWorkerDisposedError\(\)\)\r?\n  const instance = getWorker\(\)/,
+        `  if (signal.aborted) return Promise.reject(new MarkdownWorkerDisposedError())\n  const instance = workerOrNull()\n  if (!instance) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))`,
+      )
+      s = s.replace(
+        /export function projectMarkdown\(key: string, text: string, live: boolean\) \{\r?\n  getWorker\(\)/,
+        `export function projectMarkdown(key: string, text: string, live: boolean) {\n  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))\n  getWorker()`,
+      )
+      s = s.replace(
+        /export function highlightStreamingCode\(key: string, text: string, language: string, complete = false\) \{\r?\n  getWorker\(\)/,
+        `export function highlightStreamingCode(key: string, text: string, language: string, complete = false) {\n  if (!workerOrNull()) return Promise.reject(new MarkdownWorkerUnavailableError("markdown worker unavailable"))\n  getWorker()`,
+      )
+      if (s === before) throw new Error("vendor-v2: markdown-worker anchors missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: the markdown worker's unavailable-throw is synchronous —
+// startMarkdown must defer the call into its promise chain so the
+// rejection lands on consumers' escaped-text fallback instead of killing
+// the render boundary (offline snapshot files run from file://, where
+// Worker construction throws SecurityError).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown-cache.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: parseMarkdown THROWS synchronously")) {
+      const before = s
+      s = s.replace(
+        /  const promise = parseMarkdown\(block\.src, controller\.signal\)\r?\n    \.then\(\(html\) => \{/,
+        `  // openshare fork: parseMarkdown THROWS synchronously when the worker is\n  // unavailable (offline snapshot files run from file://, where Worker\n  // construction throws) — deferring the call turns that throw into a\n  // normal rejection so consumers take the escaped-text fallback instead\n  // of the render boundary\n  const promise = Promise.resolve()\n    .then(() => parseMarkdown(block.src, controller.signal))\n    .then((html) => {`,
+      )
+      if (s === before) throw new Error("vendor-v2: markdown-cache startMarkdown anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: pierre's worker module, importable on the main thread.
+// Offline snapshot files run from file://, where Worker construction throws
+// SecurityError; instead of degrading rendering to plain text, the same
+// module runs in-page behind a Worker-shaped shim (identical output, no
+// parallelism). Two copies exist because the kit builds two pools with
+// different render options.
+{
+  const pierreDir = join(ROOT, "vendor/session-ui-v2/src/pierre")
+  const workerSrcDir = join(ROOT, "node_modules/@pierre/diffs/dist/worker")
+  if (existsSync(workerSrcDir)) {
+    const chunkFiles = readdirSync(workerSrcDir).filter((f) => f.endsWith(".js"))
+    const selfListen = 'self.addEventListener("message", (event) => {\n\thandleMessage(event.data);\n});\n'
+    const prependMain =
+      "// @ts-nocheck - openshare vendored copy of @pierre/diffs/dist/worker for\n" +
+      "// MAIN-THREAD use (generated by scripts/vendor-v2.mjs; the real worker\n" +
+      "// asset is the untouched package file). Replies route through a bound\n" +
+      "// callback instead of the worker postMessage.\n" +
+      "var __oshReply\n" +
+      "var postMessage = function (data) {\n" +
+      "  if (__oshReply) __oshReply(data)\n" +
+      "}\n\n"
+    const appendMain =
+      "\n// openshare: main-thread entry points (see ../worker-shim.ts)\n" +
+      "export function __setMainThreadReply(fn) {\n" +
+      "  __oshReply = fn\n" +
+      "}\n" +
+      "export { handleMessage }\n"
+    for (const dir of ["diffs-main", "diffs-main-none"]) {
+      const target = join(pierreDir, dir)
+      mkdirSync(target, { recursive: true })
+      for (const f of chunkFiles) {
+        let s = readFileSync(join(workerSrcDir, f), "utf8").replace(/\r\n/g, "\n")
+        s = s.replace(/(\.\/[A-Za-z0-9_-]+)\.js/g, "$1")
+        const header = `// @ts-nocheck - openshare vendored copy of @pierre/diffs/dist/worker/${f} (generated by scripts/vendor-v2.mjs)\n`
+        if (f === "worker.js") {
+          if (!s.includes(selfListen)) throw new Error(`vendor-v2: pierre worker self-listener anchor missing in ${dir} - package layout changed`)
+          s = s.replace(selfListen, "")
+          s = prependMain + s + appendMain
+        }
+        writeFileSync(join(target, f.replace(/\.js$/, ".ts")), header + s)
+      }
+    }
+    // Worker-shaped shim driving both module instances. Replies are routed by
+    // request id to the fake worker that sent the request, delivered async
+    // like a real worker, and event types stay apart: the pool registers BOTH
+    // message and error listeners, so a message handed to the error listener
+    // read as a worker failure on every reply.
+    writeFileSync(
+      join(pierreDir, "worker-shim.ts"),
+      [
+        "// openshare fork file (generated by scripts/vendor-v2.mjs - regen rewrites",
+        "// it): drives the pierre diffs worker module on the main thread when real",
+        "// Workers are unavailable (file:// snapshots). Each pool type gets its own",
+        "// module instance so per-pool render options never cross.",
+        'import { handleMessage as handleWordLine, __setMainThreadReply as bindWordLine } from "./diffs-main/worker"',
+        'import { handleMessage as handleNone, __setMainThreadReply as bindNone } from "./diffs-main-none/worker"',
+        "",
+        "type MsgListener = (ev: { data: unknown }) => void",
+        "",
+        "interface FakeWorker {",
+        "  listeners: Map<string, MsgListener[]>",
+        "  deliver: (data: unknown) => void",
+        "}",
+        "",
+        "const fakes = new Set<FakeWorker>()",
+        "const bound = new Set<string>()",
+        "// request id -> the fake worker that sent it (replies route back there)",
+        "const owner = new Map<unknown, FakeWorker>()",
+        "",
+        "function ensureBound(kind: string, bind: (fn: (data: unknown) => void) => void) {",
+        '  if (bound.has(kind)) return',
+        "  bound.add(kind)",
+        "  bind((data) => {",
+        "    const id = (data as { id?: unknown })?.id",
+        "    const target = id === undefined ? undefined : owner.get(id)",
+        "    if (target) {",
+        "      owner.delete(id)",
+        "      queueMicrotask(() => target.deliver(data))",
+        "      return",
+        "    }",
+        "    queueMicrotask(() => {",
+        "      for (const f of [...fakes]) f.deliver(data)",
+        "    })",
+        "  })",
+        "}",
+        "",
+        'export function createMainThreadWorker(lineDiffType: "none" | "word-line"): Worker {',
+        '  if (lineDiffType === "none") {',
+        '    ensureBound("none", bindNone)',
+        "  } else {",
+        '    ensureBound("word-line", bindWordLine)',
+        "  }",
+        "  const fake: FakeWorker = {",
+        "    listeners: new Map(),",
+        "    deliver: (data) => {",
+        "      for (const l of [...(fake.listeners.get(\"message\") ?? [])]) l({ data })",
+        "    },",
+        "  }",
+        "  fakes.add(fake)",
+        "  return {",
+        "    addEventListener: (type: string, cb: MsgListener) => {",
+        "      const list = fake.listeners.get(type) ?? []",
+        "      list.push(cb)",
+        "      fake.listeners.set(type, list)",
+        "    },",
+        "    removeEventListener: (type: string, cb: MsgListener) => {",
+        "      const list = fake.listeners.get(type) ?? []",
+        "      const i = list.indexOf(cb)",
+        "      if (i >= 0) list.splice(i, 1)",
+        "    },",
+        "    postMessage: (request: unknown) => {",
+        "      const id = (request as { id?: unknown })?.id",
+        "      if (id !== undefined) owner.set(id, fake)",
+        "      queueMicrotask(() => {",
+        '        const handle = lineDiffType === "none" ? handleNone : handleWordLine',
+        "        void handle(request as never).catch((e) => {",
+        '          console.error("[openshare] main-thread pierre task failed", e)',
+        "        })",
+        "      })",
+        "    },",
+        "    terminate: () => {",
+        "      fakes.delete(fake)",
+        "    },",
+        "    onmessage: null,",
+        "    onerror: null,",
+        "    dispatchEvent: () => false,",
+        "  } as unknown as Worker",
+        "}",
+        "",
+      ].join("\n"),
+    )
+  }
+
+  // wire the fork into the kit's pool factory
+  const p = join(pierreDir, "worker.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: main-thread pierre pool")) {
+      const before = s
+      const factoryAnchor = 'workerFactory: () => new Worker(DiffsWorkerUrl, { type: "module" }),'
+      if (!s.includes(factoryAnchor)) throw new Error("vendor-v2: pierre workerFactory anchor missing - upstream drifted")
+      s = s.replace(factoryAnchor, "workerFactory: () => pierreWorkerFactory(lineDiffType),")
+      const poolAnchor = "poolSize: 2,"
+      if (!s.includes(poolAnchor)) throw new Error("vendor-v2: pierre poolSize anchor missing - upstream drifted")
+      // openshare fork: bound the per-pool render caches. Upstream defaults
+      // totalASTLRUCacheSize to 100 per cache (fileCache + diffCache), per
+      // pool - full-file render results retained indefinitely. 24 entries
+      // bounds the retention while keeping re-expansions cache-hit fast.
+      // poolSize 1: each pierre worker compiles the full grammar engine
+      // (~60-90MB native per process); the viewer renders sequentially
+      // anyway, so a second worker buys latency it does not need.
+      s = s.replace(
+        poolAnchor,
+        ["      poolSize: 1,", "      totalASTLRUCacheSize: 24,"].join("\r\n"),
+      )
+      const initAnchor = "void pool.initialize()"
+      if (s.includes(initAnchor)) {
+        s = s.replace(initAnchor, 'void pool.initialize().catch((e) => console.warn("[openshare] pierre pool init failed", e))')
+      }
+      const helpers = [
+        "// openshare fork: main-thread pierre pool. Offline snapshot files run from",
+        "// file://, where Worker construction throws SecurityError; instead of",
+        "// degrading rendering to plain text, the same worker module code runs",
+        '// in-page (./worker-shim, lazy-loaded so http pages never ship it):',
+        "// identical output, no parallelism.",
+        "let oshMainThreadPool: boolean | undefined",
+        "function pierreMainThreadPool(): boolean {",
+        "  if (oshMainThreadPool === undefined) {",
+        "    // offline snapshot files and data: module pages cannot run workers",
+        '    if (location.protocol === "file:" || !!(window as any).__MIRROBOT_SNAPSHOT__) return (oshMainThreadPool = true)',
+        "    oshMainThreadPool = false",
+        "  }",
+        "  return oshMainThreadPool",
+        "}",
+        'function lazyMainThreadWorker(lineDiffType: "none" | "word-line"): Worker {',
+        "  const listeners: Array<[string, unknown]> = []",
+        "  const queue: unknown[] = []",
+        "  let real: Worker | undefined",
+        "  let dead = false",
+        '  void import("./worker-shim").then((m) => {',
+        "    if (dead) return",
+        "    real = m.createMainThreadWorker(lineDiffType)",
+        "    for (const [t, cb] of listeners) real.addEventListener(t, cb as never)",
+        "    for (const req of queue) real.postMessage(req)",
+        "    listeners.length = 0",
+        "    queue.length = 0",
+        '  }).catch((e) => console.error("[openshare] main-thread pierre shim failed to load", e))',
+        "  return {",
+        "    addEventListener: (t: string, cb: unknown) => {",
+        "      if (real) real.addEventListener(t, cb as never)",
+        "      else listeners.push([t, cb])",
+        "    },",
+        "    removeEventListener: (t: string, cb: unknown) => {",
+        "      real?.removeEventListener(t, cb as never)",
+        "      const i = listeners.findIndex(([t2, cb2]) => t2 === t && cb2 === cb)",
+        "      if (i >= 0) listeners.splice(i, 1)",
+        "    },",
+        "    postMessage: (req: unknown) => {",
+        "      if (real) real.postMessage(req)",
+        "      else queue.push(req)",
+        "    },",
+        "    terminate: () => {",
+        "      dead = true",
+        "      real?.terminate()",
+        "    },",
+        "    onmessage: null,",
+        "    onerror: null,",
+        "    dispatchEvent: () => false,",
+        "  } as unknown as Worker",
+        "}",
+        'function pierreWorkerFactory(lineDiffType: "none" | "word-line"): Worker {',
+        "  if (!pierreMainThreadPool()) {",
+        "    try {",
+        '      return new Worker(DiffsWorkerUrl, { type: "module" })',
+        "    } catch {",
+        "      oshMainThreadPool = true",
+        '      console.warn("[openshare] workers unavailable; pierre renders on the main thread")',
+        "    }",
+        "  }",
+        "  return lazyMainThreadWorker(lineDiffType)",
+        "}",
+        "",
+        "",
+      ].join("\n")
+      const fnAnchor = 'function createPool(lineDiffType: "none" | "word-line")'
+      if (!s.includes(fnAnchor)) throw new Error("vendor-v2: pierre createPool anchor missing - upstream drifted")
+      s = s.replace(fnAnchor, helpers + fnAnchor)
+      if (s === before) throw new Error("vendor-v2: pierre worker.ts main-thread fork failed")
+      writeFileSync(p, s)
+    }
+  }
+}
+// vendor fork: prompt timestamps come from the host clock. The kit renders
+// "now" / "3 minutes ago" / "1 day ago", which reads wrong on a shared
+// session; ours shows the time as recorded and switches the whole session to
+// the reader's timezone from the header toggle (src/timefmt.ts).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: the host owns the clock")) {
+      const anchor = [
+        "  const stamp = createMemo(() => {",
+        "    const created = props.message.time.created",
+        "    const relative = relativeTime(created, now())",
+        "",
+        '    if (relative.unit === "now") return i18n.t("ui.message.time.justNow")',
+        "",
+        '    if (relative.unit === "date") return datefmt().format(created)',
+        "",
+        "    return i18n.t(RELATIVE_TIME_KEYS[relative.unit], { count: numfmt().format(relative.count) })",
+        "  })",
+      ].join("\n")
+      const body = [
+        "  const stamp = createMemo(() => {",
+        "    const created = props.message.time.created",
+        "    // openshare fork: the host owns the clock. Default is the time as",
+        "    // recorded; the header toggle switches every stamp to the reader's",
+        "    // timezone (both formats live in src/timefmt.ts).",
+        '    return ((globalThis as any).__oshStamp?.(created) as string | undefined) ?? new Date(created).toISOString().slice(11, 16)',
+        "  })",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: message stamp anchor missing - upstream drifted")
+      s = s.replace(anchor, body)
+    }
+    writeFileSync(p, s)
+  }
+}
+
+// vendor fork: the shell card opts into the shared output-surface behavior
+// (drag handle, clipped fade, resize listener) with data attributes; the
+// scroller is named so the delegated code can find it.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    const before = s
+    s = s.replace(
+      '<div data-component="bash-output" data-variant="shell" dir="ltr">',
+      '<div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">',
+    )
+    s = s.replace(
+      '<div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">\n',
+      '<div data-component="bash-output" data-variant="shell" dir="ltr" data-osh-out="shell">\n      <div class="osh-out-grip" data-osh-out-grip title="drag to resize - double-click resets" />\n',
+    )
+    s = s.replace('        data-slot="bash-scroll"\n', '        data-slot="bash-scroll"\n        data-osh-scroll\n')
+    if (s === before) throw new Error("vendor-v2: shell card anchors missing - upstream drifted")
+    writeFileSync(p, s)
+  }
+}
+// vendor fork: calmer word emphasis inside diffs. On a rewritten line every
+// word counts as changed, so the 0.4 (dark) / 0.2 (light) fill painted the
+// whole line as a saturated band; 0.3 / 0.16 keeps the changed words
+// distinct without turning the card into a colour block.
+{
+   const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+   if (existsSync(p)) {
+     let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+     if (!s.includes("rgb(from var(--v2-green-600) r g b / 0.16)")) {
+       const before = s
+       s = s
+         .replace(
+           "    rgb(from var(--v2-green-600) r g b / 0.2),\n    rgb(from var(--v2-green-600) r g b / 0.4)",
+           "    rgb(from var(--v2-green-600) r g b / 0.16),\n    rgb(from var(--v2-green-600) r g b / 0.3)",
+         )
+         .replace(
+           "    rgb(from var(--v2-red-600) r g b / 0.2),\n    rgb(from var(--v2-red-600) r g b / 0.4)",
+           "    rgb(from var(--v2-red-600) r g b / 0.16),\n    rgb(from var(--v2-red-600) r g b / 0.3)",
+         )
+       if (s === before) throw new Error("vendor-v2: diff emphasis anchor missing - upstream drifted")
+       writeFileSync(p, s)
+     }
+   }
+ }
+
+// The light-mode text/separator overrides are ordinary outer CSS declarations
+// in app.css targeting `diffs-container`; no :host self referential override is
+// needed here (outer declarations win over the shadow host's normal styles).
+
+// vendor fork: aliasing the library's default theme names. A worker bundle can
+// evaluate its module graph twice (vite dev serves the entry and a plain copy
+// under different URLs), leaving a copy that renders with DEFAULT_THEMES
+// ("pierre-dark"/"pierre-light") instead of the pool theme; every task in that
+// copy throws "Theme ... has not been resolved". Registering the default names
+// as aliases of the same palette and initializing with them means every copy
+// resolves, handshake or not. Palette unchanged; only the names differ.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/pierre/index.ts")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: default theme aliases")) {
+      const before = s
+      s = s.replace(
+        'registerCustomTheme(OpenCodeTheme.name, () => Promise.resolve(OpenCodeTheme), "zed")\n',
+        'registerCustomTheme(OpenCodeTheme.name, () => Promise.resolve(OpenCodeTheme), "zed")\n' +
+          "// openshare fork: default theme aliases (see VENDOR.md)\n" +
+          'const oshAliasedTheme = (name: string) => ({ ...OpenCodeTheme, name })\n' +
+          'registerCustomTheme("pierre-dark", () => Promise.resolve(oshAliasedTheme("pierre-dark")), "zed")\n' +
+          'registerCustomTheme("pierre-light", () => Promise.resolve(oshAliasedTheme("pierre-light")), "zed")\n',
+      )
+      s = s.replace(
+        "export const highlightOptions = { theme: OpenCodeTheme.name, preferredHighlighter: \"highlights\" } as const",
+        "export const highlightOptions = {\n  theme: { dark: \"pierre-dark\", light: \"pierre-light\" },\n  preferredHighlighter: \"highlights\",\n} as const",
+      )
+      if (s === before || !s.includes("oshAliasedTheme")) throw new Error("vendor-v2: theme alias anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: file-change tools never merge with each other inside a
+// context group. Grouping groups individual tools, so edit/write/patch each
+// render as their own expandable card; the merged CurrentFileToolGroup
+// showed one aggregate row for N edits with broken expansion. Literal
+// anchors; throws on upstream drift.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: file-change tools NEVER merge")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const nl = "\n"
       const A = ["      if (isFileChangeTool(tool) && Array.isArray(previous) && previous[0] && isFileChangeTool(previous[0])) {", "        previous.push(tool)", "", "        return groups", "      }"].join(nl)
-      const B = ["      // openshare fork: file-change tools NEVER merge with each other -", "      // each edit/write/patch renders as its own expandable card inside", "      // the group, exactly like every other tool (owner directive)", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
+      const B = ["      // openshare fork: file-change tools NEVER merge with each other - each", "      // edit/write/patch renders as its own expandable card inside the group,", "      // exactly like every other tool", "      if (isFileChangeTool(tool)) {", "        groups.push([tool])", "", "        return groups", "      }"].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: file-tools-merge anchor missing - upstream drifted")
       s = s.replace(A, B)
       writeFileSync(p, s)
@@ -295,23 +946,22 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 }
 
 // vendor fork: grouped rows all EXPAND. Upstream renders glob/grep/list
-// inside a context group as a STATIC trigger row (no Collapsible at all -
-// live-caught: grouped searches could never expand) and file-change tools
-// as an aggregate CurrentFileToolGroup accordion. Both branches now fall
-// through to ToolDisplay + our registry renderers: real expandable bodies,
-// patch diffs, per-card toggles (owner directive: grouping groups
-// individual tools, each one expands like its ungrouped self).
+// inside a context group as a STATIC trigger row (no Collapsible at all, so
+// grouped searches cannot expand) and file-change tools as an aggregate
+// CurrentFileToolGroup accordion. Both branches now fall through to
+// ToolDisplay + our registry renderers: real expandable bodies, patch
+// diffs, per-card toggles, and each tool expands like its ungrouped self.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: glob/grep/list expand like every other grouped tool")) {
       const A = 'when={tool().state.status !== "error" && ["glob", "grep", "list"].includes(tool().name)}'
-      const B = 'when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches could never expand (live-caught). ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}'
+      const B = 'when={false /* openshare fork: glob/grep/list expand like every other grouped tool - the upstream static trigger row has NO collapsible, so grouped searches can never expand. ToolDisplay + our registry renderers give them real bodies. The static-row markup below stays unreachable for reference. */}'
       if (!s.includes(A)) throw new Error("vendor-v2: glob/grep static-row anchor missing - upstream drifted")
       s = s.replace(A, B)
       const C = "when={isFileChangeTool(tool())}"
-      const D = 'when={false /* openshare fork: file-change tools render as their own ToolDisplay cards (owner directive: grouping groups individual tools) - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}'
+      const D = 'when={false /* openshare fork: file-change tools render as their own ToolDisplay cards - CurrentFileToolGroup is an aggregate accordion that does not fit single edit/write cards with patch diffs */}'
       if (!s.includes(C)) throw new Error("vendor-v2: file group render anchor missing - upstream drifted")
       s = s.replace(C, D)
       writeFileSync(p, s)
@@ -328,7 +978,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: reads stay ordinary rows")) {
       const before = s
       s = s.replace(
@@ -341,19 +991,170 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: reads no longer MERGE inside a context group. Upstream
-// collapses consecutive reads into one inner array, rendered as the inline
-// CurrentReadToolGroup subtitle row - but our forks bypass that renderer,
-// so the merged array flows into a single ToolDisplay row that shows only
-// group()[0] (live-caught: "Used 4 Read" expanded to one row, three reads
-// invisible). Reads render as individual expandable rows, like every other
-// grouped tool (owner directive: grouping groups individual tools).
+// vendor fork: read-of-image attachments reach the renderers. The v1 host
+// stores an image read as state.attachments (data URLs); upstream never
+// forwards state attachments, so the viewer's read renderer can never show
+// the picture. Three edits: ToolProps gains `attachments?: unknown`, and
+// both ToolDisplay call sites (grouped tools in tool-renderer.tsx, lone
+// tools in current-message.tsx) pass tool().state.attachments through.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("attachments?: unknown")) {
+      const before = s
+      s = s.replace(
+        "  status?: string\n  hideDetails?: boolean",
+        "  status?: string\n  /** read-of-image carries the file as v1 attachments (data URLs) */\n  attachments?: unknown\n  hideDetails?: boolean",
+      )
+      s = s.replace(
+        /(\n {40}status=\{tool\(\)\.state\.status\})/,
+        `$1\n                                        attachments={(tool().state as { attachments?: unknown }).attachments}`,
+      )
+      if (!s.includes("attachments?: unknown") || !s.includes(".state as { attachments?: unknown }).attachments")) {
+        throw new Error("vendor-v2: attachments fork anchors missing - upstream drifted")
+      }
+      if (s === before) throw new Error("vendor-v2: attachments fork did not change anything")
+      writeFileSync(p, s)
+    }
+  }
+}
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/message/current-message.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("attachments={(tool().state")) {
+      const before = s
+      s = s.replace(
+        /(\n {12}error=\{currentToolError\(tool\(\)\)\}\n)/,
+        "$1            attachments={(tool().state as { attachments?: unknown }).attachments}\n",
+      )
+      if (s === before) throw new Error("vendor-v2: current-message attachments anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: subagent cards link to the paired CHILD PROMPT, not just
+// the child session. A child can hold several prompts (later calls,
+// auto-continues); metadata.promptID on the task part resolves the exact
+// one (plugin stamp, with the viewer's old-share text-coverage fallback
+// written onto the same field at fold time). data.tsx's href/navigate
+// signatures gain the optional anchor; the task card passes it through,
+// so plain clicks SPA-navigate and middle/ctrl-click opens the anchored
+// URL.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/context/data.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("anchor?: string")) {
+      // per-anchor assertions: a whole-block comparison passes when only
+      // ONE of the two signatures applied, silently shipping the other
+      // un-typed
+      const a1 = "export type NavigateToSessionFn = (sessionID: string) => void"
+      const a2 = "export type SessionHrefFn = (sessionID: string) => string"
+      if (!s.includes(a1)) throw new Error("vendor-v2: data.tsx NavigateToSessionFn anchor missing - upstream drifted")
+      if (!s.includes(a2)) throw new Error("vendor-v2: data.tsx SessionHrefFn anchor missing - upstream drifted")
+      s = s.replace(a1, "export type NavigateToSessionFn = (sessionID: string, anchor?: string) => void")
+      s = s.replace(a2, "export type SessionHrefFn = (sessionID: string, anchor?: string) => string")
+      writeFileSync(p, s)
+    }
+  }
+  const t = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(t)) {
+    let s = readFileSync(t, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: the paired child prompt anchors the card's link")) {
+      const A = `    const childSessionId = createMemo(
+      () => metadata().sessionID || taskSession(input().description, data.sessionID, data.store.session),
+    )`
+      if (!s.includes(A)) throw new Error("vendor-v2: task childSessionId memo anchor missing - upstream drifted")
+      s = s.replace(
+        A,
+        A + `
+
+    // openshare fork: the paired child prompt anchors the card's link
+    // (metadata.promptID - plugin stamp, or the viewer's old-share
+    // text-coverage fallback written onto the same field at fold time)
+    const promptAnchor = createMemo(() =>
+      typeof metadata().promptID === "string" ? (metadata().promptID as string) : undefined,
+    )`,
+      )
+      const B = "    const href = createMemo(() => sessionLink(childSessionId(), data.sessionHref))"
+      if (!s.includes(B)) throw new Error("vendor-v2: task href memo anchor missing - upstream drifted")
+      s = s.replace(
+        B,
+        `    const href = createMemo(() => {
+      // openshare fork: sessionHref takes the prompt anchor so
+      // middle/ctrl-click lands on the paired prompt too
+      const id = childSessionId()
+      if (!id) return undefined
+      return data.sessionHref?.(id, promptAnchor())
+    })`,
+      )
+      const C = `    const open = () => {
+      const id = childSessionId()
+
+      if (!id) return
+      data.navigateToSession?.(id)
+    }`
+      if (!s.includes(C)) throw new Error("vendor-v2: task open() anchor missing - upstream drifted")
+      s = s.replace(C, C.replace("data.navigateToSession?.(id)", "data.navigateToSession?.(id, promptAnchor())"))
+      // the metadata schema keeps the promptID field through decoding
+      const E = "    name: optional(Schema.String),\n    provider: optional(Schema.String),\n    sessionID: optional(Schema.String),"
+      if (!s.includes(E)) throw new Error("vendor-v2: toolMetadata schema anchor missing - upstream drifted")
+      s = s.replace(E, E + "\n    promptID: optional(Schema.String),")
+      // the subagent card anchors to its paired child prompt the same
+      // way (the viewer's fallback writes promptID onto subagent parts)
+      const F = "  const taskHref = createMemo(() => sessionLink(taskId(), data.sessionHref))"
+      if (!s.includes(F)) throw new Error("vendor-v2: subagent taskHref anchor missing - upstream drifted")
+      s = s.replace(
+        F,
+        `  const taskHref = createMemo(() => {
+    // openshare fork: the subagent card anchors to the paired child
+    // prompt like the task card does (plugin promptID stamp or the
+    // viewer's old-share fallback writes it onto this part too).
+    // toolMetadata directly - the \`metadata\` memo is declared further
+    // down and solid memos evaluate eagerly (TDZ)
+    const meta = toolMetadata(props.metadata)
+    const anchor = props.tool === "subagent" && typeof meta.promptID === "string" ? (meta.promptID as string) : undefined
+    return sessionLink(taskId(), data.sessionHref, anchor)
+  })`,
+      )
+      const G = `function sessionLink(id: string | undefined, href?: (id: string) => string | undefined) {
+  if (!id) return undefined
+
+  return href?.(id)
+}`
+      if (!s.includes(G)) throw new Error("vendor-v2: sessionLink anchor missing - upstream drifted")
+      s = s.replace(
+        G,
+        `// openshare fork: optional prompt anchor rides the link hash so the
+// subagent card lands on the paired child prompt (same contract as the
+// task card's sessionHref)
+function sessionLink(id: string | undefined, href?: (id: string, anchor?: string) => string | undefined, anchor?: string) {
+  if (!id) return undefined
+
+  return href?.(id, anchor)
+}`,
+      )
+      writeFileSync(t, s)
+    }
+  }
+}
+
+// vendor fork: reads no longer MERGE inside a context group. Upstream
+// collapses consecutive reads into one inner array, rendered as the inline
+// CurrentReadToolGroup subtitle row, but our forks bypass that renderer, so
+// the merged array flows into a single ToolDisplay row that shows only
+// group()[0] ("Used 4 Read" expands to one row, three reads invisible).
+// Reads render as individual expandable rows, like every other grouped
+// tool.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: reads no longer merge inside a context group")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
+      const nl = "\n"
       const A = [
         "      if (",
         "        currentToolGroupedRead(tool) &&",
@@ -367,12 +1168,11 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
         "      }",
       ].join(nl)
       const B = [
-        "      // openshare fork: reads no longer merge inside a context group -",
-        "      // the merged array rendered through one ToolDisplay row showing",
-        "      // only the first tool (live-caught: \"Used 4 Read\" expanded to a",
-        "      // single row). Reads stay individual expandable rows, like every",
-        "      // other grouped tool (owner directive). CurrentReadToolGroup is",
-        "      // bypassed below either way.",
+        "      // openshare fork: reads no longer merge inside a context group - the",
+        "      // merged array rendered through one ToolDisplay row showing only the",
+        "      // first tool (\"Used 4 Read\" expands to a single row). Reads stay",
+        "      // individual expandable rows, like every other grouped tool;",
+        "      // CurrentReadToolGroup is bypassed below either way.",
       ].join(nl)
       if (!s.includes(A)) throw new Error("vendor-v2: read-merge anchor missing - upstream drifted")
       s = s.replace(A, B)
@@ -391,18 +1191,33 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("osh-task-wrap")) {
-      const nl = s.includes("\r\n") ? "\r\n" : "\n"
-      const openA = ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
-      const openB = [
-        "    const trigger = () => (",
-        "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
-        '      // card (app.css: height 0 -> 22px on hover; the card box never grows)',
-        '      <div class="osh-task-wrap">',
-        "      <div",
-        '        data-component="task-tool-card"',
-      ].join(nl)
+      const nl = "\n"
+      // upstream reformatted the card div between revs (multi-line vs
+      // single-line attributes) — match either shape
+      const openA = s.includes('    const trigger = () => (\n      <div data-component="task-tool-card">')
+        ? ['    const trigger = () => (', '      <div data-component="task-tool-card">'].join(nl)
+        : ['    const trigger = () => (', '      <div', '        data-component="task-tool-card"'].join(nl)
+      // card attrs: the running animation hook + the agent type color var
+      const openA2 = openA.replace(
+        /(      <div data-component="task-tool-card")>/,
+        '$1 data-running={running() ? "" : undefined} style={{ "--osh-agent": oshAgentColor(input()?.agent) || undefined }}>',
+      ).replace(
+        /(      <div\n        data-component="task-tool-card")/,
+        '$1\n        data-running={running() ? "" : undefined}\n        style={{ "--osh-agent": oshAgentColor(input()?.agent) || undefined }}',
+      )
+      const openB = openA2.replace(
+        /(      <div)/,
+        [
+          "      // openshare fork: .osh-task-wrap carries the in-flow hint below the",
+          '      // card (app.css: height 0 -> 22px on hover; the card box never grows).',
+          '      // data-running drives the sweep animation; --osh-agent paints the card',
+          '      // in its type color (src/agent-colors.ts).',
+          '      <div class="osh-task-wrap">',
+          "$1",
+        ].join(nl),
+      )
       // close anchor rides the task-unique `delegating()` Show that follows
       const closeA = ["      </div>", "    )", "", "    return (", "      <Show", "        when={delegating()}"].join(nl)
       const closeB = [
@@ -422,18 +1237,104 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// vendor fork: grouped task rows label the agent that ACTUALLY ran.
-// Upstream's grouped label ignores the task input's agent entirely (it
-// always reads ui.tool.agent.default = "Agent"). The viewer's fold
-// (subagent-map.ts) rewrites part.input.agent from the plugin-stamped
-// metadata.agent (authoritative) or the old-share fallback, so the kit
-// reads one field; subagent_type stays as a last-resort fallback.
+// vendor fork: unregistered tools fall back to the catch-all output card
+// (ctx_*, MCP tools) registered under name "*"; without this upstream
+// returns undefined for every unknown tool and the row renders nothing.
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes('state["*"]?.render')) {
+      const anchor = ["function getTool(name: string) {", "  return state[name]?.render", "}"].join("\n")
+      const body = [
+        "function getTool(name: string) {",
+        "  // openshare fork: unregistered tools fall back to the catch-all renderer",
+        '  return state[name]?.render ?? state["*"]?.render',
+        "}",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: getTool anchor missing - upstream drifted")
+      s = s.replace(anchor, body)
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: per-agent colors for task cards. explore is blue, general
+// dark red, every other type takes the next free palette slot in first-use
+// order (stable for the page); past ten types, colors are generated by
+// golden-angle hue steps so no two types ever share one. Inserted above
+// taskAgentName; the card reads it through the --osh-agent style var.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    // guard on the DEFINITION, not the name: the card fork above already
+    // inserts an oshAgentColor(...) usage, which would defeat a name guard
+    if (!s.includes("function oshAgentColor")) {
+      const anchor = "export function taskAgentName("
+      const block = [
+        "// openshare fork: per-agent colors. explore is blue, general dark red, and",
+        "// every other type takes the next free slot in first-use order, so one",
+        "// session always paints the same assignment.",
+        'const OSH_AGENT_NAMED: Record<string, string> = { explore: "#5b9cf6", general: "#d65454" }',
+        "const OSH_AGENT_PALETTE = [",
+        '  "#5b9cf6", // blue',
+        '  "#d65454", // dark red',
+        '  "#e08a54", // orange',
+        '  "#c9c05a", // khaki',
+        '  "#8fc772", // green',
+        '  "#4fc9a0", // mint',
+        '  "#57b9d6", // cyan',
+        '  "#a78bfa", // violet',
+        '  "#d577c7", // magenta',
+        '  "#e58fb0", // pink',
+        "]",
+        "const oshAgentAssigned = new Map<string, string>()",
+        "let oshAgentSeq = 0",
+        "function oshAgentColor(agent: string | undefined): string {",
+        '  if (!agent) return ""',
+        "  const hit = oshAgentAssigned.get(agent)",
+        "  if (hit) return hit",
+        "  const used = new Set(oshAgentAssigned.values())",
+        "  // past the base palette, colors are GENERATED (golden-angle hue steps)",
+        "  // so two types never share a color, however many appear",
+        "  const generated = () => {",
+        "    oshAgentSeq += 1",
+        "    return `hsl(${(oshAgentSeq * 137) % 360} 62% 64%)`",
+        "  }",
+        "  const color = OSH_AGENT_NAMED[agent] ?? OSH_AGENT_PALETTE.find((c) => !used.has(c)) ?? generated()",
+        "  oshAgentAssigned.set(agent, color)",
+        "  return color",
+        "}",
+        "",
+        "",
+      ].join("\n")
+      if (!s.includes(anchor)) throw new Error("vendor-v2: taskAgentName anchor missing - upstream drifted")
+      s = s.replace(anchor, block + anchor)
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// vendor fork: grouped task rows label the agent that ACTUALLY ran.
+// Upstream's toolTitle switch ignores the task input's agent entirely
+// (always ui.tool.agent.default). The viewer's fold (subagent-map.ts)
+// rewrites part.input.agent from the plugin-stamped metadata.agent
+// (authoritative) or the old-share fallback; subagent_type stays as a
+// last-resort fallback. The task ROW itself reads the agent natively
+// since v2.0.18 (taskAgentName at the call site).
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: grouped label prefers the stamped agent")) {
       const before = s
+      // two upstream shapes: the ternary in the group label (older revs)
+      // and the toolTitle switch case (newer revs)
+      s = s.replace(
+        /    case "subagent":\r?\n      return i18n\.t\("ui\.tool\.agent\.default"\)/,
+        '    case "subagent":\n      // openshare fork: grouped label prefers the stamped agent (the fold\n      // rewrites state.input.agent from metadata.agent)\n      return taskAgentName((tool as any).state?.input?.agent ?? (tool as any).state?.input?.subagent_type, undefined) ?? i18n.t("ui.tool.agent.default")',
+      )
       s = s.replace(
         /: part\.name === "subagent"\r?\n\s*\? i18n\.t\("ui\.tool\.agent\.default"\)/,
         ': part.name === "subagent"\n                  // openshare fork: grouped label prefers the stamped agent\n                  // (fold rewrites state.input.agent from metadata.agent)\n                  ? taskAgent((part as any).state?.input?.agent ?? (part as any).state?.input?.subagent_type, undefined).name ?? i18n.t("ui.tool.agent.default")',
@@ -450,13 +1351,13 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/components/basic-tool.tsx")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: generic tools show output")) {
       let before = s
       s = s.replace(/export function GenericTool\(props: \{[^}]*\}\) \{/, (m) =>
         m.replace(
-          "input?: Record<string, unknown>",
-          "input?: Record<string, unknown>\n  /** openshare fork: generic tools show output */\n  output?: string\n  metadata?: Record<string, unknown>",
+          /input\?: (GenericToolInput|Record<string, unknown>)/,
+          "input?: $1\n  /** openshare fork: generic tools show output */\n  output?: string\n  metadata?: Record<string, unknown>",
         ),
       )
       if (s === before) throw new Error("vendor-v2: GenericTool signature anchor missing")
@@ -480,6 +1381,268 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
       if (s === before) throw new Error("vendor-v2: GenericTool body anchor missing")
       writeFileSync(p, s)
     }
+
+    // openshare fork: keepMounted keeps the collapsible content MOUNTED
+    // when closed (forceMount) - the reasoning panel animates its collapse,
+    // which Kobalte otherwise makes impossible by unmounting closed
+    // content. The tool-pour fork below carries the mechanism for every
+    // other tool; reasoning still passes keepMounted explicitly.
+    if (!s.includes("openshare fork: keepMounted keeps the collapsible content MOUNTED")) {
+      const nl = "\n"
+      const must = (cond, what) => {
+        if (!cond) throw new Error("vendor-v2: keepMounted fork failed (" + what + ") - upstream drifted")
+      }
+      let before = s
+      s = s.replace(
+        ["  locked?: boolean", "  rail?: boolean"].join(nl),
+        ["  locked?: boolean", "  /** openshare fork: keepMounted keeps the collapsible content MOUNTED", "   *  when closed (forceMount) so a collapse animation can run. */", "  keepMounted?: boolean", "  /** opt out of the openshare tool-height motion for lazily rendered", "   *  file bodies (read/write/edit), which own complex pierre layout", "   *  inside shadow roots and use the kit's original instant mounting. */", "  pour?: boolean", "  rail?: boolean"].join(nl),
+      )
+      must(s !== before, "props decl")
+      before = s
+      s = s.replace(
+        ["    <Collapsible", "      open={open()}", "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+        ["    <Collapsible", "      // openshare fork: forceMount is a ROOT prop (kobalte reads it in", "      // CollapsibleRoot.shouldMount); on Content it is silently ignored", "      forceMount={props.keepMounted || undefined}", "      open={open()}", "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+      )
+      must(s.includes("forceMount={props.keepMounted || undefined}"), "root forceMount")
+      writeFileSync(p, s)
+    }
+
+    // openshare fork (tool pour): thinking's expand/collapse on plain tool
+    // cards that have ordinary Solid bodies. Pierre-driven file cards opt out:
+    // they retain the kit's direct mounting, so there is no staged height.
+    // The opted-in content mounts at height 0 then releases its measured
+    // height; a close remains mounted for the height transition.
+    if (!s.includes("openshare fork (tool pour)")) {
+      const nl = "\n"
+      const must = (cond, what) => {
+        if (!cond) throw new Error("vendor-v2: tool-pour fork failed (" + what + ") - upstream drifted")
+      }
+      let before = s
+      s = s.replace(
+        "import {\n  createEffect,\n  createMemo,\n  For,",
+        "import {\n  createEffect,\n  createMemo,\n  createRenderEffect,\n  createSignal,\n  For,",
+      )
+      must(s !== before, "createSignal import")
+      before = s
+      s = s.replace(
+        ['  const open = () => props.open ?? state.open',
+         "  const ready = () => state.ready",
+         '  const pending = () => props.status === "streaming" || props.status === "running"',
+         '  const hasChildren = () => props.hasContent ?? (props.defer ? "children" in props : props.children)'].join(nl),
+        ['  const open = () => props.open ?? state.open',
+         "  const ready = () => state.ready",
+         '  const pending = () => props.status === "streaming" || props.status === "running"',
+         '  const hasChildren = () => props.hasContent ?? (props.defer ? "children" in props : props.children)',
+         "",
+         "  // openshare fork (tool pour): opted-in plain tool content stays mounted",
+         "  // through collapse so the height transition runs both directions. Lazy",
+         "  // pierre file bodies opt out and keep upstream's immediate unmount.",
+         "  const [animAlive, setAnimAlive] = createSignal(false)",
+         "  let animCloseTimer: ReturnType<typeof setTimeout> | undefined",
+         "  let pourRoot: HTMLElement | undefined",
+         "  // true only across an OPEN->CLOSED transition: the effect below also",
+         "  // runs at mount for every born-closed card, and those must not mark",
+         "  // themselves as closing (no wipe ever ran)",
+         "  let oshWasOpen = false",
+         "  let oshWipeTimer: ReturnType<typeof setTimeout> | undefined",
+         "  const pourContent = () => pourRoot?.querySelector(':scope > [data-slot=\"collapsible-content\"]') as HTMLElement | undefined",
+         "  onCleanup(() => {",
+         "    if (animCloseTimer) clearTimeout(animCloseTimer)",
+         "    if (oshWipeTimer) clearTimeout(oshWipeTimer)",
+         "  })",
+         "  createRenderEffect(",
+         "    on(",
+         "      open,",
+          "      (value) => {",
+          "        if (props.pour === false) return",
+          "        if (animCloseTimer) {",
+          "          clearTimeout(animCloseTimer)",
+         "          animCloseTimer = undefined",
+         "        }",
+         "        if (oshWipeTimer) {",
+         "          clearTimeout(oshWipeTimer)",
+         "          oshWipeTimer = undefined",
+         "        }",
+         "        if (value) {",
+         "          pourRoot?.removeAttribute(\"data-osh-closing\")",
+         "          oshWasOpen = true",
+         "          if (!animAlive()) {",
+         "            // stage a newly mounted body at 0 before its release below;",
+         "            // lazy bodies can mount a few frames after the trigger, so the",
+         "            // release retries until content has a real height",
+         "            setAnimAlive(true)",
+         "            pourRoot?.style.setProperty(\"--osh-pour-h\", \"0px\")",
+         "            let tries = 0",
+         "            const release = () => {",
+         "              const el = pourContent()",
+         "              const h = el?.scrollHeight ?? 0",
+         "              if (h > 0 || ++tries > 36) {",
+         "                if (el && h > 0) {",
+         "                  // Commit the staged zero before the real height: a",
+         "                  // shared mount/release frame cannot start a height",
+         "                  // transition without a committed old style",
+         "                  pourRoot?.style.setProperty(\"--osh-pour-h\", \"0px\")",
+         "                  void el.offsetHeight",
+         "                  pourRoot?.style.setProperty(\"--osh-pour-h\", `${h}px`)",
+         "                  // Natural height resumes after the pour so later child",
+         "                  // growth and output dragging aren't clipped by this value",
+         "                  animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty(\"--osh-pour-h\"), 300)",
+         "                } else {",
+         "                  pourRoot?.style.removeProperty(\"--osh-pour-h\")",
+         "                }",
+         "                return",
+         "              }",
+         "              requestAnimationFrame(release)",
+         "            }",
+         "            requestAnimationFrame(release)",
+         "            return",
+         "          }",
+         "          setAnimAlive(true)",
+         "          // reopened while the close was still running: the pinned",
+         "          // close-time height must release again or later growth stays",
+         "          // trapped at the old measurement",
+         "          animCloseTimer = setTimeout(() => pourRoot?.style.removeProperty(\"--osh-pour-h\"), 300)",
+         "        } else {",
+         "          const wasOpen = oshWasOpen",
+         "          oshWasOpen = false",
+         "          const h = wasOpen ? (pourContent()?.scrollHeight ?? 0) : 0",
+         "          if (h > 0) pourRoot?.style.setProperty(\"--osh-pour-h\", `${h}px`)",
+         "          // mark the closing card LATE: the top fade mask only needs to",
+         "          // exist for the sweep's final pixels (the remnant forms there),",
+         "          // and arming at click fades the card top for the whole close",
+         "          if (wasOpen) oshWipeTimer = setTimeout(() => pourRoot?.setAttribute(\"data-osh-closing\", \"\"), 190)",
+         "          animCloseTimer = setTimeout(() => {",
+         "            setAnimAlive(false)",
+         "            if (oshWipeTimer) clearTimeout(oshWipeTimer)",
+         "            pourRoot?.removeAttribute(\"data-osh-closing\")",
+         "            pourRoot?.style.removeProperty(\"--osh-pour-h\")",
+         "            if (props.defer) setState(\"ready\", false)",
+         "            // the last painted frame of the shrinking box can survive the",
+         "            // unmount as a 1px compositor remnant; one opacity nudge forces",
+         "            // the layer to rebuild (invisible, two frames)",
+         "            const row = pourRoot?.closest(\"[data-row-key],[data-timeline-row]\") as HTMLElement | undefined",
+         "            if (row) {",
+         "              row.style.opacity = \"0.999\"",
+         "              requestAnimationFrame(() => row.style.removeProperty(\"opacity\"))",
+         "            }",
+         "          }, 420)",
+         "        }",
+         "      },",
+         "      { defer: false },",
+         "    ),",
+         "  )"].join(nl),
+      )
+      must(s !== before, "animAlive block")
+        // "ready" controls the lazy body independently of the content box;
+        // opted-in tools finish closing before it is dropped; file cards
+        // retain the kit's immediate disposal.
+        before = s
+        s = s.replace(
+          ['        if (!value) {',
+           "          cancel()",
+           '          setState("ready", false)',
+           "",
+           "          return",
+           "        }"].join(nl),
+          ['        if (!value) {',
+           "          cancel()",
+           "          // File cards keep upstream's immediate lazy-body disposal; plain",
+           "          // tool bodies stay until the collapse has finished",
+           '          if (props.pour === false) setState("ready", false)',
+           "          return",
+           "        }"].join(nl),
+        )
+        must(s !== before, "defer-ready fork")
+      before = s
+      s = s.replace(
+        ['  const handleOpenChange = (value: boolean) => {',
+         '    if (pending() && !props.allowOpenWhilePending) return',
+         "",
+         "    if (props.locked && !value) return",
+         "    setOpen(value)",
+         "  }"].join(nl),
+        ['  const handleOpenChange = (value: boolean) => {',
+         '    if (pending() && !props.allowOpenWhilePending) return',
+         "",
+         "    if (props.locked && !value) return",
+         "    setOpen(value)",
+         "  }",
+         "",
+         "  // openshare fork (tool pour): the render effect above owns all staging;",
+         "  // the kit's open handler also keeps its native pending/locked guards"].join(nl),
+       )
+       must(s !== before, "native open handler retained")
+      before = s
+      s = s.replace(
+        ['      // openshare fork: forceMount is a ROOT prop (kobalte reads it in',
+         "      // CollapsibleRoot.shouldMount); on Content it is silently ignored",
+         "      forceMount={props.keepMounted || undefined}",
+         "      open={open()}",
+         "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+        ['      ref={(el) => (pourRoot = el)}',
+         "      // openshare fork: forceMount is a ROOT prop (kobalte reads it in",
+         "      // CollapsibleRoot.shouldMount); on Content it is silently ignored.",
+          "      // animAlive mounts the content through close animations and the",
+          "      // staged pour (see the fork block above); excluded file cards keep",
+          "      // the kit's normal lifecycle",
+          "      forceMount={props.keepMounted || (props.pour !== false ? animAlive() : undefined) || undefined}",
+          "      data-osh-pour={props.pour === false ? undefined : \"\"}",
+          "      open={open()}",
+          "      onOpenChange={props.locked ? undefined : handleOpenChange}"].join(nl),
+      )
+      must(s.includes('forceMount={props.keepMounted || (props.pour !== false ? animAlive() : undefined) || undefined}'), "root forceMount file opt-out")
+      writeFileSync(p, s)
+    }
+  }
+}
+
+// A tool group's parts list filtered on open; preserving it during the close
+// keeps the group's height animation from dominating an empty body. The
+// closing state sits ABOVE items (createMemo evaluates eagerly - a TDZ
+// otherwise) and is driven by a render effect so programmatic closes
+// (disclosure resets, search expansion) behave like click closes.
+{
+  const p = join(ROOT, "vendor/session-ui-v2/src/tools/tool-renderer.tsx")
+  if (!readFileSync(p, "utf8").includes("openshare fork: closing group bodies")) {
+    const nl = "\n"
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, nl)
+    let before = s
+    s = s.replace(
+      "  createEffect,\n  createMemo,\n  createSignal,",
+      "  createEffect,\n  createMemo,\n  createRenderEffect,\n  createSignal,",
+    )
+    if (s === before) throw new Error("vendor-v2: tool-renderer import anchor missing")
+    before = s
+    s = s.replace(
+      "  const items = createMemo(() =>\n    (props.open ? props.parts : []).reduce<",
+      [
+        "  // openshare fork: closing group bodies stay mounted through BasicTool's",
+        "  // pour, then drop with the content unmount. Declared ABOVE items (the",
+        "  // eager createMemo would hit a TDZ otherwise) and driven by a render",
+        "  // effect on props.open so PROGRAMMATIC closes (disclosure resets, search",
+        "  // expansion) animate the same as click closes; defer:true keeps groups",
+        "  // born closed from mounting their parts.",
+        "  const [closing, setClosing] = createSignal(false)",
+        "  let closingTimer: ReturnType<typeof setTimeout> | undefined",
+        "  onCleanup(() => closingTimer && clearTimeout(closingTimer))",
+        "  createRenderEffect(",
+        "    on(",
+        "      () => props.open,",
+        "      (open) => {",
+        "        setClosing(!open)",
+        "        if (closingTimer) clearTimeout(closingTimer)",
+        "        if (!open) closingTimer = setTimeout(() => setClosing(false), 420)",
+        "      },",
+        "      { defer: true },",
+        "    ),",
+        "  )",
+        "",
+        "  const items = createMemo(() =>",
+        "    (props.open || closing() ? props.parts : []).reduce<",
+      ].join(nl),
+    )
+    if (s === before) throw new Error("vendor-v2: group items anchor missing")
+    writeFileSync(p, s)
   }
 }
 
@@ -488,7 +1651,7 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/timeline-row.ts")
   if (existsSync(p)) {
-    let s = readFileSync(p, "utf8")
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
     if (!s.includes("openshare fork: message spacing")) {
       const before = s
       s = s
@@ -500,19 +1663,13 @@ copyTree(join(SRC, "packages/session-ui/src"), join(ROOT, "vendor/session-ui-v2/
   }
 }
 
-// Row rhythm: upstream emits BOTH the pt-2/pt-4 classes AND the
-// data-timeline-spacing attribute on the same element. share-viewer's
-// app.css keys the rhythm on the attribute with UNLAYERED rules, which
-// beat tailwind's @layer utilities in the cascade regardless of
-// specificity - so no class-removal fork is needed here (app.css scans
-// the vendor trees via @source, the classes are generated but lose).
+// openshare fork: agent transition chip on user rows (renders the
+// plugin-stamped metadata.agentSwitch, never computes anything)
 {
   const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
   if (existsSync(p)) {
-    // openshare fork: agent transition chip on user rows (renders the
-    // plugin-stamped metadata.agentSwitch, never computes anything)
     {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("osh-agent-switch")) {
         const before = s
         s = s.replace(
@@ -541,27 +1698,132 @@ $2`,
 
     // openshare fork: per-tool-name default-open input (the viewer's
     // auto-expand checkbox list) consulted BEFORE the category booleans,
-    // in the content default-open and the shell row's defaultOpen.
-    // nl-aware: the anchors use the file's own EOL so regeneration works
-    // on LF checkouts too (was hardcoded \r\n - a portability bug).
+    // in the content default-open, the group call site, and the shell
+    // row's defaultOpen. Every replace asserts its OWN landing: a partial
+    // no-op once shipped a half-applied fork (the type decl landed, the
+    // contentDefaultOpen insert silently missed after upstream grew a line
+    // between the anchor parts) and auto-expand went dead on every common
+    // tool while the shell row still worked.
     {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: the viewer's per-tool auto-expand list wins first")) {
-        const nl2 = s.includes("\r\n") ? "\r\n" : "\n"
-        const before = s
+        const nl2 = "\n"
+        const must = (cond, what) => {
+          if (!cond) throw new Error("vendor-v2: toolDefaultOpen fork failed (" + what + ") - upstream drifted")
+        }
+        let before = s
         s = s.replace(
           ["  editToolDefaultOpen: Accessor<boolean>"].join(nl2),
           ["  editToolDefaultOpen: Accessor<boolean>", "  /** openshare fork: per-tool-name default-open (the viewer's auto-expand", "   *  checkbox list). Consulted BEFORE the category booleans; undefined =", "   *  fall through to the kit's own logic. */", "  toolDefaultOpen?: (tool: { name: string }) => boolean | undefined"].join(nl2),
         )
+        must(s !== before, "input type decl")
+        before = s
         s = s.replace(
-          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {", "    if (input.timelineDetail) {"].join(nl2),
-          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {", "    // openshare fork: the viewer's per-tool auto-expand list wins first", "    if (item.type === \"tool\" && input.toolDefaultOpen) {", "      const custom = input.toolDefaultOpen(item)", "      if (custom !== undefined) return custom", "    }", "    if (input.timelineDetail) {"].join(nl2),
+          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {"].join(nl2),
+          ["  function contentDefaultOpen(item: SessionMessageAssistant[\"content\"][number]) {", "    // openshare fork: the viewer's per-tool auto-expand list wins first", "    if (item.type === \"tool\" && input.toolDefaultOpen) {", "      const custom = input.toolDefaultOpen(item)", "      if (custom !== undefined) return custom", "    }"].join(nl2),
         )
+        must(s.includes("const custom = input.toolDefaultOpen(item)"), "contentDefaultOpen insert")
+        before = s
+        s = s.replace(
+          ["            toolDefaultOpen={(tool) =>", "              input.timelineDetail || tool.name === \"execute\" ? contentDefaultOpen(tool) : false", "            }"].join(nl2),
+          ["            toolDefaultOpen={(tool) =>", "              // openshare fork: the viewer's per-tool auto-expand list wins first", "              input.toolDefaultOpen?.(tool) ??", "              (input.timelineDetail || tool.name === \"execute\" ? contentDefaultOpen(tool) : false)", "            }"].join(nl2),
+        )
+        must(s.includes("input.toolDefaultOpen?.(tool) ??"), "group call site")
+        before = s
         s = s.replace(
           ["    const defaultOpen = createMemo(() => {", "      if (!input.timelineDetail) return input.shellToolDefaultOpen()"].join(nl2),
           ["    const defaultOpen = createMemo(() => {", "      // openshare fork: the viewer's per-tool auto-expand list wins first", "      if (input.toolDefaultOpen) {", "        const custom = input.toolDefaultOpen({ name: \"shell\" })", "        if (custom !== undefined) return custom", "      }", "      if (!input.timelineDetail) return input.shellToolDefaultOpen()"].join(nl2),
         )
-        if (s === before) throw new Error("vendor-v2: toolDefaultOpen anchors missing - upstream drifted")
+        must(s.includes("const custom = input.toolDefaultOpen({ name: \"shell\" })"), "shell defaultOpen")
+        writeFileSync(p, s)
+      }
+    }
+  }
+
+  // vendor fork (session-timeline-row): suppressed turn footer. An
+  // interrupted turn can end on a tool call AFTER its last text part;
+  // the kit parks the copy/model footer inside that text part, carving a
+  // gap between the completion and its tool call. The turn ends on tool
+  // output, so the reader loses nothing: the footer is suppressed
+  // entirely for that shape.
+  {
+    const p = join(ROOT, "vendor/session-ui-v2/src/timeline/session-timeline-row.tsx")
+    if (existsSync(p)) {
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+      const has = s.includes("const copyContentIDWithRelocation")
+      if (!has) {
+        const must = (cond, what) => {
+          if (!cond) throw new Error("vendor-v2: suppressed-footer fork failed (" + what + ") - upstream drifted")
+        }
+        let before = s
+        s = s.replace(
+          '                showAssistantCopyPartID={copyContentID(row().userMessageID)}',
+          '                showAssistantCopyPartID={copyContentIDWithRelocation(row().userMessageID)}',
+        )
+        must(s !== before, "callsite")
+        before = s
+        s = s.replace(
+          `  const copyContentID = (messageID: string) => {
+    if (workingTurn(messageID)) return null
+
+    const message = input.projection
+      .assistantMessagesByParent()
+      .get(messageID)
+      ?.findLast((message) => message.content.some((content) => content.type === "text" && !!content.text.trim()))
+
+    return message
+      ? Timeline.contentEntries(message).findLast(
+          (entry) => entry.content.type === "text" && !!entry.content.text.trim(),
+        )?.id
+      : undefined
+  }`,
+          `  const copyContentID = (messageID: string) => {
+    if (workingTurn(messageID)) return null
+
+    const message = input.projection
+      .assistantMessagesByParent()
+      .get(messageID)
+      ?.findLast((message) => message.content.some((content) => content.type === "text" && !!content.text.trim()))
+
+    return message
+      ? Timeline.contentEntries(message).findLast(
+          (entry) => entry.content.type === "text" && !!entry.content.text.trim(),
+        )?.id
+      : undefined
+  }
+
+  // openshare fork: an interrupted turn can end on a tool call AFTER its
+  // last text part. The in-text footer then renders in a carved gap
+  // between the completion and its tool call - worse than no footer. The
+  // turn carries tool output after its text, so the reader loses nothing
+  // by having no copy footer on it: suppress the footer entirely for
+  // that shape.
+  const turnEndsOnNonText = (messageID: string) => {
+    if (workingTurn(messageID)) return false
+
+    const messages = input.projection.assistantMessagesByParent().get(messageID) ?? emptyAssistantMessages
+
+    let lastTextEntryID: string | undefined
+    let lastEntryID: string | undefined
+
+    for (const message of messages) {
+      for (const entry of Timeline.contentEntries(message)) {
+        lastEntryID = entry.id
+
+        if (entry.content.type === "text" && !!(entry.content as { text?: string }).text?.trim()) {
+          lastTextEntryID = entry.id
+        }
+      }
+    }
+
+    return !!lastTextEntryID && !!lastEntryID && lastEntryID !== lastTextEntryID
+  }
+
+  const copyContentIDWithRelocation = (messageID: string) => {
+    return turnEndsOnNonText(messageID) ? null : copyContentID(messageID)
+  }`,
+        )
+        must(s.includes("const copyContentIDWithRelocation"), "helper insert")
         writeFileSync(p, s)
       }
     }
@@ -570,24 +1832,24 @@ $2`,
   // vendor fork (markdown.tsx): paragraph-SHAPED fallback. Upstream's
   // fallback() joined the whole text with <br>, so a paragraph break
   // rendered as a full blank LINE while ready markdown uses
-  // p { margin-bottom: 12px } - the fallback->ready swap visibly snapped
-  // spacing (live-caught "reasoning snap"). The fork emits real <p> chunks
-  // with <br> soft breaks: metrically identical to the parsed result.
+  // p { margin-bottom: 12px } and the fallback->ready swap visibly snapped
+  // the spacing. The fork emits real <p> chunks with <br> soft breaks:
+  // metrically identical to the parsed result.
   {
     const p = join(ROOT, "vendor/session-ui-v2/src/components/markdown.tsx")
     if (existsSync(p)) {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: paragraph-SHAPED fallback")) {
-        const nl = s.includes("\r\n") ? "\r\n" : "\n"
+        const nl = "\n"
         const A = ["function fallback(markdown: string) {", '  return escape(markdown).replace(/\\r\\n?/g, "\\n").replace(/\\n/g, "<br>")', "}"].join(nl)
         const B = [
           "function fallback(markdown: string) {",
-          "  // openshare fork: paragraph-SHAPED fallback (live-caught \"reasoning",
-          "  // snap\"): upstream joined everything with <br>, so a paragraph break",
-          "  // (\\n\\n) rendered as a full blank LINE while the ready markdown uses",
-          "  // p { margin-bottom: 12px } - visibly tighter, and the fallback->ready",
-          "  // swap snapped the spacing. Emit real <p> chunks with <br> soft breaks",
-          "  // so the fallback is metrically identical to the parsed result.",
+          "  // openshare fork: paragraph-SHAPED fallback: upstream joined everything",
+          "  // with <br>, so a paragraph break (\\n\\n) rendered as a full blank LINE",
+          "  // while the ready markdown uses p { margin-bottom: 12px }, visibly tighter,",
+          "  // and the fallback->ready swap snapped the spacing. Emit real <p> chunks",
+          "  // with <br> soft breaks so the fallback is metrically identical to the",
+          "  // parsed result.",
           "  const esc = (s: string) =>",
           '    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")',
           "  return esc(markdown)",
@@ -605,64 +1867,160 @@ $2`,
   }
 
   // vendor fork (message-content): reasoning bodies mount ON EXPAND, and
-  // Markdown deferUntilReady shows NOTHING until the markdown worker
-  // parses the whole blob (live-caught: visible blank beat on a 12s
-  // thought; minutes-long reasoning would be a long empty wait). The
-  // fork adds a `defer` prop to PacedMarkdown (default true = unchanged
-  // for load-time text) and passes defer={false} from the reasoning
-  // call site only: instant plain fallback, rich markdown swaps in when
-  // the worker completes.
+  // Markdown deferUntilReady shows NOTHING until the markdown worker parses
+  // the whole blob, so a long thought opens to a blank beat (minutes-long
+  // reasoning would be a long empty wait). The fork adds a `defer` prop to
+  // PacedMarkdown (default true = unchanged for load-time text) and passes
+  // defer={false} from the reasoning call site only: instant plain fallback,
+  // rich markdown swaps in when the worker completes.
   {
     const p = join(ROOT, "vendor/session-ui-v2/src/message/message-content.tsx")
     if (existsSync(p)) {
-      let s = readFileSync(p, "utf8")
+      let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
       if (!s.includes("openshare fork: `defer` defaults true")) {
-        const before = s
+        // per-anchor assertions: a whole-block comparison passes when any
+        // SINGLE replace no-ops, silently shipping that site unfixed
+        const D1 = "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean }) {"
+        const D2 = "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady />"
+        const D3 = '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />'
+        const D4 = '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} />'
+        const D5 = '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} />'
+        const D6 = '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n              />'
+        for (const [n, a] of Object.entries({ D1, D2, D3, D4, D5, D6 })) {
+          if (!s.includes(a)) throw new Error(`vendor-v2: message-content defer anchor ${n} missing - upstream drifted`)
+        }
         s = s.replace(
-          "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean }) {",
+          D1,
           "function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boolean; defer?: boolean }) {",
         )
         s = s.replace(
-          "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady />",
+          D2,
           "<Markdown text={value()} cacheKey={props.cacheKey} streaming={props.streaming} deferUntilReady={props.defer !== false} />",
         )
         s = s.replace(
-          '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} />',
+          D3,
           '<PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />',
+        )
+        // assistant text parts and summaries render the instant
+        // paragraph-shaped fallback too: born-blank markdown collapses the
+        // row until the worker parses, then the parse grows it back and
+        // shoves every row below (the reload "completion disappears, next
+        // element in its place, then everything moves" report); the
+        // fallback is metrically identical, so the rich swap never reflows
+        s = s.replace(
+          D4,
+          '<PacedMarkdown text={props.text} cacheKey={props.id} streaming={props.message.time.completed === undefined} defer={false} />',
+        )
+        s = s.replace(
+          D5,
+          '<PacedMarkdown text={props.summary} cacheKey={props.id} streaming={false} defer={false} />',
+        )
+        s = s.replace(
+          D6,
+          '<PacedMarkdown\n                text={summary()}\n                cacheKey={props.message.id}\n                streaming={props.message.status === "running"}\n                defer={false}\n              />',
         )
         // (a hidden "prewarm" copy while collapsed was tried and deleted:
         // collapsed bodies unmount inside Collapsible.Content, so the
         // prewarm unmounted with them and never prewarmed anything - it
         // was a no-op; defer={false} is the entire snap fix)
-        if (s === before) throw new Error("vendor-v2: message-content anchors missing - upstream drifted")
+        writeFileSync(p, s)
+      }
+
+      // openshare fork: the reasoning body is a PANEL, not loose markdown:
+      // a wrapper carrying data-osh-out (the shared per-card drag system,
+      // default cap via --osh-out-h) around the markdown, with the same
+      // bottom grip every output surface has. keepMounted rides the
+      // BasicTool so the collapse animation can run (see basic-tool fork).
+      // Open/close drives the CONTENT height: on open the final height is
+      // written to --osh-anim-h BEFORE the disclosure flips (with the
+      // height transition suppressed for two frames), so the row reserves
+      // full space instantly and the panel pours in clipped - a CSS height
+      // animation on the row itself reports intermediate sizes to the
+      // virtualizer's ResizeObserver, which positions rows below one frame
+      // behind (visible overlap mid-animation).
+      if (!s.includes("openshare fork: the reasoning body is a PANEL")) {
+        const nl = "\n"
+        const must = (cond, what) => {
+          if (!cond) throw new Error("vendor-v2: reasoning panel fork failed (" + what + ") - upstream drifted")
+        }
+        let before = s
+        s = s.replace(
+          ["        allowOpenWhilePending", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
+          ["        allowOpenWhilePending", "        keepMounted={keepAlive()}", "        // reasoning owns --osh-anim-h, so no second tool-pour timer", "        pour={false}", "        hideDetails={!props.content.text.trim()}", "        open={open()}"].join(nl),
+        )
+        must(s !== before, "keepMounted prop")
+        before = s
+        s = s.replace(
+          ["        onOpenChange={(value) => {", "          setState(\"open\", value)", "          props.onOpenChange?.(value)", "          props.onContentRendered?.()", "        }}"].join(nl),
+          ["        onOpenChange={(value) => {", "          setState(\"open\", value)", "          props.onOpenChange?.(value)", "          // remeasure once the async markdown lands (a remounted body", "          // parses empty first); inside the 420ms window the live body", "          // measures immediately", "          if (value) measureWhenReady()", "          props.onContentRendered?.()", "        }}"].join(nl),
+        )
+        must(s.includes("if (value) measureWhenReady()"), "open handler")
+        before = s
+        s = s.replace(
+          ["        <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />"].join(nl),
+          ["        {/* openshare fork: the reasoning body is a PANEL - wrapper carries the", "            shared drag system (data-osh-out + grip), the inner box scrolls", "            under its cap; styles live in share-viewer's app.css */}", "        <div data-osh-out=\"think\" class=\"osh-think-panel\" ref={(el) => (panelEl = el)}>", "          <div data-osh-scroll class=\"osh-think-body\">", "            <PacedMarkdown text={props.content.text} cacheKey={props.id} streaming={props.streaming} defer={false} />", "          </div>", "          {/* openshare fork: the closing mark - centered gradient lines", "              parting around the thought icon + label, shown at the scroll", "              end (CSS-gated on the scrolled attrs from output-resize) */}",           "          <div class=\"osh-think-end\" aria-hidden=\"true\">", "            <span class=\"osh-think-end-line\" />", "            <span class=\"osh-think-end-label\">end of thought</span>", "            <span class=\"osh-think-end-line\" />", "          </div>", "          <div class=\"osh-out-grip\" data-osh-out-grip title=\"drag to resize - double-click resets\" />", "        </div>"].join(nl),
+        )
+        must(s.includes('ref={(el) => (panelEl = el)}'), "panel wrapper + ref")
+        before = s
+        s = s.replace(
+          ["  const i18n = useI18n()", "  const [state, setState] = createStore<{ open?: boolean }>({})"].join(nl),
+          ["  // openshare fork: PER-INSTANCE panel ref - a module-level ref would", "  // point at whichever reasoning panel mounted last", "  let panelEl: HTMLDivElement | undefined", "  // the animated height target (CSS cannot compute min(scrollHeight,", "  // cap)); stored on the PART element, which survives the closed-state", "  // content unmount - a var on the content element dies with every", "  // remount. Measured while the body is live (open, or just before the", "  // close unmount); reopens read the cached value",           "  const measureTarget = () => {", "    const body = panelEl?.querySelector<HTMLElement>(\".osh-think-body\")", "    const part = panelEl?.closest(\"[data-component='reasoning-part']\")", "    if (!body || !(part instanceof HTMLElement)) return", "    // a freshly remounted body parses its markdown async and measures", "    // empty; caching that would collapse the box to the chrome - skip", "    // and keep the previous value until the real content lands", "    if (body.scrollHeight < 4) return", "    const cap = parseFloat(getComputedStyle(body).maxHeight) || 416",           "    part.style.setProperty(\"--osh-anim-h\", `${Math.round(Math.min(body.scrollHeight, cap))}px`)", "  }", "  // a remounted body parses its markdown async; poll cheap frames until", "  // real content exists, then cache the target", "  const measureWhenReady = () => {", "    let tries = 0", "    const tick = () => {", "      const body = panelEl?.querySelector<HTMLElement>(\".osh-think-body\")", "      if (body && body.scrollHeight >= 4) {", "        measureTarget()", "        return", "      }", "      if (++tries < 60) requestAnimationFrame(tick)", "    }", "    requestAnimationFrame(tick)", "  }", "  const [keepAlive, setKeepAlive] = createSignal(true)", "  // true only across an OPEN->CLOSED transition: the keepAlive effect runs", "  // at mount for every born-closed panel, and those must not mark", "  // themselves as closing (no wipe ever ran)", "  let oshWasOpen = false", "  let oshWipeTimer: ReturnType<typeof setTimeout> | undefined", "  let unmountTimer: ReturnType<typeof setTimeout> | undefined", "  onCleanup(() => {", "    if (unmountTimer) clearTimeout(unmountTimer)", "    if (oshWipeTimer) clearTimeout(oshWipeTimer)", "  })", "  const i18n = useI18n()", "  const [state, setState] = createStore<{ open?: boolean }>({})"].join(nl),
+        )
+        must(s.includes("let panelEl") && s.includes("measureTarget"), "panelEl + measureTarget decl")
+        before = s
+        s = s.replace(
+          ["  const open = () => props.open ?? state.open ?? props.defaultOpen ?? false"].join(nl),
+          ["  const open = () => props.open ?? state.open ?? props.defaultOpen ?? false", "  // openshare fork: the content stays mounted only while OPEN or while", "  // the collapse animation runs (~420ms > the 320ms transition); a", "  // resting closed panel then unmounts its markdown - measured 362 DOM", "  // nodes per closed panel otherwise (74% of page DOM at rest). The", "  // effect (defer:false) also releases panels that LOAD closed and", "  // follows programmatic opens (the reasoningOpen setting)", "  createEffect(on(open, (value) => {", "    if (unmountTimer) {", "      clearTimeout(unmountTimer)", "      unmountTimer = undefined", "    }", "    if (oshWipeTimer) {", "      clearTimeout(oshWipeTimer)", "      oshWipeTimer = undefined", "    }", "    // capture the animated-height target while the body is live, in", "    // BOTH branches (load-open measures on the first run; close", "    // measures before the unmount releases the body)", "    measureTarget()", "    if (value) {", "      panelEl?.closest(\".tool-collapsible\")?.removeAttribute(\"data-osh-closing\")", "      oshWasOpen = true", "      setKeepAlive(true)", "      measureWhenReady()", "    } else {", "      const wasOpen = oshWasOpen", "      oshWasOpen = false", "      // mark the closing panel LATE: the top fade mask only needs to", "      // exist for the sweep's final pixels (the remnant forms there), and", "      // arming at click fades the panel top for the whole close. The root", "      // is captured here, BEFORE the unmount detaches the subtree", "      const closingRoot = wasOpen ? (panelEl?.closest(\".tool-collapsible\") as HTMLElement | undefined) : undefined", "      if (wasOpen) oshWipeTimer = setTimeout(() => closingRoot?.setAttribute(\"data-osh-closing\", \"\"), 190)", "      unmountTimer = setTimeout(() => {", "        setKeepAlive(false)", "        if (oshWipeTimer) clearTimeout(oshWipeTimer)", "        closingRoot?.removeAttribute(\"data-osh-closing\")", "        // same compositor-remnant guard as the tool pour close: the last", "        // painted frame of the panel can survive the unmount as a 1px line", "        const row = closingRoot?.closest(\"[data-row-key],[data-timeline-row]\") as HTMLElement | undefined", "        if (row) {", "          row.style.opacity = \"0.999\"", "          requestAnimationFrame(() => row.style.removeProperty(\"opacity\"))", "        }", "      }, 420)",
+         "    }", "  }, { defer: false }))"].join(nl),
+        )
+        must(s.includes("createEffect(on(open"), "keepAlive effect")
         writeFileSync(p, s)
       }
     }
   }
 }
 
-// Inline line virtualization must use the transcript's bounded viewport.
-// pierre's inline file virtualizer picked the nearest overflowY ancestor
-// as its scroll root - a horizontal tool-output wrapper - so line
+// Inline line virtualization must resolve the scroll root by ACTUAL
+// vertical scrollability. pierre's inline file virtualizer picks the
+// nearest overflowY ancestor - a horizontal tool-output wrapper, since
+// setting one overflow axis forces the other to compute "auto" - so line
 // virtualization inside large files misbehaved (wrong scroll root, wrong
-// content target). The fork prefers the transcript viewport element and
-// the transcript content node, and file.tsx drops its now-duplicate
+// content target). Preferring the transcript unconditionally fixed the
+// wrappers but broke CAPPED file cards: their own body scroller is the
+// real viewport for line windowing, and windowing against the transcript
+// paints only the band the card occupies on the page (top-or-end, never
+// the middle). The fork returns the nearest ancestor that scrolls
+// vertically and is not wide-but-not-tall; the capped card body wins,
+// the transcript follows when the card does not scroll itself, and
+// horizontal wrappers are skipped. file.tsx drops its now-duplicate
 // scrollParent walker in favor of the shared one.
 {
   let p = join(ROOT, "vendor/session-ui-v2/src/pierre/virtualizer.ts")
   let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
   const patch = (from, to) => {
     const next = s.replace(from, to)
-    if (next === s) throw new Error(`vendor-v2: transcript viewport anchor missing in ${p}`)
+    if (next === s) throw new Error(`vendor-v2: vertical scroll-root anchor missing in ${p}`)
     s = next
   }
-  if (!s.includes("openshare fork: use the transcript viewport")) {
+  if (!s.includes("openshare fork: the nearest VERTICALLY scrolling ancestor")) {
+    // upstream keeps scrollRoot module-private; file.tsx (second patch
+    // below) imports it, so the export is part of this fork
+    if (!s.includes("export function scrollRoot")) {
+      patch("function scrollRoot(container: HTMLElement) {", "export function scrollRoot(container: HTMLElement) {")
+    }
     patch(
-      "function scrollRoot(container: HTMLElement) {",
-      `export function scrollRoot(container: HTMLElement) {
-  // openshare fork: use the transcript viewport, not horizontal tool wrappers.
-  const transcript = container.closest<HTMLElement>("[data-transcript-scroll]")
-  if (transcript) return transcript`,
+      "if (scrollable(style.overflowY)) return node",
+      `if (
+      scrollable(style.overflowY) &&
+      // openshare fork: the nearest VERTICALLY scrolling ancestor owns line
+      // windowing - a capped file card's own body scroller first, then the
+      // transcript. Horizontal tool-output wrappers compute overflow-y:auto
+      // too (setting one axis forces the other), so style alone misidentifies
+      // them: skip anything wide but not tall.
+      !(node.scrollWidth > node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1)
+    ) {
+      return node
+    }`,
     )
     patch(
       `root.querySelector("[role='log']")`,
@@ -674,9 +2032,11 @@ $2`,
   p = join(ROOT, "vendor/session-ui-v2/src/components/file.tsx")
   s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
   if (!s.includes("scrollRoot as scrollParent")) {
+    // import anchor is member-agnostic (upstream adds/removes named
+    // exports from pierre/virtualizer between revisions)
     patch(
-      `import { acquireVirtualizer, virtualMetrics } from "../pierre/virtualizer"`,
-      `import { acquireVirtualizer, scrollRoot as scrollParent, virtualMetrics } from "../pierre/virtualizer"`,
+      /import \{ ([^}]*) \} from "\.\.\/pierre\/virtualizer"/,
+      (m, members) => m.replace(members, members.includes("scrollRoot") ? members : `scrollRoot as scrollParent, ${members}`),
     )
     patch(/function scrollParent\(el: HTMLElement\): HTMLElement \| undefined \{[\s\S]+?\n\}\n\n/, "")
     writeFileSync(p, s)
@@ -746,6 +2106,8 @@ writeFileSync(
         "@opencode/client": "file:../client-v2",
         "@opencode/ui": "file:../ui-v2",
         "@opencode/util": "file:../util-v2",
+        // only when the vendored tree exists (newer betas only)
+        ...(existsSync(join(ROOT, "vendor/patchmark-v2")) ? { "@opencode/patchmark": "file:../patchmark-v2" } : {}),
       },
     },
     null,
@@ -756,13 +2118,34 @@ writeFileSync(
 // --- ui ---
 copyTree(join(SRC, "packages/ui/src"), join(ROOT, "vendor/ui-v2/src"))
 
+// vendor fork (MUST live AFTER the ui copyTree above): keep the token
+// colours the previous (shiki) engine produced. The kit's Zed palette maps
+// three token classes differently from the old TextMate scopes, so code
+// cards change hue after the engine swap: punctuation goes body-text to dim
+// grey, JSON/property keys primitive to variable, markdown headings info to
+// keyword. A fork placed BEFORE the copy edits a stale file and is then
+// overwritten.
+{
+  const p = join(ROOT, "vendor/ui-v2/src/context/highlight-theme.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes('punctuation: "text-base"')) {
+      const before = s
+      s = s
+        .replace('      punctuation: "syntax-punctuation",', '      punctuation: "text-base",')
+        .replace('      property: "syntax-variable",', '      property: "syntax-primitive",')
+        .replace('      title: { color: "syntax-keyword", font_weight: 700 },', '      title: { color: "syntax-info", font_weight: 700 },')
+      if (s === before) throw new Error("vendor-v2: highlight-theme anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+
 // (en locale: the kit's group label reads ui.tool.todos for todowrite
-// rows, but upstream en.ts ships without the key. The key is merged in
-// the viewer's OWN dictionary at src/entry.tsx - a vendor fork is not
-// needed for an i18n key, the provider's t() resolves it. Report filed
-// for the upstream bug: raw key on the page, live-caught as
-// "Used 3 ui.tool.todos, Shell, Glob".)
-// styles live under src/styles in the beta (no separate styles dir)
+// rows, but upstream en.ts ships without the key. The key is merged in the
+// viewer's OWN dictionary at src/entry.tsx: a vendor fork is not needed for
+// an i18n key, the provider's t() resolves it. Upstream bug report filed:
+// the raw key renders on the page as "Used 3 ui.tool.todos, Shell, Glob".)
 {
   // exports map copied verbatim from the beta package — per-component
   // explicit paths across src subdirectories, no guessing
@@ -797,7 +2180,7 @@ mkdirSync(join(ROOT, "vendor/client-v2/promise/generated"), { recursive: true })
 cpSync(clientSrc, join(ROOT, "vendor/client-v2/promise/generated/types.ts"))
 writeFileSync(
   join(ROOT, "vendor/client-v2/promise/index.ts"),
-  `// vendor shim: re-export the generated client types + the single\n// runtime helper session-ui imports (isShellNotFoundError).\nexport * from "./generated/types.js"\nexport const isShellNotFoundError = (e: unknown): e is { _tag: "ShellNotFoundError" } =>\n  typeof e === "object" && e !== null && (e as { _tag?: unknown })._tag === "ShellNotFoundError"\n`,
+  `// vendor shim: re-export the generated client types + the single\n// runtime helper session-ui imports (isShellNotFoundError).\nexport * from "./generated/types.js"\n// the beta re-exports Attachment/MediaFileAttachment from @opencode/schema/prompt\nexport type PromptMention = { start: number; end: number; text: string }\nexport type PromptFileSource = { type: \"inline\" } | { type: \"uri\"; uri: string }\nexport type PromptBase64 = string\nexport type PromptFileAttachment = { data: PromptBase64; mime: string; source: PromptFileSource; name?: string; description?: string; mention?: PromptMention }\nexport type PromptMediaFileAttachment = { mime: string; source: PromptFileSource; name?: string; description?: string; mention?: PromptMention; uri: string; bytes?: number; width?: number; height?: number }\nexport type PromptAttachment = PromptFileAttachment | PromptMediaFileAttachment\nexport type PromptAgentAttachment = { name: string; mention?: PromptMention }\nexport type PromptSkillAttachment = { id: string; name: string; text?: string; mention?: PromptMention }\nexport const isShellNotFoundError = (e: unknown): e is { _tag: "ShellNotFoundError" } =>\n  typeof e === "object" && e !== null && (e as { _tag?: unknown })._tag === "ShellNotFoundError"\n`,
 )
 writeFileSync(
   join(ROOT, "vendor/client-v2/package.json"),
@@ -816,9 +2199,9 @@ writeFileSync(
   ),
 )
 
-// --- util (path + encode only) ---
+// --- util (leaf helpers only; self-contained modules) ---
 mkdirSync(join(ROOT, "vendor/util-v2/src"), { recursive: true })
-for (const f of ["path.ts", "encode.ts"]) {
+for (const f of ["path.ts", "encode.ts", "abort.ts", "session-mention.ts"]) {
   const p = join(SRC, "packages/util/src", f)
   if (existsSync(p)) cpSync(p, join(ROOT, "vendor/util-v2/src", f))
 }
@@ -833,6 +2216,8 @@ writeFileSync(
       exports: {
         "./path": "./src/path.ts",
         "./encode": "./src/encode.ts",
+        "./abort": "./src/abort.ts",
+        "./session-mention": "./src/session-mention.ts",
       },
     },
     null,
@@ -840,18 +2225,102 @@ writeFileSync(
   ),
 )
 
-writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), `vendored from ${SRC}\ngit: ${rev} (${describe})\ndate: ${new Date().toISOString()}\n`)
+// --- patchmark (upstream's own markdown streaming/patch parser, a
+// session-ui dependency in newer betas; absent in older pins) ---
+if (existsSync(join(SRC, "packages/patchmark/src"))) {
+  mkdirSync(join(ROOT, "vendor/patchmark-v2/src"), { recursive: true })
+  // vendor fork: a file-type icon that is not shipped (snapshots inline only
+// the icons this share can ask for) renders the generic file icon instead
+// of nothing.
+{
+  const p = join(ROOT, "vendor/ui-v2/src/components/file-icon.tsx")
+  if (existsSync(p)) {
+    let s = readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+    if (!s.includes("openshare fork: generic-icon fallback")) {
+      const before = s
+      const old = `  sources[name]?.()\n    .then((text) => insertSymbol(name, text))\n    .catch(() => requested.delete(name))`
+      const next = `  // openshare fork: generic-icon fallback - a snapshot ships only the\n  // icons its share can ask for; anything else renders the generic file\n  // icon rather than a blank slot\n  const load = sources[name] ?? sources[ICON_MAPS.defaults.file]\n  load?.()\n    .then((text) => insertSymbol(name, text))\n    .catch(() => {\n      requested.delete(name)\n      if (name === ICON_MAPS.defaults.file) return\n      sources[ICON_MAPS.defaults.file]?.()\n        .then((text) => insertSymbol(name, text))\n        .catch(() => {})\n    })`
+      s = s.replace(old, next)
+      if (s === before) throw new Error("vendor-v2: file-icon loadSymbol anchor missing - upstream drifted")
+      writeFileSync(p, s)
+    }
+  }
+}
+copyTree(join(SRC, "packages/patchmark/src"), join(ROOT, "vendor/patchmark-v2/src"))
+  writeFileSync(
+    join(ROOT, "vendor/patchmark-v2/package.json"),
+    JSON.stringify({ name: "@opencode/patchmark", version: "0.0.0-vendor", private: true, type: "module", exports: { ".": "./src/index.ts" } }, null, 2),
+  )
+}
+
+writeFileSync(join(ROOT, "vendor/V2-SOURCE.txt"), [
+  `vendored from github.com/${PIN.repo} (downloaded at the PIN in scripts/vendor-v2.mjs)`,
+  `git: ${rev} (${describe})`,
+  `date: ${new Date().toISOString()}`,
+  `regenerate: npm run vendor  (downloads the pin; OPENSHARE_BETA_SRC=<checkout> overrides)`,
+  `patches + ritual: VENDOR.md`,
+  "",
+].join("\n"))
+
+// root-dep parity: vendored packages resolve peers from the ROOT tree (they
+// are junctioned into node_modules), so a root pin that lags the vendored
+// catalog silently changes kit behavior. A stale root
+// @pierre/diffs against a kit that tokenizes via @pierre/highlights makes every
+// code card render with zero colored spans and no error anywhere. This check
+// makes that class a hard failure naming the exact packages to bump.
+{
+  const root = JSON.parse(readFileSync(join(REAL_ROOT, "package.json"), "utf8"))
+  const rootDeps = { ...(root.dependencies ?? {}), ...(root.devDependencies ?? {}) }
+  const mismatches = []
+  for (const pkg of readdirSync(join(ROOT, "vendor"))) {
+    const vp = join(ROOT, "vendor", pkg, "package.json")
+    if (!existsSync(vp)) continue
+    const vend = JSON.parse(readFileSync(vp, "utf8"))
+    for (const [name, range] of Object.entries({ ...(vend.dependencies ?? {}), ...(vend.peerDependencies ?? {}) })) {
+      if (!(name in rootDeps)) continue // root pins only the shared set
+      const norm = (r) => String(r).replace(/^[~^]/, "").split(/[-+]/)[0]
+      if (norm(range) !== norm(rootDeps[name])) mismatches.push(`${name}: root ${rootDeps[name]} vs vendored ${range}`)
+    }
+  }
+  if (mismatches.length) {
+    console.error("vendor-v2: root dependency pins disagree with the vendored catalog:")
+    for (const m of mismatches) console.error(`  ${m}`)
+    console.error("Bump the root package.json pins to match (they feed the junctioned peer resolution).")
+    process.exit(1)
+  }
+}
+
+// the download cache is scratch: delete it on success, keep it only when the
+// port threw (the catch above rethrows before reaching here)
+if (fromDownload && cacheDir && !process.env.OPENSHARE_VENDOR_KEEP_CACHE) rmSync(cacheDir, { recursive: true, force: true })
 {
   // upstream beta type bugs (narrowed unions) — suppress typechecking for
   // these files rather than forking them
-  const suppress = ["session-ui-v2/src/tools/shell-output.ts", "ui-v2/src/forms/select/select.tsx"]
+  const suppress = [
+    "session-ui-v2/src/tools/shell-output.ts",
+    "ui-v2/src/forms/select/select.tsx",
+    "session-ui-v2/src/components/file.tsx",
+    "session-ui-v2/src/pierre/index.ts",
+    "session-ui-v2/src/pierre/worker.ts",
+    "ui-v2/src/motion-tuning-fields.ts",
+  ]
   const notes = {
     "session-ui-v2/src/tools/shell-output.ts": "string|object union narrowed as object-only",
     "ui-v2/src/forms/select/select.tsx": "onCleanup(void|fn) union",
+    "session-ui-v2/src/components/file.tsx": "renderHeaderPrefix/preferredHighlighter unions vs @pierre/diffs 1.6.1 types (-679)",
+    "session-ui-v2/src/pierre/index.ts": "createHighlighter arg count vs @pierre/highlights 0.2.0 types",
+    "session-ui-v2/src/pierre/worker.ts": "preferredHighlighter \"highlights\" not in @pierre/diffs 1.6.1 HighlighterTypes",
+    "ui-v2/src/motion-tuning-fields.ts": "imports storybook-only 'knobs' (upstream leak)",
   }
   for (const rel of suppress) {
     const p = join(ROOT, "vendor", rel)
     if (existsSync(p))     writeFileSync(p, `// @ts-nocheck — upstream beta type bug: ${notes[rel]}\n` + readFileSync(p, "utf8"))
   }
 }
-console.log("vendor complete")
+if (DRY) {
+  const count = readdirSync(join(ROOT, "vendor"), { recursive: true }).length
+  console.log(`check complete — every anchor applies; a real run would rewrite vendor/ (${count} entries)`)
+  rmSync(ROOT, { recursive: true, force: true })
+} else {
+  console.log("vendor complete")
+}

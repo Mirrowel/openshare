@@ -21,12 +21,33 @@
 // shareMode ("all" | "manual"; default = TUI presence), debounceMs,
 // completedDelayMs, modelLabel, ttlDays,
 // authLogin, authPassword, spoolDir, urlFile ("none" = off),
-// announceStderr.
+// announceStderr ("all" | "status" | "url" | "off"; status keeps the
+// status/banner lines and never prints the share URL - the public-CI
+// shape; url prints announce lines only).
 //
 // src/config.ts
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+function normalizeShareOverrides(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return;
+  const e = raw;
+  const out = {};
+  if (typeof e.ttlHours === "number" && Number.isFinite(e.ttlHours) && e.ttlHours > 0)
+    out.ttlHours = Math.floor(e.ttlHours);
+  else if (typeof e.ttlDays === "number" && e.ttlDays > 0)
+    out.ttlHours = Math.floor(e.ttlDays) * 24;
+  if (typeof e.authLogin === "string")
+    out.authLogin = e.authLogin;
+  if (typeof e.authPassword === "string")
+    out.authPassword = e.authPassword;
+  if (typeof e.title === "string")
+    out.title = e.title;
+  if (e.paused === true || e.paused === false)
+    out.paused = e.paused;
+  return Object.keys(out).length ? out : undefined;
+}
 var METADATA_KEY = "openshare";
 var URL_FILE_NONE = "none";
 var DEFAULTS = {
@@ -35,12 +56,14 @@ var DEFAULTS = {
   debounceMs: 1e4,
   completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
-  ttlDays: 90,
+  ttlHours: 90 * 24,
   authLogin: "",
   authPassword: "",
   spoolDir: "",
   urlFile: "",
-  announceStderr: true
+  urlFileFormat: "url",
+  configSet: "",
+  announceStderr: "all"
 };
 var CONFIG_NAME = "openshare.config.json";
 var LOCAL_NAME = "openshare.local.json";
@@ -78,6 +101,76 @@ function configPaths(pluginDir, env = process.env) {
 function configHomePath(env = process.env) {
   return join(globalConfigDir(env), CONFIG_NAME);
 }
+function configSourceMap(pluginDir, env = process.env) {
+  const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"]);
+  const known = new Set([...Object.keys(DEFAULTS), "shareMode", "servers", "shares", "redact", "meta"]);
+  const sources = {};
+  const envKeys = {
+    workerUrl: env.OPENSHARE_WORKER_URL,
+    createToken: env.OPENSHARE_CREATE_TOKEN,
+    debounceMs: env.OPENSHARE_DEBOUNCE_MS,
+    completedDelayMs: env.OPENSHARE_COMPLETED_DELAY_MS,
+    modelLabel: env.OPENSHARE_MODEL_LABEL,
+    ttlHours: env.OPENSHARE_TTL_HOURS,
+    ttlDays: env.OPENSHARE_TTL_DAYS,
+    authLogin: env.OPENSHARE_AUTH_LOGIN,
+    authPassword: env.OPENSHARE_AUTH_PASSWORD,
+    urlFile: env.OPENSHARE_URL_FILE,
+    urlFileFormat: env.OPENSHARE_URL_FILE_FORMAT,
+    configSet: env.OPENSHARE_CONFIG_SET,
+    spoolDir: env.OPENSHARE_SPOOL_DIR,
+    announceStderr: env.OPENSHARE_ANNOUNCE_STDERR,
+    shareMode: env.OPENSHARE_SHARE_MODE
+  };
+  for (const [key, value] of Object.entries(envKeys)) {
+    if (value !== undefined && value !== "")
+      sources[key] = "environment";
+  }
+  if (sources.ttlDays && !sources.ttlHours)
+    sources.ttlHours = sources.ttlDays;
+  delete sources.ttlDays;
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      const raw = JSON.parse(env.OPENSHARE_CONFIG_JSON);
+      if (raw && typeof raw === "object") {
+        for (const [key, value] of Object.entries(raw)) {
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+            continue;
+          if (sources[key] === "environment")
+            continue;
+          if (key === "servers" || known.has(key))
+            sources[key] = "OPENSHARE_CONFIG_JSON";
+        }
+      }
+    } catch {}
+  }
+  for (const path of configPaths(pluginDir, env)) {
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"));
+      if (!raw || typeof raw !== "object")
+        continue;
+    } catch {
+      continue;
+    }
+    const label = basename(path) === LOCAL_NAME ? `openshare.local.json (${dirname(path).split(/[\\/]/).pop()})` : `${basename(path)} (${dirname(path).split(/[\\/]/).pop()})`;
+    for (const [key, value] of Object.entries(raw)) {
+      if (key === "servers") {
+        if (sources.servers === undefined && normalizeServers(value))
+          sources.servers = label;
+        continue;
+      }
+      if (sources[key] !== undefined || !known.has(key))
+        continue;
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+        continue;
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key))
+        continue;
+      sources[key] = label;
+    }
+  }
+  return sources;
+}
 function num(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -104,6 +197,11 @@ function normalizeServers(raw) {
       entry.adminToken = e.adminToken;
     if (e.active === true)
       entry.active = true;
+    if (e.anonymous === true)
+      entry.anonymous = true;
+    const overrides = normalizeShareOverrides(e.overrides);
+    if (overrides)
+      entry.overrides = overrides;
     out[url] = entry;
   }
   return Object.keys(out).length ? out : undefined;
@@ -119,8 +217,8 @@ function resolveServer(cfg) {
   if (cfg.workerUrl)
     servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true };
   if (cfg.servers)
-    for (const [url2, entry] of Object.entries(cfg.servers))
-      servers[url2] = entry;
+    for (const [url, entry] of Object.entries(cfg.servers))
+      servers[url] = entry;
   const urls = Object.keys(servers);
   if (!urls.length)
     return;
@@ -151,30 +249,145 @@ function saveServerEntry(url, patch, target) {
 function saveServerToken(url, token, target) {
   return saveServerEntry(url, { token }, target);
 }
+function saveShareOverrides(sessionID, patch, target) {
+  if (!sessionID)
+    return;
+  const path = target ?? configHomePath();
+  if (!path)
+    return;
+  try {
+    let previous = {};
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"));
+      if (!previous || typeof previous !== "object")
+        previous = {};
+    } catch {}
+    const shares = previous.shares && typeof previous.shares === "object" ? previous.shares : {};
+    const merged = normalizeShareOverrides({ ...normalizeShareOverrides(shares[sessionID]) ?? {}, ...patch });
+    if (merged)
+      shares[sessionID] = merged;
+    else
+      delete shares[sessionID];
+    if (Object.keys(shares).length)
+      previous.shares = shares;
+    else
+      delete previous.shares;
+    writeFileSync(path, JSON.stringify(previous, null, 2) + `
+`);
+    return path;
+  } catch {
+    return;
+  }
+}
+function deleteShareOverrides(sessionID, target) {
+  return saveShareOverrides(sessionID, { ttlHours: undefined, authLogin: undefined, authPassword: undefined, title: undefined, paused: undefined }, target);
+}
+var liveSharesCache;
+function liveShares() {
+  try {
+    const path = configHomePath();
+    if (!path)
+      return {};
+    const mtime = statSync(path).mtimeMs;
+    if (liveSharesCache && liveSharesCache.mtime === mtime)
+      return liveSharesCache.shares;
+    let shares = {};
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8"));
+      if (raw && typeof raw === "object" && raw.shares && typeof raw.shares === "object") {
+        for (const [sid, ov] of Object.entries(raw.shares)) {
+          const clean = normalizeShareOverrides(ov);
+          if (clean)
+            shares[sid] = clean;
+        }
+      }
+    } catch {}
+    liveSharesCache = { mtime, at: Date.now(), shares };
+    return shares;
+  } catch {
+    return {};
+  }
+}
+function normalizeAnnounce(value, fallback) {
+  if (value === true)
+    return "all";
+  if (value === false)
+    return "off";
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (v === "all" || v === "status" || v === "url" || v === "off")
+      return v;
+    if (/^(1|true|yes|on)$/.test(v))
+      return "all";
+    if (/^(0|false|no)$/.test(v))
+      return "off";
+  }
+  return fallback;
+}
 function loadConfig(pluginDir, options) {
   const cfg = { ...DEFAULTS };
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"]);
   const known = new Set([...Object.keys(DEFAULTS), "shareMode"]);
+  const applyObject = (raw) => {
+    if (!raw || typeof raw !== "object")
+      return;
+    for (const [key, value] of Object.entries(raw)) {
+      if (key === "servers") {
+        const servers = normalizeServers(value);
+        if (servers)
+          cfg.servers = mergeServerGroups(cfg.servers, servers);
+        continue;
+      }
+      if (key === "shares") {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          for (const [sid, ov] of Object.entries(value)) {
+            if (typeof sid !== "string" || !sid)
+              continue;
+            const clean = normalizeShareOverrides(ov);
+            if (!clean)
+              continue;
+            cfg.shares = { ...cfg.shares, [sid]: { ...cfg.shares?.[sid] ?? {}, ...clean } };
+          }
+        }
+        continue;
+      }
+      if (key === "redact") {
+        if (value && typeof value === "object" && Array.isArray(value.patterns)) {
+          const pats = value.patterns.filter((x) => typeof x === "string" && x.length > 0 && x.length < 500).slice(0, 50);
+          cfg.redact = { patterns: pats };
+        }
+        continue;
+      }
+      if (key === "meta") {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const clean = {};
+          for (const [mk, mv] of Object.entries(value)) {
+            if (typeof mv === "string" && mv.length <= 500 && mk.length <= 64)
+              clean[mk] = mv;
+          }
+          if (Object.keys(clean).length)
+            cfg.meta = { ...cfg.meta, ...clean };
+        }
+        continue;
+      }
+      if (key === "ttlDays") {
+        const d = Math.floor(Number(value));
+        if (Number.isFinite(d) && d > 0)
+          cfg.ttlHours = d * 24;
+        continue;
+      }
+      if (!known.has(key))
+        continue;
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+        continue;
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key))
+        continue;
+      cfg[key] = value;
+    }
+  };
   for (const path of [...configPaths(pluginDir)].reverse()) {
     try {
-      const raw = JSON.parse(readFileSync(path, "utf8"));
-      if (!raw || typeof raw !== "object")
-        continue;
-      for (const [key, value] of Object.entries(raw)) {
-        if (key === "servers") {
-          const servers = normalizeServers(value);
-          if (servers)
-            cfg.servers = mergeServerGroups(cfg.servers, servers);
-          continue;
-        }
-        if (!known.has(key))
-          continue;
-        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
-          continue;
-        if (typeof value === "string" && value === "" && emptyMeansUnset.has(key))
-          continue;
-        cfg[key] = value;
-      }
+      applyObject(JSON.parse(readFileSync(path, "utf8")));
     } catch (e) {
       if (existsSync(path))
         console.error(`[openshare] config file ${path} could not be parsed - ignored:`, e?.message ?? e);
@@ -197,6 +410,13 @@ function loadConfig(pluginDir, options) {
       cfg.shareMode = mode;
   }
   const env = process.env;
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      applyObject(JSON.parse(env.OPENSHARE_CONFIG_JSON));
+    } catch (e) {
+      console.error("[openshare] OPENSHARE_CONFIG_JSON could not be parsed - ignored:", e?.message ?? e);
+    }
+  }
   if (env.OPENSHARE_WORKER_URL)
     cfg.workerUrl = env.OPENSHARE_WORKER_URL;
   if (env.OPENSHARE_CREATE_TOKEN)
@@ -207,22 +427,29 @@ function loadConfig(pluginDir, options) {
     cfg.completedDelayMs = num(env.OPENSHARE_COMPLETED_DELAY_MS, cfg.completedDelayMs);
   if (env.OPENSHARE_MODEL_LABEL !== undefined)
     cfg.modelLabel = env.OPENSHARE_MODEL_LABEL;
+  if (env.OPENSHARE_TTL_HOURS)
+    cfg.ttlHours = num(env.OPENSHARE_TTL_HOURS, cfg.ttlHours);
   if (env.OPENSHARE_TTL_DAYS)
-    cfg.ttlDays = num(env.OPENSHARE_TTL_DAYS, cfg.ttlDays);
+    cfg.ttlHours = Math.max(1, Math.floor(num(env.OPENSHARE_TTL_DAYS, 90) * 24));
   if (env.OPENSHARE_AUTH_LOGIN !== undefined)
     cfg.authLogin = env.OPENSHARE_AUTH_LOGIN;
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined)
     cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD;
   if (env.OPENSHARE_URL_FILE !== undefined)
     cfg.urlFile = env.OPENSHARE_URL_FILE;
+  if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url")
+    cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT;
+  if (env.OPENSHARE_CONFIG_SET)
+    cfg.configSet = env.OPENSHARE_CONFIG_SET;
   if (env.OPENSHARE_SPOOL_DIR)
     cfg.spoolDir = env.OPENSHARE_SPOOL_DIR;
   if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined)
-    cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim());
+    cfg.announceStderr = env.OPENSHARE_ANNOUNCE_STDERR;
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual")
     cfg.shareMode = env.OPENSHARE_SHARE_MODE;
   if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE)
     cfg.urlFile = URL_FILE_NONE;
+  cfg.announceStderr = normalizeAnnounce(cfg.announceStderr, "all");
   if (cfg.workerUrl)
     cfg.workerUrl = cfg.workerUrl.trim().replace(/\/+$/, "");
   if (cfg.servers) {
@@ -318,9 +545,12 @@ function tuiLayerPaths(input) {
   if (envTui && existsSync(envTui))
     paths.push(envTui);
   if (input.directory) {
-    const dir = normalizePath(input.directory);
-    const worktree = input.worktree ? normalizePath(input.worktree) : undefined;
-    const sane = worktree !== undefined && worktree !== "/" && !/^[a-z]:\/$/.test(worktree) && (dir === worktree || dir.startsWith(`${worktree}/`));
+    const fwd = (v) => v.replace(/\\/g, "/").replace(/\/+$/, "");
+    const dir = fwd(input.directory);
+    const worktree = input.worktree ? fwd(input.worktree) : undefined;
+    const dirLower = dir.toLowerCase();
+    const sane = worktree !== undefined && worktree !== "/" && !/^[a-z]:\/$/.test(worktree) && (dirLower === worktree.toLowerCase() || dirLower.startsWith(`${worktree.toLowerCase()}/`));
+    const worktreeLower = worktree?.toLowerCase();
     let current = dir;
     for (let guard = 0;guard < 64 && current; guard++) {
       for (const name of ["tui.json", ".opencode/tui.json"]) {
@@ -328,7 +558,7 @@ function tuiLayerPaths(input) {
         if (existsSync(candidate) && !paths.includes(candidate))
           paths.push(candidate);
       }
-      if (sane && current === worktree)
+      if (sane && current.toLowerCase() === worktreeLower)
         break;
       const parent = dirname(current);
       if (parent === current)
@@ -355,8 +585,140 @@ function resolveShareMode(cfg, input) {
 
 // src/core.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { isAbsolute, join as join2 } from "node:path";
+
+// src/share-settings.ts
+function pairFrom(tier) {
+  if (!tier)
+    return;
+  const login = tier.authLogin ?? "";
+  const password = tier.authPassword ?? "";
+  return login !== "" && password !== "" ? { login, password } : undefined;
+}
+function ttlFrom(tier) {
+  const h = tier?.ttlHours;
+  return typeof h === "number" && Number.isFinite(h) && h > 0 ? Math.floor(h) : undefined;
+}
+function resolveShareSettings(input) {
+  const share = { ...input.mirror ?? {}, ...input.share ?? {} };
+  const out = {};
+  const ttl = ttlFrom(share) ?? ttlFrom(input.server) ?? ttlFrom(input.general);
+  if (ttl !== undefined) {
+    out.ttlHours = { value: ttl, source: ttlFrom(share) !== undefined ? "share" : ttlFrom(input.server) !== undefined ? "server" : "general" };
+  }
+  const auth = pairFrom(share) ?? pairFrom(input.server) ?? pairFrom(input.general);
+  if (auth) {
+    out.auth = { value: auth, source: pairFrom(share) !== undefined ? "share" : pairFrom(input.server) !== undefined ? "server" : "general" };
+  } else if ([share, input.server, input.general].some((t) => t && ((t.authLogin ?? "") !== "" || (t.authPassword ?? "") !== ""))) {
+    out.authHalfPair = true;
+  }
+  if (typeof share.title === "string" && share.title !== "")
+    out.title = { value: share.title, source: "share" };
+  if (share.paused === true)
+    out.paused = { value: true, source: "share" };
+  return out;
+}
+function resolveFor(cfg, serverUrl, sessionID, mirror) {
+  const live = sessionID ? liveShares()[sessionID] : undefined;
+  return resolveShareSettings({
+    general: { ttlHours: cfg.ttlHours, authLogin: cfg.authLogin, authPassword: cfg.authPassword },
+    server: serverUrl ? cfg.servers?.[serverUrl]?.overrides : undefined,
+    share: sessionID ? { ...cfg.shares?.[sessionID] ?? {}, ...live ?? {} } : undefined,
+    mirror
+  });
+}
+
+// src/task-pairing.ts
+var ARRIVAL_BACKFILL_MS = 2000;
+var COVERAGE_MIN = 0.75;
+var norm = (s) => s.replace(/\r\n/g, `
+`).trim();
+var normTokens = (s) => s.replace(/\r\n/g, `
+`).replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+function longestRun(a, b, alo, ahi, blo, bhi) {
+  const byLine = new Map;
+  for (let j = blo;j < bhi; j++) {
+    const list = byLine.get(b[j]);
+    if (list)
+      list.push(j);
+    else
+      byLine.set(b[j], [j]);
+  }
+  let best;
+  let bestLen = 0;
+  const run = new Int32Array(bhi - blo + 1);
+  for (let i = ahi - 1;i >= alo; i--) {
+    const js = byLine.get(a[i]);
+    if (!js)
+      continue;
+    for (const j of js) {
+      const len = 1 + (run[j + 1 - blo] ?? 0);
+      run[j - blo] = len;
+      if (len > bestLen) {
+        bestLen = len;
+        best = [i, j, len];
+      }
+    }
+  }
+  return best;
+}
+function matchingBlocks(a, b) {
+  const out = [];
+  const queue = [[0, a.length, 0, b.length]];
+  while (queue.length) {
+    const [alo, ahi, blo, bhi] = queue.pop();
+    const m = longestRun(a, b, alo, ahi, blo, bhi);
+    if (!m || m[2] === 0)
+      continue;
+    out.push(m);
+    queue.push([alo, m[0], blo, m[1]]);
+    queue.push([m[0] + m[2], ahi, m[1] + m[2], bhi]);
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+function promptCoverage(childText, prompt) {
+  const b = norm(prompt);
+  if (!b)
+    return 0;
+  if (norm(childText).includes(b))
+    return 1;
+  const child = normTokens(childText);
+  const want = normTokens(prompt);
+  const total = want.reduce((s, t) => s + t.length + 1, 0);
+  if (!total)
+    return 0;
+  const matched = matchingBlocks(want, child).reduce((s, [wi, , n]) => {
+    let add = 0;
+    for (let k = wi;k < wi + n; k++)
+      add += want[k].length + 1;
+    return s + add;
+  }, 0);
+  return Math.min(1, matched / total);
+}
+function pairPromptID(call, candidates, claimed) {
+  const open = candidates.filter((c) => !claimed.has(c.id));
+  if (open.length === 0)
+    return;
+  const from = call.created - ARRIVAL_BACKFILL_MS;
+  const pool = open.filter((c) => c.created >= from);
+  if (pool.length === 0)
+    return;
+  let textPick;
+  let best = 0;
+  for (const c of pool) {
+    const cov = promptCoverage(c.text, call.prompt ?? "");
+    if (cov > best) {
+      best = cov;
+      textPick = c;
+    }
+  }
+  if (textPick && best >= COVERAGE_MIN)
+    return textPick.id;
+  const after = pool.find((c) => c.created >= call.created);
+  return (after ?? pool[pool.length - 1]).id;
+}
 
 // src/contract.ts
 function messageTombstone(sessionID, messageID) {
@@ -439,7 +801,7 @@ function normalizeV1Message(info, parts) {
   if (info.role === "user") {
     const compaction = parts.find((p) => p?.type === "compaction");
     if (compaction) {
-      const message2 = {
+      const message = {
         id,
         type: "compaction",
         status: "completed",
@@ -448,7 +810,7 @@ function normalizeV1Message(info, parts) {
         recent: "",
         time: { created }
       };
-      return { message: message2 };
+      return { message };
     }
     const text = parts.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join(`
 `);
@@ -574,6 +936,109 @@ function queueBindingWrite(sid, fn) {
   return run;
 }
 
+// src/redact.ts
+var BUILTINS = [
+  { kind: "aws-key", re: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: "gh-token", re: /\bgh[pousr]_[A-Za-z0-9]{36,255}\b/g },
+  { kind: "gh-token", re: /\bgithub_pat_[A-Za-z0-9_]{22,255}\b/g },
+  { kind: "api-key", re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
+  { kind: "slack-token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { kind: "google-key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { kind: "bearer", re: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/gi },
+  { kind: "private-key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
+  { kind: "env-secret", re: /(?<![A-Za-z0-9_])(?:export\s+)?[A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*\S+/g },
+  { kind: "conn-string", re: /\b[a-z][a-z0-9+.-]*:\/\/[^:@/\s"']+:[^@/\s"']{4,}@/gi }
+];
+function compile(patterns) {
+  if (!Array.isArray(patterns))
+    return [];
+  const out = [];
+  for (const p of patterns) {
+    if (typeof p !== "string" || !p)
+      continue;
+    try {
+      out.push({ kind: "user", re: new RegExp(p, "g") });
+    } catch {}
+  }
+  return out;
+}
+function tildePath(p, home) {
+  if (!p || !home || p.length <= home.length)
+    return p;
+  const norm = (s) => s.replace(/[\\/]+/g, "/").replace(/\/$/, "");
+  const np = norm(p);
+  const nh = norm(home);
+  if (np === nh)
+    return "~";
+  if (np.startsWith(nh + "/"))
+    return "~" + np.slice(nh.length);
+  return p;
+}
+var PATH_KEYS = new Set(["file", "path", "filePath", "cwd", "directory", "root"]);
+function redactItem(item, opts) {
+  const flat = JSON.stringify(item) ?? "null";
+  const needRedact = opts.enabled && opts.rules.some((r) => {
+    r.re.lastIndex = 0;
+    return r.re.test(flat);
+  });
+  const needPaths = !!opts.home && flat.includes(opts.home);
+  if (!needRedact && !needPaths)
+    return { item, hits: [] };
+  const clone = JSON.parse(flat);
+  const stats = { hits: [], changed: false };
+  walk(clone, opts, stats);
+  return { item: clone, hits: stats.hits };
+}
+function walk(node, opts, stats, key) {
+  if (Array.isArray(node)) {
+    for (let i = 0;i < node.length; i++) {
+      const v = node[i];
+      if (typeof v === "string")
+        node[i] = applyString(v, opts, stats, key);
+      else
+        walk(v, opts, stats, key);
+    }
+    return;
+  }
+  if (node && typeof node === "object") {
+    for (const [k, v] of Object.entries(node)) {
+      if (typeof v === "string")
+        node[k] = applyString(v, opts, stats, k);
+      else
+        walk(v, opts, stats, k);
+    }
+  }
+}
+function applyString(v, opts, stats, key) {
+  let out = v;
+  if (opts.enabled) {
+    for (const r of opts.rules) {
+      r.re.lastIndex = 0;
+      out = out.replace(r.re, (full) => {
+        if (stats.hits.length < 8 && !stats.hits.some((h) => h.kind === r.kind)) {
+          stats.hits.push({ kind: r.kind, sample: full.slice(0, 60) });
+        }
+        stats.changed = true;
+        if (r.kind === "conn-string") {
+          const at = full.lastIndexOf("@");
+          const colon = full.indexOf(":", full.indexOf("://") + 3) + 1;
+          if (at > colon && colon > 0)
+            return full.slice(0, colon) + "[redacted:conn-string]" + full.slice(at);
+        }
+        return `[redacted:${r.kind}]`;
+      });
+    }
+  }
+  if (key && PATH_KEYS.has(key) && opts.home && out.includes(opts.home)) {
+    out = tildePath(out, opts.home);
+    stats.changed = true;
+  }
+  return out;
+}
+function activeRules(userPatterns) {
+  return [...BUILTINS, ...compile(userPatterns)];
+}
+
 // src/core.ts
 var DEFAULT_POLICY = {
   mode: "persistent",
@@ -626,6 +1091,19 @@ function redact(info) {
   delete metadata[METADATA_KEY];
   return { ...info, metadata };
 }
+function stripLocalFacts(info) {
+  if (!info || typeof info !== "object")
+    return info;
+  const out = { ...info };
+  let changed = false;
+  for (const k of ["directory", "worktree"]) {
+    if (out[k] !== undefined) {
+      delete out[k];
+      changed = true;
+    }
+  }
+  return changed ? out : info;
+}
 function shareFlag(info) {
   const raw = info?.metadata?.[METADATA_KEY];
   if (!raw || typeof raw !== "object")
@@ -637,23 +1115,37 @@ function shareFlag(info) {
   const opts = {};
   if (optsRaw && typeof optsRaw === "object") {
     const o = optsRaw;
-    if (typeof o.ttlDays === "number" && o.ttlDays > 0)
-      opts.ttlDays = o.ttlDays;
+    if (typeof o.ttlHours === "number" && o.ttlHours > 0)
+      opts.ttlHours = Math.floor(o.ttlHours);
+    else if (typeof o.ttlDays === "number" && o.ttlDays > 0)
+      opts.ttlHours = Math.floor(o.ttlDays * 24);
     if (typeof o.authLogin === "string")
       opts.authLogin = o.authLogin;
     if (typeof o.authPassword === "string")
       opts.authPassword = o.authPassword;
     if (typeof o.modelLabel === "string")
       opts.modelLabel = o.modelLabel;
+    if (typeof o.title === "string" && o.title)
+      opts.title = o.title;
+    if (o.paused === true)
+      opts.paused = true;
   }
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined };
 }
 var liveTargets = [];
+var statsProvider = null;
+var redactionLedger = new Map;
 function createEngine(deps) {
   let cfg = loadConfig(deps.pluginDir, deps.options);
   const mode = resolveShareMode(cfg, deps);
   if (mode === "manual")
     stderrInfoAllowed = false;
+  const wantAnnounce = () => cfg.announceStderr === "all" || cfg.announceStderr === "url";
+  const logStatus = (...a) => {
+    if (cfg.announceStderr !== "all" && cfg.announceStderr !== "status")
+      return;
+    log(...a);
+  };
   if (process.env.OPENSHARE_DEBUG_FILE) {
     try {
       writeFileSync2(process.env.OPENSHARE_DEBUG_FILE, JSON.stringify({
@@ -667,7 +1159,7 @@ function createEngine(deps) {
   }
   const server = resolveServer(cfg);
   if (!server || !server.url) {
-    log("disabled: no share server configured (workerUrl or a servers entry)");
+    logStatus("disabled: no share server configured (workerUrl or a servers entry)");
     return {
       mode,
       config: () => cfg,
@@ -677,7 +1169,7 @@ function createEngine(deps) {
       }
     };
   }
-  log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
+  logStatus(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`);
   const resolveTargets = () => {
     const merged = {};
     const hasServers = !!cfg.servers && Object.keys(cfg.servers).length > 0;
@@ -685,7 +1177,7 @@ function createEngine(deps) {
     if (cfg.workerUrl && (!hasServers || envWorker))
       merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true };
     if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers[cfg.workerUrl]) {
-      log(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`);
+      logStatus(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`);
     }
     if (cfg.servers)
       for (const [u, e] of Object.entries(cfg.servers))
@@ -721,40 +1213,98 @@ function createEngine(deps) {
   };
   seedCredentials();
   const ENROLL_RETRY_MS = 60000;
+  const setsFetched = new Set;
+  const adoptServerSuggestions = async (url, token) => {
+    if (setsFetched.has(url))
+      return;
+    setsFetched.add(url);
+    try {
+      const r = await fetch(`${url}/api/token/sets`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000)
+      });
+      const body = r.ok ? await r.json().catch(() => null) : null;
+      const sets = body?.sets ?? {};
+      const pick = sets[cfg.configSet ?? ""] ?? Object.values(sets)[0];
+      if (!pick)
+        return;
+      const wantModel = typeof pick.modelLabel === "string" && !pick.modelLabel ? undefined : pick.modelLabel;
+      const wantMode = pick.shareMode === "all" || pick.shareMode === "manual" ? pick.shareMode : undefined;
+      const src = configSourceMap(deps.pluginDir ?? "");
+      const modelUnset = cfg.modelLabel === DEFAULTS.modelLabel && !src.modelLabel;
+      const modeUnset = cfg.shareMode === undefined && !src.shareMode;
+      const adoptModel = wantModel && modelUnset;
+      const adoptMode = wantMode && modeUnset;
+      if (!adoptModel && !adoptMode)
+        return;
+      const home = configHomePath();
+      if (!home)
+        return;
+      let doc = {};
+      try {
+        doc = JSON.parse(readFileSync2(home, "utf8"));
+        if (!doc || typeof doc !== "object")
+          doc = {};
+      } catch {}
+      let dirty = false;
+      if (adoptModel && doc.modelLabel === undefined) {
+        doc.modelLabel = wantModel;
+        dirty = true;
+        logStatus(`${url}: adopted modelLabel from the server config set`);
+      }
+      if (adoptMode && doc.shareMode === undefined) {
+        doc.shareMode = wantMode;
+        dirty = true;
+        logStatus(`${url}: adopted shareMode from the server config set`);
+      }
+      if (dirty)
+        writeFileSync2(home, JSON.stringify(doc, null, 2) + `
+`);
+    } catch {}
+  };
   const ensureCredential = async (url) => {
     const c = credOf(url);
     const target = targets.find((t) => t.url === url);
-    if (c.credential)
+    if (c.credential) {
+      adoptServerSuggestions(url, c.credential);
       return c.credential;
+    }
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS)
       return "";
     c.lastEnrollAt = Date.now();
-    try {
-      const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) });
-      const hb = h.ok ? await h.json().catch(() => null) : null;
-      const authMode2 = hb?.auth?.mode;
-      const code = target?.entry.code ?? "";
-      if (authMode2 === "public" || code) {
-        const r = await fetch(`${url}/api/enroll`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code }),
-          signal: AbortSignal.timeout(1e4)
-        });
-        const b = r.ok ? await r.json().catch(() => null) : null;
-        if (b?.ok && typeof b.token === "string") {
-          c.credential = b.token;
+    const code = target?.entry.code ?? "";
+    if (!code) {
+      try {
+        const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) });
+        const hb = h.ok ? await h.json().catch(() => null) : null;
+        if (hb?.auth?.mode === "public") {
           c.error = "";
-          const savedTo = saveServerToken(url, c.credential);
-          log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
-          return c.credential;
+          return "";
         }
-        c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
-      } else if (authMode2 === "private") {
-        c.error = "private server: add servers.{url}.code (or token) to enroll";
-      } else {
-        c.error = `server health unreachable (HTTP ${h.status})`;
+        c.error = "private server - onboard via /openshare (needs an access code)";
+      } catch (e) {
+        c.error = `server unreachable: ${e?.message || e}`;
       }
+      logError(`no credential for ${url}: ${c.error}`);
+      return "";
+    }
+    try {
+      const r = await fetch(`${url}/api/enroll`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code }),
+        signal: AbortSignal.timeout(1e4)
+      });
+      const b = r.ok ? await r.json().catch(() => null) : null;
+      if (b?.ok && typeof b.token === "string") {
+        c.credential = b.token;
+        c.error = "";
+        const savedTo = saveServerToken(url, c.credential);
+        logStatus(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`);
+        adoptServerSuggestions(url, c.credential);
+        return c.credential;
+      }
+      c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`;
     } catch (e) {
       c.error = `enrollment failed: ${e?.message || e}`;
     }
@@ -809,19 +1359,19 @@ function createEngine(deps) {
     if (!raw || typeof raw !== "object")
       return;
     const p = raw;
-    const num2 = (v, d) => {
+    const num = (v, d) => {
       const n = Number(v);
       return Number.isFinite(n) && n >= 0 ? n : d;
     };
     const prev = policyOf(url);
     policyMap.set(url, {
       mode: p.mode === "turn" ? "turn" : "persistent",
-      turnGraceMs: num2(p.turnGraceMs, prev.turnGraceMs),
-      idleDropMs: num2(p.idleDropMs, prev.idleDropMs),
-      finalizeAfterMs: num2(p.finalizeAfterMs, prev.finalizeAfterMs),
-      debounceMinMs: num2(p.debounceMinMs, 0),
-      debounceMaxMs: Math.max(num2(p.debounceMaxMs, Infinity), num2(p.debounceMinMs, 0)),
-      completedDelayMaxMs: num2(p.completedDelayMaxMs, Infinity)
+      turnGraceMs: num(p.turnGraceMs, prev.turnGraceMs),
+      idleDropMs: num(p.idleDropMs, prev.idleDropMs),
+      finalizeAfterMs: num(p.finalizeAfterMs, prev.finalizeAfterMs),
+      debounceMinMs: num(p.debounceMinMs, 0),
+      debounceMaxMs: Math.max(num(p.debounceMaxMs, Infinity), num(p.debounceMinMs, 0)),
+      completedDelayMaxMs: num(p.completedDelayMaxMs, Infinity)
     });
     clampToPolicy();
     if (debugEvents)
@@ -876,6 +1426,7 @@ function createEngine(deps) {
     bindingQueried: false,
     optOuts: new Set,
     opts: undefined,
+    paused: false,
     activated: false,
     wroteBinding: false,
     everConnected: false,
@@ -897,7 +1448,7 @@ function createEngine(deps) {
         const after = targets.map((t) => t.url);
         const added = after.filter((u) => !before.has(u));
         if (added.length)
-          log(`fan-out set grew: ${added.join(", ")}`);
+          logStatus(`fan-out set grew: ${added.join(", ")}`);
       }
     }
   };
@@ -914,6 +1465,7 @@ function createEngine(deps) {
     }
     st.activated = true;
     st.opts = opts;
+    st.paused = resolvedFor(st).paused?.value === true;
     st.sentHash.clear();
     const gated = mode === "manual" || opts2?.gated === true;
     if (gated) {
@@ -1075,10 +1627,11 @@ function createEngine(deps) {
   const scheduleBindingWrite = (st) => {
     if (st.metaTimer)
       return;
+    const debounce = Number(process.env.OPENSHARE_BINDING_WRITE_MS) > 0 ? Number(process.env.OPENSHARE_BINDING_WRITE_MS) : 30000;
     st.metaTimer = setTimeout(() => {
       st.metaTimer = null;
       chain = chain.then(() => writeBinding(st)).catch(() => {});
-    }, 30000);
+    }, debounce);
   };
   const h8 = (url) => {
     let h = 5381;
@@ -1245,14 +1798,21 @@ function createEngine(deps) {
       return;
     r.announced = true;
     const url = `${r.url}/s/${r.shareId}`;
-    if (cfg.announceStderr)
+    if (wantAnnounce())
       log(`live: ${url}`);
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       const file = cfg.urlFile ? isAbsolute(cfg.urlFile) ? cfg.urlFile : join2(deps.directory ?? process.cwd(), cfg.urlFile) : join2(deps.directory ?? process.cwd(), "openshare.urls.txt");
       try {
-        appendFileSync(file, url + `
-`);
-        if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
+        const line = cfg.urlFileFormat === "json" ? JSON.stringify({
+          id: r.shareId,
+          url,
+          status: st.lastSentStatus ?? "waiting",
+          gated: resolvedFor(st, r).auth !== undefined
+        }) + `
+` : url + `
+`;
+        appendFileSync(file, line);
+        if (wantAnnounce() && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true;
           lastUrlFile = file;
           log(`url file: ${file}`);
@@ -1263,36 +1823,69 @@ function createEngine(deps) {
     }
   };
   let halfAuthWarned = false;
-  const authFrame = (st) => {
-    const login = st.opts?.authLogin ?? cfg.authLogin ?? "";
-    const password = st.opts?.authPassword ?? cfg.authPassword ?? "";
-    if (login === "" !== (password === "")) {
-      if (!halfAuthWarned) {
-        halfAuthWarned = true;
-        logError("read auth needs BOTH a login and a password - gate disabled until fixed");
-      }
-      return { authLogin: "", authPassword: "" };
+  const resolvedFor = (st, r) => resolveFor(cfg, r?.url, st.sid, st.opts);
+  const authFrame = (st, r) => {
+    const res = resolvedFor(st, r);
+    if (res.auth)
+      return { authLogin: res.auth.value.login, authPassword: res.auth.value.password };
+    if (res.authHalfPair && !halfAuthWarned) {
+      halfAuthWarned = true;
+      logError("read auth needs BOTH a login and a password - gate disabled until fixed");
     }
-    return { authLogin: login, authPassword: password };
+    return { authLogin: "", authPassword: "" };
   };
-  const ttlFor = (st) => st.opts?.ttlDays ?? cfg.ttlDays;
+  const ttlFor = (st, r) => resolvedFor(st, r).ttlHours?.value ?? cfg.ttlHours;
+  const createInit = (st, r) => {
+    const res = resolvedFor(st, r);
+    return {
+      op: "init",
+      create: {
+        sessionID: st.sid,
+        ttlHours: ttlFor(st, r),
+        ...authFrame(st, r),
+        ...res.title ? { title: res.title.value } : {},
+        ...cfg.configSet ? { set: cfg.configSet } : {},
+        ...metaFor() ? { meta: metaFor() } : {}
+      }
+    };
+  };
+  const metaFor = () => {
+    if (!cfg.meta || typeof cfg.meta !== "object")
+      return;
+    const out = {};
+    let n = 0;
+    for (const [k, v] of Object.entries(cfg.meta)) {
+      if (n >= 20)
+        break;
+      out[k] = v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => process.env[name] ?? m);
+      n++;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
   const applyOpts = (st, opts) => {
     if (!opts)
       return;
     const prev = st.opts ? JSON.stringify(st.opts) : "";
+    const wasPaused = st.paused;
     st.opts = opts;
+    st.paused = resolvedFor(st).paused?.value === true;
     if (prev === JSON.stringify(opts))
       return;
     for (const [url, r] of st.remotes) {
       if (!r.shareId || !r.secret || !r.wsReady)
         continue;
-      const attach = { id: r.shareId, secret: r.secret, ...authFrame(st) };
-      if (st.opts?.ttlDays)
-        attach.ttlDays = st.opts.ttlDays;
+      if (st.paused)
+        continue;
+      const attach = { id: r.shareId, secret: r.secret, ...authFrame(st, r) };
+      const ttl = resolvedFor(st, r).ttlHours?.value;
+      if (ttl)
+        attach.ttlHours = ttl;
       const sent = wsSend(r, { op: "init", attach });
       if (sent)
-        log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlDays ? ` (ttl ${st.opts.ttlDays}d)` : ""}`);
+        logStatus(`opts re-synced to ${url.slice(0, 24)}${ttl ? ` (ttl ${ttl}h)` : ""}`);
     }
+    if (wasPaused && !st.paused)
+      drainRemotes(st);
   };
   const deleteAbandoned = (r) => {
     const id = r.shareId;
@@ -1485,9 +2078,9 @@ function createEngine(deps) {
         }
       }
       if (r.initWasAttach) {
-        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } });
+        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st, r) } });
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, createInit(st, r));
       }
       r.initTimer = setTimeout(() => {
         if (seq !== r.socketSeq)
@@ -1658,7 +2251,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, createInit(st, r));
         return;
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
@@ -1667,7 +2260,7 @@ function createEngine(deps) {
         r.shareId = null;
         r.secret = null;
         r.ackedRev = 0;
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } });
+        wsSend(r, createInit(st, r));
         return;
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected;
@@ -1699,9 +2292,10 @@ function createEngine(deps) {
         applyPolicy(frame.policy, r.url);
       r.intentionalClose = false;
       touch(st);
-      if (typeof frame.ttlDays === "number") {
-        const wanted = ttlFor(st);
-        const clamp = wanted != null && frame.ttlDays !== wanted ? { requested: wanted, effective: frame.ttlDays } : null;
+      const ackTtl = typeof frame.ttlHours === "number" ? frame.ttlHours : typeof frame.ttlDays === "number" ? frame.ttlDays * 24 : undefined;
+      if (typeof ackTtl === "number") {
+        const wanted = ttlFor(st, r);
+        const clamp = wanted != null && ackTtl !== wanted ? { requested: wanted, effective: ackTtl } : null;
         if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
           st.ttlClamped = clamp;
           scheduleBindingWrite(st);
@@ -1711,6 +2305,28 @@ function createEngine(deps) {
         st.lastError = null;
         scheduleBindingWrite(st);
       }
+      const wantedGate = resolvedFor(st, r).auth !== undefined;
+      if (wantedGate && frame.auth === false && !r.warnedNoGate) {
+        r.warnedNoGate = true;
+        logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`);
+      } else if (frame.auth === true) {
+        r.warnedNoGate = false;
+      }
+      if (credOf(r.url).credential) {
+        const priv = {};
+        const dir = deps.directory ?? "";
+        if (dir)
+          priv.directory = dir;
+        if (deps.worktree)
+          priv.worktree = String(deps.worktree);
+        try {
+          priv.home = homedir();
+        } catch {}
+        if (Object.keys(priv).length) {
+          const seq = ++nextSeq;
+          wsSend(r, { op: "sync", items: [{ type: "pmeta", sessionID: st.sid, data: priv }], status: undefined, seq });
+        }
+      }
       announceUrl(st, r);
       if (!st.wroteBinding) {
         chain = chain.then(() => writeBinding(st)).catch(() => {});
@@ -1719,8 +2335,9 @@ function createEngine(deps) {
       }
       spoolSave(st, r);
       if (r.pending.length) {
-        for (const f of r.pending)
-          sendSync(r, f);
+        if (!st.paused)
+          for (const f of r.pending)
+            sendSync(r, f);
       } else if (st.queue.size) {
         flush(st);
       }
@@ -1831,6 +2448,8 @@ function createEngine(deps) {
         r.pending.push(cf);
         spoolAppend(st, r, cf);
       }
+      if (st.paused)
+        continue;
       if (r.ws && !r.wsReady)
         continue;
       if (r.wsReady) {
@@ -1907,6 +2526,25 @@ function createEngine(deps) {
     r.pending = r.pending.filter((p) => !sentSeqs.has(p.seq));
     scheduleSpoolSave(st, r);
   };
+  const drainRemotes = (st) => {
+    if (st.closed)
+      return;
+    let httpWork;
+    for (const r of st.remotes.values()) {
+      if (!r.pending.length)
+        continue;
+      if (r.wsReady) {
+        for (const cf of r.pending)
+          sendSync(r, cf);
+        continue;
+      }
+      const viaHttp = flushViaHttp(st, r);
+      if (viaHttp)
+        httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp);
+    }
+    if (httpWork)
+      httpWork.catch((e) => logError("unpause drain error", e?.message || e));
+  };
   const scheduleFlush = (st) => {
     if (st.timer)
       return;
@@ -1921,6 +2559,15 @@ function createEngine(deps) {
       }).catch((e) => logError("flush error", e?.message || e));
     }, wait);
   };
+  const homeDir = (() => {
+    try {
+      return homedir();
+    } catch {
+      return "";
+    }
+  })();
+  const userPatterns = cfg.redact?.patterns;
+  const redactionRules = activeRules(userPatterns);
   const enqueue = (st, entry) => {
     if (!st || !entry)
       return;
@@ -1937,6 +2584,21 @@ function createEngine(deps) {
     }
     if (h)
       st.sentHash.set(entry.key, h);
+    {
+      const gated = st.remotes.size ? [...st.remotes.values()].every((r) => resolvedFor(st, r).auth !== undefined) : resolvedFor(st).auth !== undefined;
+      const pass = redactItem(entry.item, { rules: redactionRules, home: homeDir, enabled: !gated });
+      if (pass.item !== entry.item)
+        entry = { ...entry, item: pass.item };
+      if (pass.hits.length) {
+        const led = redactionLedger.get(st.sid) ?? { count: 0, samples: [] };
+        led.count += pass.hits.length;
+        for (const hit of pass.hits) {
+          if (led.samples.length < 5 && !led.samples.some((x) => x.kind === hit.kind))
+            led.samples.push(hit);
+        }
+        redactionLedger.set(st.sid, led);
+      }
+    }
     st.queue.set(entry.key, entry.item);
     indexMessage(entry);
     if (debugEvents)
@@ -1944,6 +2606,24 @@ function createEngine(deps) {
     touch(st);
     ensureConnected(st);
     scheduleFlush(st);
+  };
+  statsProvider = (sid) => {
+    const st = sessions.get(sid);
+    let messages = 0;
+    let toolCalls = 0;
+    if (st) {
+      for (const [, merged] of st.merged) {
+        messages++;
+        const content = merged.content;
+        if (Array.isArray(content))
+          toolCalls += content.filter((c) => !!c && c.type === "tool").length;
+      }
+      for (const it of st.queue.values()) {
+        if (it?.type === "message")
+          messages++;
+      }
+    }
+    return { messages, toolCalls };
   };
   const msgIndex = new Map;
   const tombstoned = new Set;
@@ -2061,6 +2741,64 @@ function createEngine(deps) {
         reEnqueueMessage(m);
     }
   };
+  const stampTaskPromptLinks = (bySession) => {
+    const callsByChild = new Map;
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant")
+        continue;
+      const content = m.data.content;
+      if (!Array.isArray(content))
+        continue;
+      for (const part of content) {
+        if (!part || part.type !== "tool")
+          continue;
+        if (part.name !== "task" && part.name !== "subagent")
+          continue;
+        if (!part.state || typeof part.id !== "string")
+          continue;
+        const childSid = typeof part.state.metadata?.sessionID === "string" ? part.state.metadata.sessionID : undefined;
+        if (!childSid)
+          continue;
+        const entry = { part, created: Number(part.time?.created ?? 0), parent: m };
+        const list = callsByChild.get(childSid);
+        if (list)
+          list.push(entry);
+        else
+          callsByChild.set(childSid, [entry]);
+      }
+    }
+    for (const [childSid, calls] of callsByChild) {
+      const child = bySession.get(childSid);
+      if (!child)
+        continue;
+      calls.sort((a, b) => a.created - b.created);
+      const candidates = child.filter((c) => c.role === "user" && typeof c.data.id === "string").map((c) => ({ id: c.data.id, created: c.created, text: String(c.data.text ?? "") }));
+      const claimed = new Set(child.filter((c) => c.role === "user" && typeof c.data.metadata?.toolCallID === "string").map((c) => String(c.data.id)));
+      for (const call of calls) {
+        const meta = call.part.state.metadata ??= {};
+        let promptID = typeof meta.promptID === "string" ? meta.promptID : undefined;
+        if (!promptID) {
+          const prompt = typeof call.part.state.input?.prompt === "string" ? call.part.state.input.prompt : undefined;
+          const pick = pairPromptID({ partID: call.part.id, created: call.created, prompt }, candidates, claimed);
+          if (!pick)
+            continue;
+          meta.promptID = pick;
+          promptID = pick;
+          reEnqueueMessage(call.parent);
+        }
+        claimed.add(promptID);
+        const target = child.find((c) => String(c.data.id) === promptID);
+        if (!target)
+          continue;
+        const dmeta = target.data.metadata ??= {};
+        if (dmeta.toolCallID !== call.part.id) {
+          dmeta.toolCallID = call.part.id;
+          dmeta.toolSessionID = call.parent.sid;
+          reEnqueueMessage(target);
+        }
+      }
+    }
+  };
   const LANG_BY_EXT = {
     ts: "typescript",
     tsx: "tsx",
@@ -2103,6 +2841,32 @@ function createEngine(deps) {
     svelte: "svelte"
   };
   const FILE_TOOLS = new Set(["read", "write", "edit", "patch"]);
+  const refineEmbeddedLanguage = (meta, text) => {
+    if (meta.language !== "html")
+      return false;
+    const head = text.slice(0, 4000);
+    if (/<[a-zA-Z][^>\n]*>/.test(head))
+      return false;
+    let refined;
+    if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) {
+      refined = "css";
+    } else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) {
+      refined = "javascript";
+    }
+    if (!refined || meta.language === refined)
+      return false;
+    meta.language = refined;
+    return true;
+  };
+  const refinePatchLanguage = (meta, patchText) => {
+    const at = patchText.indexOf("@@");
+    if (at < 0)
+      return false;
+    const body = patchText.slice(at).split(`
+`).map((l) => /^[ +\\]/.test(l) ? l.slice(1) : l.startsWith("-") ? l.slice(1) : "").join(`
+`);
+    return refineEmbeddedLanguage(meta, body);
+  };
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant")
@@ -2128,6 +2892,15 @@ function createEngine(deps) {
             meta.language = lang;
             mutated = true;
           }
+        }
+        if (part.name === "read" && typeof state.output === "string" && state.output.length > 0) {
+          if (refineEmbeddedLanguage(meta, state.output))
+            mutated = true;
+        }
+        if ((part.name === "edit" || part.name === "patch") && typeof meta.language === "string") {
+          const pt = typeof meta.diff === "string" ? meta.diff : typeof meta.filediff?.patch === "string" ? meta.filediff.patch : undefined;
+          if (pt && refinePatchLanguage(meta, pt))
+            mutated = true;
         }
         if (typeof meta.lineStart !== "number" && part.name === "read") {
           const off = state.input?.offset;
@@ -2163,6 +2936,7 @@ function createEngine(deps) {
       list.sort((a, b) => a.created - b.created);
     stampAgentSwitches(bySession);
     stampTaskAgents(bySession);
+    stampTaskPromptLinks(bySession);
     stampFileLanguages();
   };
   const mergeEntry = (st, messageID) => {
@@ -2367,10 +3141,10 @@ function createEngine(deps) {
   const backfillSession = async (st, client, sid, info) => {
     const sessionInfoValue = info ?? await sessionInfo(client, sid);
     if (sessionInfoValue)
-      enqueue(st, itemFor("session", redact(sessionInfoValue), sid));
+      enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid));
     let modelSeen = false;
-    const consume = (messages2) => {
-      for (const message of messages2) {
+    const consume = (messages) => {
+      for (const message of messages) {
         const m = message.info ?? message;
         if (!m || typeof m.id !== "string")
           continue;
@@ -2407,7 +3181,7 @@ function createEngine(deps) {
     if (messages.length === 0 && !info) {
       const fetched = await sessionInfo(client, st.sid);
       if (fetched)
-        enqueue(st, itemFor("session", redact(fetched), st.sid));
+        enqueue(st, itemFor("session", stripLocalFacts(redact(fetched)), st.sid));
     }
     if (typeof client.session.list === "function") {
       try {
@@ -2482,31 +3256,31 @@ function createEngine(deps) {
     const parent = trackChild(sid, info);
     if (mode === "manual") {
       if (parent) {
-        const st3 = sessions.get(parent);
-        if (st3?.activated && !st3.closed) {
+        const st = sessions.get(parent);
+        if (st?.activated && !st.closed) {
           if (info)
-            enqueue(st3, itemFor("session", redact(info), sid));
+            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
         }
         return;
       }
       const flag = shareFlag(info);
-      const st2 = sessions.get(sid);
+      const st = sessions.get(sid);
       if (flag.enabled) {
-        if (st2?.activated && !st2.closed) {
+        if (st?.activated && !st.closed) {
           if (flag.opts)
-            applyOpts(st2, flag.opts);
+            applyOpts(st, flag.opts);
           if (info)
-            enqueue(st2, itemFor("session", redact(info), sid));
+            enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
           if (t === "session.updated")
-            chain = chain.then(() => refreshOptOuts(st2)).catch(() => {});
+            chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
           return;
         }
         activate(sid, flag.opts, info);
         return;
       }
-      if (st2?.activated && !st2.closed && t === "session.updated") {
+      if (st?.activated && !st.closed && t === "session.updated") {
         log(`share disabled for ${sid} - removing`);
-        chain = chain.then(() => remove(st2)).catch((e) => logError("remove error", e?.message || e));
+        chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
         return;
       }
       return;
@@ -2548,7 +3322,7 @@ function createEngine(deps) {
     if (!st)
       return;
     if (info)
-      enqueue(st, itemFor("session", redact(info), sid));
+      enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid));
     if (t === "session.updated" && st.activated && !st.closed) {
       chain = chain.then(() => refreshOptOuts(st)).catch(() => {});
     }
@@ -2653,16 +3427,16 @@ function createEngine(deps) {
               chain = chain.then(async () => {
                 if (created.closed)
                   return;
-                const info2 = await sessionInfo(created.client, main);
+                const info = await sessionInfo(created.client, main);
                 verifying.delete(main);
                 if (created.closed)
                   return;
-                const flag = shareFlag(info2);
-                const hasBinding = !!info2?.metadata?.[METADATA_KEY];
-                const createdMs = info2?.time?.created;
+                const flag = shareFlag(info);
+                const hasBinding = !!info?.metadata?.[METADATA_KEY];
+                const createdMs = info?.time?.created;
                 const isPreExisting = typeof createdMs === "number" && createdMs < bootTime;
                 if (debugEvents) {
-                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info2}`);
+                  log(`verify ${main}: created=${createdMs} boot=${bootTime} pre=${isPreExisting} flag=${flag.enabled} binding=${hasBinding} infoMissing=${!info}`);
                 }
                 if (isPreExisting && !flag.enabled && !hasBinding) {
                   preExistingRetired.add(main);
@@ -2711,6 +3485,7 @@ function createEngine(deps) {
           const st = sessions.get(sid);
           if (!st)
             return;
+          deleteShareOverrides(sid);
           chain = chain.then(() => remove(st)).catch((e) => logError("remove error", e?.message || e));
         }
       },
@@ -3067,7 +3842,7 @@ var server_default = {
   setup: createV2ServerSetup()
 };
 export {
-  server_default as default,
+  OpenSharePlugin,
   PLUGIN_ID,
-  OpenSharePlugin
+  server_default as default
 };

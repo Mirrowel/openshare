@@ -36,18 +36,22 @@
 // Session metadata shape (metadata.openshare):
 //  - all-mode binding: { id, secret, rev, url }
 //  - manual-mode:      { id, secret, rev, url, enabled: true, opts? }
-//    opts: { ttlDays?, authLogin?, authPassword?, modelLabel? } optional
+//    opts: { ttlHours?, authLogin?, authPassword?, modelLabel? } optional
 //    per-session overrides (capture at activation; modelLabel applies
 //    immediately, the rest at create/attach).
 //  - The plugin strips this key from everything it syncs — the write
 //    secret must never reach viewers.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { createHash } from "node:crypto"
 import { isAbsolute, join } from "node:path"
-import { METADATA_KEY, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
+import { METADATA_KEY, DEFAULTS, configHomePath, configSourceMap, deleteShareOverrides, loadConfig, resolveShareMode, spoolDirFor, URL_FILE_NONE, resolveServer, saveServerToken, type ShareConfig, type ShareMode, type ServerEntry } from "./config.js"
+import { resolveFor } from "./share-settings.js"
+import { pairPromptID, type PairMsg } from "./task-pairing.js"
 import { CONTRACT_VERSION, cursorFor, isV2NativeMessage, messageTombstone, normalizeV1Diff, normalizeV1Message } from "./contract.js"
 import { queueBindingWrite } from "./binding-queue.js"
+import { activeRules, redactItem, type RedactionHit } from "./redact.js"
 
 // --- minimal structural types (hand-written: the standalone bundle must
 // not depend on the plugin SDK at runtime; shapes verified against
@@ -86,10 +90,16 @@ export type ShareEvent =
   | { type: "session.deleted"; sessionID: string }
 
 export type SessionOpts = {
-  ttlDays?: number
+  ttlHours?: number
   authLogin?: string
   authPassword?: string
   modelLabel?: string
+  /** Sticky custom share title: set = the page keeps this title and ignores
+   * session renames; unset = the live session title auto-syncs. */
+  title?: string
+  /** Per-share pause: stop syncing (the spool keeps queueing for backfill)
+   * while the server keeps the page on its last status. */
+  paused?: boolean
 }
 
 type Binding = { id: string; secret: string; rev: number; url: string }
@@ -121,6 +131,7 @@ type RemoteState = {
   authBlocked: boolean
   pending: Array<{ items: unknown[]; status: string; seq?: number; wire?: string }> // chunk-frames awaiting ack (spool; wire = prebuilt frame string)
   frozenRemote?: boolean // server froze the owner mid-session: stop writing
+  warnedNoGate?: boolean // B2: one-shot "requested gate missing" warning sent
   spoolAppendFailed?: boolean // last append errored: memory-only frame exists
   spoolSaveTimer: ReturnType<typeof setTimeout> | null // debounced ack-path spool rewrite
   authWaiter?: (() => void) | undefined // frame-auth handshake resolver
@@ -159,6 +170,9 @@ type SessionState = {
   optOuts: Set<string>
   // manual-mode bookkeeping
   opts: SessionOpts | undefined
+  /** per-share pause flag (resolved from the share-settings tier at
+   * activation and on every opts change) */
+  paused: boolean
   activated: boolean
   wroteBinding: boolean
   /** any remote completed a handshake — used to detect LATER creates
@@ -227,11 +241,14 @@ export type Engine = {
   config: () => ShareConfig
 }
 
-// Stderr policy (owner directive): in manual mode (TUI present) stderr is
-// for ACTUAL ERRORS only — informational lines (live:/url file:/mode
-// banner, lifecycle traces) are suppressed; the TUI surfaces the URL.
-// All-mode (CI/server-only) keeps its stderr contract (announce lines,
-// silenceable via announceStderr). Error-class lines always reach stderr.
+// Stderr policy: in manual mode (TUI present) stderr is for ACTUAL ERRORS
+// only. Informational lines (live:/url file:/mode banner, lifecycle
+// traces) are suppressed because the TUI surfaces the URL itself.
+// All-mode (CI/server-only) keeps its stderr contract, layered by the
+// announceStderr ladder: "all" = announce + status lines, "status" =
+// status lines only (the share URL never touches stderr), "url" =
+// announce lines only, "off" = neither. Error-class lines always reach
+// stderr.
 let stderrInfoAllowed = true
 
 const log = (...a: unknown[]) => {
@@ -284,6 +301,22 @@ function redact<T extends { metadata?: Record<string, unknown> }>(info: T): T {
   return { ...info, metadata }
 }
 
+/** Wave 3 data-inventory split: machine-local facts leave the PUBLIC
+ * session item. Viewers recover them from the envelope's private block
+ * (gated+authenticated shares only); anonymous shares never store them. */
+function stripLocalFacts<T>(info: T): T {
+  if (!info || typeof info !== "object") return info
+  const out = { ...(info as Record<string, unknown>) }
+  let changed = false
+  for (const k of ["directory", "worktree"]) {
+    if (out[k] !== undefined) {
+      delete out[k]
+      changed = true
+    }
+  }
+  return changed ? (out as T) : info
+}
+
 function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: SessionOpts | undefined } {
   const raw = info?.metadata?.[METADATA_KEY]
   if (!raw || typeof raw !== "object") return { enabled: false, opts: undefined }
@@ -293,10 +326,14 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
   const opts: SessionOpts = {}
   if (optsRaw && typeof optsRaw === "object") {
     const o = optsRaw as Record<string, unknown>
-    if (typeof o.ttlDays === "number" && o.ttlDays > 0) opts.ttlDays = o.ttlDays
+    // legacy days-shaped opts migrate x24 (old bindings)
+    if (typeof o.ttlHours === "number" && o.ttlHours > 0) opts.ttlHours = Math.floor(o.ttlHours)
+    else if (typeof o.ttlDays === "number" && o.ttlDays > 0) opts.ttlHours = Math.floor(o.ttlDays * 24)
     if (typeof o.authLogin === "string") opts.authLogin = o.authLogin
     if (typeof o.authPassword === "string") opts.authPassword = o.authPassword
     if (typeof o.modelLabel === "string") opts.modelLabel = o.modelLabel
+    if (typeof o.title === "string" && o.title) opts.title = o.title
+    if (o.paused === true) opts.paused = true
   }
   return { enabled: true, opts: Object.keys(opts).length ? opts : undefined }
 }
@@ -306,6 +343,23 @@ function shareFlag(info: SessionInfo | undefined): { enabled: boolean; opts: Ses
  * with what the engine actually targets - file config alone can miss
  * plugin-options-layer config the TUI cannot see). */
 let liveTargets: string[] = []
+// the live engine registers its counter here (the TUI imports the
+// accessor without holding the engine instance)
+let statsProvider: ((sid: string) => { messages: number; toolCalls: number }) | null = null
+
+// Wave 3 preflight ledger: per-session redaction hits (count + first
+// samples, verbatim, so false positives are visible in the consent
+// preview before anything is published)
+const redactionLedger = new Map<string, { count: number; samples: RedactionHit[] }>()
+
+/** Preflight stats for the consent dialog: message/tool counts plus the
+ * redaction ledger (what would be stripped before publishing). */
+export function sessionStatsFor(sid: string): { messages: number; toolCalls: number; redaction: { count: number; samples: RedactionHit[] } } {
+  const led = redactionLedger.get(sid) ?? { count: 0, samples: [] as RedactionHit[] }
+  const counts = statsProvider ? statsProvider(sid) : { messages: 0, toolCalls: 0 }
+  return { ...counts, redaction: led }
+}
+
 export function engineTargetUrls(): string[] {
   return liveTargets
 }
@@ -313,8 +367,17 @@ export function engineTargetUrls(): string[] {
 export function createEngine(deps: EngineDeps): Engine {
   let cfg = loadConfig(deps.pluginDir, deps.options)
   const mode: ShareMode = resolveShareMode(cfg, deps)
-  // stderr = errors only when the TUI part exists (the TUI surfaces URLs)
+  // Stderr = errors only when the TUI part exists (the TUI surfaces URLs)
   if (mode === "manual") stderrInfoAllowed = false
+  // The ladder controls two line classes independently: announce lines
+  // (live:, url file:) print at all/url; status lines (mode banner,
+  // enrollment, adoption notes) print at all/status. "status" is the
+  // public-CI shape - the share URL never reaches the log.
+  const wantAnnounce = () => cfg.announceStderr === "all" || cfg.announceStderr === "url"
+  const logStatus = (...a: unknown[]) => {
+    if (cfg.announceStderr !== "all" && cfg.announceStderr !== "status") return
+    log(...a)
+  }
   if (process.env.OPENSHARE_DEBUG_FILE) {
     // diagnostic ground truth for the suites (never set in production)
     try {
@@ -336,7 +399,7 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const server = resolveServer(cfg)
   if (!server || !server.url) {
-    log("disabled: no share server configured (workerUrl or a servers entry)")
+    logStatus("disabled: no share server configured (workerUrl or a servers entry)")
     return {
       mode,
       config: () => cfg,
@@ -346,7 +409,7 @@ export function createEngine(deps: EngineDeps): Engine {
       },
     }
   }
-  log(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
+  logStatus(`share mode: ${mode} (directory: ${deps.directory ?? "?"} worktree: ${deps.worktree ?? "?"})`)
 
   // ---- share servers (the fan-out set) -----------------------------------
   // Every entry flagged active:true shares new sessions; when none is
@@ -357,13 +420,13 @@ export function createEngine(deps: EngineDeps): Engine {
   const resolveTargets = (): ServerTarget[] => {
     const merged: Record<string, ServerEntry> = {}
     const hasServers = !!cfg.servers && Object.keys(cfg.servers).length > 0
-    // layer-aware legacy rule: a FILE workerUrl beside a FILE servers
-    // group would silently dual-home the session (live-caught surprise);
-    // an ENV workerUrl is the highest-priority layer and always joins.
+    // layer-aware legacy rule: a FILE workerUrl beside a FILE servers group
+    // would silently dual-home the session; an ENV workerUrl is the
+    // highest-priority layer and always joins.
     const envWorker = !!process.env.OPENSHARE_WORKER_URL
     if (cfg.workerUrl && (!hasServers || envWorker)) merged[cfg.workerUrl] = { token: cfg.createToken || "", active: true }
     if (cfg.workerUrl && hasServers && !envWorker && !cfg.servers![cfg.workerUrl]) {
-      log(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`)
+      logStatus(`legacy workerUrl ${cfg.workerUrl} ignored: a servers group is configured - remove one of the two`)
     }
     if (cfg.servers) for (const [u, e] of Object.entries(cfg.servers)) merged[u] = { ...merged[u], ...e }
     const urls = Object.keys(merged)
@@ -404,39 +467,99 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   seedCredentials()
   const ENROLL_RETRY_MS = 60000
+  // B4 Class B (server-SUGGESTED modelLabel/shareMode): fetch once per
+  // server per boot, adopt ONLY keys with no explicit local source, and
+  // persist the adoption to the settings home (owner: no repeated CF
+  // fetches). One flag per URL for the whole process lifetime.
+  const setsFetched = new Set<string>()
+  const adoptServerSuggestions = async (url: string, token: string) => {
+    if (setsFetched.has(url)) return
+    setsFetched.add(url)
+    try {
+      const r = await fetch(`${url}/api/token/sets`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+      })
+      const body = r.ok ? ((await r.json().catch(() => null)) as { sets?: Record<string, { modelLabel?: string; shareMode?: string }> } | null) : null
+      const sets = body?.sets ?? {}
+      const pick = sets[cfg.configSet ?? ""] ?? Object.values(sets)[0]
+      if (!pick) return
+      const wantModel = typeof pick.modelLabel === "string" && !pick.modelLabel ? undefined : pick.modelLabel
+      const wantMode = pick.shareMode === "all" || pick.shareMode === "manual" ? pick.shareMode : undefined
+      // adopt only what is UNSPECIFIED locally: modelLabel sits at the
+      // default template, shareMode is unset and env carry no override
+      const src = configSourceMap(deps.pluginDir ?? "")
+      const modelUnset = cfg.modelLabel === DEFAULTS.modelLabel && !src.modelLabel
+      const modeUnset = cfg.shareMode === undefined && !src.shareMode
+      const adoptModel = wantModel && modelUnset
+      const adoptMode = wantMode && modeUnset
+      if (!adoptModel && !adoptMode) return
+      // surgical write into the settings home: read, patch just these
+      // keys when they are absent, write back (never clobber explicit
+      // values that appeared since load)
+      const home = configHomePath()
+      if (!home) return
+      let doc: Record<string, unknown> = {}
+      try {
+        doc = JSON.parse(readFileSync(home, "utf8"))
+        if (!doc || typeof doc !== "object") doc = {}
+      } catch {}
+      let dirty = false
+      if (adoptModel && doc.modelLabel === undefined) { doc.modelLabel = wantModel; dirty = true; logStatus(`${url}: adopted modelLabel from the server config set`) }
+      if (adoptMode && doc.shareMode === undefined) { doc.shareMode = wantMode; dirty = true; logStatus(`${url}: adopted shareMode from the server config set`) }
+      if (dirty) writeFileSync(home, JSON.stringify(doc, null, 2) + "\n")
+    } catch {
+      // suggestions are best-effort; a failed fetch never blocks sharing
+    }
+  }
 
   const ensureCredential = async (url: string): Promise<string> => {
     const c = credOf(url)
     const target = targets.find((t) => t.url === url)
-    if (c.credential) return c.credential
+    if (c.credential) {
+      void adoptServerSuggestions(url, c.credential)
+      return c.credential
+    }
     if (Date.now() - c.lastEnrollAt < ENROLL_RETRY_MS) return ""
     c.lastEnrollAt = Date.now()
-    try {
-      const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) })
-      const hb = h.ok ? ((await h.json().catch(() => null)) as { auth?: { mode?: string } } | null) : null
-      const authMode2 = hb?.auth?.mode
-      const code = target?.entry.code ?? ""
-      if (authMode2 === "public" || code) {
-        const r = await fetch(`${url}/api/enroll`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code }),
-          signal: AbortSignal.timeout(10000),
-        })
-        const b = r.ok ? ((await r.json().catch(() => null)) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string } | null) : null
-        if (b?.ok && typeof b.token === "string") {
-          c.credential = b.token
-          c.error = ""
-          const savedTo = saveServerToken(url, c.credential)
-          log(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
-          return c.credential
+    // A configured code IS expressed onboarding intent (headless-safe: CI
+    // carries it precisely to enroll). Without one, never auto-enroll:
+    // public servers share anonymously (the ask-once TUI flow offers an
+    // account), private ones refuse until the user connects via
+    // /openshare.
+    const code = target?.entry.code ?? ""
+    if (!code) {
+      try {
+        const h = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) })
+        const hb = h.ok ? ((await h.json().catch(() => null)) as { auth?: { mode?: string } } | null) : null
+        if (hb?.auth?.mode === "public") {
+          c.error = "" // anonymous standing - tokenless create works
+          return ""
         }
-        c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
-      } else if (authMode2 === "private") {
-        c.error = "private server: add servers.{url}.code (or token) to enroll"
-      } else {
-        c.error = `server health unreachable (HTTP ${h.status})`
+        c.error = "private server - onboard via /openshare (needs an access code)"
+      } catch (e) {
+        c.error = `server unreachable: ${(e as Error)?.message || e}`
       }
+      logError(`no credential for ${url}: ${c.error}`)
+      return ""
+    }
+    try {
+      const r = await fetch(`${url}/api/enroll`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code }),
+        signal: AbortSignal.timeout(10000),
+      })
+      const b = r.ok ? ((await r.json().catch(() => null)) as { ok?: boolean; token?: string; userId?: string; label?: string; error?: string } | null) : null
+      if (b?.ok && typeof b.token === "string") {
+        c.credential = b.token
+        c.error = ""
+        const savedTo = saveServerToken(url, c.credential)
+        logStatus(`enrolled at ${url} (user ${b.userId} "${b.label}")${savedTo ? " - token saved" : ""}`)
+        void adoptServerSuggestions(url, c.credential)
+        return c.credential
+      }
+      c.error = `enroll refused: ${b?.error ?? `HTTP ${r.status}`}`
     } catch (e) {
       c.error = `enrollment failed: ${(e as Error)?.message || e}`
     }
@@ -579,6 +702,9 @@ export function createEngine(deps: EngineDeps): Engine {
     bindingQueried: false,
     optOuts: new Set(),
     opts: undefined,
+    /** per-share pause (share-settings tier): flushes keep queueing into
+     * pending+spool but no frame is sent until the flag clears */
+    paused: false,
     activated: false,
     wroteBinding: false,
     everConnected: false,
@@ -602,7 +728,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (debugEvents) {
         const after = targets.map((t) => t.url)
         const added = after.filter((u) => !before.has(u))
-        if (added.length) log(`fan-out set grew: ${added.join(", ")}`)
+        if (added.length) logStatus(`fan-out set grew: ${added.join(", ")}`)
       }
     }
   }
@@ -623,6 +749,7 @@ export function createEngine(deps: EngineDeps): Engine {
     }
     st.activated = true
     st.opts = opts
+    st.paused = resolvedFor(st).paused?.value === true
     // re-activation re-backfills the whole session (unshare -> share
     // again): the enqueue dedupe must not skip the returning content
     st.sentHash.clear()
@@ -800,10 +927,10 @@ export function createEngine(deps: EngineDeps): Engine {
     // is absent from `servers`, and dropping the marker would let the next
     // refreshOptOuts resurrect (and re-create) the opted-out server
     for (const url of st.optOuts) if (!servers[url]) servers[url] = { optedOut: true }
-    // A binding in session metadata means opted-in — enabled: true in BOTH
-    // modes (live-caught: all-mode bindings without `enabled` made the TUI
-    // gate fall through to the consent dialog on an already-shared session;
-    // live is now uniformly "url && enabled !== false").
+    // A binding in session metadata means opted-in, so enabled: true is
+    // written in BOTH modes. All-mode bindings without `enabled` made the
+    // TUI gate fall through to the consent dialog on an already-shared
+    // session; live is uniformly "url && enabled !== false".
     const value: Record<string, unknown> = { v: 2, servers, enabled: true }
     if (mode === "manual" && st.opts) value.opts = st.opts
     if (st.lastError) value.lastError = st.lastError
@@ -815,10 +942,14 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const scheduleBindingWrite = (st: SessionState) => {
     if (st.metaTimer) return
+    // env knob exists for the mock suites: their two-remote scenarios
+    // assert the SETTLED binding, and waiting out the production 30s
+    // coalescing window per scenario would dominate suite time
+    const debounce = Number(process.env.OPENSHARE_BINDING_WRITE_MS) > 0 ? Number(process.env.OPENSHARE_BINDING_WRITE_MS) : 30000
     st.metaTimer = setTimeout(() => {
       st.metaTimer = null
       chain = chain.then(() => writeBinding(st)).catch(() => {})
-    }, 30000)
+    }, debounce)
   }
 
   // ---- spool (temporary buffer for unacked frames) ----------------------
@@ -856,9 +987,9 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       appendFileSync(queuePath(st, r.url), (f.wire ?? JSON.stringify(f)) + "\n")
     } catch (e) {
-      // the frame lives ONLY in memory now — flag the remote so the next
-      // spoolLoad does NOT replace in-memory pending with the shorter
-      // disk queue (silent loss otherwise; live-caught class in review)
+      // the frame lives ONLY in memory now, so flag the remote: the next
+      // spoolLoad must NOT replace in-memory pending with the shorter disk
+      // queue (silent loss otherwise).
       r.spoolAppendFailed = true
       logError("spool append failed", (e as Error)?.message || e)
     }
@@ -879,10 +1010,10 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const spoolLoad = (st: SessionState, r: RemoteState) => {
     // meta first (share binding recovery), in its OWN try: a missing meta
-    // file is normal (it's only written after the first successful
-    // handshake) and must NOT touch pending (live-caught class: the old
-    // blanket catch wiped in-memory pending AND skipped the queue read,
-    // so everything queued before the first successful connect was lost).
+    // file is normal (written only after the first successful handshake)
+    // and must NOT touch pending. A blanket catch here wipes in-memory
+    // pending AND skips the queue read, so everything queued before the
+    // first successful connect is lost.
     try {
       const meta = JSON.parse(readFileSync(metaPath(st, r.url), "utf8"))
       // metadata binding (db) is authoritative when both exist and disagree
@@ -1044,7 +1175,7 @@ export function createEngine(deps: EngineDeps): Engine {
     if (r.announced) return
     r.announced = true
     const url = `${r.url}/s/${r.shareId}`
-    if (cfg.announceStderr) log(`live: ${url}`)
+    if (wantAnnounce()) log(`live: ${url}`)
     if (mode === "all" && cfg.urlFile !== URL_FILE_NONE) {
       // default: the file lives where the session lives (its directory,
       // falling back to the process cwd) — never a fixed global path.
@@ -1058,8 +1189,21 @@ export function createEngine(deps: EngineDeps): Engine {
           : join(deps.directory ?? process.cwd(), cfg.urlFile)
         : join(deps.directory ?? process.cwd(), "openshare.urls.txt")
       try {
-        appendFileSync(file, url + "\n")
-        if (cfg.announceStderr && (file !== lastUrlFile || !urlFileAnnounced)) {
+        // "json" format: one machine-readable object per line (CI parses
+        // fields instead of URLs). Status is the engine's current signal
+        // at announce time; the completed flip updates the SHARE, not
+        // this file line.
+        const line =
+          cfg.urlFileFormat === "json"
+            ? JSON.stringify({
+                id: r.shareId,
+                url,
+                status: st.lastSentStatus ?? "waiting",
+                gated: resolvedFor(st, r).auth !== undefined,
+              }) + "\n"
+            : url + "\n"
+        appendFileSync(file, line)
+        if (wantAnnounce() && (file !== lastUrlFile || !urlFileAnnounced)) {
           urlFileAnnounced = true
           lastUrlFile = file
           log(`url file: ${file}`)
@@ -1073,45 +1217,83 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   let halfAuthWarned = false
-  const authFrame = (st: SessionState) => {
+  /** Three-tier share-settings resolution (general < per-server <
+   * per-share) for one session, scoped to the remote a frame targets. */
+  const resolvedFor = (st: SessionState, r?: { url: string }) => resolveFor(cfg, r?.url, st.sid, st.opts)
+
+  const authFrame = (st: SessionState, r?: { url: string }) => {
     // always send both (empty strings included): attach with empty values
-    // REMOVES protection - an intentional owner action. Session opts
-    // override the global config when set.
-    const login = st.opts?.authLogin ?? cfg.authLogin ?? ""
-    const password = st.opts?.authPassword ?? cfg.authPassword ?? ""
-    // both-or-none: the server builds a gate only from a full pair, so a
-    // half pair silently means "no gate" - refuse to send one and say so
-    if ((login === "") !== (password === "")) {
-      if (!halfAuthWarned) {
-        halfAuthWarned = true
-        logError("read auth needs BOTH a login and a password - gate disabled until fixed")
-      }
-      return { authLogin: "", authPassword: "" }
+    // REMOVES protection - an intentional owner action. Tiers resolve as a
+    // pair-unit; a half pair anywhere means "no gate" server-side.
+    const res = resolvedFor(st, r)
+    if (res.auth) return { authLogin: res.auth.value.login, authPassword: res.auth.value.password }
+    if (res.authHalfPair && !halfAuthWarned) {
+      halfAuthWarned = true
+      logError("read auth needs BOTH a login and a password - gate disabled until fixed")
     }
-    return { authLogin: login, authPassword: password }
+    return { authLogin: "", authPassword: "" }
   }
 
-  const ttlFor = (st: SessionState) => st.opts?.ttlDays ?? cfg.ttlDays
+  const ttlFor = (st: SessionState, r?: { url: string }) => resolvedFor(st, r).ttlHours?.value ?? cfg.ttlHours
+
+  /** The init-create frame for one remote: resolved TTL + read-auth (tiers
+   * scoped to this server), sticky custom title when set, config-set and
+   * meta labels. Shared by every create site so they cannot drift. */
+  const createInit = (st: SessionState, r: { url: string }) => {
+    const res = resolvedFor(st, r)
+    return {
+      op: "init" as const,
+      create: {
+        sessionID: st.sid,
+        ttlHours: ttlFor(st, r),
+        ...authFrame(st, r),
+        ...(res.title ? { title: res.title.value } : {}),
+        ...(cfg.configSet ? { set: cfg.configSet } : {}),
+        ...(metaFor() ? { meta: metaFor() } : {}),
+      },
+    }
+  }
+
+  // free-form labels for team directories/admin listings: ${NAME} refs
+  // resolve from the process env at send time; unresolved refs stay
+  // literal (visible beats silently-empty). Cached env lookup, max 20
+  // keys/500 chars per value (config loader caps the same).
+  const metaFor = (): Record<string, string> | undefined => {
+    if (!cfg.meta || typeof cfg.meta !== "object") return undefined
+    const out: Record<string, string> = {}
+    let n = 0
+    for (const [k, v] of Object.entries(cfg.meta)) {
+      if (n >= 20) break
+      out[k] = v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => process.env[name] ?? m)
+      n++
+    }
+    return Object.keys(out).length ? out : undefined
+  }
 
   /** Apply a metadata opts update. On a CHANGED opts set for a session with
    * live sockets, re-send the attach frame over each open socket: the
    * worker's attach path applies read-auth retroactively (rotating viewer
-   * tokens on change) and now also honors an explicit ttlDays override -
+   * tokens on change) and now also honors an explicit ttlHours override -
    * so settings heal immediately instead of waiting for a reconnect.
    * Re-attach is idempotent (no once-guard on init; earlySyncs empty at
    * steady state) and revalidates the token. */
   const applyOpts = (st: SessionState, opts: SessionOpts | undefined) => {
     if (!opts) return
     const prev = st.opts ? JSON.stringify(st.opts) : ""
+    const wasPaused = st.paused
     st.opts = opts
+    st.paused = resolvedFor(st).paused?.value === true
     if (prev === JSON.stringify(opts)) return
     for (const [url, r] of st.remotes) {
       if (!r.shareId || !r.secret || !r.wsReady) continue
-      const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st) }
-      if (st.opts?.ttlDays) attach.ttlDays = st.opts.ttlDays
+      if (st.paused) continue // paused remotes get nothing pushed; unpause drains
+      const attach: Record<string, unknown> = { id: r.shareId, secret: r.secret, ...authFrame(st, r) }
+      const ttl = resolvedFor(st, r).ttlHours?.value
+      if (ttl) attach.ttlHours = ttl
       const sent = wsSend(r, { op: "init", attach })
-      if (sent) log(`opts re-synced to ${url.slice(0, 24)}${st.opts?.ttlDays ? ` (ttl ${st.opts.ttlDays}d)` : ""}`)
+      if (sent) logStatus(`opts re-synced to ${url.slice(0, 24)}${ttl ? ` (ttl ${ttl}h)` : ""}`)
     }
+    if (wasPaused && !st.paused) drainRemotes(st)
   }
 
   /** Best-effort cleanup of a share we are about to abandon (refused
@@ -1131,9 +1313,9 @@ export function createEngine(deps: EngineDeps): Engine {
 
   /** Single-flight connect queuing: multiple paths (activation, event
    * reconnect, backfill chain) may want a socket before any connect has
-   * STARTED — the connecting flag alone guards execution, not the queue,
-   * and double connects used to create duplicate shares + init storms
-   * (live-caught in the S11 repro: ws#1 create AND ws#2 create). */
+   * STARTED. The connecting flag alone guards execution, not the queue,
+   * and double connects create duplicate shares and init storms (one
+   * create per socket). */
   const queueConnect = (st: SessionState, r: RemoteState) => {
     if (st.closed || r.connectQueued || r.connecting || r.authBlocked || r.collided) return
     r.connectQueued = true
@@ -1235,12 +1417,12 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const connect = async (st: SessionState, r: RemoteState) => {
     if (st.closed || r.connecting || r.authBlocked || r.collided) return
-    // "connecting" spans the WHOLE handshake: socket open + init ack. It
-    // is only cleared on init-ok, socket death or the init timeout — an
-    // event arriving mid-handshake must NEVER spawn a second socket (the
-    // old connect() returned after merely SENDING init; a second socket
+    // "connecting" spans the WHOLE handshake: socket open plus init ack.
+    // It is cleared only on init-ok, socket death or the init timeout. An
+    // event arriving mid-handshake must NEVER spawn a second socket: the
+    // old connect() returned after merely SENDING init, a second socket
     // raced it, and the loser's late init-ok poisoned the winner's state
-    // — live-caught: duplicate shares, mismatch storms, empty pages).
+    // (duplicate shares, mismatch storms, empty pages).
     r.connecting = true
     r.socketSeq += 1
     const seq = r.socketSeq
@@ -1256,9 +1438,9 @@ export function createEngine(deps: EngineDeps): Engine {
       spoolLoad(st, r)
       askPolicy(r.url)
       // was this socket's init an ATTACH (resume) or a CREATE? A create
-      // ack legitimately starts at rev 0 — the mismatch guard is for
-      // attaches only (live-caught: create-ack rev 0 tripped it and
-      // spawned a fresh husk share with the content dropped).
+      // ack legitimately starts at rev 0, so the mismatch guard is for
+      // attaches only. Applying it to a create spawns a fresh husk share
+      // with the content dropped.
       r.initWasAttach = !!(r.shareId && r.secret)
       if (debugEvents) log(`ws ${r.url.slice(0, 24)} #${seq} opening (${r.initWasAttach ? `attach ${r.shareId}` : "create"})`)
       // creates need a credential (enrolls on demand — first contact with
@@ -1344,9 +1526,9 @@ export function createEngine(deps: EngineDeps): Engine {
       }
 
       if (r.initWasAttach) {
-        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st) } })
+        wsSend(r, { op: "init", attach: { id: r.shareId, secret: r.secret, ...authFrame(st, r) } })
       } else {
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, createInit(st, r))
       }
 
       // handshake deadline: init sent but no ack (silent worker death)
@@ -1521,9 +1703,9 @@ export function createEngine(deps: EngineDeps): Engine {
           return
         }
         // share swept / removed / revoked: start fresh, never merge into a
-        // bad base (mismatch protocol). Content REPLAYS to the new share —
-        // pending is never dropped on a reset (live-caught: the recreate
-        // husk had the title but zero messages).
+        // bad base (mismatch protocol). Content REPLAYS to the new share,
+        // and pending is never dropped on a reset: dropping it leaves the
+        // recreate as a husk with the title and zero messages.
         if (/limit|too many|rate/i.test(err)) {
           // quota/429 ("max shares reached", "daily create limit", the
           // anonymous caps): an immediate re-init on the same socket is a
@@ -1546,19 +1728,19 @@ export function createEngine(deps: EngineDeps): Engine {
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, createInit(st, r))
         return
       }
       if (r.initWasAttach && typeof frame.rev === "number" && frame.rev < r.ackedRev) {
-        // worker lost data behind our back (ATTACH only — a create ack
-        // legitimately starts at rev 0; the old guard misread that as
-        // data loss and spawned a fresh husk, live-caught)
+        // worker lost data behind our back (ATTACH only: a create ack
+        // legitimately starts at rev 0, and misreading that as data loss
+        // spawns a fresh husk)
         logError(`${r.url}: mismatch: worker rev ${frame.rev} < acked ${r.ackedRev} - recreating`)
         deleteAbandoned(r)
         r.shareId = null
         r.secret = null
         r.ackedRev = 0
-        wsSend(r, { op: "init", create: { sessionID: st.sid, ttlDays: ttlFor(st), ...authFrame(st) } })
+        wsSend(r, createInit(st, r))
         return
       }
       const wasFanoutCreate = !r.initWasAttach && st.everConnected
@@ -1578,11 +1760,10 @@ export function createEngine(deps: EngineDeps): Engine {
         clearTimeout(r.initTimer)
         r.initTimer = null
       }
-      // backoff reset is DEFERRED until the socket proves stable: a
-      // server that accepts init then immediately drops would otherwise
-      // reconnect once per second forever (~1 cycle/s per session-server
-      // pair, live-caught in the optimization audit). 30s alive (socket
-      // still ready, no reconnect pending) or a second acked sync.
+      // backoff reset is DEFERRED until the socket proves stable: a server
+      // that accepts init then immediately drops would otherwise reconnect
+      // once per second per session-server pair. Stability means 30s alive
+      // (socket still ready, no reconnect pending) or a second acked sync.
       if (r.backoffResetTimer) clearTimeout(r.backoffResetTimer)
       r.backoffResetTimer = setTimeout(() => {
         r.backoffResetTimer = null
@@ -1595,9 +1776,10 @@ export function createEngine(deps: EngineDeps): Engine {
       // the ack carries the RESOLVED ttl: surface a server/token clamp to
       // the binding once, and a successful handshake clears any stale
       // refusal reason the TUI may be showing
-      if (typeof frame.ttlDays === "number") {
-        const wanted = ttlFor(st)
-        const clamp = wanted != null && frame.ttlDays !== wanted ? { requested: wanted, effective: frame.ttlDays } : null
+      const ackTtl = typeof frame.ttlHours === "number" ? frame.ttlHours : (typeof frame.ttlDays === "number" ? frame.ttlDays * 24 : undefined)
+      if (typeof ackTtl === "number") {
+        const wanted = ttlFor(st, r)
+        const clamp = wanted != null && ackTtl !== wanted ? { requested: wanted, effective: ackTtl } : null
         if (JSON.stringify(clamp) !== JSON.stringify(st.ttlClamped)) {
           st.ttlClamped = clamp
           scheduleBindingWrite(st)
@@ -1606,6 +1788,36 @@ export function createEngine(deps: EngineDeps): Engine {
       if (st.lastError) {
         st.lastError = null
         scheduleBindingWrite(st)
+      }
+      // ack-level gate assurance (B2): we asked for a gate (both fields
+      // set) but the server reports none - the page is actually public.
+      // Once per remote; the next init-ok re-checks after a fix.
+      const wantedGate = resolvedFor(st, r).auth !== undefined
+      if (wantedGate && frame.auth === false && !r.warnedNoGate) {
+        r.warnedNoGate = true
+        logError(`${r.url}: read auth requested but the page has NO gate - check the server's auth handling`)
+      } else if (frame.auth === true) {
+        r.warnedNoGate = false
+      }
+      // Wave 3 pmeta: machine-local facts (directory/worktree) ride their
+      // OWN tiny sync once per init-ok, only to remotes we hold a
+      // credential for - anonymous (ownerless) shares never store them.
+      // Server-side they land in the private block, readable with share
+      // auth. Idempotent upsert; rides no shared frame so fan-out
+      // remotes with mixed identity each get exactly their due.
+      if (credOf(r.url).credential) {
+        const priv: Record<string, string> = {}
+        const dir = (deps.directory ?? "") as string
+        if (dir) priv.directory = dir
+        if (deps.worktree) priv.worktree = String(deps.worktree)
+        // the sharer's home lets the server mask absolute paths as ~/...
+        try {
+          priv.home = homedir()
+        } catch {}
+        if (Object.keys(priv).length) {
+          const seq = ++nextSeq
+          wsSend(r, { op: "sync", items: [{ type: "pmeta", sessionID: st.sid, data: priv }], status: undefined, seq })
+        }
       }
       announceUrl(st, r)
       // first binding write is immediate (the TUI waits on the URL in
@@ -1617,18 +1829,20 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       spoolSave(st, r)
       if (r.pending.length) {
-        for (const f of r.pending) sendSync(r, f)
+        // paused: pending stays queued (unpause drains) — the reconnect
+        // must not empty it behind the flush loop's back
+        if (!st.paused) for (const f of r.pending) sendSync(r, f)
       } else if (st.queue.size) {
         flush(st)
       }
       if (wasFanoutCreate) {
         // a server joined an ALREADY-live session (fan-out add, or a
-        // post-mismatch recreate): its fresh share needs the full history —
-        // backfill is keyed-idempotent, other servers just re-upsert.
-        // The enqueue dedupe must step aside: those hashes say "already
-        // entered the machinery", but the NEW remote never received any
-        // of it (live-caught by F3: the join's backfill was fully
-        // deduped away and the joined share stayed empty).
+        // post-mismatch recreate): its fresh share needs the full history,
+        // and backfill is keyed-idempotent while other servers simply
+        // re-upsert. The enqueue dedupe must step aside here: those hashes
+        // say "already entered the machinery", but the NEW remote received
+        // none of it, so a deduped join backfills nothing and the joined
+        // share stays empty.
         st.sentHash.clear()
         chain = chain.then(() => backfill(st)).catch((e) => logError("fan-out backfill error", (e as Error)?.message || e))
       }
@@ -1733,8 +1947,8 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   // returns a promise when the frame goes out via HTTP (the dispose path
-  // awaits it - an unawaited fetch dies with the exiting process and the
-  // final status never lands, live-caught as shares stuck on "live")
+  // awaits it: an unawaited fetch dies with the exiting process and the
+  // final status never lands, leaving the share stuck on "live")
   const flush = (st: SessionState): Promise<unknown> | undefined => {
     if (st.closed) return
     const f = frameFrom(st)
@@ -1742,8 +1956,8 @@ export function createEngine(deps: EngineDeps): Engine {
     // fan out to every remote; each carries its own pending copy and acks
     // independently. Remotes mid-handshake or auth-blocked just buffer.
     // PENDING IS CHUNK-SHAPED (seq-tagged): one logical frame becomes N
-    // chunk-frames so a partial-ack can never erase unsent chunks
-    // (live-caught class: chunk-1 ack + socket death erased chunks 2..N).
+    // chunk-frames, so a partial ack can never erase unsent chunks (a
+    // chunk-1 ack followed by socket death used to drop chunks 2..N).
     const chunks: Array<{ items: unknown[]; json: string }> = f.items.length ? chunkedFrames(f.items, 200, 512 * 1024) : []
     let httpWork: Promise<unknown> | undefined
     for (const r of st.remotes.values()) {
@@ -1767,8 +1981,11 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       // never send syncs before the init ack: the worker's per-socket
       // ControlDO has no attach until OUR init completes, and a racing
-      // sync dies as "unknown op" (live-caught: post-drop reconnects
-      // lost whole turns). The init-ok handler flushes pending itself.
+      // sync dies as "unknown op", losing whole turns on post-drop
+      // reconnects. The init-ok handler flushes pending itself.
+      // PAUSED sessions stop here: pending+spool keep accumulating, no
+      // frame leaves the machine until the pause clears (then drainRemotes).
+      if (st.paused) continue
       if (r.ws && !r.wsReady) continue
       if (r.wsReady) {
         for (const cf of fresh) sendSync(r, cf)
@@ -1803,13 +2020,12 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const flushViaHttp = async (st: SessionState, r: RemoteState) => {
     if (!r.shareId || !r.pending.length) return
-    // ALL pending frames, merged (keyed upserts — later wins). Sending
-    // only the last frame dropped every earlier batch's items whenever
-    // the HTTP fallback carried more than one (live-caught class:
-    // content loss on reconnect paths). DEDUPE BY KEY before chunking:
-    // a streaming message appearing in k pending frames shipped k
-    // copies (up to 25x on a replay burst) — every duplicate was also a
-    // server row-write + a rebroadcast frame.
+    // ALL pending frames, merged (keyed upserts, later wins). Sending only
+    // the last frame dropped every earlier batch's items whenever the HTTP
+    // fallback carried more than one, losing content on reconnect paths.
+    // DEDUPE BY KEY before chunking: a streaming message appearing in k
+    // pending frames shipped k copies (up to 25x on a replay burst), and
+    // every duplicate cost a server row-write plus a rebroadcast frame.
     const byKey = new Map<string, unknown>()
     const unkeyed: unknown[] = []
     let status: string | undefined
@@ -1852,6 +2068,24 @@ export function createEngine(deps: EngineDeps): Engine {
     scheduleSpoolSave(st, r)
   }
 
+  /** Unpause: push everything the pause (or a down socket) queued. Same
+   * send paths flush uses — WS when ready, HTTP fallback otherwise — so a
+   * pause/backfill cycle is exactly a long disconnect/reconnect. */
+  const drainRemotes = (st: SessionState) => {
+    if (st.closed) return
+    let httpWork: Promise<unknown> | undefined
+    for (const r of st.remotes.values()) {
+      if (!r.pending.length) continue
+      if (r.wsReady) {
+        for (const cf of r.pending) sendSync(r, cf)
+        continue
+      }
+      const viaHttp = flushViaHttp(st, r)
+      if (viaHttp) httpWork = (httpWork ?? Promise.resolve()).then(() => viaHttp)
+    }
+    if (httpWork) void httpWork.catch((e) => logError("unpause drain error", (e as Error)?.message || e))
+  }
+
   const scheduleFlush = (st: SessionState) => {
     if (st.timer) return
     // sync interval is a rate limit anchored at the PREVIOUS flush: an
@@ -1876,15 +2110,19 @@ export function createEngine(deps: EngineDeps): Engine {
     }, wait)
   }
 
+  const homeDir = (() => { try { return homedir() } catch { return "" } })()
+  const userPatterns = (cfg as { redact?: { patterns?: unknown } }).redact?.patterns
+  const redactionRules = activeRules(userPatterns)
+
   const enqueue = (st: SessionState, entry: ItemEntry | undefined) => {
     if (!st || !entry) return
     // content dedupe at the machinery boundary: an identical re-feed has
-    // either entered the queue already or been flushed into every
-    // remote's pending/spool (the per-remote delivery machinery owns it
-    // from there) — re-sending it bumps rev, rewrites storage and
-    // re-folds every viewer for nothing. This is the engine-side home
-    // the v2-adapter dedupe lacked (an adapter-side cache poisoned while
-    // dormant and skipped the flag-time content — live-caught).
+    // either entered the queue already or been flushed into every remote's
+    // pending/spool, and the per-remote delivery machinery owns it from
+    // there. Re-sending it bumps rev, rewrites storage and re-folds every
+    // viewer for nothing. This is the engine-side home dedupe belongs in:
+    // an adapter-side cache can be poisoned while the session is still
+    // dormant, and then the flag-time content is skipped.
     let h: string
     try {
       h = createHash("sha256").update(JSON.stringify(entry.item)).digest("hex")
@@ -1896,12 +2134,52 @@ export function createEngine(deps: EngineDeps): Engine {
       return
     }
     if (h) st.sentHash.set(entry.key, h)
+    // Wave 3 trust pass: redaction on UNGATED shares only (a gated share
+    // is private from casual observers already; the server owner sees
+    // content either way until encryption lands). The light path
+    // transform applies regardless. Zero-copy when nothing matches.
+    {
+      // per-server auth tiers can diverge: one ungated destination means
+      // the content leaves redacted (every-remote-gated to skip). Before
+      // any remote exists the tiers alone decide.
+      const gated = st.remotes.size
+        ? [...st.remotes.values()].every((r) => resolvedFor(st, r).auth !== undefined)
+        : resolvedFor(st).auth !== undefined
+      const pass = redactItem(entry.item, { rules: redactionRules, home: homeDir, enabled: !gated })
+      if (pass.item !== entry.item) entry = { ...entry, item: pass.item as typeof entry.item }
+      if (pass.hits.length) {
+        const led = redactionLedger.get(st.sid) ?? { count: 0, samples: [] as RedactionHit[] }
+        led.count += pass.hits.length
+        for (const hit of pass.hits) {
+          if (led.samples.length < 5 && !led.samples.some((x) => x.kind === hit.kind)) led.samples.push(hit)
+        }
+        redactionLedger.set(st.sid, led)
+      }
+    }
     st.queue.set(entry.key, entry.item)
     indexMessage(entry)
     if (debugEvents) log(`enqueue sid=${st.sid.slice(0, 18)} ${entry.item.type} queue=${st.queue.size}`)
     touch(st)
     ensureConnected(st)
     scheduleFlush(st)
+  }
+
+  // Wave 3 preflight counts: the module-level accessor delegates here
+  statsProvider = (sid: string) => {
+    const st = sessions.get(sid)
+    let messages = 0
+    let toolCalls = 0
+    if (st) {
+      for (const [, merged] of st.merged) {
+        messages++
+        const content = (merged as { content?: unknown }).content
+        if (Array.isArray(content)) toolCalls += content.filter((c: unknown) => !!c && (c as { type?: string }).type === "tool").length
+      }
+      for (const it of st.queue.values()) {
+        if ((it as { type?: string })?.type === "message") messages++
+      }
+    }
+    return { messages, toolCalls }
   }
 
   // ---- authoritative stamps ----------------------------------------------
@@ -1919,10 +2197,9 @@ export function createEngine(deps: EngineDeps): Engine {
   }
   const msgIndex = new Map<string, IndexedMessage>() // `${sid}:${messageID}`
   /** message ids tombstoned this run: stampsPass must never re-upsert an
-   * undone message (live-caught class: dropMergedMessage removed the
-   * merged entry but msgIndex kept the corpse; a neighboring-segment
-   * change recomputed its stamps and reEnqueueMessage resurrected the
-   * deleted turn server-side). */
+   * undone message. dropMergedMessage removes the merged entry but msgIndex
+   * keeps the corpse, so a neighboring-segment change recomputes its
+   * stamps and reEnqueueMessage resurrects the deleted turn server-side. */
   const tombstoned = new Set<string>()
 
   const indexMessage = (entry: ItemEntry) => {
@@ -1985,11 +2262,11 @@ export function createEngine(deps: EngineDeps): Engine {
         const agent = segmentAgent(list, users[k])
         const d = list[users[k]].data as Record<string, any>
         const want = k > 0 && agent && prev && agent !== prev ? agent : undefined
-        // only touch metadata when the stamp actually CHANGES — a blanket
-        // `d.metadata ??= {}` polluted every user message (including the
+        // only touch metadata when the stamp actually CHANGES: a blanket
+        // `d.metadata ??= {}` pollutes every user message (including the
         // host's live objects on v2 pass-through) with an empty metadata
-        // object, which re-emitted the message once per refresh (rev churn
-        // per feed — live-caught by the enqueue-dedupe rev check)
+        // object, which re-emits the message once per refresh and churns
+        // rev per feed.
         if (want !== (d.metadata?.agentSwitch as string | undefined)) {
           if (want) {
             const meta = (d.metadata ??= {}) as Record<string, unknown>
@@ -2052,9 +2329,73 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
+  /** task/subagent calls get metadata.promptID (the child prompt the call
+   *  created) and that child prompt message gets metadata.toolCallID +
+   *  toolSessionID pointing back at the call - stamped on BOTH sides so
+   *  one surviving side still resolves the pair. The pairing ladder lives
+   *  in task-pairing.ts: an exact-or-coverage text match beats arrival
+   *  timing; the arrival window covers prompts the host transformed past
+   *  recognition (v2 preamble, inlined @files). The viewer anchors
+   *  subagent card links on that exact prompt. */
+  const stampTaskPromptLinks = (bySession: Map<string, IndexedMessage[]>) => {
+    const callsByChild = new Map<string, Array<{ part: any; created: number; parent: IndexedMessage }>>()
+    for (const m of msgIndex.values()) {
+      if (m.role !== "assistant") continue
+      const content = (m.data as any).content
+      if (!Array.isArray(content)) continue
+      for (const part of content) {
+        if (!part || part.type !== "tool") continue
+        if (part.name !== "task" && part.name !== "subagent") continue
+        if (!part.state || typeof part.id !== "string") continue
+        const childSid = typeof part.state.metadata?.sessionID === "string" ? part.state.metadata.sessionID : undefined
+        if (!childSid) continue
+        const entry = { part, created: Number(part.time?.created ?? 0), parent: m }
+        const list = callsByChild.get(childSid)
+        if (list) list.push(entry)
+        else callsByChild.set(childSid, [entry])
+      }
+    }
+    for (const [childSid, calls] of callsByChild) {
+      const child = bySession.get(childSid)
+      if (!child) continue
+      calls.sort((a, b) => a.created - b.created)
+      const candidates: PairMsg[] = child
+        .filter((c) => c.role === "user" && typeof c.data.id === "string")
+        .map((c) => ({ id: c.data.id as string, created: c.created, text: String(c.data.text ?? "") }))
+      // prompts already back-linked keep their claim; a later call never
+      // re-claims them
+      const claimed = new Set<string>(
+        child
+          .filter((c) => c.role === "user" && typeof (c.data as any).metadata?.toolCallID === "string")
+          .map((c) => String(c.data.id)),
+      )
+      for (const call of calls) {
+        const meta = (call.part.state.metadata ??= {})
+        let promptID = typeof meta.promptID === "string" ? meta.promptID : undefined
+        if (!promptID) {
+          const prompt = typeof call.part.state.input?.prompt === "string" ? call.part.state.input.prompt : undefined
+          const pick = pairPromptID({ partID: call.part.id, created: call.created, prompt }, candidates, claimed)
+          if (!pick) continue
+          meta.promptID = pick
+          promptID = pick
+          reEnqueueMessage(call.parent)
+        }
+        claimed.add(promptID)
+        const target = child.find((c) => String(c.data.id) === promptID)
+        if (!target) continue
+        const dmeta = ((target.data as any).metadata ??= {})
+        if (dmeta.toolCallID !== call.part.id) {
+          dmeta.toolCallID = call.part.id
+          dmeta.toolSessionID = call.parent.sid
+          reEnqueueMessage(target)
+        }
+      }
+    }
+  }
+
   /** file tools get metadata.language (shiki lang id, from the path the
-   * call touched) - the viewer highlights from the stamp and never guesses
-   * (owner directive; the viewer's extension map is an old-share fallback) */
+   * call touched). The viewer highlights from this stamp and never
+   * guesses; its extension map only covers old shares without one. */
   const LANG_BY_EXT: Record<string, string> = {
     ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
     js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
@@ -2065,7 +2406,44 @@ export function createEngine(deps: EngineDeps): Engine {
     sql: "sql", c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp",
     swift: "swift", kt: "kotlin", php: "php", lua: "lua", vue: "vue", svelte: "svelte",
   }
+
   const FILE_TOOLS = new Set(["read", "write", "edit", "patch"])
+
+  /** A read that returns lines from inside an html file's <script>/<style>
+   *  block gets tokenized as html by the viewer, and a snippet with no tag
+   *  context tokenizes as untyped soup (one default span per line). The
+   *  viewer only sees the snippet, so the stamp carries the language that is
+   *  true for the RETURNED RANGE: no tags plus code shape means the range sat
+   *  inside an embedded script or style block. */
+  const refineEmbeddedLanguage = (meta: { language?: unknown }, text: string): boolean => {
+    if (meta.language !== "html") return false
+    const head = text.slice(0, 4000)
+    if (/<[a-zA-Z][^>\n]*>/.test(head)) return false
+    let refined: string | undefined
+    if (/^[ \t]*[.#][A-Za-z][\w-]*[^\n{]*\{/m.test(head) && !/\b(function|=>|return)\b/.test(head)) {
+      refined = "css"
+    } else if (/\b(function|const|let|var|return|if|for|while|=>|addEventListener|document\.|window\.)\b/.test(head) || /[;{}]\s*$/m.test(head)) {
+      refined = "javascript"
+    }
+    if (!refined || meta.language === refined) return false
+    meta.language = refined
+    return true
+  }
+
+  /** Sniff the CODE CONTENT of a unified patch: drop everything before the
+   *  first hunk header and strip each line's diff marker, so the same
+   *  tag/shape checks as reads run over clean source lines. */
+  const refinePatchLanguage = (meta: { language?: unknown }, patchText: string): boolean => {
+    const at = patchText.indexOf("@@")
+    if (at < 0) return false
+    const body = patchText
+      .slice(at)
+      .split("\n")
+      .map((l) => (/^[ +\\]/.test(l) ? l.slice(1) : l.startsWith("-") ? l.slice(1) : ""))
+      .join("\n")
+    return refineEmbeddedLanguage(meta, body)
+  }
+
   const stampFileLanguages = () => {
     for (const m of msgIndex.values()) {
       if (m.role !== "assistant") continue
@@ -2078,6 +2456,10 @@ export function createEngine(deps: EngineDeps): Engine {
         const state = part.state
         const meta = state?.metadata
         if (!meta) continue
+        // paths stay absolute here: the server rewrites them against the
+        // session's working folder on read (wireItems), so old shares get
+        // the same treatment and the host's message objects are never
+        // mutated
         const raw = state.input?.path ?? state.input?.filePath
         // language stamp (shiki id from the path)
         if (typeof meta.language !== "string" && typeof raw === "string") {
@@ -2087,6 +2469,16 @@ export function createEngine(deps: EngineDeps): Engine {
             meta.language = lang
             mutated = true
           }
+        }
+        // range refinement: html-stamped reads inside script/style blocks
+        if (part.name === "read" && typeof state.output === "string" && state.output.length > 0) {
+          if (refineEmbeddedLanguage(meta, state.output)) mutated = true
+        }
+        // same refinement for edit hunks: a mid-script html diff tokenizes
+        // untyped without the range language
+        if ((part.name === "edit" || part.name === "patch") && typeof meta.language === "string") {
+          const pt = typeof (meta as any).diff === "string" ? (meta as any).diff : typeof (meta as any).filediff?.patch === "string" ? (meta as any).filediff.patch : undefined
+          if (pt && refinePatchLanguage(meta, pt)) mutated = true
         }
         // lineStart stamp: reads sliced from an offset keep REAL file line
         // numbers in the viewer's unified file card (pierre numbers from 1;
@@ -2128,6 +2520,7 @@ export function createEngine(deps: EngineDeps): Engine {
     for (const list of bySession.values()) list.sort((a, b) => a.created - b.created)
     stampAgentSwitches(bySession)
     stampTaskAgents(bySession)
+    stampTaskPromptLinks(bySession)
     stampFileLanguages()
   }
 
@@ -2238,9 +2631,9 @@ export function createEngine(deps: EngineDeps): Engine {
         r.idleDropTimer = null
       }
       // wsReady delete only when THIS remote still owns a share: a stray
-      // child teardown clears shareId after adopting into the parent —
-      // the ControlDO's server-side attach would otherwise delete the
-      // very share the parent just inherited (live-caught adoption churn)
+      // child teardown clears shareId after adopting into the parent, and
+      // the ControlDO's server-side attach would then delete the very
+      // share the parent just inherited.
       if (r.wsReady && r.shareId) {
         wsSend(r, { op: "delete" })
         // backstop: the WS delete is fire-and-forget on the wire — a
@@ -2349,9 +2742,9 @@ export function createEngine(deps: EngineDeps): Engine {
       const lastInfo = (last?.info ?? last) as Record<string, unknown> | undefined
       const lastID = typeof lastInfo?.id === "string" ? lastInfo.id : undefined
       // `before` is an OPAQUE cursor: base64url({id, time}) of the page
-      // tail (message-v2.ts codec). A bare message id 400s on hosts with
-      // cursor pagination — every v1 backfill silently truncated to one
-      // 100-message page (live-caught).
+      // tail (message-v2.ts codec). Hosts with cursor pagination 400 on a
+      // bare message id, which truncates a v1 backfill to its first
+      // 100-message page.
       const lastTime = (lastInfo?.time as Record<string, unknown> | undefined)?.created
       if (!lastID || typeof lastTime !== "number") break
       const nextBefore = cursorFor(lastID, lastTime)
@@ -2368,7 +2761,7 @@ export function createEngine(deps: EngineDeps): Engine {
 
   const backfillSession = async (st: SessionState, client: ClientApi, sid: string, info?: SessionInfo) => {
     const sessionInfoValue = info ?? (await sessionInfo(client, sid))
-    if (sessionInfoValue) enqueue(st, itemFor("session", redact(sessionInfoValue), sid))
+    if (sessionInfoValue) enqueue(st, itemFor("session", stripLocalFacts(redact(sessionInfoValue)), sid))
 
     let modelSeen = false
     const consume = (messages: Message[]) => {
@@ -2416,7 +2809,7 @@ export function createEngine(deps: EngineDeps): Engine {
       // nothing synced yet and no info in hand: the session item is the
       // one thing a viewer always needs — fetch it explicitly
       const fetched = await sessionInfo(client, st.sid)
-      if (fetched) enqueue(st, itemFor("session", redact(fetched), st.sid))
+      if (fetched) enqueue(st, itemFor("session", stripLocalFacts(redact(fetched)), st.sid))
     }
 
     // children (subagent sessions) share the parent's page
@@ -2508,7 +2901,7 @@ export function createEngine(deps: EngineDeps): Engine {
         // activates anything on its own
         const st = sessions.get(parent)
         if (st?.activated && !st.closed) {
-          if (info) enqueue(st, itemFor("session", redact(info), sid))
+          if (info) enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid))
         }
         return
       }
@@ -2518,7 +2911,7 @@ export function createEngine(deps: EngineDeps): Engine {
         if (st?.activated && !st.closed) {
           // already sharing: opts updates apply, flag removal handled below
           if (flag.opts) applyOpts(st, flag.opts)
-          if (info) enqueue(st, itemFor("session", redact(info), sid))
+          if (info) enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid))
           if (t === "session.updated") chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
           return
         }
@@ -2578,13 +2971,14 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }
     if (!st) return
-    if (info) enqueue(st, itemFor("session", redact(info), sid))
+    if (info) enqueue(st, itemFor("session", stripLocalFacts(redact(info)), sid))
     if (t === "session.updated" && st.activated && !st.closed) {
       chain = chain.then(() => refreshOptOuts(st)).catch(() => {})
     }
   }
 
   return {
+
     mode,
     config: () => cfg,
     hooks: {
@@ -2607,12 +3001,12 @@ export function createEngine(deps: EngineDeps): Engine {
           touch(st)
           if (type === "busy") {
             // work resumed: a pending completed flip is cancelled (opencode
-            // idles between sequential automation prompts — that is NOT
-            // "done"), a recovered retry is forgiven, share is live again.
-            // The busy epoch is the completed-flip guard: only WORK
-            // invalidates a pending settle (v1.18 republishes the
-            // status/idle pair on failure paths — a repeated idle must
-            // NOT void it, live-caught as a share stuck on live forever)
+            // idles between sequential automation prompts, which is NOT
+            // "done"), a recovered retry is forgiven, and the share is live
+            // again. The busy epoch is the completed-flip guard: only WORK
+            // invalidates a pending settle. v1.18 republishes the status/idle
+            // pair on failure paths, and a repeated idle must NOT void it or
+            // the share stays on live forever.
             st.statusEpoch++
             if (st.completedTimer) {
               clearTimeout(st.completedTimer)
@@ -2625,8 +3019,8 @@ export function createEngine(deps: EngineDeps): Engine {
           } else if (type === "idle") {
             // opencode's idle is authoritative turn end (v1 holds busy
             // through steps, tool runs and permission waits). CONTENT
-            // flushes now — turn-end batches must not ride the sync
-            // interval (live-caught: subagent finals lagged one interval).
+            // flushes now, because turn-end batches must not ride the sync
+            // interval (subagent finals lagged one interval otherwise).
             // Only the completed flip waits out completedDelayMs, guarded
             // by the busy epoch: work resuming voids it, repeated idle
             // publications do not. Dispose flushes a pending flip, so CI
@@ -2758,11 +3152,11 @@ export function createEngine(deps: EngineDeps): Engine {
             const label = formatLabel(st.opts?.modelLabel ?? cfg.modelLabel, info.model)
             enqueue(st, itemFor("model", [{ id: info.model.modelID, providerID: info.model.providerID, name: label }], sid))
           }
-          // an assistant message that DIED (finish:"error") — e.g. all
-          // retries exhausted — surfaces as a 200 response with an errored
-          // message, NOT as session.error (live-caught in the suite); the
-          // share must still say error. Works for v2-native messages too
-          // (finish lives on the message itself).
+          // an assistant message that DIED (finish:"error"), e.g. all
+          // retries exhausted, surfaces as a 200 response with an errored
+          // message rather than session.error. The share must still say
+          // error. Works for v2-native messages too (finish lives on the
+          // message itself).
           if ((info as { finish?: string; role?: string })?.finish === "error") {
             st.badSignal = true
           }
@@ -2787,6 +3181,9 @@ export function createEngine(deps: EngineDeps): Engine {
           }
           const st = sessions.get(sid)
           if (!st) return
+          // the session is gone: its per-share overrides (config shares
+          // section) must not outlive it
+          deleteShareOverrides(sid)
           chain = chain.then(() => remove(st)).catch((e) => logError("remove error", (e as Error)?.message || e))
         }
       },

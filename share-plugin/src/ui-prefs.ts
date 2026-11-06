@@ -1,9 +1,9 @@
-// Host-agnostic dialog size preferences (owner decision 2026-10-19: host
-// kv, not the config file — UI settings are per-host and synced by
-// opencode itself). dialog width maps to the host's fixed dialog widths;
-// height is a percent of terminal rows. v1 dialogs apply these directly
-// (dialogs.tsx); the settings dialog edits them through this module so the
-// flows stay host-agnostic.
+// Host-agnostic dialog size preferences, stored in host kv rather than the
+// config file because UI settings are per-host and synced by opencode
+// itself. Dialog width maps to the host's fixed dialog widths; height is a
+// percent of terminal rows. v1 dialogs apply these directly (dialogs.tsx);
+// the settings dialog edits them through this module so the flows stay
+// host-agnostic.
 
 export const UI_WIDTH_KV = "openshare.ui-width"
 export const UI_HEIGHT_PERCENT_KV = "openshare.ui-height-percent"

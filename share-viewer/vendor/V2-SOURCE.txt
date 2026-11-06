@@ -1,3 +1,5 @@
-vendored from c:/tools/opencode-beta
-git: 4617210822bdbb31e5749751afbfb4584ccedac8 (v2.0.0-1105-g4617210822)
-date: 2026-10-26T21:26:17.493Z
+vendored from github.com/anomalyco/opencode (downloaded at the PIN in scripts/vendor-v2.mjs)
+git: c1b5f1b416c2bff799a4be6a75d640e9ba28d42f (anomalyco/opencode@c1b5f1b416)
+date: 2026-11-05T04:58:51.161Z
+regenerate: npm run vendor  (downloads the pin; OPENSHARE_BETA_SRC=<checkout> overrides)
+patches + ritual: VENDOR.md

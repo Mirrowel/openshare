@@ -1,6 +1,6 @@
-// Copy the session as markdown (owner round 2026-10-25, views-SDK phase 4:
-// moved out of app.tsx so the ViewContext and every skin header can offer
-// it - classic used to be the only surface with the affordance).
+// Copy the session as markdown. Lives here rather than in app.tsx so the
+// ViewContext and every skin header can offer it; classic used to be the
+// only surface with the affordance.
 import type { ShareData } from "./fold"
 import { visibleMessages } from "./fold"
 
@@ -10,7 +10,8 @@ export async function copySessionMarkdown(data: ShareData, sessionID: string) {
   const parts: string[] = [
     `# ${info?.title ?? sessionID}`,
     "",
-    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"} · ${info?.directory ?? ""}_`,
+    // machine facts never leave in markdown (the directory is private)
+    `_model: ${modelLabel || "?"} · v${info?.version ?? "?"}_`,
     "",
   ]
   const toolOutputText = (state: any): string => {

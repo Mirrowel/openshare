@@ -22,10 +22,8 @@ import { SessionTimeline } from "@opencode/session-ui/timeline"
 import { DataProvider } from "@opencode/session-ui/context"
 import { DialogProvider } from "@opencode/ui/context/dialog"
 import { FileComponentProvider } from "@opencode/ui/context/file"
-import { WorkerPoolProvider } from "@opencode/ui/context/worker-pool"
-import { getWorkerPools } from "@opencode/session-ui/pierre/worker"
+import { File } from "@opencode/session-ui/file"
 import { PromptNav } from "./hover-rail"
-import { FileSSR } from "@opencode/session-ui/file-ssr"
 import { Logo, Mark } from "@opencode/ui/logo"
 import { ProviderIcon } from "@opencode/ui/provider-icon"
 import { DateTime } from "luxon"
@@ -34,14 +32,20 @@ import { Icon } from "@opencode/ui/icon"
 import { createEffect, createMemo, createSignal, ErrorBoundary, For, onCleanup, Show } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { createStore } from "solid-js/store"
-import { useShareSource, type Branding } from "./data-source"
+import { useShareSource, isEmbeddedShare, type Branding } from "./data-source"
+import { buildTurns, leaderOf, groupOfLeader } from "./turns"
 import { copySessionMarkdown } from "./copy-markdown"
+import { downloadSessionExport } from "./export-session"
 import { SearchControl } from "./search-palette"
+import { searchQuery, setSearchQuery } from "./search-state"
 import { useSessionSections } from "./views/session-data"
-import { BrandMark } from "./views/chrome"
+import { BrandMark, TranscriptMenuCore } from "./views/chrome"
+import { downloadSnapshot } from "./download-snapshot"
 import { SettingsPanel, togglePanel } from "./settings-panel"
 import { ReaderView } from "./reader"
 import { VirtualTimeline } from "./timeline-v2"
+import { buildTimelineDetail } from "./timeline-detail"
+import { fullStamp, timezoneHint, toggleLocalTime, useLocalTime } from "./timefmt"
 import { promptNavKey, registerPromptNav } from "./prompt-nav"
 import { findParentTurn } from "./parent-link"
 import { createMediaQuery } from "@solid-primitives/media"
@@ -65,9 +69,9 @@ function FullPageView(props: {
   createEffect(() => applyCodeSurface(view()?.codeSurface === true))
   const sessionID = createMemo(() => resolveSessionID(props.source.data(), props.sub()))
   setVendoredData(props.source.data(), {
-    sessionHref: (id) => subHref(props.source, id),
-    navigateToSession: (id) => {
-      const href = subHref(props.source, id)
+    sessionHref: (id, anchor) => subHref(props.source, id, anchor),
+    navigateToSession: (id, anchor) => {
+      const href = subHref(props.source, id, anchor)
       if (!href) return
       scrollMemory.set(location.pathname, window.scrollY)
       window.history.pushState({}, "", href)
@@ -118,7 +122,7 @@ const OPENSHARE_REPO_URL = "https://github.com/Mirrowel/OpenShare"
 // it reads on every theme; wordmark image overrides the text)
 export function PageFooter(props: { branding: Branding; class?: string }) {
   return (
-    <div class={`flex flex-col items-center gap-2 w-full ${props.class ?? ""}`}>
+    <div data-osh-footer class={`flex flex-col items-center gap-2 w-full ${props.class ?? ""}`}>
       <div class="w-full max-w-[52rem] border-t border-border-weak-base" />
       <Show
         when={props.branding.wordmarkUrl}
@@ -133,6 +137,7 @@ export function PageFooter(props: { branding: Branding; class?: string }) {
             <span>code</span>
             <span class="text-text-weaker">)</span>
             <span>Share</span>
+            <span class="text-text-weaker"> · {__OSH_VERSION__}</span>
           </div>
         }
       >
@@ -233,9 +238,9 @@ function StatusLine(props: { status: string }) {
 }
 
 // A subagent page or the main session — same rendering, bound to one session.
-// NOTE: created ONCE by App (never inside a reactive expression that re-runs
-// on data/settings changes — a re-created subtree remounts the settings
-// panel and resets its open state, live-caught).
+// NOTE: created ONCE by App, never inside a reactive expression that re-runs
+// on data/settings changes: a re-created subtree remounts the settings panel
+// and resets its open state.
 function SessionView(props: {
   data: ShareData
   source: ReturnType<typeof useShareSource>
@@ -271,7 +276,8 @@ function SessionView(props: {
               const searchSections = useSessionSections(props.data, sessionID())
   const isSub = () => target().isSub
   const info = createMemo(() => props.data.session[match().index])
-  // classic's prompt-nav gate: shows from ONE prompt (owner-settled
+
+  // classic's prompt-nav gate: shows from ONE prompt (owner-settled
   // 2026-10-27; registry views can still override via navMinTurns)
   const NAV_MIN_TURNS = 1
 
@@ -280,7 +286,10 @@ function SessionView(props: {
     const [store, setStore] = createStore({ messageId: undefined as string | undefined })
 
               const messages = createMemo(() => visibleMessages(props.data, sessionID()))
-              const userTurns = createMemo(() => messages().filter((m: any) => m?.type === "user"))
+              // consecutive prompts are ONE turn: every counting surface
+              // (nav, pill, focus, search jumps) works on group leaders
+              const turnGroups = createMemo(() => buildTurns(messages()))
+              const userTurns = createMemo(() => turnGroups().map((g) => g.leader))
               // every tool name this share actually used (the auto-expand
               // picker appends them to the known vocabulary: mcp, ctx_*,
               // custom tools)
@@ -293,17 +302,19 @@ function SessionView(props: {
               ])
               // the auto-expand checkbox list drives default-open per tool
               // name (renderer input; consulted before the categories)
+              // offline snapshots cannot rely on clicking through the whole
+              // transcript: everything starts open so the record reads as one
               const autoExpandOpen = (tool: { name: string }) => props.settings.autoExpand.includes(tool.name)
               const firstUserMessage = createMemo(() => userTurns().at(0))
               const activeMessage = createMemo(() => userTurns().find((m: any) => m.id === store.messageId) ?? firstUserMessage())
               function setActiveMessage(message: any) {
                 setStore("messageId", message ? message.id : undefined)
               }
-              // exact date by default, relative on click (title block toggle)
-              const [relativeDate, setRelativeDate] = createSignal(false)
-              // focus mode (owner round 2026-10-25): shift+click a prompt ->
-              // one turn as an overlay over the still-mounted transcript.
-              // Replaces paged-vs-continuous as the "read one turn" surface.
+              // timezone conversion for the whole session (title toggle)
+              const [localTime, setLocalTime] = createSignal(useLocalTime())
+              // focus mode: ctrl+click a prompt opens one turn as an overlay
+              // over the still-mounted transcript, the "read one turn" surface
+              // that replaces paged-vs-continuous.
               const [focused, setFocused] = createSignal(false)
               // the parent turn that spawned this child (subagent pages):
               // resolves via the plugin's metadata.sessionID stamp on task
@@ -313,9 +324,17 @@ function SessionView(props: {
               // arriving at the parent page with #<messageID> (the
               // turn-anchored return) jumps to that turn
               const hashJump = () => {
-                const id = decodeURIComponent(location.hash.slice(1))
-                if (!id || !userTurns().some((m: any) => m.id === id)) return
-                setJumpTarget({ id, nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
+                // a snapshot's compound child-route hash carries the sub
+                // page and a prompt anchor (n<index>:<msgID>); only the
+                // message id is a jump target
+                const raw = location.hash.slice(1).replace(/^n\d+:/, "")
+                const id = decodeURIComponent(raw)
+                // a hash may point at any prompt of a burst; the group jumps as one
+                const leader = leaderOf(turnGroups(), id)
+                if (!id || !leader) return
+                // hash navigation is restore navigation (back-to-parent
+                // return, anchor on load) - land instantly, never animate
+                jumpTo(leader.id, true)
               }
               const onHashNav = () => hashJump()
               window.addEventListener("popstate", onHashNav)
@@ -351,12 +370,12 @@ function SessionView(props: {
                 next: () => {
                   const i = Math.min(activeIndex() + 1, userTurns().length - 1)
                   if (i === activeIndex()) return
-                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
+                  jumpTo(userTurns()[i]?.id ?? "")
                 },
                 prev: () => {
                   const i = Math.max(activeIndex() - 1, 0)
                   if (i === activeIndex()) return
-                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
+                  jumpTo(userTurns()[i]?.id ?? "")
                 },
               })
               // the model of the ACTIVE turn: user metadata first (stamped
@@ -386,27 +405,7 @@ function SessionView(props: {
                 return name ?? modelID()
               })
               const diffs = createMemo(() => props.data.session_diff[sessionID()] ?? [])
-              // Grouping is PER RESPONSE (one assistant message = one
-              // response) and never merges thinking: each reasoning part is
-              // its own "Thought" row. OFF = every tool call its own row.
-              // Always passed so ungrouped rows keep content spacing.
-              const timelineDetail = createMemo(() => {
-                const mode = props.settings.toolGrouping
-                const picks = new Set(props.settings.groupTools ?? [])
-                const gp = (tool: string) => mode === "all" || (mode === "custom" && picks.has(tool))
-                // per-tool auto-expand drives everything (renderer's
-                // toolDefaultOpen, consulted before categories); category
-                // details stay collapsed so unlisted tools never open
-                const details = "collapsed" as const
-                return {
-                  shell: { placement: gp("shell") ? "grouped" : "separate", details },
-                  edit: { placement: gp("edit") ? "grouped" : "separate", details },
-                  thinking: { placement: "separate", details: props.settings.reasoningOpen ? "expanded" : "collapsed" },
-                  subagents: { placement: gp("task") ? "grouped" : "separate" },
-                  notices: { placement: "separate" },
-                  tools: { placement: mode === "off" ? "separate" : "grouped", ...(mode === "custom" ? { only: [...picks] } : {}) },
-                } as any
-              })
+              const timelineDetail = createMemo(() => buildTimelineDetail(props.settings))
               // the v2 timeline document: full session (continuous mode)
               const document = createMemo(() => ({
                 sessionID: sessionID(),
@@ -414,30 +413,26 @@ function SessionView(props: {
                 status: sessionStatus(props.source.status()),
                 diffs: diffs() as any,
               }))
-              // paged (classic) mode: one turn — the active user message
-              // through just before the next user message
+              // paged (classic) mode: one turn — the active group's span,
+              // every prompt of the burst through the last response
               const pagedDocument = createMemo(() => {
                 const all = messages()
-                const idx = all.findIndex((m) => m.id === activeMessage()?.id)
-                if (idx < 0) return { ...document(), messages: [] as any[] }
-                let end = all.length
-                for (let i = idx + 1; i < all.length; i++) {
-                  if ((all[i] as any)?.type === "user") {
-                    end = i
-                    break
-                  }
-                }
-                return { ...document(), messages: all.slice(idx, end) }
+                const group = groupOfLeader(turnGroups(), activeMessage()?.id)
+                if (!group) return { ...document(), messages: [] as any[] }
+                return { ...document(), messages: all.slice(group.startIdx, group.endIdx) }
               })
 
               // display title: opencode creates child titles as
-              // "description (@agent subagent)" - the suffix carries the
+              // "description (@agent subagent)", and the suffix carries the
               // agent variant which can change mid-session, so it never
-              // belongs in the header. Subagent pages get a plain
-              // "subagent" label instead (owner directive); the title
-              // itself is live from the folded data, so renames propagate.
+              // belongs in the header. Subagent pages get a plain "subagent"
+              // label instead; the title itself is live from the folded data,
+              // so renames propagate.
               const stripSubagentSuffix = (raw: string) => raw.replace(/\s*\(@[^)]*\s*subagent\)\s*$/i, "")
-              const displayTitle = () => stripSubagentSuffix(info().title ?? "")
+              // owner-set sticky title overrides the ROOT page's header
+              // (survives session renames); sub pages always use their own
+              const overrideTitle = () => (!isSub() ? props.source.title?.() : undefined)
+              const displayTitle = () => overrideTitle() ?? stripSubagentSuffix(info().title ?? "")
               const title = () => (
                 <div class="flex flex-col gap-2">
                   {/* line 1: version, model, date */}
@@ -454,16 +449,16 @@ function SessionView(props: {
                         <div class="text-12-regular text-text-base">{modelDisplay()}</div>
                       </div>
                       <div class="text-12-regular text-text-weaker">
+                        {/* time as recorded by default; the click converts the
+                            whole session to the reader's timezone and says so */}
                         <button
                           type="button"
                           class="bg-transparent border-none p-0 cursor-pointer text-12-regular text-text-weaker hover:text-text-base"
-                          title={relativeDate() ? "Show exact date" : "Show relative time"}
-                          aria-pressed={relativeDate()}
-                          onClick={() => setRelativeDate((v) => !v)}
+                          title={timezoneHint()}
+                          aria-pressed={localTime()}
+                          onClick={() => setLocalTime(toggleLocalTime())}
                         >
-                          {relativeDate()
-                            ? DateTime.fromMillis(info().time.created).toRelative({ locale: "en" })
-                            : DateTime.fromMillis(info().time.created).toFormat("dd MMM yyyy, HH:mm")}
+                          {fullStamp(info().time.created)}
                         </button>
                       </div>
                     </div>
@@ -497,23 +492,22 @@ function SessionView(props: {
                 </div>
               )
 
-              // search: prompts AND responses (owner decision 2026-10-25 -
-              // unified with the skins' semantics; a turn matches when its
-              // prompt text or any of its responses' text/reasoning/tool
-              // titles contain the query)
+              // search: prompts AND responses, unified with the skins'
+              // semantics; a turn (group) matches when ANY of its prompts'
+              // text or any of its span's responses' text/reasoning/tool
+              // titles contain the query
               const filtered = createMemo(() => {
                 const q = props.search.trim().toLowerCase()
                 if (!q) return userTurns()
-                return userTurns().filter((m: any) => {
-                  if (typeof m?.text === "string" && m.text.toLowerCase().includes(q)) return true
-                  // the turn's span: this user message until the next one
-                  const all = messages()
-                  const start = all.findIndex((x: any) => x.id === m.id)
-                  if (start < 0) return false
-                  for (let i = start + 1; i < all.length; i++) {
-                    const msg: any = all[i]
-                    if (msg?.type === "user") break
-                    if (msg?.type === "assistant") {
+                const all = messages()
+                return turnGroups()
+                  .filter((g) => {
+                    for (const p of g.prompts) {
+                      if (typeof p?.text === "string" && p.text.toLowerCase().includes(q)) return true
+                    }
+                    for (let i = g.startIdx; i < g.endIdx; i++) {
+                      const msg: any = all[i]
+                      if (msg?.type !== "assistant") continue
                       for (const c of msg?.content ?? []) {
                         const text =
                           c?.type === "text" || c?.type === "reasoning" ? c.text :
@@ -521,18 +515,21 @@ function SessionView(props: {
                         if (typeof text === "string" && text.toLowerCase().includes(q)) return true
                       }
                     }
-                  }
-                  return false
-                })
+                    return false
+                  })
+                  .map((g) => g.leader)
               })
               const searching = createMemo(() => props.search.trim().length > 0)
               // hover previews for the prompt nav: the first text of the
-              // response that follows the prompt (240 chars)
+              // response that follows the prompt (240 chars). Scans to the
+              // GROUP's end - a burst leader is followed by further user
+              // prompts of the same turn before the assistant reply
               const responsePreview = (messageID: string | undefined) => {
                 if (!messageID) return undefined
                 const all = messages()
-                const index = all.findIndex((message) => message.id === messageID)
-                for (let i = index + 1; i < all.length && (all[i] as any)?.type !== "user"; i++) {
+                const group = groupOfLeader(turnGroups(), messageID)
+                if (!group) return undefined
+                for (let i = group.startIdx + 1; i < group.endIdx; i++) {
                   if ((all[i] as any)?.type !== "assistant") continue
                   for (const part of (all[i] as any).content ?? []) {
                     if (part.type === "text" && part.text?.trim()) return part.text.trim().slice(0, 240)
@@ -541,18 +538,58 @@ function SessionView(props: {
                 return undefined
               }
               const reasoningMode = () => (props.settings.reasoningOpen ? "full" : "compact")
-              const timelineDoc = () => (searching() ? { ...document(), messages: messages().filter((m) => (m?.type === "user" ? filtered().some((u) => u.id === m.id) : true)) } : document())
+              const timelineDoc = () => {
+                if (!searching()) return document()
+                // while searching, drop whole unmatched GROUPS: a matched
+                // burst keeps all its prompts (display stays per-message)
+                const matched = new Set(filtered().map((m: any) => m.id))
+                return {
+                  ...document(),
+                  messages: messages().filter((m) => (m?.type === "user" ? matched.has(leaderOf(turnGroups(), m.id)?.id ?? m.id) : true)),
+                }
+              }
 
               // mobile (narrow) layout: paged timeline under the title.
-              // Virtualized like every path — rows outside the viewport
-              // never enter the DOM. GATED on a real media query: a
-              // CSS-hidden duplicate still mounts its own virtualizer and
-              // disclosure store, and rows in the hidden copy swallow
-              // DOM-first queries (live-caught: 6 instances, dead toggles
-              // in automated probes).
-              const narrow = createMediaQuery("(max-width: 767px)")
+              // Virtualized like every path, so rows outside the viewport
+              // never enter the DOM. GATED on a real media query: a CSS-hidden
+              // duplicate still mounts its own virtualizer and disclosure
+              // store, and rows in the hidden copy swallow DOM-first queries.
+              // 900 (not 767): the single-turn surface engages exactly where
+              // the header/narrow-bar mode does - the 768-899 band otherwise
+              // ran the continuous desktop transcript inside a header that
+              // promised the single-turn view (blank/mangled on resize)
+              const narrow = createMediaQuery("(max-width: 899px)")
+              // jumps route by surface: the desktop timeline scrolls to the
+              // row; below 900px the single-turn view pages to the turn (its
+              // virtualizer is per-turn - a scroll target has no home there).
+              // `instant` marks position-RESTORE navigation (the back-to-
+              // parent return, an anchor on load): the page must LAND at
+              // the turn mounted-at-position, like the reload restore - a
+              // smooth glide from wherever the view mounted reads as the
+              // position being lost and re-found
+              const jumpTo = (id: string, instant = false) => {
+                if (!id) return
+                if (narrow()) {
+                  const leader = leaderOf(turnGroups(), id)
+                  if (leader) setActiveMessage(leader)
+                  return
+                }
+                setJumpTarget({
+                  id,
+                  nonce: jumpNonce++,
+                  behavior: instant ? "auto" : jumpBehavior(),
+                  force: instant ? false : jumpForce(),
+                })
+              }
+              // session-keyed like the desktop column: a subagent switch
+              // under a stale paged virtualizer clamps the carried
+              // scrollTop into the shorter child transcript
               const turns = () => (
-                <Show when={narrow()}>
+                <Show when={narrow() ? sessionID() : undefined} keyed>
+                {/* KEYED on the turn id for the same reason as the focus
+                    overlay: paging must mount a fresh virtualizer, not
+                    re-feed a stale one */}
+                <Show when={activeMessage()?.id} keyed>
                 <VirtualTimeline
                   doc={pagedDocument() as any}
                   sessionKey={props.source.shareID + ":" + sessionID() + ":paged-m:" + (activeMessage()?.id ?? "")}
@@ -572,6 +609,7 @@ function SessionView(props: {
                   class="h-full"
                 />
                 </Show>
+                </Show>
               )
 
               // (diff review view removed 2026-10-25 - see DEVELOPMENT.md:
@@ -587,14 +625,13 @@ function SessionView(props: {
                   </Show>
                   {/* the chrome bar is hidden for reader: reader's own
                       SkinHeader carries the full row once (branding,
-                      title, version/model/status, copy, GitHub, settings)
-                      - both bars rendered duplicated (live-caught) */}
+                      title, version/model/status, copy, GitHub, settings),
+                      and both bars render duplicated */}
                   <Show when={props.settings.view !== "reader"}>
                   <header class="h-7 px-4 flex items-center justify-between self-stretch bg-background-base border-b border-border-weak-base relative z-30">
                     {/* the brand frame renders ONLY when there is a logo:
-                        with no branding an empty bordered chip showed as a
-                        tiny circle (live-caught) - nothing to show, nothing
-                        rendered */}
+                        with no branding an empty bordered chip shows as a tiny
+                        circle with nothing inside */}
                     <Show when={props.source.branding().logoUrl}>
                       <Show
                         when={props.source.branding().linkUrl}
@@ -612,9 +649,9 @@ function SessionView(props: {
                       </Show>
                     </Show>
                     {/* status sits dead-center of the bar regardless of
-                        siblings (brand chip may or may not exist) - the
-                        flex flow put it far left with no branding, then
-                        far right with ml-auto (live-caught both ways) */}
+                        siblings (the brand chip may or may not exist); in the
+                        flex flow it sat far left without branding and far right
+                        with ml-auto */}
                     <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
                       <StatusLine status={props.source.status()} />
                     </div>
@@ -623,15 +660,14 @@ function SessionView(props: {
                           thinking, tools) - left of copy-markdown */}
                       <SearchControl
                         sections={searchSections}
-                        onJump={(sectionId) => setJumpTarget({ id: sectionId, nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })}
+                        onJump={(sectionId) => jumpTo(sectionId)}
                       />
-                      <button
-                        class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer bg-transparent border-none p-0"
-                        title="copy session as markdown"
-                        onClick={() => copySessionMarkdown(props.data, sessionID())}
-                      >
-                        <Icon name="copy" size="small" />
-                      </button>
+                      <TranscriptMenuCore
+                        shareID={props.source.shareID}
+                        onCopyMarkdown={() => copySessionMarkdown(props.data, sessionID())}
+                        onExport={() => downloadSessionExport(props.data as never, sessionID(), info()?.title)}
+                        onSnapshot={() => downloadSnapshot(props.source.shareID, props.source.branding())}
+                      />
                       <a href={OPENSHARE_REPO_URL} target="_blank" rel="noreferrer" class="text-icon-weaker-base hover:text-icon-strong-base cursor-pointer" title="Open(code)Share">
                         <Icon name="github" size="small" />
                       </a>
@@ -647,12 +683,11 @@ function SessionView(props: {
                   </header>
                   </Show>
                   {/* NO select-text here: the whole-column rule made padding
-                      and edges selectable, so a press at the far right
-                      (under Edge's floating overlay thumb) started a text
-                      selection UNDER the scrollbar drag. Selection stays
-                      enabled on the content itself - the kit's markdown
-                      rules re-enable it per block, exactly like the
-                      conversation view (owner round 2026-10-25). */}
+                      and edges selectable, so a press at the far right (under a
+                      floating overlay scrollbar thumb) started a text selection
+                      UNDER the scrollbar drag. Selection stays enabled on the
+                      content itself: the kit's markdown rules re-enable it per
+                      block, exactly like the conversation view. */}
                   <div class="osh-content flex flex-col flex-1 min-h-0 relative z-10">
                     <Show when={props.settings.view !== "reader"}>
                     <div
@@ -684,7 +719,7 @@ function SessionView(props: {
                                   focusTurn(i)
                                   return
                                 }
-                                setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
+                                jumpTo(userTurns()[i]?.id ?? "")
                               }}
                             />
                           </Show>
@@ -693,7 +728,7 @@ function SessionView(props: {
                                 sidebar column or the floating pill (one of
                                 the two, never neither). Paged pages the turn,
                                 continuous jumps to the user message row;
-                                shift+click focuses the turn. */}
+                                ctrl+click focuses the turn. */}
                             <Show when={userTurns().length >= NAV_MIN_TURNS}>
                               <PromptNav
                                 only="desktop"
@@ -724,14 +759,28 @@ function SessionView(props: {
                                     focusTurn(i)
                                     return
                                   }
-                                  setJumpTarget({ id: userTurns()[i]?.id ?? "", nonce: jumpNonce++, behavior: jumpBehavior(), force: jumpForce() })
+                                  jumpTo(userTurns()[i]?.id ?? "")
                                 }}
                               />
                             </Show>
                            {/* focus mode: the main transcript stays mounted
                                (hidden, scroll position intact - returning is
                                instant) while the focused turn renders as an
-                               overlay with its own virtualized timeline */}
+                               overlay with its own virtualized timeline.
+                               UNMOUNTS at narrow: a hidden timeline's
+                               zero-width measurement wedges the virtualizer
+                               (offset freezes, ranges balloon, ghost rows
+                               mount at collapsed positions - the resize
+                               mangle); the fresh mount on widen restores
+                               from the session snapshot instead */}
+                             {/* keyed on the session too: main -> subagent
+                                 switches the session under an un-keyed
+                                 timeline, and the carried scrollTop clamps
+                                 into the shorter child transcript - landing
+                                 at its end and poisoning its snapshot. A
+                                 fresh mount per session restores from that
+                                 session's own snapshot (first visit = top) */}
+                             <Show when={!narrow() ? sessionID() : undefined} keyed>
                             <div class="relative flex flex-1 min-w-0 min-h-0">
                              <div
                                class="flex flex-1 min-h-0 min-w-0"
@@ -747,16 +796,22 @@ function SessionView(props: {
                                   focused: the HIDDEN main timeline still
                                   reports its active message when followLive
                                   flips at focus open, stomping the focused
-                                  turn with the bottom-rest message
-                                  (live-caught: next disabled at overlay
-                                  open, the last turn unreachable). The
-                                  overlay owns the selection while up. */}
+                                  turn with the bottom-rest message (next
+                                  disabled at overlay open, the last turn
+                                  unreachable). The overlay owns the selection
+                                  while up. */}
                               <VirtualTimeline
                                 doc={timelineDoc() as any}
                                 sessionKey={props.source.shareID + ":" + sessionID()}
                                 scrollTarget={jumpTarget()}
-                                followLive={props.settings.followLive && !focused()}
-                                onActiveMessageChange={focused() ? undefined : (id) => setActiveMessage(userTurns().find((m: any) => m.id === id))}
+                                  followLive={props.settings.followLive && !focused()}
+                                  // subagent pages start at the TOP: the
+                                  // default end-anchor pins a fresh (no
+                                  // snapshot) mount to the bottom as rows
+                                  // arrive; revisits restore their saved
+                                  // position regardless of anchor
+                                  anchor={isSub() ? "start" : undefined}
+                                 onActiveMessageChange={focused() ? undefined : (id) => { const leader = leaderOf(turnGroups(), id); if (leader) setActiveMessage(leader) }}
                                 reasoningMode={reasoningMode() as any}
                                 shellToolDefaultOpen={false}
                   editToolDefaultOpen={false}
@@ -778,8 +833,14 @@ function SessionView(props: {
                             </div>
                             {/* the focused turn overlay: bar (back, turn count,
                                 prev/next) over a single-turn virtualized
-                                timeline; Esc and "back to conversation" exit */}
-                           <Show when={focused()}>
+                                timeline; Esc and "back to conversation" exit.
+                                KEYED on the turn id: switching turns must
+                                build a fresh virtualizer - reusing the
+                                instance kept the previous turn's measured
+                                sizes and offset, so the new turn rendered
+                                empty until a third switch (11→12 blank,
+                                13→12 fine) */}
+                            <Show when={focused() ? activeMessage()?.id : undefined} keyed>
                              <div class="absolute inset-0 z-20 flex flex-col bg-background-stronger">
                                <div class="flex flex-wrap items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-border-weak-base text-12-regular text-text-base">
                                  <button
@@ -821,22 +882,29 @@ function SessionView(props: {
                                  shellToolDefaultOpen={false}
                                  editToolDefaultOpen={false}
                                  toolDefaultOpen={autoExpandOpen}
-                                 timelineDetail={timelineDetail() as any}
-                                 anchor="start"
-                                 header={<div class="px-6 pt-6">{title()}</div>}
-                                 class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow min-h-0 w-full osh-indent"}
-                               />
-                             </div>
-                           </Show>
-                          </div>
-                        </div>
-                      </div>
-                      </div>
-                      <div classList={{ "!overflow-hidden": true, "md:hidden": wide(), "lg:hidden": !wide() }}>
-                        {/* narrow-viewport nav: the "Turn N of M" bar
-                            (PromptNav renders its NarrowBar below md);
-                            the desktop column's instance is CSS-hidden
-                            there, so the mobile branch carries its own */}
+                                  timelineDetail={timelineDetail() as any}
+                                  anchor="start"
+                                  header={<div class="px-6 pt-6">{title()}</div>}
+                                  footer={
+                                    <div class="px-6 pt-8 pb-8">
+                                      <PageFooter branding={props.source.branding()} />
+                                    </div>
+                                  }
+                                  class={(props.settings.centerContent ? "max-w-[52rem] mx-auto " : "") + "grow min-h-0 w-full osh-indent"}
+                                />
+                              </div>
+                            </Show>
+                            </div>
+                         </Show>
+                         </div>
+                         </div>
+                         </div>
+                         <div class="!overflow-hidden osh-narrow-col">
+                         {/* narrow-viewport nav: the "Turn N of M" bar
+                             (PromptNav renders its NarrowBar under
+                             900px); the desktop column's instance is
+                             CSS-hidden there, so the mobile branch
+                             carries its own */}
                         <Show when={userTurns().length >= NAV_MIN_TURNS}>
                           <PromptNav
                             only="narrow"
@@ -881,10 +949,9 @@ function SessionView(props: {
   return (
     <>
       <Show when={info().title}>
-        <Title>{info().title} | {props.source.branding().name || "openshare"}</Title>
+        <Title>{props.source.title?.() && !isSub() ? props.source.title() : info().title} | {props.source.branding().name || "openshare"}</Title>
       </Show>
-      <WorkerPoolProvider pools={getWorkerPools()}>
-        <FileComponentProvider component={FileSSR}>
+        <FileComponentProvider component={File}>
           <DialogProvider>
           <DataProvider
             data={{
@@ -897,9 +964,9 @@ function SessionView(props: {
             }}
             directory={info().directory}
             sessionID={sessionID()}
-            onSessionHref={(id) => subHref(props.source, id)}
-            onNavigateToSession={(id) => {
-              const href = subHref(props.source, id)
+            onSessionHref={(id, anchor) => subHref(props.source, id, anchor)}
+            onNavigateToSession={(id, anchor) => {
+              const href = subHref(props.source, id, anchor)
               if (!href) return
               scrollMemory.set(location.pathname, window.scrollY)
               window.history.pushState({}, "", href)
@@ -907,26 +974,31 @@ function SessionView(props: {
             }}
           >
             {/* a REAL component boundary: this body was an IIFE child of
-                DataProvider - any children-slot re-evaluation re-ran the
-                whole body, recreating its createStore (live-caught: the
-                paged rail's selection reset on every click; the view body
-                ran 3x at load). ClassicBody closes over SessionView memos
-                and owns its reactive scope. */}
+                DataProvider, so any children-slot re-evaluation re-ran the
+                whole body and recreated its createStore (the paged rail's
+                selection reset on every click; the view body ran 3x at load).
+                ClassicBody closes over SessionView memos and owns its reactive
+                scope. */}
             <ClassicBody />
           </DataProvider>
           </DialogProvider>
         </FileComponentProvider>
-      </WorkerPoolProvider>
     </>
   )
 }
 
-function subHref(source: ReturnType<typeof useShareSource>, childSessionID: string): string | undefined {
+function subHref(source: ReturnType<typeof useShareSource>, childSessionID: string, anchor?: string): string | undefined {
   const d = source.data()
   if (!d) return undefined
   const subs = children(d)
   const hit = subs.find((s) => s.sessionID === childSessionID)
-  return hit ? `/s/${source.shareID}/${hit.index}` : undefined
+  if (!hit) return undefined
+  // a snapshot file cannot rewrite its path: its hrefs are in-page hashes
+  // (middle/ctrl-click then opens the same file at the right sub-page);
+  // the prompt anchor rides INSIDE the n-hash (n<index>:<msgID>) because
+  // a fragment cannot hold two hashes
+  if (isEmbeddedShare()) return `#n${hit.index}${anchor ? `:${anchor}` : ""}`
+  return `/s/${source.shareID}/${hit.index}${anchor ? `#${anchor}` : ""}`
 }
 
 // serialize the visible session to markdown (clipboard)
@@ -939,8 +1011,7 @@ function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
   const sid = d.sessionID
   const info = d.session.find((s) => s.id === sid)
   return (
-    <WorkerPoolProvider pools={getWorkerPools()}>
-      <FileComponentProvider component={FileSSR}>
+      <FileComponentProvider component={File}>
         <DialogProvider>
           <DataProvider
             data={{
@@ -972,7 +1043,6 @@ function MinimalTimeline(props: { source: ReturnType<typeof useShareSource> }) {
           </DataProvider>
         </DialogProvider>
       </FileComponentProvider>
-    </WorkerPoolProvider>
   )
 }
 
@@ -980,17 +1050,29 @@ export function App() {
   const source = useShareSource()
   const [sub, setSub] = createSignal<number | undefined>(source.sub)
   const [settings, setSettings] = createSignal<OshSettings>(readSettings())
-  const [search, setSearch] = createSignal("")
+  // ONE search query for the whole page: the palette engine (marks, scopes,
+  // jump) and every skin's filter read this store. The old page-local
+  // signal meant a skin's input and the palette were two unrelated
+  // searches; they are the same search now.
+  const search = searchQuery
+  const setSearch = setSearchQuery
 
   // the reader's transcript offset, tracked from real scroll events so a
   // settings-driven reflow can put them back exactly where they were
   let lastTranscriptOffset: number | undefined
+  let lastTranscriptNarrow = false
   let lastPanelOffset: number | undefined
   const trackTranscriptScroll = (event: Event) => {
     const el = event.target
     if (!(el instanceof HTMLElement)) return
-    if (el.dataset.transcriptScroll !== undefined) lastTranscriptOffset = el.scrollTop
-    else if (el.dataset.oshPanelScroll !== undefined) lastPanelOffset = el.scrollTop
+    if (el.dataset.transcriptScroll !== undefined) {
+      lastTranscriptOffset = el.scrollTop
+      // WHICH scroller the offset came from: the narrow single-turn page
+      // and the desktop transcript are different documents - replaying
+      // one's offset into the other lands the reader at a position from
+      // the wrong document after a layout crossing
+      lastTranscriptNarrow = !!el.closest(".osh-narrow-col")
+    } else if (el.dataset.oshPanelScroll !== undefined) lastPanelOffset = el.scrollTop
   }
   document.addEventListener("scroll", trackTranscriptScroll, true)
 
@@ -1003,7 +1085,9 @@ export function App() {
     // panel itself resets too (toggling reflows its section list) - restore
     // its scroll as well.
     const restore = () => {
-      const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
+      const scrollers = [...document.querySelectorAll<HTMLElement>("[data-transcript-scroll]")]
+      // same-layout scroller only (narrow page vs desktop transcript)
+      const el = scrollers.find((s) => !!s.closest(".osh-narrow-col") === lastTranscriptNarrow)
       if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
       const panel = document.querySelector<HTMLElement>("[data-osh-panel-scroll]")
       if (panel && lastPanelOffset != null) panel.scrollTop = lastPanelOffset
@@ -1040,17 +1124,39 @@ export function App() {
     requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }))
   })
 
+  // clear the boot flag once real data has rendered and settled: panels
+  // born open during boot mount statically (no pour animation - the
+  // layout must arrive final), and everything that mounts or toggles
+  // afterwards animates normally. The folded message store is keyed by
+  // sessionID (an object, not an array), so count via keys; a hard
+  // fallback timer in settings.ts guarantees the flag cannot stick.
+  // ONE-SHOT: the flag is gone after the first fire, and re-running the
+  // O(n) count plus a fresh timer per data rev is pure waste
+  let bootCleared = false
+  createEffect(() => {
+    if (bootCleared) return
+    const d = source.data()
+    if (!d) return
+    const rows = Object.values(d.message ?? {}).reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0)
+    if (!rows) return
+    bootCleared = true
+    setTimeout(() => document.documentElement.removeAttribute("data-osh-boot"), 400)
+  })
+
   // SMART-SYNC scroll continuity: a real data update (rev bump) rebuilds
-  // the projection; even with in-place row updates the page height can
-  // shift under the reader mid-rebuild and the browser clamps scroll
-  // toward the top (live-caught as "pushed to the top when it finished").
-  // Same capture/reapply as settings changes, driven by data instead:
-  // restore the transcript offset AND the window position unless the
-  // reader is following live at the bottom (the effect above owns that).
+  // the projection; even with in-place row updates the page height can shift
+  // under the reader mid-rebuild and the browser clamps scroll toward the
+  // top. Same capture/reapply as settings changes, driven by data instead:
+  // restore the transcript offset AND the window position unless the reader
+  // is following live at the bottom (the effect above owns that). Uses
+  // the same SAME-LAYOUT scroller selection as the settings restore -
+  // after a layout crossing the first scroller in the DOM can be the
+  // wrong document.
   createEffect(() => {
     source.rev()
     const restore = () => {
-      const el = document.querySelector<HTMLElement>("[data-transcript-scroll]")
+      const scrollers = [...document.querySelectorAll<HTMLElement>("[data-transcript-scroll]")]
+      const el = scrollers.find((s) => !!s.closest(".osh-narrow-col") === lastTranscriptNarrow)
       if (el && lastTranscriptOffset != null) el.scrollTop = lastTranscriptOffset
     }
     requestAnimationFrame(() => {
@@ -1060,11 +1166,15 @@ export function App() {
     })
   })
 
-  // in-page navigation (popstate) re-parses the sub segment
+  // in-page navigation (popstate) re-parses the sub segment (a snapshot
+  // file navigates subagent pages via `#n<N>` — its path never changes)
   window.addEventListener("popstate", () => {
     const parts = location.pathname.split("/").filter(Boolean)
     const i = parts.indexOf("s")
-    const n = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : undefined
+    // n<index> routes to the child page; n<index>:<msgID> additionally
+    // anchors its paired prompt (snapshot subagent-card links)
+    const hashSub = /^n(\d+)(?::.+)?$/.exec(location.hash.slice(1))
+    const n = i >= 0 && parts[i + 2] && /^\d+$/.test(parts[i + 2]) ? Number(parts[i + 2]) : hashSub ? Number(hashSub[1]) : undefined
     setSub(n)
     requestAnimationFrame(() => {
       const saved = scrollMemory.get(location.pathname)
@@ -1118,8 +1228,7 @@ export function App() {
         }}
       >
         <Show when={source.ready()} fallback={<NotFound status={source.status()} branding={source.branding()} />}>
-          <WorkerPoolProvider pools={getWorkerPools()}>
-            <FileComponentProvider component={FileSSR}>
+                <FileComponentProvider component={File}>
               <DialogProvider>
                 <DataProvider
                   data={{
@@ -1130,9 +1239,9 @@ export function App() {
                   }}
                   sessionID={source.data()?.sessionID ?? ""}
                   directory={source.data()?.session?.find((s: any) => s.id === source.data()?.sessionID)?.directory ?? ""}
-                  onSessionHref={(id) => subHref(source, id)}
-                  onNavigateToSession={(id) => {
-                    const href = subHref(source, id)
+                  onSessionHref={(id, anchor) => subHref(source, id, anchor)}
+                  onNavigateToSession={(id, anchor) => {
+                    const href = subHref(source, id, anchor)
                     if (!href) return
                     scrollMemory.set(location.pathname, window.scrollY)
                     window.history.pushState({}, "", href)
@@ -1143,8 +1252,7 @@ export function App() {
                 </DataProvider>
               </DialogProvider>
             </FileComponentProvider>
-          </WorkerPoolProvider>
-          <Show when={settings().view === "classic" || settings().view === "reader"}>
+              <Show when={settings().view === "classic" || settings().view === "reader"}>
           <SessionView
             data={source.data()!}
             source={source}
@@ -1157,7 +1265,7 @@ export function App() {
           </Show>
         </Show>
       </ErrorBoundary>
-      <InfoPanel data={source.data()} sessionID={source.data().sessionID} source={source} />
+      <InfoPanel data={source.data()} sessionID={source.data().sessionID} view={settings().view} source={source} />
       </Show>
     </Show>
   )

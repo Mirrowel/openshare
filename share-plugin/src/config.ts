@@ -18,11 +18,39 @@
 // Detection is read-only: this plugin NEVER writes tui.json (no
 // selfwiring — the two parts are installed deliberately).
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
 export type ShareMode = "all" | "manual"
+
+/** Share-facing settings that exist at more than one tier. The resolver
+ * (share-settings.ts) deep-merges: general (top-level config keys) <
+ * per-server (`servers{url}.overrides`) < per-share (the `shares{sid}`
+ * config section — authoritative; the session-binding opts mirror it).
+ * `title` and `paused` exist at the per-share tier only. */
+export type ShareOverrides = {
+  ttlHours?: number
+  authLogin?: string
+  authPassword?: string
+  title?: string
+  paused?: boolean
+}
+
+/** Coerce a raw object into a clean ShareOverrides; undefined fields are
+ * dropped so tiers fall through to whatever lies below. */
+export function normalizeShareOverrides(raw: unknown): ShareOverrides | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const e = raw as Record<string, unknown>
+  const out: ShareOverrides = {}
+  if (typeof e.ttlHours === "number" && Number.isFinite(e.ttlHours) && e.ttlHours > 0) out.ttlHours = Math.floor(e.ttlHours)
+  else if (typeof e.ttlDays === "number" && e.ttlDays > 0) out.ttlHours = Math.floor(e.ttlDays) * 24
+  if (typeof e.authLogin === "string") out.authLogin = e.authLogin
+  if (typeof e.authPassword === "string") out.authPassword = e.authPassword
+  if (typeof e.title === "string") out.title = e.title
+  if (e.paused === true || e.paused === false) out.paused = e.paused
+  return Object.keys(out).length ? out : undefined
+}
 
 /** One share-server membership. Keyed by server URL in the `servers`
  * config group; the entry with `active: true` (or the first) is where
@@ -37,6 +65,12 @@ export type ServerEntry = {
   label?: string
   active?: boolean
   adminToken?: string
+  /** The user DECLINED onboarding for this server (asked once, remembered):
+   * shares go out anonymously (public servers only). Cleared by enrolling. */
+  anonymous?: boolean
+  /** Per-server share defaults (the middle tier): override the general
+   * ttlHours / read-auth for every share sent to THIS server. */
+  overrides?: ShareOverrides
 }
 
 export type ShareConfig = {
@@ -45,17 +79,45 @@ export type ShareConfig = {
   /** Multi-server memberships (URL -> entry). Legacy workerUrl/createToken
    * synthesize into this group at load; the group is the canonical form. */
   servers?: Record<string, ServerEntry>
+  /** Per-share overrides, keyed by session id — the AUTHORITATIVE
+   * per-share tier of the settings model. Entries are written only when a
+   * per-share override is explicitly set; the session binding opts carry a
+   * mirror so the resolved state travels with the session. Pruned when the
+   * session is deleted. */
+  shares?: Record<string, ShareOverrides>
   debounceMs: number
   completedDelayMs: number
   modelLabel: string
-  ttlDays: number
+  /** Default share lifetime in HOURS (Wave 3; default 2160 = 90d).
+   * Legacy ttlDays config/env is accepted and converted x24. */
+  ttlHours: number
   authLogin: string
   authPassword: string
   spoolDir: string
   urlFile: string
-  /** false silences the `[openshare] live:` (and `url file:`) stderr
-   * lines. The share itself is unaffected. */
-  announceStderr: boolean
+  /** urlFile line format: "url" (default, one bare URL per line) or
+   * "json" (one JSON object per line: id, url, status, gated) for CI
+   * consumers that want machine-readable lines without parsing URLs. */
+  urlFileFormat: "url" | "json"
+  /** Stderr ladder with two independently controllable line classes:
+   * announce lines (`live:`, `url file:`) and status lines (mode banner,
+   * enrollment, adoption notes). "all" (default) prints both; "status"
+   * prints status lines only - the share URL never touches stderr
+   * (public CI logs); "url" prints announce lines only (private runners
+   * scraping the URL); "off" prints neither. Error-class lines ALWAYS
+   * reach stderr. */
+  announceStderr: "all" | "status" | "url" | "off"
+  /** Wave 3 redaction: user-supplied regex rules (client-side only)
+   * applied beside the built-in detectors on UNGATED shares. */
+  redact?: { patterns?: string[] }
+  /** B4: which named config set on the server token this agent uses
+   * (unset = the token's first/default set). Rides the create frame. */
+  configSet?: string
+  /** Free-form string metadata stamped onto every share at create
+   * (labels for team directories/admin listings). Values may reference
+   * env vars as ${NAME} - interpolated at send time; unresolved refs
+   * stay literal so misconfiguration is visible. */
+  meta?: Record<string, string>
   shareMode?: ShareMode
 }
 
@@ -76,12 +138,14 @@ export const DEFAULTS: ShareConfig = {
   // pending flip, so CI runs still land their final status.
   completedDelayMs: 5000,
   modelLabel: "$Provider/$Model",
-  ttlDays: 90,
+  ttlHours: 90 * 24,
   authLogin: "",
   authPassword: "",
   spoolDir: "",
   urlFile: "",
-  announceStderr: true,
+  urlFileFormat: "url",
+  configSet: "",
+  announceStderr: "all",
 }
 
 const CONFIG_NAME = "openshare.config.json"
@@ -93,9 +157,19 @@ export function moduleDir(): string {
   return dirname(fileURLToPath((import.meta as { pathname?: string }).pathname ?? import.meta.url))
 }
 
+/** Version of the running plugin, from the package it was loaded from.
+ *  "?" outside a package (single-file CI bundle with no sibling manifest). */
+export function pluginVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(packageRoot(moduleDir()), "package.json"), "utf8")) as { version?: string }
+    return pkg.version ?? "?"
+  } catch {
+    return "?"
+  }
+}
+
 /** Nearest ancestor (starting at `start`) containing package.json. */
-export function packageRoot(start: string): string {
-  let current = start
+export function packageRoot(start: string): string {  let current = start
   for (let guard = 0; guard < 16; guard++) {
     if (existsSync(join(current, "package.json"))) return current
     const parent = dirname(current)
@@ -142,9 +216,8 @@ export type WriteCandidate = { path: string; label: string; always?: boolean }
 
 /** Write-target candidates for the TUI picker: the global settings home
  * (always writable) plus every OTHER file in the read chain that already
- * exists on disk (deploy-time overrides are never created from the TUI —
- * owner rule). Order: global first (default), then the rest by read
- * precedence (highest first). */
+ * exists on disk, since the TUI never creates deploy-time overrides. Order:
+ * global first (default), then the rest by read precedence (highest first). */
 export function writeCandidates(pluginDir: string, env: NodeJS.ProcessEnv = process.env): WriteCandidate[] {
   const candidates: WriteCandidate[] = [{ path: configHomePath(env), label: "global settings (~/.config/opencode)", always: true }]
   const labels: Array<[string, string]> = [
@@ -170,7 +243,7 @@ export function writeCandidates(pluginDir: string, env: NodeJS.ProcessEnv = proc
  * Values of "" count as unset for the credential/path keys. */
 export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"])
-  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode", "servers"])
+  const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode", "servers", "shares", "redact", "meta"])
   const sources: Record<string, string> = {}
   const envKeys: Record<string, string | undefined> = {
     workerUrl: env.OPENSHARE_WORKER_URL,
@@ -178,16 +251,36 @@ export function configSourceMap(pluginDir: string, env: NodeJS.ProcessEnv = proc
     debounceMs: env.OPENSHARE_DEBOUNCE_MS,
     completedDelayMs: env.OPENSHARE_COMPLETED_DELAY_MS,
     modelLabel: env.OPENSHARE_MODEL_LABEL,
+    ttlHours: env.OPENSHARE_TTL_HOURS,
     ttlDays: env.OPENSHARE_TTL_DAYS,
     authLogin: env.OPENSHARE_AUTH_LOGIN,
     authPassword: env.OPENSHARE_AUTH_PASSWORD,
     urlFile: env.OPENSHARE_URL_FILE,
+    urlFileFormat: env.OPENSHARE_URL_FILE_FORMAT,
+    configSet: env.OPENSHARE_CONFIG_SET,
     spoolDir: env.OPENSHARE_SPOOL_DIR,
     announceStderr: env.OPENSHARE_ANNOUNCE_STDERR,
     shareMode: env.OPENSHARE_SHARE_MODE,
   }
   for (const [key, value] of Object.entries(envKeys)) {
     if (value !== undefined && value !== "") sources[key] = "environment"
+  }
+  // legacy days-shaped env feeds the same knob as ttlHours
+  if (sources.ttlDays && !sources.ttlHours) sources.ttlHours = sources.ttlDays
+  delete sources.ttlDays
+  // OPENSHARE_CONFIG_JSON sits between env and the files: it loses only
+  // to a specific env var, so it overrides any file's key
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      const raw = JSON.parse(env.OPENSHARE_CONFIG_JSON)
+      if (raw && typeof raw === "object") {
+        for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
+          if (sources[key] === "environment") continue
+          if (key === "servers" || known.has(key)) sources[key] = "OPENSHARE_CONFIG_JSON"
+        }
+      }
+    } catch {}
   }
   // configPaths() is ordered lowest-priority-first? No: index 0 is the
   // ADJACENT file (highest). Merge order reverses it; attribution walks
@@ -238,6 +331,9 @@ export function normalizeServers(raw: unknown): Record<string, ServerEntry> | un
     if (typeof e.label === "string" && e.label) entry.label = e.label
     if (typeof e.adminToken === "string" && e.adminToken) entry.adminToken = e.adminToken
     if (e.active === true) entry.active = true
+    if (e.anonymous === true) entry.anonymous = true
+    const overrides = normalizeShareOverrides(e.overrides)
+    if (overrides) entry.overrides = overrides
     out[url] = entry
   }
   return Object.keys(out).length ? out : undefined
@@ -245,9 +341,8 @@ export function normalizeServers(raw: unknown): Record<string, ServerEntry> | un
 
 /** Field-level merge of servers groups: entries only carry present fields
  * (normalizeServers), so a static `code` in plugin options and a persisted
- * `token` in the settings home combine instead of shadowing — per-URL
- * wholesale replacement would re-enroll on every boot (live-caught in
- * suite design review). */
+ * `token` in the settings home combine instead of shadowing. Per-URL
+ * wholesale replacement would re-enroll on every boot. */
 export function mergeServerGroups(base: Record<string, ServerEntry> | undefined, add: Record<string, ServerEntry>): Record<string, ServerEntry> {
   const merged: Record<string, ServerEntry> = { ...(base ?? {}) }
   for (const [url, entry] of Object.entries(add)) merged[url] = { ...(merged[url] ?? {}), ...entry }
@@ -255,10 +350,10 @@ export function mergeServerGroups(base: Record<string, ServerEntry> | undefined,
 }
 
 /** The server new sessions share to: the `active` entry (or the first).
- * Legacy workerUrl/createToken merge in as the implicit first entry — with
- * the root token ALSO filed as adminToken (the createToken IS root; filing
- * it only as `token` made the TUI offer user-actions like rotate to a root
- * holder — live-caught "can either be admin or user but not both"). */
+ * Legacy workerUrl/createToken merge in as the implicit first entry, with
+ * the root token ALSO filed as adminToken: the createToken IS root, and
+ * filing it only as `token` offers user-actions like rotate to a root
+ * holder, while an identity is either admin or user, not both. */
 export function resolveServer(cfg: ShareConfig): { url: string; token: string; entry: ServerEntry } | undefined {
   const servers: Record<string, ServerEntry> = {}
   if (cfg.workerUrl) servers[cfg.workerUrl] = { token: cfg.createToken || "", adminToken: cfg.createToken || "", active: true }
@@ -318,6 +413,116 @@ export function deleteServerEntry(url: string, target?: string): string | undefi
   }
 }
 
+/** Surgical patch of a server's per-server share defaults. `null` CLEARS
+ * the tier for that server (the general tier applies again); otherwise a
+ * key present in the patch is applied — `undefined` clears that key,
+ * absent keys are untouched. */
+export function saveServerOverrides(url: string, patch: Partial<ShareOverrides> | null, target?: string): string | undefined {
+  if (!url.startsWith("http")) return undefined
+  const path = target ?? configHomePath()
+  if (!path) return undefined
+  try {
+    let previous: Record<string, unknown> = {}
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"))
+      if (!previous || typeof previous !== "object") previous = {}
+    } catch {}
+    const servers = normalizeServers(previous.servers) ?? {}
+    const entry = servers[url] ?? {}
+    // spread semantics: a present-undefined key overwrites (clears) the
+    // existing value; absent keys keep theirs — normalize drops cleared keys
+    const merged = patch === null ? undefined : normalizeShareOverrides({ ...(entry.overrides ?? {}), ...patch })
+    if (merged) entry.overrides = merged
+    else delete entry.overrides
+    servers[url] = entry
+    previous.servers = servers
+    writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+/** Per-share tier persistence (the authoritative record). A key present
+ * in the patch is applied — `undefined` clears it, absent keys untouched;
+ * a session left with zero overrides drops out of the section entirely. */
+export function saveShareOverrides(sessionID: string, patch: Partial<ShareOverrides>, target?: string): string | undefined {
+  if (!sessionID) return undefined
+  const path = target ?? configHomePath()
+  if (!path) return undefined
+  try {
+    let previous: Record<string, unknown> = {}
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"))
+      if (!previous || typeof previous !== "object") previous = {}
+    } catch {}
+    const shares = (previous.shares && typeof previous.shares === "object" ? previous.shares : {}) as Record<string, unknown>
+    const merged = normalizeShareOverrides({ ...(normalizeShareOverrides(shares[sessionID]) ?? {}), ...patch })
+    if (merged) shares[sessionID] = merged
+    else delete shares[sessionID]
+    if (Object.keys(shares).length) previous.shares = shares
+    else delete previous.shares
+    writeFileSync(path, JSON.stringify(previous, null, 2) + "\n")
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+/** Drop a session's per-share overrides entirely — called when the
+ * session itself is deleted (stale entries otherwise accumulate forever). */
+export function deleteShareOverrides(sessionID: string, target?: string): string | undefined {
+  return saveShareOverrides(
+    sessionID,
+    { ttlHours: undefined, authLogin: undefined, authPassword: undefined, title: undefined, paused: undefined },
+    target,
+  )
+}
+
+let liveSharesCache: { mtime: number; at: number; shares: Record<string, ShareOverrides> } | undefined
+
+/** The settings home's `shares` section, fresh: the TUI writes this file
+ * while the engine's init-time config snapshot grows stale, and a stale
+ * snapshot would resurrect overrides the user just cleared. Mtime-guarded
+ * so the common no-change path costs one statSync. The snapshot's own
+ * shares section (e.g. an adjacent CI config) merges UNDER this. */
+export function liveShares(): Record<string, ShareOverrides> {
+  try {
+    const path = configHomePath()
+    if (!path) return {}
+    const mtime = statSync(path).mtimeMs
+    if (liveSharesCache && liveSharesCache.mtime === mtime) return liveSharesCache.shares
+    let shares: Record<string, ShareOverrides> = {}
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8"))
+      if (raw && typeof raw === "object" && raw.shares && typeof raw.shares === "object") {
+        for (const [sid, ov] of Object.entries(raw.shares as Record<string, unknown>)) {
+          const clean = normalizeShareOverrides(ov)
+          if (clean) shares[sid] = clean
+        }
+      }
+    } catch {}
+    liveSharesCache = { mtime, at: Date.now(), shares }
+    return shares
+  } catch {
+    return {}
+  }
+}
+
+/** Coerce an announceStderr value from any layer (enum string, legacy
+ * boolean, truthy/falsy word) to the 4-position ladder. */
+function normalizeAnnounce(value: unknown, fallback: "all" | "status" | "url" | "off"): "all" | "status" | "url" | "off" {
+  if (value === true) return "all"
+  if (value === false) return "off"
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase()
+    if (v === "all" || v === "status" || v === "url" || v === "off") return v
+    if (/^(1|true|yes|on)$/.test(v)) return "all"
+    if (/^(0|false|no)$/.test(v)) return "off"
+  }
+  return fallback
+}
+
 /** Load the effective config. `options` is the plugin-array options tuple
  * object (env still wins over it). Files MERGE lowest→highest priority
  * (later files override per key); empty strings in credential/path keys
@@ -328,24 +533,64 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
 
   const emptyMeansUnset = new Set(["workerUrl", "createToken", "urlFile", "spoolDir"])
   const known = new Set([...(Object.keys(DEFAULTS) as string[]), "shareMode"])
+  const applyObject = (raw: unknown) => {
+    if (!raw || typeof raw !== "object") return
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (key === "servers") {
+        const servers = normalizeServers(value)
+        if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
+        continue
+      }
+      if (key === "shares") {
+        // per-share tier: per-session deep merge across the file chain
+        // (a nearer file overriding ONE key keeps the rest)
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          for (const [sid, ov] of Object.entries(value as Record<string, unknown>)) {
+            if (typeof sid !== "string" || !sid) continue
+            const clean = normalizeShareOverrides(ov)
+            if (!clean) continue
+            cfg.shares = { ...cfg.shares, [sid]: { ...(cfg.shares?.[sid] ?? {}), ...clean } }
+          }
+        }
+        continue
+      }
+      if (key === "redact") {
+        if (value && typeof value === "object" && Array.isArray((value as { patterns?: unknown }).patterns)) {
+          const pats = (value as { patterns: unknown[] }).patterns.filter((x): x is string => typeof x === "string" && x.length > 0 && x.length < 500).slice(0, 50)
+          cfg.redact = { patterns: pats }
+        }
+        continue
+      }
+      if (key === "meta") {
+        // string-to-string only: meta rides the create frame verbatim
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const clean: Record<string, string> = {}
+          for (const [mk, mv] of Object.entries(value as Record<string, unknown>)) {
+            if (typeof mv === "string" && mv.length <= 500 && mk.length <= 64) clean[mk] = mv
+          }
+          if (Object.keys(clean).length) cfg.meta = { ...cfg.meta, ...clean }
+        }
+        continue
+      }
+      if (key === "ttlDays") {
+        // legacy days-shaped file/options value converts to hours once
+        const d = Math.floor(Number(value))
+        if (Number.isFinite(d) && d > 0) cfg.ttlHours = d * 24
+        continue
+      }
+      if (!known.has(key)) continue
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
+      if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
+      ;(cfg as Record<string, unknown>)[key] = value
+    }
+  }
+
   for (const path of [...configPaths(pluginDir)].reverse()) {
     try {
       // strict JSON: the $comment key (what our templates use) is valid
       // JSON; comment-stripping is deliberately avoided because a naive
       // stripper eats "//" inside workerUrl values
-      const raw = JSON.parse(readFileSync(path, "utf8"))
-      if (!raw || typeof raw !== "object") continue
-      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-        if (key === "servers") {
-          const servers = normalizeServers(value)
-          if (servers) cfg.servers = mergeServerGroups(cfg.servers, servers)
-          continue
-        }
-        if (!known.has(key)) continue
-        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
-        if (typeof value === "string" && value === "" && emptyMeansUnset.has(key)) continue
-        ;(cfg as Record<string, unknown>)[key] = value
-      }
+      applyObject(JSON.parse(readFileSync(path, "utf8")))
     } catch (e) {
       // a malformed config file is a real setup error the user must hear
       // about - silence here looks like "no share server configured".
@@ -370,21 +615,42 @@ export function loadConfig(pluginDir: string, options?: Record<string, unknown>)
   }
 
   const env = process.env
+  // OPENSHARE_CONFIG_JSON: a complete config object in one env var. Sits
+  // between the file/options layers and the per-key OPENSHARE_* env (a
+  // specific env var still wins) - CI sets one variable instead of nine,
+  // and secrets never touch a file. Malformed JSON is a loud error, not
+  // silence (same rule as files).
+  if (env.OPENSHARE_CONFIG_JSON) {
+    try {
+      applyObject(JSON.parse(env.OPENSHARE_CONFIG_JSON))
+    } catch (e) {
+      console.error("[openshare] OPENSHARE_CONFIG_JSON could not be parsed - ignored:", (e as Error)?.message ?? e)
+    }
+  }
   if (env.OPENSHARE_WORKER_URL) cfg.workerUrl = env.OPENSHARE_WORKER_URL
   if (env.OPENSHARE_CREATE_TOKEN) cfg.createToken = env.OPENSHARE_CREATE_TOKEN
   if (env.OPENSHARE_DEBOUNCE_MS) cfg.debounceMs = num(env.OPENSHARE_DEBOUNCE_MS, cfg.debounceMs)
   if (env.OPENSHARE_COMPLETED_DELAY_MS !== undefined) cfg.completedDelayMs = num(env.OPENSHARE_COMPLETED_DELAY_MS, cfg.completedDelayMs)
   if (env.OPENSHARE_MODEL_LABEL !== undefined) cfg.modelLabel = env.OPENSHARE_MODEL_LABEL
-  if (env.OPENSHARE_TTL_DAYS) cfg.ttlDays = num(env.OPENSHARE_TTL_DAYS, cfg.ttlDays)
+  if (env.OPENSHARE_TTL_HOURS) cfg.ttlHours = num(env.OPENSHARE_TTL_HOURS, cfg.ttlHours)
+  if (env.OPENSHARE_TTL_DAYS) cfg.ttlHours = Math.max(1, Math.floor(num(env.OPENSHARE_TTL_DAYS, 90) * 24))
   if (env.OPENSHARE_AUTH_LOGIN !== undefined) cfg.authLogin = env.OPENSHARE_AUTH_LOGIN
   if (env.OPENSHARE_AUTH_PASSWORD !== undefined) cfg.authPassword = env.OPENSHARE_AUTH_PASSWORD
   if (env.OPENSHARE_URL_FILE !== undefined) cfg.urlFile = env.OPENSHARE_URL_FILE
+  if (env.OPENSHARE_URL_FILE_FORMAT === "json" || env.OPENSHARE_URL_FILE_FORMAT === "url") cfg.urlFileFormat = env.OPENSHARE_URL_FILE_FORMAT
+  if (env.OPENSHARE_CONFIG_SET) cfg.configSet = env.OPENSHARE_CONFIG_SET
   if (env.OPENSHARE_SPOOL_DIR) cfg.spoolDir = env.OPENSHARE_SPOOL_DIR
-  if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = !/^(0|false|no|off)$/i.test(env.OPENSHARE_ANNOUNCE_STDERR.trim())
+  if (env.OPENSHARE_ANNOUNCE_STDERR !== undefined) cfg.announceStderr = env.OPENSHARE_ANNOUNCE_STDERR as ShareConfig["announceStderr"]
   if (env.OPENSHARE_SHARE_MODE === "all" || env.OPENSHARE_SHARE_MODE === "manual") cfg.shareMode = env.OPENSHARE_SHARE_MODE
 
   // normalize the disable sentinel (case-insensitive from any source)
   if (cfg.urlFile.trim().toLowerCase() === URL_FILE_NONE) cfg.urlFile = URL_FILE_NONE
+
+  // announceStderr may arrive from ANY layer as the enum string or a
+  // legacy boolean/word (old saved configs carry true/false) - coerce the
+  // merged value once; unknown values fall back to the default ladder
+  // position
+  cfg.announceStderr = normalizeAnnounce(cfg.announceStderr, "all")
 
   // URL hygiene: a trailing slash on a server url becomes
   // wss://host//api/ws and https://host//s/<id> downstream - strip once,
@@ -429,9 +695,9 @@ function specPath(spec: string): string | undefined {
 
 /** Does this plugin spec (tui.json entry) point at the openshare package?
  * Accepts the bare npm name, name@version, and the /tui (or any) subpath
- * form — older docs shipped the subpath spec and presence detection must
- * never silently miss it (all-mode would keep auto-sharing while the user
- * believes they installed manual mode — live-caught in review). */
+ * form. Older docs shipped the subpath spec, and presence detection must
+ * never silently miss it: all-mode would keep auto-sharing while the user
+ * believes they installed manual mode. */
 export function isOpenShareSpec(spec: unknown): spec is string {
   if (typeof spec !== "string" || spec.length === 0) return false
   if (spec === NPM_NAME) return true
@@ -499,20 +765,27 @@ export function tuiLayerPaths(input: { directory?: string; worktree?: string; en
   const envTui = env["OPENCODE_TUI_CONFIG"]
   if (envTui && existsSync(envTui)) paths.push(envTui)
   if (input.directory) {
-    const dir = normalizePath(input.directory)
-    const worktree = input.worktree ? normalizePath(input.worktree) : undefined
+    // case-preserving separator fix only: the walk probes the FILESYSTEM,
+    // and lowercasing the path (fine for spec comparisons) breaks every
+    // lookup on case-sensitive filesystems - a mixed-case project dir
+    // would silently miss its tui.json and flip manual mode to all
+    const fwd = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "")
+    const dir = fwd(input.directory)
+    const worktree = input.worktree ? fwd(input.worktree) : undefined
+    const dirLower = dir.toLowerCase()
     const sane =
       worktree !== undefined &&
       worktree !== "/" &&
       !/^[a-z]:\/$/.test(worktree) &&
-      (dir === worktree || dir.startsWith(`${worktree}/`))
+      (dirLower === worktree.toLowerCase() || dirLower.startsWith(`${worktree.toLowerCase()}/`))
+    const worktreeLower = worktree?.toLowerCase()
     let current: string | undefined = dir
     for (let guard = 0; guard < 64 && current; guard++) {
       for (const name of ["tui.json", ".opencode/tui.json"]) {
         const candidate = `${current}/${name}`
         if (existsSync(candidate) && !paths.includes(candidate)) paths.push(candidate)
       }
-      if (sane && current === worktree) break
+      if (sane && current.toLowerCase() === worktreeLower) break
       const parent = dirname(current)
       if (parent === current) break
       current = parent

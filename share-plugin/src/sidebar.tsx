@@ -9,13 +9,13 @@
 // v1-only: the v2 TUI plugin context has no slot registry. The v2 adapter
 // simply skips this module.
 //
-// SLOT CONTRACT (live-caught 2x): (1) @opentui/core SlotRenderer is called
-// as (ctx, props) — CONTEXT FIRST. (2) The payload MUST be box-rooted:
-// a text root with text children is not hostable through the slot
-// machinery ("TextNodeRenderable only accepts strings…" on embed). Every
-// proven consumer returns box-rooted trees (opencode's own default
-// children, magic-context's sidebar, the host's slot self-test); text
-// nodes stay LEAVES here — string content only.
+// SLOT CONTRACT: (1) @opentui/core SlotRenderer is called as (ctx, props),
+// CONTEXT FIRST. (2) The payload MUST be box-rooted: a text root with text
+// children is not hostable through the slot machinery
+// ("TextNodeRenderable only accepts strings..." on embed). Every proven
+// consumer returns box-rooted trees (opencode's own default children,
+// magic-context's sidebar, the host's slot self-test); text nodes stay
+// LEAVES here, string content only.
 
 import type { JSX } from "@opentui/solid"
 import { bindingsOf, bindingOf, verifyShare } from "./share-flow.js"

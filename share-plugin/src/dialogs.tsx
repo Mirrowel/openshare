@@ -13,7 +13,10 @@
 // settings fields, no family precedent on 1.19.x) built on the same
 // discipline.
 
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup } from "solid-js"
+import { appendFileSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { JSX } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
@@ -27,6 +30,37 @@ type KeyContext = { event?: { preventDefault?: () => void; stopPropagation?: () 
 const blockKey = (ctx: KeyContext | undefined) => {
   ctx?.event?.preventDefault?.()
   ctx?.event?.stopPropagation?.()
+}
+
+// Opt-in TUI trace for live-host debugging: OPENSHARE_TUI_DEBUG=1 appends a
+// timestamped line per dialog lifecycle event and every keymap command
+// invocation (plus any throw) to %TEMP%/openshare-tui-debug.log. Zero cost
+// when the env is unset. stderr stays error-only (TUI owns the terminal).
+let tuiDebugFile: string | undefined
+export function tuiDebug(line: string): void {
+  if (process.env.OPENSHARE_TUI_DEBUG !== "1") return
+  tuiDebugFile ??= join(tmpdir(), "openshare-tui-debug.log")
+  try {
+    appendFileSync(tuiDebugFile, `${new Date().toISOString()} ${line}\n`)
+  } catch {}
+}
+
+/** wraps a keymap command so invocations and throws reach the debug log */
+function traced(name: string, run: (ctx: KeyContext) => void) {
+  return (ctx: KeyContext) => {
+    tuiDebug(`cmd ${name}`)
+    try {
+      run(ctx)
+    } catch (error) {
+      tuiDebug(`cmd ${name} THREW ${(error as Error)?.stack ?? error}`)
+      throw error
+    }
+  }
+}
+
+function traceCmds<C extends Array<{ name: string; run: (ctx: KeyContext) => void }>>(commands: C): C {
+  if (process.env.OPENSHARE_TUI_DEBUG !== "1") return commands
+  return commands.map((command) => ({ ...command, run: traced(command.name, command.run) })) as C
 }
 
 // verbatim from agent-variants (plus their punctuation coverage)
@@ -163,11 +197,11 @@ function estimatedVisualRows(message: string, width: number) {
   return message.split(/\r?\n/).reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / Math.max(1, width))), 0)
 }
 
-/** Deterministic character-level pre-wrap (parity lesson: opentui's
- * word wrap cannot break unbreakable tokens like a JSON policy blob, so
- * "wrapped" text still escaped the dialog border — live-caught). Both the
- * [i] pane and InfoDialog render THESE lines; the row estimate uses the
- * same output, so heights match what renders. */
+/** Deterministic character-level pre-wrap: opentui's word wrap cannot
+ * break unbreakable tokens like a JSON policy blob, so "wrapped" text still
+ * escapes the dialog border. Both the [i] pane and InfoDialog render THESE
+ * lines; the row estimate uses the same output, so heights match what
+ * renders. */
 export function preWrap(text: string, width: number): string[] {
   const out: string[] = []
   for (const raw of text.split(/\r?\n/)) {
@@ -229,10 +263,9 @@ function InfoLines(props: { api: TuiPluginApi; lines: string[] }): JSX.Element {
   )
 }
 
-/** title column cap (family menuTitleWidth, live-caught need: a server URL
- * as a row title stretched the column toward half the dialog — the owner
- * capped it further: full URLs belong in the [i] pane, not the row).
- * Capped + ellipsized. */
+/** Title column cap (family menuTitleWidth): a server URL as a row title
+ * would otherwise stretch the column toward half the dialog. Full URLs
+ * belong in the [i] pane, not the row. Capped and ellipsized. */
 function menuTitleWidth(width: DialogWidth, options: readonly { title: string }[]) {
   const longest = Math.max(0, ...options.map((option) => option.title.length)) + 2
   if (width === "xlarge") return Math.min(Math.max(20, longest), 28)
@@ -246,13 +279,12 @@ function ellipsize(text: string, width: number) {
 
 /** OpenShare visual frame: rounded accent border + accent title row. The
  * logic inside the menus stays the ported family pattern; this wrapper is
- * purely presentation (owner-preferred styling). Natural width — the host
- * dialog panel provides the container; the border hugs the content. */
-// Frame note (live-caught): the HOST dialog panel renders plugin content
-// with paddingTop=1 (opencode dialog.tsx), so a BORDERED frame always
-// showed a dead panel strip above its top border. Borderless family
-// shape + a solid accent rule under the title: zero dead space, accent
-// identity kept.
+ * purely presentation. Natural width: the host dialog panel provides the
+ * container and the border hugs the content. */
+// Frame note: the HOST dialog panel renders plugin content with
+// paddingTop=1 (opencode dialog.tsx), so a BORDERED frame always shows a
+// dead panel strip above its top border. Borderless family shape plus a
+// solid accent rule under the title: zero dead space, accent identity kept.
 function DialogFrame(props: { api: TuiPluginApi; title: string; children: JSX.Element }): JSX.Element {
   const theme = () => props.api.theme.current
   return (
@@ -274,16 +306,19 @@ function KeyLegend(props: { api: TuiPluginApi; keys: Array<[string, string]>; on
   return (
     <box flexDirection="row" gap={1} paddingTop={1} paddingLeft={1} alignItems="center">
       <For each={props.keys}>
+        {/* one root per pair and NO component siblings inside the boxes:
+            a <Show> (or any component) between <text>/<box> children makes
+            the reconciler drop array-hole text markers straight into the
+            box — "orphan text" throw at mount. The separator is a
+            content-conditional <text> instead. */}
         {(pair, index) => (
-          <>
+          <box flexDirection="row" gap={1} alignItems="center">
             <box backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} onMouseUp={() => { if (pair[0] === "esc") props.onBack?.() }}>
               <text fg={theme().accent}><b>{pair[0]}</b></text>
             </box>
             <text fg={theme().textMuted}>{pair[1]}</text>
-            <Show when={index() < props.keys.length - 1}>
-              <text fg={theme().textMuted}>·</text>
-            </Show>
-          </>
+            <text fg={theme().textMuted}>{index() < props.keys.length - 1 ? "·" : " "}</text>
+          </box>
         )}
       </For>
     </box>
@@ -305,6 +340,8 @@ export type MenuOption<Value = string> = {
   danger?: boolean
   /** pending/edited state — title renders green (config-studio port) */
   edited?: boolean
+  /** inherited/computed value (settings tiers) — muted row (config-studio port) */
+  dim?: boolean
   /** non-interactive section separator row (never focusable) */
   divider?: boolean
 }
@@ -321,10 +358,22 @@ export function MenuDialog<Value>(props: {
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
   const dimensions = useTerminalDimensions()
-  const listHeight = createMemo(() => cappedHeight(props.options.length, maxRows(props.api, dimensions().height, 12, 4), 4))
+  // Body rule, in PAINTED rows: a divider renders a rule plus a margin row
+  // above and below (3 rows for one option), so budgeting option count makes
+  // menus with separators scroll their own last rows. A small menu expands to
+  // its painted content (≤12 rows, capped by the 75%-of-terminal backdrop
+  // budget) regardless of the stored height percent — the percent setting
+  // tames big dialogs, it must not shrink a 7-row menu. Bigger menus honor
+  // the percent cap.
+  const listHeight = createMemo(() => {
+    const painted = props.options.reduce((rows, option) => rows + (option.divider ? 3 : 1), 0)
+    const { availableRows, targetRows } = dialogMetrics(props.api, dimensions().height, 12, 4)
+    const contentFit = Math.min(painted, 12, availableRows)
+    return cappedHeight(painted, Math.max(targetRows, contentFit), 4)
+  })
   // fixed title column shared by every row (family menuTitleWidth): flex
-  // columns stagger per-row because flex splits by content — a computed
-  // width is what makes the value/description column align (live-caught).
+  // columns stagger per row because flex splits by content, so a computed
+  // width is what makes the value/description column align.
   const width = dialogWidthOf(props.api)
   const titleWidth = createMemo(() => menuTitleWidth(width, props.options))
   const hasHelp = createMemo(() => props.options.some((option) => option.help))
@@ -352,8 +401,8 @@ export function MenuDialog<Value>(props: {
     })
   // [i] pane sections: "## Header" lines in help split sections; the pane
   // height comes from the CONTENT (pre-wrapped rows), capped by the same
-  // dialog metrics — no longer bound to the spawning menu's list height
-  // (live-caught: a 3-row menu gave a 3-row info pane).
+  // dialog metrics rather than the spawning menu's list height (which gave
+  // a 3-row menu a 3-row info pane).
   const helpSections = createMemo(() => {
     const raw = current()?.help ?? ""
     const sections: Array<{ title: string; lines: string[] }> = [{ title: "", lines: [] }]
@@ -419,7 +468,7 @@ export function MenuDialog<Value>(props: {
       : []
   const unregister = props.api.keymap.registerLayer({
     priority: 10000,
-    commands: [
+    commands: traceCmds([
       { name: `${commandPrefix}.up`, title: "Previous item", run: (ctx: KeyContext) => { blockKey(ctx); vertical(-1) } },
       { name: `${commandPrefix}.down`, title: "Next item", run: (ctx: KeyContext) => { blockKey(ctx); vertical(1) } },
       { name: `${commandPrefix}.pageUp`, title: "Page up", run: (ctx: KeyContext) => { blockKey(ctx); page(-1) } },
@@ -433,7 +482,7 @@ export function MenuDialog<Value>(props: {
       { name: `${commandPrefix}.nextSection`, title: "Next section", run: (ctx: KeyContext) => { blockKey(ctx); jumpSection(1) } },
       ...helpSections()
         .slice(0, 9)
-        .map((_, index) => ({
+        .map((_, index): { name: string; title: string; run: (ctx: KeyContext) => void } => ({
           name: `${commandPrefix}.jump${index + 1}`,
           title: `Section ${index + 1}`,
           run: (ctx: KeyContext) => {
@@ -442,8 +491,8 @@ export function MenuDialog<Value>(props: {
             infoScroll?.scrollTo(0)
           },
         })),
-      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
-    ],
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
+    ]),
     bindings: [
       { key: "up", cmd: `${commandPrefix}.up`, desc: "Previous item" },
       { key: "ctrl+p", cmd: `${commandPrefix}.up`, desc: "Previous item" },
@@ -469,66 +518,16 @@ export function MenuDialog<Value>(props: {
 
   return (
     <DialogFrame api={props.api} title={props.title}>
-      <Show when={hintLines().length > 0}>
+      {/* no <Show> siblings in DialogFrame children: a false Show makes the
+          reconciler drop solid's slot-marker text node straight into the
+          box ("orphan text" throw on this opentui rev) — eager ternaries
+          with null arms are the safe conditional here */}
+      {hintLines().length > 0 ? (
         <box flexDirection="column" marginBottom={1} paddingLeft={1} paddingRight={1}>
           <InfoLines api={props.api} lines={hintLines()} />
         </box>
-      </Show>
-      <Show
-        when={inspecting() && current()?.help}
-        fallback={
-          <scrollbox maxHeight={listHeight()} ref={(element: ScrollBoxRenderable) => (listScroll = element)}>
-            <box flexDirection="column" gap={0}>
-              <For each={props.options}>
-                {(option, index) => {
-                  const active = createMemo(() => selected() === index())
-                  const fg = createMemo(() =>
-                    active()
-                      ? theme().background
-                      : option.divider
-                        ? theme().textMuted
-                        : option.disabled
-                          ? theme().textMuted
-                          : option.danger
-                            ? theme().error
-                            : option.edited
-                              ? theme().success
-                              : theme().text,
-                  )
-                  const descFg = createMemo(() => (active() ? theme().background : theme().textMuted))
-                  if (option.divider) {
-                    return (
-                      <box paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={1}>
-                        <text fg={theme().textMuted}>{"─".repeat(Math.max(8, dialogContentWidth(props.api) - 4))}</text>
-                      </box>
-                    )
-                  }
-                  return (
-                    <box
-                      flexDirection="row"
-                      width="100%"
-                      gap={1}
-                      paddingLeft={1}
-                      paddingRight={1}
-                      backgroundColor={active() ? theme().primary : theme().backgroundPanel}
-                      onMouseOver={() => {
-                        if (!option.divider) setSelected(index())
-                      }}
-                      onMouseUp={() => {
-                        if (!option.disabled && !option.divider) props.onDone(option.value)
-                      }}
-                    >
-                      <text width={2} flexShrink={0} fg={fg()}>{active() ? "❯" : " "}</text>
-                      <text width={titleWidth()} flexShrink={0} fg={fg()} wrapMode="none" overflow="hidden"><b>{ellipsize(option.title, titleWidth())}</b></text>
-                      <text flexGrow={1} fg={descFg()} wrapMode="none" overflow="hidden">{option.help ? "ⓘ " : ""}{option.description ?? ""}</text>
-                    </box>
-                  )
-                }}
-              </For>
-            </box>
-          </scrollbox>
-        }
-      >
+      ) : null}
+      {inspecting() && current()?.help ? (
         <box flexDirection="column">
           <box marginBottom={1} paddingLeft={1}>
             <text fg={theme().text} wrapMode="none" overflow="hidden"><b>{current()?.title ?? ""}</b></text>
@@ -537,25 +536,78 @@ export function MenuDialog<Value>(props: {
             <box flexDirection="column" paddingLeft={1} paddingRight={1}>
               <For each={helpSections()}>
                 {(sectionData, index) => (
-                  <>
-                    <Show when={sectionData.title}>
+                  <box flexDirection="column">
+                    {sectionData.title ? (
                       <box marginTop={index() > 0 ? 1 : 0} marginBottom={1}>
                         <text fg={theme().accent}><b>{`── ${sectionData.title} `}{"─".repeat(Math.max(0, Math.min(40, 40 - sectionData.title.length)))}</b></text>
                       </box>
-                    </Show>
+                    ) : null}
                     <InfoLines api={props.api} lines={sectionData.lines} />
-                  </>
+                  </box>
                 )}
               </For>
             </box>
           </scrollbox>
-          <Show when={helpSections().length > 1}>
+          {helpSections().length > 1 ? (
             <box paddingLeft={1} marginTop={1}>
               <text fg={theme().textMuted}>{`section ${section() + 1}/${helpSections().length} · p/n move · 1-${Math.min(9, helpSections().length)} jump`}</text>
             </box>
-          </Show>
+          ) : null}
         </box>
-      </Show>
+      ) : (
+        <scrollbox maxHeight={listHeight()} ref={(element: ScrollBoxRenderable) => (listScroll = element)}>
+          <box flexDirection="column" gap={0}>
+            <For each={props.options}>
+              {(option, index) => {
+                const active = createMemo(() => selected() === index())
+                const fg = createMemo(() =>
+                  active()
+                    ? theme().background
+                    : option.divider
+                      ? theme().textMuted
+                      : option.disabled
+                        ? theme().textMuted
+                        : option.danger
+                          ? theme().error
+                          : option.edited
+                            ? theme().success
+                            : option.dim
+                              ? theme().textMuted
+                              : theme().text,
+                )
+                const descFg = createMemo(() => (active() ? theme().background : theme().textMuted))
+                if (option.divider) {
+                  return (
+                    <box paddingLeft={1} paddingRight={1} marginTop={1} marginBottom={1}>
+                      <text fg={theme().textMuted}>{"─".repeat(Math.max(8, dialogContentWidth(props.api) - 4))}</text>
+                    </box>
+                  )
+                }
+                return (
+                  <box
+                    flexDirection="row"
+                    width="100%"
+                    gap={1}
+                    paddingLeft={1}
+                    paddingRight={1}
+                    backgroundColor={active() ? theme().primary : theme().backgroundPanel}
+                    onMouseOver={() => {
+                      if (!option.divider) setSelected(index())
+                    }}
+                    onMouseUp={() => {
+                      if (!option.disabled && !option.divider) props.onDone(option.value)
+                    }}
+                  >
+                    <text width={2} flexShrink={0} fg={fg()}>{active() ? "❯" : " "}</text>
+                    <text width={titleWidth()} flexShrink={0} fg={fg()} wrapMode="none" overflow="hidden"><b>{ellipsize(option.title, titleWidth())}</b></text>
+                    <text flexGrow={1} fg={descFg()} wrapMode="none" overflow="hidden">{option.help ? "ⓘ " : ""}{option.description ?? ""}</text>
+                  </box>
+                )
+              }}
+            </For>
+          </box>
+        </scrollbox>
+      )}
       <KeyLegend
         api={props.api}
         keys={
@@ -602,11 +654,10 @@ function claimDialog(api: TuiPluginApi): () => void {
   pendingDialog = release
   return release
 }
-/** showMenuOnce, family discipline with the flicker fix (2026-10-19):
- * done() does NOT clear the host stack — the next dialog's replace() is an
- * atomic swap, so clearing first paints one empty frame (the esc-to-parent
- * flicker, live-caught). Chain ends clear explicitly (command exits,
- * settings exit). */
+/** showMenuOnce, family discipline: done() does NOT clear the host stack,
+ * because the next dialog's replace() is an atomic swap and clearing first
+ * paints one empty frame (the esc-to-parent flicker). Chain ends clear
+ * explicitly (command exits, settings exit). */
 export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; options: MenuOption<Value>[]; current?: Value; hint?: string }): Promise<Value | undefined> {
   return new Promise((resolve) => {
     let settled = false
@@ -615,10 +666,10 @@ export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; o
       if (settled) return
       settled = true
       release()
-      dbgLog(`menu(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
+      tuiDebug(`menu(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
       resolve(value)
     }
-    dbgLog(`menu(${props.title}) OPEN (${props.options.length} options)`)
+    tuiDebug(`menu(${props.title}) OPEN (${props.options.length} options)`)
     api.ui.dialog.replace(
       () => <MenuDialog api={api} title={props.title} options={props.options} current={props.current} hint={props.hint} onDone={done} />,
       () => done(undefined),
@@ -627,11 +678,11 @@ export function showMenuOnce<Value>(api: TuiPluginApi, props: { title: string; o
 }
 
 // --- InfoDialog (config-studio port): a real message body ----------------------
-// Content-derived height, pre-wrapped (char-level — word wrap cannot break
+// Content-derived height, pre-wrapped (char-level: word wrap cannot break
 // JSON blobs), semantically styled lines, page/home/end keys, and an action
-// footer with buttons + key shortcuts. Replaces the hint-as-message menus
-// for confirm/alert (whose single overflow-hidden line clipped destructive
-// prompts mid-URL — live-caught).
+// footer with buttons + key shortcuts. Replaces the hint-as-message menus for
+// confirm/alert, whose single overflow-hidden line clipped destructive
+// prompts mid-URL.
 
 export type DialogAction = { title: string; value: string; key?: string; danger?: boolean }
 
@@ -643,8 +694,10 @@ export function showInfoDialog(api: TuiPluginApi, props: { title: string; messag
       if (settled) return
       settled = true
       release()
+      tuiDebug(`info(${props.title}) -> ${value === undefined ? "cancel" : String(value)}`)
       resolve(value)
     }
+    tuiDebug(`info(${props.title}) OPEN (${props.actions?.length ?? 1} actions)`)
     api.ui.dialog.replace(
       () => <InfoDialog api={api} title={props.title} message={props.message} actions={props.actions} onDone={done} />,
       () => done(undefined),
@@ -652,13 +705,13 @@ export function showInfoDialog(api: TuiPluginApi, props: { title: string; messag
   })
 }
 
-function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; actions?: DialogAction[]; onDone: (value: string | undefined) => void }): JSX.Element {
-  const theme = () => props.api.theme.current
+export function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; actions?: DialogAction[]; onDone: (value: string | undefined) => void }): JSX.Element {  const theme = () => props.api.theme.current
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
   const dimensions = useTerminalDimensions()
   const lines = createMemo(() => preWrap(props.message, dialogContentWidth(props.api)))
-  const bodyHeight = createMemo(() => cappedHeight(lines().length + 1, maxRows(props.api, dimensions().height, 8, 4), 4))
+  // chrome: frame title + rule + footer row + key legend + paddings
+  const bodyHeight = createMemo(() => cappedHeight(lines().length + 1, maxRows(props.api, dimensions().height, 10, 4), 4))
   let scroll: ScrollBoxRenderable | undefined
   const page = () => Math.max(1, (scroll?.height ?? bodyHeight()) - 1)
   const popMode = props.api.mode.push("openshare.dialog")
@@ -668,18 +721,29 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
     const list = props.actions?.length ? props.actions : [{ title: "ok", value: okValue, danger: false }]
     return list.map((action, index) => ({ ...action, key: action.key ?? (index === 0 ? "enter" : undefined) }))
   })
+  // Keyboard selection between the action buttons. Without it the dialog has
+  // no visible response to arrows (the body usually fits, nothing scrolls),
+  // which reads as a frozen menu to keyboard users.
+  const [focus, setFocus] = createSignal(0)
+  const moveFocus = (delta: number) =>
+    setFocus((value) => {
+      const count = actions().length
+      if (count <= 1) return value
+      return (value + delta + count) % count
+    })
+  const choose = () => props.onDone(actions()[focus()]?.value ?? okValue)
   const unregister = props.api.keymap.registerLayer({
     priority: 10000,
-    commands: [
-      { name: `${commandPrefix}.close`, title: "Close", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(actions().find((a) => a.key === "enter")?.value ?? okValue) } },
+    commands: traceCmds([
+      { name: `${commandPrefix}.close`, title: "Confirm", run: (ctx: KeyContext) => { blockKey(ctx); choose() } },
       { name: `${commandPrefix}.back`, title: "Back", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(undefined) } },
-      { name: `${commandPrefix}.up`, title: "Scroll up", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(-1) } },
-      { name: `${commandPrefix}.down`, title: "Scroll down", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(1) } },
+      { name: `${commandPrefix}.focusUp`, title: "Previous action", run: (ctx: KeyContext) => { blockKey(ctx); moveFocus(-1) } },
+      { name: `${commandPrefix}.focusDown`, title: "Next action", run: (ctx: KeyContext) => { blockKey(ctx); moveFocus(1) } },
       { name: `${commandPrefix}.pageUp`, title: "Page up", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(-page()) } },
       { name: `${commandPrefix}.pageDown`, title: "Page down", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollBy(page()) } },
       { name: `${commandPrefix}.home`, title: "Scroll top", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollTo(0) } },
       { name: `${commandPrefix}.end`, title: "Scroll bottom", run: (ctx: KeyContext) => { blockKey(ctx); scroll?.scrollTo(scroll.scrollHeight) } },
-      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
       ...actions()
         .filter((action) => action.key && action.key !== "enter")
         .map((action) => ({
@@ -690,14 +754,16 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
             props.onDone(action.value)
           },
         })),
-    ],
+    ]),
     bindings: [
-      { key: "enter", cmd: `${commandPrefix}.close`, desc: "Close" },
+      { key: "enter", cmd: `${commandPrefix}.close`, desc: "Confirm" },
       { key: "escape", cmd: `${commandPrefix}.back`, desc: "Back" },
-      { key: "up", cmd: `${commandPrefix}.up`, desc: "Scroll up" },
-      { key: "ctrl+p", cmd: `${commandPrefix}.up`, desc: "Scroll up" },
-      { key: "down", cmd: `${commandPrefix}.down`, desc: "Scroll down" },
-      { key: "ctrl+n", cmd: `${commandPrefix}.down`, desc: "Scroll down" },
+      { key: "up", cmd: `${commandPrefix}.focusUp`, desc: "Previous action" },
+      { key: "ctrl+p", cmd: `${commandPrefix}.focusUp`, desc: "Previous action" },
+      { key: "left", cmd: `${commandPrefix}.focusUp`, desc: "Previous action" },
+      { key: "down", cmd: `${commandPrefix}.focusDown`, desc: "Next action" },
+      { key: "ctrl+n", cmd: `${commandPrefix}.focusDown`, desc: "Next action" },
+      { key: "right", cmd: `${commandPrefix}.focusDown`, desc: "Next action" },
       { key: "pageup", cmd: `${commandPrefix}.pageUp`, desc: "Page up" },
       { key: "ctrl+b", cmd: `${commandPrefix}.pageUp`, desc: "Page up" },
       { key: "pagedown", cmd: `${commandPrefix}.pageDown`, desc: "Page down" },
@@ -707,7 +773,7 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
       ...actions()
         .filter((action) => action.key && action.key !== "enter")
         .map((action) => ({ key: action.key as string, cmd: `${commandPrefix}.act_${action.value}`, desc: action.title })),
-      ...shieldBindings(`${commandPrefix}.shield`, ["home", "end", ...actions().filter((a) => a.key && a.key !== "enter").map((a) => a.key as string)]),
+      ...shieldBindings(`${commandPrefix}.shield`, ["home", "end", "left", "right", ...actions().filter((a) => a.key && a.key !== "enter").map((a) => a.key as string)]),
     ],
   })
   onCleanup(() => {
@@ -732,23 +798,33 @@ function InfoDialog(props: { api: TuiPluginApi; title: string; message: string; 
         </box>
         <box flexDirection="row" gap={1}>
           <For each={actions()}>
-            {(action) => (
-              <box
-                paddingLeft={2}
-                paddingRight={2}
-                backgroundColor={action.key === "enter" ? (action.danger ? theme().error : theme().primary) : undefined}
-                border={action.key === "enter" ? undefined : true}
-                borderColor={action.danger ? theme().error : theme().textMuted}
-                onMouseUp={() => props.onDone(action.value)}
-              >
-                <text fg={action.key === "enter" ? theme().background : action.danger ? theme().error : theme().textMuted}>
-                  <b>{action.title}</b>
-                </text>
-              </box>
-            )}
+            {(action, index) => {
+              // constant geometry: the border stays on in both states (it
+              // consumes 2 cols + 1 row, so dropping it on focus reflows the
+              // row and stretches the short box against its sibling);
+              // focus is expressed through colors only
+              const focused = () => index() === focus()
+              const tone = () => (action.danger ? theme().error : theme().textMuted)
+              return (
+                <box
+                  paddingLeft={2}
+                  paddingRight={2}
+                  border={true}
+                  backgroundColor={focused() ? (action.danger ? theme().error : theme().primary) : undefined}
+                  borderColor={focused() ? (action.danger ? theme().error : theme().primary) : tone()}
+                  onMouseOver={() => setFocus(index())}
+                  onMouseUp={() => props.onDone(action.value)}
+                >
+                  <text fg={focused() ? theme().background : tone()}>
+                    <b>{action.title}</b>
+                  </text>
+                </box>
+              )
+            }}
           </For>
         </box>
       </box>
+      <KeyLegend api={props.api} keys={[["↑↓", "select"], ["⏎", "confirm"], ["esc", "back"]]} onBack={() => props.onDone(undefined)} />
     </DialogFrame>
   )
 }
@@ -772,9 +848,9 @@ export function showAlertMenu(api: TuiPluginApi, props: { title: string; message
 
 // --- prompt (text entry — the one custom piece) -------------------------------
 
-// Full printable ASCII (parity fix, live-caught class: the lowercase-only
-// set made uppercase CREATE_TOKENs and codes UNTYPEABLE). Space is bound
-// separately below; escape is the back binding, so it's excluded.
+// Full printable ASCII: a lowercase-only set makes uppercase
+// CREATE_TOKENs and codes UNTYPEABLE. Space is bound separately below;
+// escape is the back binding, so it is excluded.
 const PROMPT_CHARS = [
   ..."abcdefghijklmnopqrstuvwxyz",
   ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ",
@@ -804,7 +880,7 @@ export function PromptDialog(props: {
     { name: `${commandPrefix}.ok`, title: "Confirm", run: (ctx) => { blockKey(ctx); props.onDone(text()) } },
     { name: `${commandPrefix}.back`, title: "Cancel", run: (ctx) => { blockKey(ctx); props.onDone(undefined) } },
     { name: `${commandPrefix}.del`, title: "Backspace", run: (ctx) => { blockKey(ctx); setText((v) => v.slice(0, -1)) } },
-    { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
+    { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
   ]
   const bindings: Array<{ key: string; cmd: string; desc?: string }> = [
     { key: "enter", cmd: `${commandPrefix}.ok`, desc: "Confirm" },
@@ -819,7 +895,7 @@ export function PromptDialog(props: {
     commands.push({ name: `${commandPrefix}.${name}`, title: `Type ${ch}`, run: (ctx) => { blockKey(ctx); setText((v) => v + ch) } })
     bindings.push({ key: ch, cmd: `${commandPrefix}.${name}` })
   }
-  const unregister = props.api.keymap.registerLayer({ priority: 10000, commands, bindings })
+  const unregister = props.api.keymap.registerLayer({ priority: 10000, commands: traceCmds(commands), bindings })
   onCleanup(() => {
     unregister()
     popMode()
@@ -843,10 +919,10 @@ export function showPromptOnce(api: TuiPluginApi, props: { title: string; placeh
       if (settled) return
       settled = true
       release()
-      dbgLog(`prompt(${props.title}) -> ${value === undefined ? "cancel" : `len=${value.length}`}`)
+      tuiDebug(`prompt(${props.title}) -> ${value === undefined ? "cancel" : `len=${value.length}`}`)
       resolve(value)
     }
-    dbgLog(`prompt(${props.title}) OPEN`)
+    tuiDebug(`prompt(${props.title}) OPEN`)
     api.ui.dialog.replace(
       () => <PromptDialog api={api} title={props.title} placeholder={props.placeholder} value={props.value} onDone={done} />,
       () => done(undefined),
@@ -856,7 +932,7 @@ export function showPromptOnce(api: TuiPluginApi, props: { title: string; placeh
 
 /** host-facade adapter: ShareDialogSelectOption (flows) -> MenuOption */
 export function toMenuOptions<Value>(options: ShareDialogSelectOption<Value>[]): MenuOption<Value>[] {
-  return options.map((o) => ({ title: o.title, description: o.description, value: o.value, disabled: o.disabled, help: o.help, danger: o.danger, edited: o.edited, divider: o.divider }))
+  return options.map((o) => ({ title: o.title, description: o.description, value: o.value, disabled: o.disabled, help: o.help, danger: o.danger, edited: o.edited, dim: o.dim, divider: o.divider }))
 }
 
 // --- combined size picker (config-studio SizeSliderDialog port) ----------------
@@ -875,8 +951,10 @@ export function showSizePickerOnce(api: TuiPluginApi, current: SizePickerResult)
       if (settled) return
       settled = true
       release()
+      tuiDebug(`sizePicker -> ${value === undefined ? "cancel" : `${value.width}/${value.heightPercent}`}`)
       resolve(value)
     }
+    tuiDebug("sizePicker OPEN")
     api.ui.dialog.replace(
       () => <SizePickerDialog api={api} current={current} onDone={done} />,
       () => done(undefined),
@@ -884,7 +962,7 @@ export function showSizePickerOnce(api: TuiPluginApi, current: SizePickerResult)
   })
 }
 
-function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult; onDone: (value: SizePickerResult | undefined) => void }): JSX.Element {
+export function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult; onDone: (value: SizePickerResult | undefined) => void }): JSX.Element {
   const theme = () => props.api.theme.current
   useDialogSize(props.api)
   useHidePromptCursor(props.api)
@@ -944,13 +1022,13 @@ function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult;
   })
   const unregister = props.api.keymap.registerLayer({
     priority: 10000,
-    commands: [
+    commands: traceCmds([
       { name: `${commandPrefix}.width`, title: "Cycle width", run: (ctx: KeyContext) => { blockKey(ctx); cycleWidth() } },
       { name: `${commandPrefix}.left`, title: "Lower height", run: (ctx: KeyContext) => { blockKey(ctx); move(-1) } },
       { name: `${commandPrefix}.right`, title: "Raise height", run: (ctx: KeyContext) => { blockKey(ctx); move(1) } },
       { name: `${commandPrefix}.down`, title: "Lower height faster", run: (ctx: KeyContext) => { blockKey(ctx); move(-5) } },
       { name: `${commandPrefix}.up`, title: "Raise height faster", run: (ctx: KeyContext) => { blockKey(ctx); move(5) } },
-      ...HEIGHT_PRESETS.map((preset) => ({
+      ...HEIGHT_PRESETS.map((preset): { name: string; title: string; run: (ctx: KeyContext) => void } => ({
         name: `${commandPrefix}.preset_${preset.label}`,
         title: `${preset.label} preset`,
         run: (ctx: KeyContext) => {
@@ -961,8 +1039,8 @@ function SizePickerDialog(props: { api: TuiPluginApi; current: SizePickerResult;
       { name: `${commandPrefix}.custom`, title: "Custom percent", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone({ width: kvWidthOf(props.api.kv), heightPercent: -1 }) } },
       { name: `${commandPrefix}.save`, title: "Save", run: (ctx: KeyContext) => { blockKey(ctx); save() } },
       { name: `${commandPrefix}.back`, title: "Back", run: (ctx: KeyContext) => { blockKey(ctx); props.onDone(undefined) } },
-      { name: `${commandPrefix}.shield`, title: "Block background input", run: blockKey },
-    ],
+      { name: `${commandPrefix}.shield`, title: "Block background input", run: (ctx: KeyContext) => blockKey(ctx) },
+    ]),
     bindings: [
       { key: "w", cmd: `${commandPrefix}.width`, desc: "Cycle width" },
       { key: "left", cmd: `${commandPrefix}.left`, desc: "Lower height" },

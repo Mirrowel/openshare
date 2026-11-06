@@ -42,9 +42,9 @@ export type ViewEntry = {
   mark?: string
   /** false = this view is continuous-only (a stream metaphor with no
    *  meaningful "one prompt at a time" page): the settings panel hides the
-   *  paged/continuous toggle for it and it never renders the prompt rail
-   *  (owner directive 2026-10-24: some views are always continuous, and
-   *  the option to enable paging should not even be shown) */
+   *  paged/continuous toggle for it and it never renders the prompt rail.
+   *  Some views are always continuous, and the option to enable paging should
+   *  not even be shown. */
   paged?: boolean
   /** view-scoped settings (rendered in the settings panel when active) */
   settings?: ViewSettingDef[]
@@ -65,9 +65,15 @@ export function applyCodeSurface(on: boolean) {
   else delete document.documentElement.dataset.oshCodeSurface
 }
 
-// the settings panel lists classic + reader + every registered view
+// the settings panel lists the two core views flat, then every other view
+// behind a collapsible "more views" group (classic + conversation receive
+// the newest reading features first; the rest are maintained but may lag -
+// see the viewer README). Order here is picker order; PRIMARY_VIEWS is the
+// split.
+export const PRIMARY_VIEWS = ["classic", "conversation"]
 export const VIEW_OPTIONS: { id: string; label: string }[] = [
   { id: "classic", label: "classic" },
+  { id: "conversation", label: "conversation" },
   { id: "reader", label: "reader" },
 ]
 
@@ -123,8 +129,8 @@ export function viewMark(id: string): string {
 /** does this view support paged mode? (classic/reader do; registered views
  *  declare it via ViewEntry.paged, default true) */
 export function viewSupportsPaged(id: string): boolean {
-  // classic is continuous + focus mode only (owner round 2026-10-25: the
-  // paged toggle is gone from classic; focus mode is the one-turn surface)
+  // classic is continuous + focus mode only: no paged toggle, focus mode is
+  // the one-turn surface
   if (id === "classic") return false
   if (id === "reader") return true
   const v = VIEWS.find((x) => x.id === id)

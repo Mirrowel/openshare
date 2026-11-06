@@ -18,66 +18,48 @@ set -euo pipefail
 # milestones only a human sets, through the manual levers below.
 #
 # MANUAL versioning - how to set the version by hand:
-#   1. Move the release line persistently:
-#        npm run release:intent -- <version|patch|minor|major>
-#      (run in share-plugin/). Writes .release.json "next" and updates
-#      package.json + package-lock.json to match; the CI release gate
-#      (release:intent:check) fails unless all three agree. When "next"
-#      sits ABOVE the latest stable tag it is an EXACT PIN: that version
-#      releases regardless of what the commits would compute (holding a
-#      fix round at 0.2.1 under a feat-heavy range), and the pin is
-#      self-consuming - once that version ships, latest == next and auto
-#      versioning resumes. At or below latest it acts as a floor only
-#      (released version = max(intent, existing prerelease line, auto
-#      bump)), so it can still raise the line any distance (0.3.x ->
-#      1.0.0 included), while commits alone never can.
+#   1. Persistent pin: write the next version into the repo-root VERSION
+#      file (by hand, or via `release-kit.sh next 1.2.3` / `minor` /
+#      `major` / `patch`). Base-vs-base comparison against the branch's
+#      current line (stable branches: latest stable tag; dev channels: the
+#      base already iterating there): strictly higher = EXACT PIN, that
+#      version releases regardless of what the commits would compute
+#      (holding a fix round at 0.2.1 under a feat-heavy range); equal or
+#      lower is inert (auto-computes). The pin is self-consuming - once
+#      that version ships, VERSION records the released line and auto
+#      versioning resumes. VERSION carries the BASE version (the release
+#      stamp keeps it there); prerelease suffixes never enter it as bases.
 #   2. One-shot exact version: dispatch the Release workflow with
 #      target_version=x.y.z - stable and prerelease releases both use exactly
 #      that version for that run.
 #   3. One-shot bump override: dispatch with version_bump=major|minor|patch|
 #      none - an explicit human choice, so "major" is honored as-is (not
-#      demoted like computed majors).
+#      clamped like computed majors).
+#
+# Kit config (.github/scripts/release-kit.conf): STABLE_BRANCHES (which
+# branches release to `latest`; every other branch is a development channel
+# stacking `-<branch>.N` per push), MAX_BUMP (highest AUTOMATIC bump,
+# default minor - an auto release can never open a new x.0.0 line; manual
+# designations bypass it), RELEASE_GATE, PROTECTED_BRANCHES.
 
 PKG_DIR="$(cd "$(dirname "$0")/../.." && pwd)/share-plugin"
 cd "$PKG_DIR"
 
-semver_sort() {
-  sort -V
-}
+kit_conf="$(cd .. && pwd)/.github/scripts/release-kit.conf"
+# kit library (conf + semver/tag helpers + path filters); sourced from the
+# conf's directory because this script cd'd into PKG_DIR already
+KIT_CONF="$kit_conf"
+# shellcheck disable=SC1091
+. "$(dirname "$kit_conf")/kit-lib.sh"
 
-semver_max() {
-  printf '%s\n' "$@" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | semver_sort | tail -n 1
-}
-
-bump_version() {
-  local version="$1"
-  local bump="$2"
-  local major minor patch
-  IFS='.' read -r major minor patch <<< "$version"
-  case "$bump" in
-    major) echo "$((major + 1)).0.0" ;;
-    minor) echo "$major.$((minor + 1)).0" ;;
-    patch) echo "$major.$minor.$((patch + 1))" ;;
-    none) echo "$major.$minor.$patch" ;;
-    *) echo "Unsupported bump: $bump" >&2; exit 1 ;;
+# clamp an automatic bump to MAX_BUMP (manual dispatch bumps bypass)
+clamp_auto_bump() {
+  local bump="$1"
+  case "$MAX_BUMP:$bump" in
+    patch:minor|patch:major) echo patch ;;
+    minor:major) echo minor ;;
+    *) echo "$bump" ;;
   esac
-}
-
-latest_stable_tag() {
-  git tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | semver_sort | tail -n 1 || true
-}
-
-latest_channel_tag() {
-  local channel="$1"
-  git tag --merged HEAD --list "v[0-9]*.[0-9]*.[0-9]*-$channel.*" | semver_sort | tail -n 1 || true
-}
-
-latest_prerelease_base() {
-  git tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*-*' \
-    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-(dev|alpha|beta|rc|canary)\.[0-9]+$' \
-    | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+)-.*/\1/' \
-    | semver_sort \
-    | tail -n 1 || true
 }
 
 tag_points_at_head() {
@@ -88,15 +70,15 @@ tag_points_at_head() {
 release_relevant_changes() {
   local previous_tag="$1"
   local changed_files
-  # paths are repo-root-relative (share-plugin/...), so run git from the
-  # monorepo root (PKG_DIR/..) even though the script cd'd into share-plugin
+  # paths are repo-root-relative, so run git from the monorepo root
+  # (PKG_DIR/..) even though the script cd'd into the package dir
   if [ -n "$previous_tag" ]; then
     changed_files="$(git -C .. diff --name-only "$previous_tag..HEAD")"
   else
     changed_files="$(git -C .. ls-tree -r --name-only HEAD)"
   fi
 
-  printf '%s\n' "$changed_files" | grep -E '^(share-plugin/(src/|README\.md$|LICENSE$|openshare\.config\.json$|ci/openshare\.js$|package(-lock)?\.json$|tsconfig(\..*)?\.json$))' > /dev/null
+  printf '%s\n' "$changed_files" | kit_any_match "$RELEASE_RE"
 }
 
 conventional_bump_since() {
@@ -128,6 +110,8 @@ next_prerelease_number() {
   local channel="$3"
   local npm_latest
   local git_latest
+  # a registry failure degrades to git-tag counting (|| true on the pipe),
+  # never crashes the compute
   npm_latest="$(npm view "$package_name" versions --json 2>/dev/null | node -e '
     const fs = require("node:fs")
     const versions = JSON.parse(fs.readFileSync(0, "utf8") || "[]")
@@ -142,7 +126,7 @@ next_prerelease_number() {
       .sort((a, b) => a - b)
       .at(-1)
     console.log(latest ?? 0)
-  ' "$base_version" "$channel")"
+  ' "$base_version" "$channel" || true)"
   git_latest="$(git tag --merged HEAD --list "v$base_version-$channel.*" \
     | sed -E "s/^v${base_version//./\.}-$channel\.([0-9]+)$/\1/" \
     | grep -E '^[0-9]+$' \
@@ -160,13 +144,22 @@ validate_stable_version() {
 }
 
 package_name="$(node -p "require('./package.json').name")"
-intent_version="$(node -p "require('./.release.json').next")"
-validate_stable_version "$intent_version"
+# VERSION file (repo root): absent or non-semver content is simply inert.
+# A prerelease-suffixed value (valid for repos whose VERSION is the sole
+# version carrier) reads as its base - the suffix is an iteration, never a
+# base line.
+intent_version="0.0.0"
+if [ -f ../VERSION ]; then
+  candidate_version="$(tr -d '[:space:]' < ../VERSION)"
+  if printf '%s\n' "$candidate_version" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$' > /dev/null; then
+    intent_version="$(base_of "$candidate_version")"
+  fi
+fi
 
 branch="${RELEASE_BRANCH:-main}"
 channel="${RELEASE_CHANNEL:-}"
 if [ -z "$channel" ]; then
-  if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+  if is_stable_branch "$branch"; then
     channel="latest"
   else
     channel="$branch"
@@ -198,12 +191,11 @@ fi
 
 if [ "$version_bump" = "auto" ]; then
   bump="$(conventional_bump_since "$stable_tag")"
-  # Computed majors are manual territory (see "Versioning model" in the
-  # header): demote to minor so an auto release never opens an x.0.0 line
-  # and never moves more than one 0.x step from the last stable.
-  if [ "$bump" = "major" ]; then
-    bump="minor"
-  fi
+  # Computed bumps clamp to MAX_BUMP (default minor: an auto release never
+  # opens a new x.0.0 line and never moves more than one 0.x step from the
+  # last stable). x.0.0 versions are milestones a human sets via the
+  # VERSION pin or dispatch inputs, which bypass this clamp.
+  bump="$(clamp_auto_bump "$bump")"
 else
   bump="$version_bump"
 fi
@@ -211,12 +203,11 @@ fi
 # Stable releases promote the highest prerelease base. If dev published
 # 0.5.0-dev.N, merging dev to main must release at least 0.5.0 even if the
 # merge commit range would otherwise infer a smaller conventional-commit bump.
-stable_candidate="$(semver_max "$intent_version" "$prerelease_line" "$(bump_version "$stable_version" "$bump")")"
-prerelease_default_bump="minor"
-if [ "$bump" = "major" ]; then
-  prerelease_default_bump="major"
-fi
-prerelease_base="$(semver_max "$intent_version" "$prerelease_line" "$(bump_version "$stable_version" "$prerelease_default_bump")")"
+# (A fresh dev branch synced to main derives its base the same way:
+# stable + MAX_BUMP, or the VERSION pin when one is set.)
+stable_candidate="$(semver_max "$prerelease_line" "$(bump_version "$stable_version" "$bump")")"
+prerelease_default_bump="$MAX_BUMP"
+prerelease_base="$(semver_max "$prerelease_line" "$(bump_version "$stable_version" "$prerelease_default_bump")")"
 
 force_release="${FORCE_RELEASE:-false}"
 require_relevant_changes="${REQUIRE_RELEVANT_CHANGES:-false}"
@@ -225,16 +216,26 @@ if [ -n "$target_version" ]; then
   prerelease_base="$target_version"
 fi
 
-# Manual pin (owner semantics): .release.json "next" set ABOVE the latest
-# stable tag pins the release EXACTLY, overriding the computed bump - it
-# can hold the line DOWN when commits alone (feat/breaking range) would
-# bump higher, which the floor semantics above cannot. Self-consuming:
-# once the pinned version ships, latest == next, the pin stops applying,
-# and auto versioning resumes. A one-shot TARGET_VERSION still wins.
-if [ -z "$target_version" ] && [ "$intent_version" != "$stable_version" ] \
-  && [ "$(printf '%s\n%s\n' "$stable_version" "$intent_version" | semver_sort | tail -n 1)" = "$intent_version" ]; then
-  stable_candidate="$intent_version"
-  prerelease_base="$intent_version"
+# Manual pin (VERSION file): the written value's base compared base-vs-base
+# against this branch's current line - stable branches sit on the latest
+# stable tag, dev channels on the base already iterating there. Strictly
+# above = EXACT pin, overriding the computed bump (it can hold the line DOWN
+# when commits alone would bump higher). Equal or lower is inert (no floor)
+# - equal usually means "stay on this line", which the channel already does.
+# Self-consuming: once the pinned version ships, VERSION records the
+# released line and auto versioning resumes. A one-shot TARGET_VERSION
+# still wins. Base-vs-base on BOTH sides matters: semver orders a clean
+# 0.3.0 ABOVE 0.3.0-dev.7, so comparing full values would misread "stay on
+# this line" as a live pin (and a moved line as unchanged).
+branch_base="$stable_version"
+if [ "$channel" != "latest" ]; then
+  branch_base="$(semver_max "$prerelease_line" "$stable_version")"
+fi
+intent_base="$intent_version"
+if [ -z "$target_version" ] && [ "$intent_base" != "$branch_base" ] \
+  && [ "$(printf '%s\n%s\n' "$branch_base" "$intent_base" | semver_sort | tail -n 1)" = "$intent_base" ]; then
+  stable_candidate="$intent_base"
+  prerelease_base="$intent_base"
 fi
 
 prerelease="false"
@@ -287,6 +288,8 @@ fi
   echo "npm_tag=$npm_tag"
   echo "version=$version"
   echo "base_version=$base_version"
+  echo "branch_base=$branch_base"
+  echo "intent_base=$intent_base"
   echo "tag=$tag"
   echo "previous_tag=$previous_tag"
   echo "prerelease_line=$prerelease_line"

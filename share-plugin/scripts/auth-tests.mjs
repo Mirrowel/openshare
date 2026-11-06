@@ -23,6 +23,7 @@ import {
 const BACKEND = process.env.OPENSHARE_BACKEND === "bun" || process.argv.includes("bun") ? "bun" : "wrangler"
 const B1_PORT = BACKEND === "bun" ? 8795 : WORKER_PORT
 const B2_PORT = B1_PORT + 10
+const B3_PORT = B1_PORT + 20
 const startBackend = (suiteDir, opts = {}) =>
   BACKEND === "bun" ? startBunServer(suiteDir, { ...opts, port: opts.port ?? B1_PORT }) : startWorker(suiteDir, opts)
 
@@ -90,7 +91,9 @@ function wsSession(url, token) {
       setTimeout(() => reject(new Error(`ws wait timeout: ${op}`)), ms)
     })
   const close = () => { try { ws.close() } catch {} }
-  return { open, send, wait, close }
+  const lastInit = async () => log.filter((f) => f.op === "init").at(-1)
+  const logOf = (op) => log.filter((f) => f.op === op)
+  return { open, send, wait, close, lastInit, logOf }
 }
 
 // The HTTP create route requires a hex URL suffix (POST /api/share/<hex>);
@@ -102,15 +105,17 @@ const CREATE = "/api/share/00"
 const suiteDir = mkdtempSync(join(tmpdir(), "openshare-auth-"))
 let worker1
 let worker2
+let worker3
 
 try {
   console.log(`[${SUITE}] starting private-mode worker…`)
-  worker1 = await startBackend(suiteDir, { configSuffix: "priv", name: "b1" })
+  worker1 = await startBackend(suiteDir, { configSuffix: "priv", name: "b1", vars: { SNAPSHOT_ENDPOINT: "1" } })
   const W1 = worker1.url
 
   // T01 — health advertises auth mode
   const health = await req(W1, "GET", "/health")
   ok("T01 health auth.mode=private", health.json?.auth?.mode === "private")
+  ok("T01b health reports version", typeof health.json?.version === "string" && health.json.version.length > 0, JSON.stringify(health.json?.version))
 
   // T02/T03 — private enrollment needs a valid code
   ok("T02 enroll without code rejected", (await req(W1, "POST", "/api/enroll", { body: {} })).status === 403)
@@ -204,7 +209,7 @@ try {
   const c3 = await req(W1, "POST", CREATE, { token: B, body: { sessionID: "ses_c3" } })
   ok("T16b first two creates pass", c1.json?.ok === true && c2.json?.ok === true)
   ok("T16c third create blocked (max shares)", c3.status === 403 && /max shares/.test(c3.json?.error ?? ""), `${c3.status} ${c3.json?.error}`)
-  ok("T16d ttl clamped to token max", c1.json?.ttlDays === 2, String(c1.json?.ttlDays))
+  ok("T16d ttl clamped to token max (hours)", c1.json?.ttlHours === 48, JSON.stringify(c1.json))
   // delete one via secret to free a slot and prove registry bookkeeping
   ok("T16e secret delete frees slot", (await req(W1, "DELETE", `/api/share/${c1.json.id}`, { body: { secret: c1.json.secret } })).json?.ok === true)
   ok("T16f create passes after free", (await req(W1, "POST", CREATE, { token: B, body: { sessionID: "ses_c4" } })).json?.ok === true)
@@ -214,16 +219,16 @@ try {
   const U5 = u5.json?.userId ?? ""
   const u5tok = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U5, limits: { maxTtlDays: 30 } } })
   const E = u5tok.json?.token ?? ""
-  ok("T16g user settings persist", (await req(W1, "PUT", "/api/me/settings", { token: E, body: { defaultTtlDays: 7 } })).json?.settings?.defaultTtlDays === 7)
+  ok("T16g user settings persist (hours)", (await req(W1, "PUT", "/api/me/settings", { token: E, body: { defaultTtlDays: 7 } })).json?.settings?.defaultTtlHours === 168)
   const d1 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl" } })
-  ok("T16h default TTL applied on create", d1.json?.ttlDays === 7, String(d1.json?.ttlDays))
+  ok("T16h default TTL applied on create (hours)", d1.json?.ttlHours === 168, JSON.stringify(d1.json))
   const d2 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_defttl2", ttlDays: 3 } })
-  ok("T16i explicit ttlDays beats default", d2.json?.ttlDays === 3, String(d2.json?.ttlDays))
+  ok("T16i explicit legacy ttlDays beats default", d2.json?.ttlHours === 72, JSON.stringify(d2.json))
   const ws6 = wsSession(W1, E)
   await ws6.open()
   ws6.send({ op: "init", create: { sessionID: "ses_defttlws" } })
   const ws6init = await ws6.wait("init")
-  ok("T16j ws create applies default TTL", ws6init.ok === true && ws6init.ttlDays === 7, JSON.stringify(ws6init).slice(0, 120))
+  ok("T16j ws create applies default TTL (hours)", ws6init.ok === true && ws6init.ttlHours === 168, JSON.stringify(ws6init).slice(0, 140))
   ws6.close()
 
   // T21 — DELETE auth enforcement (Bun once trusted raw-body root/ownerId:
@@ -255,7 +260,204 @@ try {
   ok("T22e wrong cookie rejected", wrongCookie.status === 401)
   ok("T22f cleanup", (await req(W1, "DELETE", `/api/share/${gated.json.id}`, { body: { secret: gated.json.secret } })).json?.ok === true)
 
-  // T23 — route shape: share-referencing paths need a real 32-hex id
+  // T37 - Wave 3 data-inventory split: pmeta items (machine-local facts)
+  // never become public item shards. They land in the share's private
+  // block, which only AUTHENTICATED (gated) reads carry. An ungated share
+  // stores them dormant - /data never exposes them.
+  {
+    const g37 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t37", authLogin: "v", authPassword: "p" } })
+    await req(W1, "POST", `/api/share/${g37.json.id}/sync`, {
+      body: {
+        secret: g37.json.secret,
+        data: [
+          { type: "session", sessionID: "ses_t37", data: { id: "ses_t37", title: "split test", version: "1.18" } },
+          { type: "pmeta", sessionID: "ses_t37", data: { directory: "/home/u/proj", worktree: "/home/u/proj" } },
+        ],
+      },
+    })
+    const l37 = await req(W1, "POST", `/api/share/${g37.json.id}/auth`, { body: { login: "v", password: "p" } })
+    const ck37 = /osh_[0-9a-f]+=([^;]+)/.exec(l37.res?.headers?.get?.("set-cookie") ?? "")?.[1] ?? ""
+    const read37 = async () => JSON.parse(await (await fetch(`${W1}/api/share/${g37.json.id}/data`, { headers: { cookie: `osh_${g37.json.id}=${ck37}` } })).text())
+    const d37 = { json: await read37() }
+    ok("T37 gated authed read carries the private block", d37.json?.private?.["ses_t37"]?.directory === "/home/u/proj", JSON.stringify(d37.json?.private))
+    ok("T37a pmeta never appears as an item", !(d37.json?.data ?? []).some((i) => i?.type === "pmeta"), JSON.stringify((d37.json?.data ?? []).map((i) => i?.type)))
+    // pmeta tombstone drops the entry
+    await req(W1, "POST", `/api/share/${g37.json.id}/sync`, { body: { secret: g37.json.secret, data: [{ type: "pmeta", sessionID: "ses_t37", del: true, data: { id: "ses_t37" } }] } })
+    const d37b = { json: await read37() }
+    ok("T37b pmeta tombstone drops the entry", !d37b.json?.private?.["ses_t37"], JSON.stringify(d37b.json?.private))
+    ok("T37c cleanup gated", (await req(W1, "DELETE", `/api/share/${g37.json.id}`, { body: { secret: g37.json.secret } })).json?.ok === true)
+
+    // ungated share: pmeta stored dormant, NEVER in the public envelope
+    const u37 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t37u" } })
+    await req(W1, "POST", `/api/share/${u37.json.id}/sync`, {
+      body: { secret: u37.json.secret, data: [{ type: "session", sessionID: "ses_t37u", data: { id: "ses_t37u", title: "anon" } }, { type: "pmeta", sessionID: "ses_t37u", data: { directory: "/secret/dir" } }] },
+    })
+    const d37u = await req(W1, "GET", `/api/share/${u37.json.id}/data`)
+    const flat37 = JSON.stringify(d37u.json ?? {})
+    ok("T37d ungated read exposes no private block", d37u.json?.private === undefined, flat37.slice(0, 140))
+    ok("T37e ungated read leaks no pmeta path", !flat37.includes("secret/dir") && !flat37.includes('"pmeta"'), flat37.slice(0, 200))
+    ok("T37f cleanup ungated", (await req(W1, "DELETE", `/api/share/${u37.json.id}`, { body: { secret: u37.json.secret } })).json?.ok === true)
+  }
+
+  // T38 — snapshot freeze (Wave 4): ONE self-contained HTML file — viewer
+  // bundle inlined, share data as a JSON island. Read gate applies exactly
+  // as /data: no bypass through the snapshot.
+  {
+    const g38 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t38" } })
+    await req(W1, "POST", `/api/share/${g38.json.id}/sync`, {
+      body: {
+        secret: g38.json.secret,
+        data: [
+          { type: "session", sessionID: "ses_t38", data: { id: "ses_t38", title: "snapshot test" } },
+          { type: "message", sessionID: "ses_t38", data: { id: "msg_t38", role: "user", content: [{ type: "text", text: "frozen hello" }] } },
+        ],
+      },
+    })
+    const s38res = await fetch(`${W1}/api/share/${g38.json.id}/snapshot`)
+    const html38 = await s38res.text()
+    ok("T38 snapshot 200 html", s38res.status === 200 && (s38res.headers.get("content-type") ?? "").includes("text/html"), `${s38res.status}`)
+    ok("T38a island present with items+status", html38.includes("__MIRROBOT_SNAPSHOT__") && html38.includes('"items":') && html38.includes('"sessionID":"ses_t38"'), html38.slice(0, 120))
+        ok(
+      "T38b bundle inlined (no external assets)",
+      // chunks ride a base64 JSON island and the boot script turns them into
+      // Blob URLs + an import map, so nothing loads from /assets/ after the
+      // download (data: module URLs blew the tab up to 5 GB RSS)
+      !/src="\/assets\//.test(html38) &&
+        !/href="\/assets\/[^"]+\.css"/.test(html38) &&
+        html38.includes('id="osh-chunks"') &&
+        html38.includes("createObjectURL"),
+    )
+    ok("T38c data frozen in island", html38.includes("frozen hello") && html38.includes("snapshot test"))
+    ok("T38d download disposition", (await req(W1, "GET", `/api/share/${g38.json.id}/snapshot?download=1`)).res?.headers?.get?.("content-disposition")?.includes("attachment"))
+
+    // gated share: unauthenticated snapshot 401s; the login cookie thaws it
+    const g38b = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t38g", authLogin: "v", authPassword: "p" } })
+    await req(W1, "POST", `/api/share/${g38b.json.id}/sync`, {
+      body: {
+        secret: g38b.json.secret,
+        data: [
+          { type: "session", sessionID: "ses_t38g", data: { id: "ses_t38g", title: "gated snap" } },
+          { type: "pmeta", sessionID: "ses_t38g", data: { directory: "/home/u/gated" } },
+        ],
+      },
+    })
+    ok("T38e gated snapshot unauthenticated 401", (await req(W1, "GET", `/api/share/${g38b.json.id}/snapshot`)).status === 401)
+    const l38 = await req(W1, "POST", `/api/share/${g38b.json.id}/auth`, { body: { login: "v", password: "p" } })
+    const ck38 = /osh_[0-9a-f]+=([^;]+)/.exec(l38.res?.headers?.get?.("set-cookie") ?? "")?.[1] ?? ""
+    const s38bres = await fetch(`${W1}/api/share/${g38b.json.id}/snapshot`, { headers: { cookie: `osh_${g38b.json.id}=${ck38}` } })
+    const html38b = await s38bres.text()
+    ok("T38f authed snapshot 200 with private block", s38bres.status === 200 && html38b.includes("/home/u/gated") && html38b.includes('"private":'), `${s38bres.status}`)
+    // gone share: 404
+    await req(W1, "DELETE", `/api/share/${g38b.json.id}`, { body: { secret: g38b.json.secret } })
+    ok("T38g gone share snapshot 404", (await req(W1, "GET", `/api/share/${g38b.json.id}/snapshot`)).status === 404)
+    ok("T38h cleanup", (await req(W1, "DELETE", `/api/share/${g38.json.id}`, { body: { secret: g38.json.secret } })).json?.ok === true)
+  }
+
+  // T39 — per-share OG embed: rendered card PNG + per-share crawler tags.
+  // Gated shares never leak: generic card, deployment-title tags only.
+  {
+    const now = Date.now()
+    const g39 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t39", status: "completed" } })
+    await req(W1, "POST", `/api/share/${g39.json.id}/sync`, {
+      body: {
+        secret: g39.json.secret, status: "completed",
+        data: [
+          { type: "session", sessionID: "ses_t39", data: { id: "ses_t39", title: "og card test session", time: { created: now } } },
+          { type: "message", sessionID: "ses_t39", data: { id: "m39a", type: "user", time: { created: now + 1 }, text: "hi" } },
+          { type: "message", sessionID: "ses_t39", data: { id: "m39b", type: "assistant", model: { id: "gm", providerID: "mock" }, time: { created: now + 2 }, content: [{ type: "text", text: "done" }, { type: "tool", tool: "bash" }] } },
+          { type: "model", sessionID: "ses_t39", data: { id: "gm", name: "Mock 1", providerID: "mock" } },
+        ],
+      },
+    })
+    const png = await fetch(`${W1}/api/share/${g39.json.id}/og.png`)
+    const buf = Buffer.from(await png.arrayBuffer())
+    ok("T39 og card 200 png", png.status === 200 && (png.headers.get("content-type") ?? "").includes("image/png") && buf.subarray(0, 4).toString("hex") === "89504e47", `${png.status} ${buf.length}b ${buf.subarray(0, 4).toString("hex") === "89504e47" ? "" : String(buf.subarray(0, 200))}`)
+    const crawl = await fetch(`${W1}/s/${g39.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })
+    const ch = await crawl.text()
+    const t = /<meta property="og:title" content="([^"]*)">/.exec(ch)?.[1] ?? ""
+    const im = /<meta property="og:image" content="([^"]*)">/.exec(ch)?.[1] ?? ""
+    const dsc = /<meta property="og:description" content="([^"]*)">/.exec(ch)?.[1] ?? ""
+    ok("T39a crawler tags carry the session title", t === "og card test session", t)
+    ok("T39b stat line derived", /1 turn.*1 tool.*Mock 1/.test(dsc), dsc)
+    ok("T39c image url is the per-share card with rev", im.endsWith(`/api/share/${g39.json.id}/og.png?v=1`), im)
+    ok("T39d summary_large_image", /twitter:card" content="summary_large_image"/.test(ch))
+
+    // gated: generic card + generic tags, no title anywhere
+    const g39b = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t39g", status: "completed", authLogin: "v", authPassword: "p" } })
+    await req(W1, "POST", `/api/share/${g39b.json.id}/sync`, { body: { secret: g39b.json.secret, status: "completed", data: [{ type: "session", sessionID: "ses_t39g", data: { id: "ses_t39g", title: "SECRET NEVER LEAK T39", time: { created: now } } }] } })
+    const gpng = await fetch(`${W1}/api/share/${g39b.json.id}/og.png`)
+    const gbuf = Buffer.from(await gpng.arrayBuffer())
+    ok("T39e gated card 200 png", gpng.status === 200 && gbuf.subarray(0, 4).toString("hex") === "89504e47", `${gpng.status} ${gbuf.length}b`)
+    const ghtml = await (await fetch(`${W1}/s/${g39b.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })).text()
+    const gt = /<meta property="og:title" content="([^"]*)">/.exec(ghtml)?.[1] ?? ""
+    ok("T39f gated tags stay generic", !gt.includes("SECRET") && !gt.includes("og card"), gt)
+    ok("T39g gated card leaks no title", !ghtml.includes("SECRET NEVER LEAK") && !gbuf.includes(Buffer.from("SECRET NEVER LEAK")))
+    ok("T39h cleanup", (await req(W1, "DELETE", `/api/share/${g39.json.id}`, { body: { secret: g39.json.secret } })).json?.ok === true && (await req(W1, "DELETE", `/api/share/${g39b.json.id}`, { body: { secret: g39b.json.secret } })).json?.ok === true)
+  }
+
+  // T40 — share title + pause (the settings tiers): a sticky custom title
+  // rides create AND PATCH, wins on the page envelope and the OG card, and
+  // clears back to the live session title. Pause is freeze-parity,
+  // self-served: data writes 423, the finalize backstop stands down (a
+  // plugin-gone pause keeps the last status), unpause reopens writes.
+  {
+    const now = Date.now()
+    const t40Items = (title) => [
+      { type: "session", sessionID: "ses_t40", data: { id: "ses_t40", title, time: { created: now } } },
+      { type: "message", sessionID: "ses_t40", data: { id: "m40", type: "user", time: { created: now + 1 }, text: "hi" } },
+    ]
+    const g40 = await req(W1, "POST", CREATE, { token: E, body: { sessionID: "ses_t40", title: "custom at create" } })
+    const sync40 = (data) => req(W1, "POST", `/api/share/${g40.json.id}/sync`, { body: { secret: g40.json.secret, status: "live", data } })
+    await sync40(t40Items("live session title"))
+    const d40 = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40 create title rides the envelope", d40.title === "custom at create", JSON.stringify(d40.title))
+
+    const p40 = await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, title: "renamed by owner" } })
+    ok("T40a PATCH title", p40.json?.title === "renamed by owner", JSON.stringify(p40.json))
+    const d40b = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40b patched title serves on the next load", d40b.title === "renamed by owner", JSON.stringify(d40b.title))
+    const og40 = await (await fetch(`${W1}/s/${g40.json.id}`, { headers: { "user-agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)" } })).text()
+    ok("T40c OG title prefers the custom title", /<meta property="og:title" content="renamed by owner">/.test(og40))
+
+    const c40 = await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, title: "" } })
+    ok("T40d title clears", c40.json?.title === "", JSON.stringify(c40.json))
+    const d40c = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40e cleared title leaves the envelope", d40c.title === undefined, JSON.stringify(d40c.title))
+
+    // pause: data writes refuse, status untouched, finalize stands down
+    const pz = await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, paused: true } })
+    ok("T40f pause", pz.json?.paused === true, JSON.stringify(pz.json))
+    const blocked = await req(W1, "POST", `/api/share/${g40.json.id}/sync`, { body: { secret: g40.json.secret, status: "completed", data: t40Items("paused edit") } })
+    ok("T40g paused data write 423", blocked.status === 423, `${blocked.status}`)
+    const d40d = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40h page untouched while paused", d40d.status === "live" && !JSON.stringify(d40d.data).includes("paused edit"), `${d40d.status}`)
+
+    // arm the finalize backstop (plugin-gone: attach then drop the socket)
+    // and outlive it: the 2.4s suite finalize window must NOT flip a paused
+    // share to interrupted
+    const ws40 = wsSession(W1, E)
+    await ws40.open()
+    ws40.send({ op: "init", attach: { id: g40.json.id, secret: g40.json.secret } })
+    await ws40.wait("init")
+    ws40.close()
+    await new Promise((r) => setTimeout(r, 3400))
+    const d40e = await (await fetch(`${W1}/api/share/${g40.json.id}/data`)).json()
+    ok("T40i finalize stands down while paused", d40e.status === "live", `${d40e.status}`)
+
+    ok("T40j unpause", (await req(W1, "PATCH", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret, paused: false } })).json?.paused === false)
+    ok("T40k writes resume after unpause", (await sync40(t40Items("live session title"))).status === 200)
+    const meta40 = await req(W1, "GET", `/api/share/${g40.json.id}/meta`, { token: E })
+    const m40 = meta40.json ?? {}
+    ok(
+      "T40l meta exposes paused/title, keeps attempts+private inside the DO",
+      meta40.status === 200 && m40.paused === false && m40.title === null && m40.attempts === undefined && m40.private === undefined,
+      `${meta40.status} ${JSON.stringify(m40).slice(0, 160)}`,
+    )
+    ok("T40m cleanup", (await req(W1, "DELETE", `/api/share/${g40.json.id}`, { body: { secret: g40.json.secret } })).json?.ok === true)
+  }
+
+
+  // T23 - route shape: share-referencing paths need a real 32-hex id
   ok("T23 short id 404s", (await req(W1, "GET", `/api/share/${"a".repeat(31)}/data`)).status === 404)
   ok("T23b junk id 404s", (await req(W1, "POST", `/api/share/zzzz/sync`, { body: {} })).status === 404)
 
@@ -360,7 +562,7 @@ try {
   // T27 - live settings sync: a re-attach over an OPEN control socket
   // retroactively applies read auth (rotating viewer tokens) and REMOVES
   // it when the pair goes empty - settings changes must not wait for a
-  // reconnect (owner rule: every connection heals all staleness)
+  // reconnect, since every connection heals staleness
   {
     const c = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_liveauth" } })
     const SID = c.json?.id ?? ""
@@ -371,21 +573,57 @@ try {
     await w.open()
     w.send({ op: "init", attach: { id: SID, secret: SECRET, authLogin: "live", authPassword: "gate" } })
     ok("T27a re-attach ok", (await w.wait("init")).ok === true)
+    ok("T27a2 ack reports the live gate (auth:true)", (await w.lastInit()).auth === true, JSON.stringify(await w.lastInit()))
     ok("T27b gate applied live (no reconnect)", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 401)
     const login = await req(W1, "POST", `/api/share/${SID}/auth`, { body: { login: "live", password: "gate" } })
     const setCookie27 = login.res?.headers?.get?.("set-cookie") ?? ""
     const cookie27 = /osh_[0-9a-f]+=([^;]+)/.exec(setCookie27)?.[1] ?? ""
     ok("T27c viewer can log in", login.status === 200 && cookie27.length > 20, `${login.status} ${setCookie27.slice(0, 40)}`)
     w.send({ op: "init", attach: { id: SID, secret: SECRET, authLogin: "", authPassword: "" } })
-    ok("T27d empty pair re-attach ok", (await w.wait("init")).ok === true)
+    // wait("init") resolves from the log's FIRST ack; poll for the second
+    let ack27d = null
+    for (let i = 0; i < 50 && !ack27d; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      const inits = w.logOf("init")
+      if (inits.length >= 2) ack27d = inits.at(-1)
+    }
+    ok("T27d empty pair re-attach ok", ack27d?.ok === true, JSON.stringify(ack27d))
+    ok("T27d2 ack reports no gate after removal (auth:false)", ack27d?.auth === false, JSON.stringify(ack27d))
     ok("T27e gate removed live", (await req(W1, "GET", `/api/share/${SID}/data`)).status === 200)
     w.close()
     await req(W1, "DELETE", `/api/share/${SID}`, { body: { secret: SECRET } })
   }
 
-  // T28 - revocation freezes control (owner rule): a user whose LAST valid
-  // token is revoked loses control of ALL their shares - user token AND
-  // share secret both - while viewing continues; rotation keeps control
+  // T29 - free-form meta on WS create (B5): the plugin's labels ride the
+  // create frame, the ack carries the resolved auth flag, and the admin
+  // shares listing exposes the custom object on both backends
+  {
+    const w = wsSession(W1, CREATE_TOKEN)
+    await w.open()
+    w.send({ op: "init", create: { sessionID: "ses_meta", ttlDays: 5, authLogin: "", authPassword: "", meta: { run: "ci-42", branch: "main" } } })
+    const init29 = await w.wait("init")
+    const SID29 = init29.id ?? ""
+    ok("T29 meta create ok", init29.ok === true && !!SID29, JSON.stringify(init29))
+    ok("T29a create ack reports no gate (auth:false)", init29.auth === false, JSON.stringify(init29))
+    w.send({ op: "init", create: { sessionID: "ses_meta2", authLogin: "m", authPassword: "g", meta: { k: "v" } } })
+    let init29b = init29
+    for (let i = 0; i < 50 && init29b === init29; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      init29b = await w.lastInit()
+    }
+    ok("T29b gated create ack reports auth:true", init29b.ok === true && init29b.auth === true, JSON.stringify(init29b))
+    w.close()
+    const admin = await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })
+    const all = admin.json?.shares ?? []
+    const mine = all.find((s) => s.id === SID29)
+    ok("T29c admin listing carries custom meta", mine?.custom?.run === "ci-42" && mine?.custom?.branch === "main", JSON.stringify(mine?.custom))
+    await req(W1, "DELETE", `/api/share/${SID29}`, { body: { secret: init29.secret } })
+    await req(W1, "DELETE", `/api/share/${init29b.id}`, { body: { secret: init29b.secret } })
+  }
+
+  // T28 - revocation freezes control: a user whose LAST valid token is
+  // revoked loses control of ALL their shares - user token AND share secret
+  // both - while viewing continues; rotation keeps control
   {
     const u4 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "revokeme" } })
     const U4 = u4.json?.userId ?? ""
@@ -454,16 +692,343 @@ try {
   const meShares2 = (await req(W1, "GET", "/api/me/shares", { token: A2 })).json?.shares ?? []
   ok("T19c registry moved", meShares2.some((s) => s.id === u4share.json.id))
 
-  // T20 — public mode worker: open enrollment + anonymous creates
-  console.log(`[${SUITE}] starting public-mode worker…`)
-  worker2 = await startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public" }, authMode: "public" })
+  // T30 — token classes: FULL mints SCOPED; scoped creates/touches ONLY
+  // its own shares; scoped cannot mint or edit settings; scoped self-
+  // rotate stays scoped; scoped listing shows only its shares
+  {
+    const u5 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "token-classes" } })
+    const full = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u5.json?.userId } })
+    const FULL = full.json?.token
+    ok("T30 full token minted", typeof FULL === "string", JSON.stringify(full.json))
+    // full creates share A
+    const shareA = await req(W1, "POST", CREATE, { token: FULL, body: { sessionID: "ses_t30a" } })
+    ok("T30a full creates share A", shareA.json?.ok === true, JSON.stringify(shareA.json))
+    // full self-mints a scoped token
+    const scopedMint = await req(W1, "POST", "/api/token", { token: FULL, body: { kind: "scoped", label: "ci" } })
+    const SCOPED = scopedMint.json?.token
+    ok("T30b full self-mints scoped", scopedMint.json?.ok === true && scopedMint.json?.kind === "scoped", JSON.stringify(scopedMint.json))
+    // scoped creates share B (allowed within limits)
+    const shareB = await req(W1, "POST", CREATE, { token: SCOPED, body: { sessionID: "ses_t30b" } })
+    ok("T30c scoped creates its own share", shareB.json?.ok === true, JSON.stringify(shareB.json))
+    // scoped CANNOT sync share A (created by the full token)
+    const touchA = await req(W1, "POST", `/api/share/${shareA.json?.id}/sync`, { token: SCOPED, body: { data: [{ type: "message", data: { id: "msg_x", role: "user" } }] } })
+    ok("T30d scoped cannot touch the full token's share", touchA.json?.ok === false, JSON.stringify(touchA.json))
+    // scoped CAN sync its own share B
+    const touchB = await req(W1, "POST", `/api/share/${shareB.json?.id}/sync`, { token: SCOPED, body: { data: [{ type: "message", data: { id: "msg_y", role: "user" } }] } })
+    ok("T30e scoped syncs its own share", touchB.json?.ok === true, JSON.stringify(touchB.json))
+    // scoped cannot mint
+    const scopedMint2 = await req(W1, "POST", "/api/token", { token: SCOPED, body: { kind: "scoped" } })
+    ok("T30f scoped cannot mint", scopedMint2.status === 403, JSON.stringify(scopedMint2.json))
+    // scoped cannot edit user settings
+    const scopedSet = await req(W1, "PUT", "/api/me/settings", { token: SCOPED, body: { defaultTtlDays: 5 } })
+    ok("T30g scoped cannot edit settings", scopedSet.status === 403, JSON.stringify(scopedSet.json))
+    // scoped listing shows ONLY share B
+    const scopedList = await req(W1, "GET", "/api/me/shares", { token: SCOPED })
+    const ids = (scopedList.json?.shares ?? []).map((s) => s.id)
+    ok("T30h scoped lists only its shares", ids.includes(shareB.json?.id) && !ids.includes(shareA.json?.id), JSON.stringify(ids))
+    // scoped self-rotate stays scoped, and the successor still reaches B
+    const rot = await req(W1, "POST", "/api/token/rotate", { token: SCOPED })
+    ok("T30i scoped rotation stays scoped", rot.json?.ok === true && rot.json?.tokenKind === "scoped", JSON.stringify(rot.json))
+    const touchB2 = await req(W1, "POST", `/api/share/${shareB.json?.id}/sync`, { token: rot.json?.token, body: { data: [{ type: "message", data: { id: "msg_z", role: "user" } }] } })
+    ok("T30j rotated scoped still reaches its share", touchB2.json?.ok === true, JSON.stringify(touchB2.json))
+    // T31 — revoking the LAST full token freezes everything INCLUDING
+    // scoped shares (scoped never keeps the account alive)
+    const scopedRow = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const fullId = scopedRow.find((t) => t.userId === u5.json?.userId && t.kind === "full" && !t.revoked)?.id
+    const revFull = await req(W1, "DELETE", `/api/admin/tokens/${fullId}`, { token: CREATE_TOKEN })
+    ok("T31 last full revoked -> frozen", revFull.json?.ok === true && revFull.json?.frozen === true, JSON.stringify(revFull.json))
+    const afterFreeze = await req(W1, "POST", `/api/share/${shareB.json?.id}/sync`, { token: rot.json?.token, body: { data: [] } })
+    ok("T31b scoped path severed too", afterFreeze.json?.ok === false, JSON.stringify(afterFreeze.json))
+    const viewStill = await req(W1, "GET", `/api/share/${shareB.json?.id}/data`)
+    ok("T31c viewing untouched", viewStill.status === 200, String(viewStill.status))
+    await req(W1, "DELETE", `/api/share/${shareB.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/share/${shareA.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T32 — freeze-by-token bulk op: freezes only the shares one token
+  // created, leaving the owner's other shares writable
+  {
+    const u6 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "bulk" } })
+    const t6full = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u6.json?.userId } })
+    const T6FULL = t6full.json?.token
+    const s6own = await req(W1, "POST", CREATE, { token: T6FULL, body: { sessionID: "ses_t32own" } })
+    const t6scoped = await req(W1, "POST", "/api/token", { token: T6FULL, body: { kind: "scoped", label: "ci2" } })
+    const T6SCOPED = t6scoped.json?.token
+    const s6ci = await req(W1, "POST", CREATE, { token: T6SCOPED, body: { sessionID: "ses_t32ci" } })
+    // find the scoped token's row id for the bulk op
+    const rows6 = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const scopedId6 = rows6.find((t) => t.userId === u6.json?.userId && t.kind === "scoped" && !t.revoked)?.id
+    const bulk = await req(W1, "POST", `/api/admin/tokens/${scopedId6}/freeze-shares`, { token: CREATE_TOKEN, body: {} })
+    ok("T32 freeze-by-token froze the scoped shares", bulk.json?.ok === true && bulk.json?.shares === 1, JSON.stringify(bulk.json))
+    const ciTouch = await req(W1, "POST", `/api/share/${s6ci.json?.id}/sync`, { token: T6SCOPED, body: { data: [] } })
+    ok("T32a frozen CI share refuses writes", ciTouch.json?.ok === false, JSON.stringify(ciTouch.json))
+    const ownTouch = await req(W1, "POST", `/api/share/${s6own.json?.id}/sync`, { token: T6FULL, body: { data: [{ type: "message", data: { id: "msg_t32", role: "user" } }] } })
+    ok("T32b owner's other share untouched", ownTouch.json?.ok === true, JSON.stringify(ownTouch.json))
+    await req(W1, "DELETE", `/api/share/${s6ci.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/share/${s6own.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T33 — code-lineage revoke: one call kills every token of every user
+  // the code onboarded and freezes their shares
+  {
+    const linCode = await req(W1, "POST", "/api/admin/codes", { token: CREATE_TOKEN, body: { label: "lineage", activations: 2 } })
+    const e1 = await req(W1, "POST", "/api/enroll", { body: { code: linCode.json?.code, label: "lin-1" } })
+    const e1share = await req(W1, "POST", CREATE, { token: e1.json?.token, body: { sessionID: "ses_t33" } })
+    ok("T33 lineage user enrolled + shared", e1.json?.ok === true && e1share.json?.ok === true, JSON.stringify(e1.json))
+    const linRevoke = await req(W1, "POST", `/api/admin/codes/${linCode.json?.id}/revoke-lineage`, { token: CREATE_TOKEN, body: {} })
+    ok("T33a lineage revoke hit the user", linRevoke.json?.ok === true && linRevoke.json?.users === 1 && linRevoke.json?.revoked >= 1, JSON.stringify(linRevoke.json))
+    const deadTouch = await req(W1, "POST", `/api/share/${e1share.json?.id}/sync`, { token: e1.json?.token, body: { data: [] } })
+    ok("T33b lineage user's token dead", deadTouch.json?.ok === false, JSON.stringify(deadTouch.json))
+    // the code itself is disabled: no further onboarding from it
+    const e2 = await req(W1, "POST", "/api/enroll", { body: { code: linCode.json?.code } })
+    ok("T33c code disabled after lineage revoke", e2.json?.ok === false, JSON.stringify(e2.json))
+    await req(W1, "DELETE", `/api/share/${e1share.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T34 — PATCH /api/share/:id (#13): edit login/pass, ttl and meta after
+  // creation over REST; auth change rotates viewer tokens; scoped tokens
+  // can patch only their own shares
+  {
+    const c34 = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_t34" } })
+    const SID34 = c34.json?.id ?? ""
+    const SECRET34 = c34.json?.secret ?? ""
+    ok("T34 share staged", !!SID34, JSON.stringify(c34.json))
+
+  // T36 - ttlHours native: hours accepted directly, floor is one hour,
+  // legacy days inputs still convert, per-token caps clamp in hours
+  {
+    const c36 = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_t36", ttlHours: 6 } })
+    ok("T36 hours-native create", c36.json?.ok === true && c36.json?.ttlHours === 6, JSON.stringify(c36.json))
+    const c36b = await req(W1, "POST", CREATE, { token: CREATE_TOKEN, body: { sessionID: "ses_t36b", ttlDays: 2 } })
+    ok("T36a legacy days converts x24", c36b.json?.ttlHours === 48, JSON.stringify(c36b.json))
+    const p36 = await req(W1, "PATCH", `/api/share/${c36.json?.id}`, { body: { secret: c36.json?.secret, ttlHours: 1 } })
+    ok("T36b PATCH one-hour floor accepted", p36.json?.ok === true && p36.json?.ttlHours === 1, JSON.stringify(p36.json))
+    await req(W1, "DELETE", `/api/share/${c36.json?.id}`, { body: { secret: c36.json?.secret } })
+    await req(W1, "DELETE", `/api/share/${c36b.json?.id}`, { body: { secret: c36b.json?.secret } })
+  }
+    // gate on via PATCH
+    const p1 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "u", authPassword: "p" } })
+    ok("T34a PATCH sets the gate", p1.json?.ok === true && p1.json?.auth === true, JSON.stringify(p1.json))
+    ok("T34b viewer needs login now", (await req(W1, "GET", `/api/share/${SID34}/data`)).status === 401)
+    // viewer logs in, then a credential CHANGE rotates their token
+    const l1 = await req(W1, "POST", `/api/share/${SID34}/auth`, { body: { login: "u", password: "p" } })
+    const ck1 = /osh_[0-9a-f]+=([^;]+)/.exec(l1.res?.headers?.get?.("set-cookie") ?? "")?.[1] ?? ""
+    const p2 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "u2", authPassword: "p2" } })
+    ok("T34c PATCH rotates creds", p2.json?.ok === true && p2.json?.auth === true, JSON.stringify(p2.json))
+    ok("T34d old viewer token dead after rotation", ck1.length > 20 && (await req(W1, "GET", `/api/share/${SID34}/data`, { headers: { cookie: `osh_${SID34}=${ck1}` } })).status === 401)
+    // gate off
+    const p3 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "", authPassword: "" } })
+    ok("T34e PATCH removes the gate", p3.json?.ok === true && p3.json?.auth === false, JSON.stringify(p3.json))
+    ok("T34f viewer reads freely again", (await req(W1, "GET", `/api/share/${SID34}/data`)).status === 200)
+    // ttl + meta
+    const p4 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, ttlHours: 7, meta: { via: "patch" } } })
+    ok("T34g PATCH ttl(hours)+meta", p4.json?.ok === true && p4.json?.ttlHours === 7 && p4.json?.custom?.via === "patch", JSON.stringify(p4.json))
+    const admin34 = await req(W1, "GET", "/api/admin/shares", { token: CREATE_TOKEN })
+    const row34 = (admin34.json?.shares ?? []).find((sh) => sh.id === SID34)
+    ok("T34h admin listing carries the patched meta", row34?.custom?.via === "patch", JSON.stringify(row34?.custom))
+    // half pair refused
+    const p5 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: SECRET34, authLogin: "x" } })
+    ok("T34i half auth pair refused", p5.status === 400, JSON.stringify(p5.json))
+    // wrong secret refused
+    const p6 = await req(W1, "PATCH", `/api/share/${SID34}`, { body: { secret: "nope", ttlDays: 3 } })
+    ok("T34j wrong secret refused", p6.json?.ok === false, JSON.stringify(p6.json))
+    // scoped token cannot PATCH another token's share
+    const u34 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t34scoped" } })
+    const t34full = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u34.json?.userId } })
+    const t34scoped = await req(W1, "POST", "/api/token", { token: t34full.json?.token, body: { kind: "scoped" } })
+    const p7 = await req(W1, "PATCH", `/api/share/${SID34}`, { token: t34scoped.json?.token, body: { ttlDays: 5 } })
+    ok("T34k scoped cannot patch others' shares", p7.json?.ok === false, JSON.stringify(p7.json))
+    await req(W1, "DELETE", `/api/share/${SID34}`, { body: { secret: SECRET34 } })
+  }
+
+  // T37 — token editing + rotation overrides: rotate may relabel/re-scope
+  // and keeps sets; POST /api/token/update and PATCH /api/admin/tokens/:id
+  // rename/re-limit tokens; scoped edits only itself (label, never limits)
+  {
+    const u37 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t37" } })
+    const f37 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u37.json?.userId, label: "orig", sets: { main: { modelLabel: "keep-me" } } } })
+    const T37 = f37.json?.token
+    const sc37 = await req(W1, "POST", "/api/token", { token: T37, body: { kind: "scoped", label: "scoped-a" } })
+    const SC37 = sc37.json?.token
+    // rotate with label+limits override; sets must survive
+    const rot37 = await req(W1, "POST", "/api/token/rotate", { token: T37, body: { label: "relabeled", limits: { maxLiveShares: 4 } } })
+    ok("T37 rotate relabels + returns the label", rot37.json?.ok === true && rot37.json?.label === "relabeled", JSON.stringify(rot37.json))
+    ok("T37a rotate applies the limit override", rot37.json?.limits?.maxLiveShares === 4, JSON.stringify(rot37.json?.limits))
+    const sets37 = await req(W1, "GET", "/api/token/sets", { token: rot37.json?.token })
+    ok("T37b rotation preserves sets", Object.keys(sets37.json?.sets ?? {}).includes("main"), JSON.stringify(sets37.json))
+    // self-update: rename the bearer itself
+    const upSelf = await req(W1, "POST", "/api/token/update", { token: rot37.json?.token, body: { label: "renamed-self" } })
+    ok("T37c self rename", upSelf.json?.ok === true && upSelf.json?.token?.label === "renamed-self", JSON.stringify(upSelf.json))
+    // full bearer renames + re-limits its own scoped token
+    const rows37 = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const scId37 = rows37.find((t) => t.userId === u37.json?.userId && t.kind === "scoped" && !t.revoked)?.id
+    const upScoped = await req(W1, "POST", "/api/token/update", { token: rot37.json?.token, body: { tokenId: scId37, label: "ci-renamed", limits: { dailyCreates: 3 } } })
+    ok("T37d full edits its scoped token", upScoped.json?.ok === true && upScoped.json?.token?.label === "ci-renamed" && upScoped.json?.token?.limits?.dailyCreates === 3, JSON.stringify(upScoped.json))
+    // scoped edits itself: label ok, limits refused
+    const scSelfLabel = await req(W1, "POST", "/api/token/update", { token: SC37, body: { label: "self-renamed" } })
+    ok("T37e scoped renames itself", scSelfLabel.json?.ok === true && scSelfLabel.json?.token?.label === "self-renamed", JSON.stringify(scSelfLabel.json))
+    const scSelfLim = await req(W1, "POST", "/api/token/update", { token: SC37, body: { limits: { maxLiveShares: 99 } } })
+    ok("T37f scoped cannot change its own limits", scSelfLim.status === 403, JSON.stringify(scSelfLim.json))
+    // scoped cannot edit a sibling token; scoped rotation cannot re-scope itself
+    const sib = await req(W1, "POST", "/api/token", { token: rot37.json?.token, body: { kind: "scoped", label: "scoped-b" } })
+    const sibRow = ((await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []).find((t) => t.label === "scoped-b")
+    const scOther = await req(W1, "POST", "/api/token/update", { token: SC37, body: { tokenId: sibRow?.id, label: "hijack" } })
+    ok("T37g scoped cannot edit siblings", scOther.status === 403, JSON.stringify(scOther.json))
+    const scRotLim = await req(W1, "POST", "/api/token/rotate", { token: SC37, body: { limits: { maxLiveShares: 99 } } })
+    ok("T37h scoped rotation cannot raise limits", scRotLim.status === 403, JSON.stringify(scRotLim.json))
+    // admin PATCH renames any token
+    const admin37 = await req(W1, "PATCH", `/api/admin/tokens/${sibRow?.id}`, { token: CREATE_TOKEN, body: { label: "admin-renamed" } })
+    ok("T37i admin PATCH renames", admin37.json?.ok === true && admin37.json?.token?.label === "admin-renamed", JSON.stringify(admin37.json))
+    // revoked tokens refuse edits
+    await req(W1, "DELETE", `/api/admin/tokens/${sibRow?.id}`, { token: CREATE_TOKEN })
+    const upDead = await req(W1, "PATCH", `/api/admin/tokens/${sibRow?.id}`, { token: CREATE_TOKEN, body: { label: "nope" } })
+    ok("T37j revoked token refuses edits", upDead.status === 400, JSON.stringify(upDead.json))
+  }
+
+  // T38 — private meta surface + single-share freeze + token provenance
+  // and expiry: meta serves admins and the owner only (viewers and other
+  // users get 403), summaries expose title/agent/parent per session,
+  // freeze stops writes on exactly one share, and tokens record who
+  // minted them plus minute-granularity expiry
+  {
+    const u38 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t38" } })
+    const U38 = u38.json?.userId
+    const f38 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U38 } })
+    const T38FULL = f38.json?.token
+    const sc38 = await req(W1, "POST", "/api/token", { token: T38FULL, body: { kind: "scoped", label: "t38ci" } })
+    const T38SCOPED = sc38.json?.token
+    // a share with a real session item (summary source)
+    const c38 = await req(W1, "POST", CREATE, { token: T38FULL, body: { sessionID: "ses_t38main" } })
+    const SID38 = c38.json?.id
+    const SEC38 = c38.json?.secret
+    await req(W1, "POST", `/api/share/${SID38}/sync`, { token: T38FULL, body: { data: [
+      { type: "session", sessionID: "ses_t38main", data: { id: "ses_t38main", title: "T38 Main", agent: "build", parentID: null } },
+      { type: "session", sessionID: "ses_t38sub", data: { id: "ses_t38sub", title: "T38 Child", agent: "explore", parentID: "ses_t38main" } },
+    ] } })
+    // root reads meta with summaries
+    const metaRoot = await req(W1, "GET", `/api/share/${SID38}/meta`, { token: CREATE_TOKEN })
+    ok("T38 root reads meta", metaRoot.json?.ok === true && metaRoot.json?.sessionID === "ses_t38main", JSON.stringify(metaRoot.json).slice(0, 200))
+    const summ = metaRoot.json?.summaries ?? {}
+    ok("T38a summaries carry title/agent/parent", summ["ses_t38main"]?.title === "T38 Main" && summ["ses_t38main"]?.agent === "build" && summ["ses_t38sub"]?.parentID === "ses_t38main", JSON.stringify(summ))
+    ok("T38b meta exposes liveness + expiry", typeof metaRoot.json?.pluginSeen === "number" && typeof metaRoot.json?.expiresAt === "number" && metaRoot.json?.ttlHours > 0, JSON.stringify({ p: metaRoot.json?.pluginSeen, e: metaRoot.json?.expiresAt }))
+    // owner full token reads; scoped creator reads; strangers and anonymous 403
+    const metaOwner = await req(W1, "GET", `/api/share/${SID38}/meta`, { token: T38FULL })
+    ok("T38c owner reads own meta", metaOwner.json?.ok === true, JSON.stringify(metaOwner.json).slice(0, 120))
+    const metaScoped = await req(W1, "GET", `/api/share/${SID38}/meta`, { token: T38SCOPED })
+    ok("T38d scoped creator denied (not its share)", metaScoped.status === 403, JSON.stringify(metaScoped.json))
+    // a scoped-CREATED share is readable by that scoped token
+    const c38b = await req(W1, "POST", CREATE, { token: T38SCOPED, body: { sessionID: "ses_t38ci" } })
+    const metaScopedOwn = await req(W1, "GET", `/api/share/${c38b.json?.id}/meta`, { token: T38SCOPED })
+    ok("T38d2 scoped reads meta of its own share", metaScopedOwn.json?.ok === true, JSON.stringify(metaScopedOwn.json).slice(0, 120))
+    const other38 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "t38other" } })
+    const otherTok = (await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: other38.json?.userId } })).json?.token
+    ok("T38e stranger 403", (await req(W1, "GET", `/api/share/${SID38}/meta`, { token: otherTok })).status === 403)
+    ok("T38f anonymous 403", (await req(W1, "GET", `/api/share/${SID38}/meta`)).status === 403)
+    // single-share freeze: writes stop, viewing continues, unfreeze resumes
+    const fr38 = await req(W1, "POST", `/api/admin/shares/${SID38}/freeze`, { token: CREATE_TOKEN })
+    ok("T38g freeze ok", fr38.json?.ok === true, JSON.stringify(fr38.json))
+    const wr38 = await req(W1, "POST", `/api/share/${SID38}/sync`, { token: T38FULL, body: { data: [] } })
+    ok("T38h frozen share refuses writes", wr38.json?.ok === false, JSON.stringify(wr38.json))
+    ok("T38i viewing unaffected", (await req(W1, "GET", `/api/share/${SID38}/data`)).status === 200)
+    // other shares of the same user unaffected
+    const wr38b = await req(W1, "POST", `/api/share/${c38b.json?.id}/sync`, { token: T38FULL, body: { data: [] } })
+    ok("T38j sibling share unaffected", wr38b.json?.ok !== false, JSON.stringify(wr38b.json))
+    await req(W1, "POST", `/api/admin/shares/${SID38}/unfreeze`, { token: CREATE_TOKEN })
+    ok("T38k unfreeze resumes writes", (await req(W1, "POST", `/api/share/${SID38}/sync`, { token: T38FULL, body: { data: [] } })).json?.ok === true)
+    // token provenance + expiry
+    const toks38 = (await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []
+    const scopedRow38 = toks38.find((t) => t.id === sc38.json?.id)
+    ok("T38l createdBy records the minter", scopedRow38?.createdBy === f38.json?.id, JSON.stringify({ createdBy: scopedRow38?.createdBy, minter: f38.json?.id }))
+    const exp38 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: U38, label: "ephemeral", expiresInMinutes: 90 } })
+    const expRow = toks38.find(() => false) ?? ((await req(W1, "GET", "/api/admin/tokens", { token: CREATE_TOKEN })).json?.tokens ?? []).find((t) => t.id === exp38.json?.id)
+    const minsLeft = (expRow?.expiresAt - Date.now()) / 60000
+    ok("T38m minute-granularity expiry lands ~90m", minsLeft > 85 && minsLeft <= 90, String(minsLeft))
+    // update can clear it
+    const clr38 = await req(W1, "PATCH", `/api/admin/tokens/${exp38.json?.id}`, { token: CREATE_TOKEN, body: { expiresInHours: 0 } })
+    ok("T38n expiry cleared via update", clr38.json?.token?.expiresAt === 0, JSON.stringify(clr38.json?.token))
+    // scoped self cannot set its own expiry (self-life escalation)
+    const scExp = await req(W1, "POST", "/api/token/update", { token: T38SCOPED, body: { expiresInHours: 999 } })
+    ok("T38o scoped cannot extend own expiry", scExp.status === 403, JSON.stringify(scExp.json))
+    // cleanup
+    await req(W1, "DELETE", `/api/share/${SID38}`, { token: CREATE_TOKEN, body: { secret: SEC38 } })
+    await req(W1, "DELETE", `/api/share/${c38b.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/admin/users/${U38}`, { token: CREATE_TOKEN, body: { mode: "delete" } })
+    await req(W1, "DELETE", `/api/admin/users/${other38.json?.userId}`, { token: CREATE_TOKEN, body: { mode: "delete" } })
+  }
+
+  // T35 — B4 token config sets: named sets on one token; Class A applies
+  // at create server-side (never transported); Class B fetch is safe
+  {
+    const u35 = await req(W1, "POST", "/api/admin/users", { token: CREATE_TOKEN, body: { label: "sets" } })
+    const t35 = await req(W1, "POST", "/api/admin/tokens", { token: CREATE_TOKEN, body: { userId: u35.json?.userId } })
+    const T35 = t35.json?.token
+    // provision two sets: default (first) + "ci"
+    const putSets = await req(W1, "PUT", "/api/token/sets", {
+      token: T35,
+      body: { sets: {
+        default: { authLogin: "d", authPassword: "k", ttlDays: 11, modelLabel: "server-model" },
+        ci: { ttlDays: 2, modelLabel: "ci-model", shareMode: "manual" },
+      } },
+    })
+    ok("T35 sets provisioned", putSets.json?.ok === true && Object.keys(putSets.json?.sets ?? {}).length === 2, JSON.stringify(putSets.json))
+    const raw = JSON.stringify(putSets.json ?? {})
+    ok("T35a Class A never in any client response", !raw.includes("authLogin") && !raw.includes("authPassword") && !raw.includes("ttlDays"), raw.slice(0, 160))
+    // GET view is Class-B-only too
+    const getS = await req(W1, "GET", "/api/token/sets", { token: T35 })
+    const graw = JSON.stringify(getS.json ?? {})
+    ok("T35b GET view carries Class B only", getS.json?.sets?.ci?.modelLabel === "ci-model" && !graw.includes("authLogin"), graw.slice(0, 160))
+    // create WITHOUT a set name: the default (first) set applies - gated,
+    // ttl 11, without the client sending either
+    const c35 = await req(W1, "POST", CREATE, { token: T35, body: { sessionID: "ses_t35a" } })
+    ok("T35c default set applied at create (ttl 264h)", c35.json?.ok === true && c35.json?.ttlHours === 264, JSON.stringify(c35.json))
+    ok("T35d default set gated the share", (await req(W1, "GET", `/api/share/${c35.json?.id}/data`)).status === 401)
+    // create with set:"ci": ttl 2, NO gate
+    const c35b = await req(W1, "POST", CREATE, { token: T35, body: { sessionID: "ses_t35b", set: "ci" } })
+    ok("T35e named set applied (ttl 48h, ungated)", c35b.json?.ok === true && c35b.json?.ttlHours === 48, JSON.stringify(c35b.json))
+    ok("T35f ci set has no gate", (await req(W1, "GET", `/api/share/${c35b.json?.id}/data`)).status === 200)
+    // scoped token: reads its own sets, cannot PUT
+    const sc35 = await req(W1, "POST", "/api/token", { token: T35, body: { kind: "scoped" } })
+    const scGet = await req(W1, "GET", "/api/token/sets", { token: sc35.json?.token })
+    ok("T35g scoped reads its sets", scGet.json?.ok === true && scGet.json?.sets?.default?.modelLabel === "server-model", JSON.stringify(scGet.json))
+    const scPut = await req(W1, "PUT", "/api/token/sets", { token: sc35.json?.token, body: { sets: { x: { modelLabel: "evil" } } } })
+    ok("T35h scoped cannot edit sets", scPut.status === 403, JSON.stringify(scPut.json))
+    // admin PUT by id
+    const admPut = await req(W1, "PUT", `/api/admin/tokens/${t35.json?.id}/sets`, { token: CREATE_TOKEN, body: { sets: { only: { ttlDays: 3 } } } })
+    ok("T35i admin edits sets by id", admPut.json?.ok === true && Object.keys(admPut.json?.sets ?? {}).length === 0, JSON.stringify(admPut.json))
+    await req(W1, "DELETE", `/api/share/${c35.json?.id}`, { token: CREATE_TOKEN, body: {} })
+    await req(W1, "DELETE", `/api/share/${c35b.json?.id}`, { token: CREATE_TOKEN, body: {} })
+  }
+
+  // T20 — public mode worker: codeless onboarding is OFF by default, so
+  // enrollment needs a code even on public; anonymous creates stay open.
+  // Both public instances boot CONCURRENTLY (independent ports/state);
+  // sequential boots put ~20s of wrangler cold-starts on the wave's
+  // critical path for no ordering benefit.
+  console.log(`[${SUITE}] starting public-mode workers…`)
+  const [w2, w3] = await Promise.all([
+    startBackend(suiteDir, { port: B2_PORT, configSuffix: "pub", name: "b2", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1" }, authMode: "public" }),
+    startBackend(suiteDir, { port: B3_PORT, configSuffix: "pub2", name: "b3", vars: { AUTH_MODE: "public", SNAPSHOT_ENDPOINT: "1", CODELESS_ONBOARDING: "1" }, authMode: "public" }),
+  ])
+  worker2 = w2
+  worker3 = w3
   const W2 = worker2.url
   const h2 = await req(W2, "GET", "/health")
   ok("T20 health auth.mode=public", h2.json?.auth?.mode === "public")
-  const pubEnroll = await req(W2, "POST", "/api/enroll", { body: {} })
-  ok("T20b open enrollment", pubEnroll.json?.ok === true && typeof pubEnroll.json?.token === "string")
+  const noCode = await req(W2, "POST", "/api/enroll", { body: {} })
+  ok("T20b codeless enrollment refused by default", noCode.status === 403 && /code required/.test(noCode.json?.error ?? ""), JSON.stringify(noCode.json))
+  // code path still onboards on a public server
+  const pubCode = await req(W2, "POST", "/api/admin/codes", { token: CREATE_TOKEN, body: { label: "pub", activations: 3 } })
+  const pubEnroll = await req(W2, "POST", "/api/enroll", { body: { code: pubCode.json?.code } })
+  ok("T20b2 code enrolls on public", pubEnroll.json?.ok === true && typeof pubEnroll.json?.token === "string", JSON.stringify(pubEnroll.json))
   ok("T20c anonymous ownerless create", (await req(W2, "POST", CREATE, { body: { sessionID: "ses_pubanon" } })).json?.ok === true)
   ok("T20d owned create with pub token", (await req(W2, "POST", CREATE, { token: pubEnroll.json?.token, body: { sessionID: "ses_pubuser" } })).json?.ok === true)
+
+  // T20e — codeless onboarding explicitly enabled: enroll without a code
+  // is allowed, on a separate instance (flag is per-deployment; booted
+  // above in parallel)
+  const W3 = worker3.url
+  const clEnroll = await req(W3, "POST", "/api/enroll", { body: { label: "codeless-one" } })
+  ok("T20e codeless onboarding when enabled", clEnroll.json?.ok === true && typeof clEnroll.json?.token === "string", JSON.stringify(clEnroll.json))
 } catch (e) {
   failed++
   failures.push(`suite crashed: ${e?.stack || e}`)
@@ -473,13 +1038,16 @@ try {
 } finally {
   try { worker1?.kill() } catch {}
   try { worker2?.kill() } catch {}
+  try { worker3?.kill() } catch {}
   await waitFor(async () => false, "settle", 1500).catch(() => {})
   if (BACKEND === "wrangler") {
     killWranglerSuites(B1_PORT)
     killWranglerSuites(B2_PORT)
+    killWranglerSuites(B3_PORT)
   } else {
     killPortOwners(B1_PORT)
     killPortOwners(B2_PORT)
+    killPortOwners(B3_PORT)
   }
   try { rmSync(suiteDir, { recursive: true, force: true }) } catch {}
 }

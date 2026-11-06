@@ -1,7 +1,5 @@
 # OpenShare — development notes
 
-Working on the repo? This is the map. User-facing docs: [README](README.md).
-
 Working on the repo? This is the map. User-facing docs: [README](README.md). The complete configuration surface across all packages: [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Repo layout
@@ -29,8 +27,8 @@ share-plugin/          the opencode plugin (@mirrowel/opencode-openshare)
 share-worker/          Cloudflare Worker backend (worker.js, wrangler.toml)
 share-server/          portable Bun backend (server.ts + Dockerfile)
 share-viewer/          vendored upstream share page (vite + solid)
-  src/views/           the viewer views SDK + nine skins (see views/README.md)
-tools/                 agent-side export/local-view companion
+share-cli/             admin console over the worker API (stateful CLI + ink TUI)
+tools/                 session interchange + offline snapshots (see tools/README.md)
 ```
 
 `share-worker/worker.js` and `share-server/server.ts` implement the **same
@@ -39,24 +37,26 @@ enforce it: the same auth/enroll suites run against both backends).
 
 ## Test suites
 
-`npm test` (matrix driver, ~4.5 min) / `npm run test:quick` (~90s).
+`npm test` (matrix driver, bounded-scheduler parallel, ~2.5 min) / `npm run test:quick` (~90s).
 
 | Suite | Covers |
 |---|---|
 | regression | parity: legacy single file == standalone build == package (== package-dir via file:// URL) |
+| tui-reactivity (`ci:package`) | the compiled TUI dialogs against the real @opentui renderer: menu selection repaints, info-dialog keyboard focus moves and enter activates it, prompt round-trips, size picker applies — catches the "painted once, never repaints" class mock-host flow tests cannot see (family-plugin discipline) |
 | manual (core/allmode/engine shards) | dormancy, flag/backfill, unshare, re-share, read-auth opts, all-mode gating, undo tombstones, completed debounce, turn sockets, finalize, queued-prompt ordering (S13) |
 | tui-flow | share/manager flows, config write targets, enrollment, admin console, gone detection, size prefs |
 | v2-mock | the v2 adapter against a scripted mock v2 host (incl. inbox queue semantics: held until `session.inbox.delivered`, cancelled never surfaces) |
-| auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign, request caps, the since/delta handshake — 80 checks, CF + Bun |
+| auth (×backends) | identity: enroll, codes, rotate, freeze, limits, reassign, request caps, the since/delta handshake — CF + Bun |
 | enroll | plugin enrollment lifecycle vs a real worker (private + public) |
 | fanout | dual workers, mid-session join backfill, opt-outs, collisions |
 | big (×backends) | scale: ~3k items incl. MB-size parts through sharded storage — full `/data`, zero stuck revs |
 | cli / npm-e2e (on demand) | real `opencode run` with the CI bundle / package; the published npm package by registry spec (`node scripts/npm-e2e.mjs` — no npm alias by design: on-demand only) |
 
-Note what CI actually gates: the GitHub workflow runs typecheck + build + pack dry-run (`npm run ci`) — **no test suites run there** (they need opencode + wrangler + port access). The matrix is a local-before-commit obligation.
+What runs where: CI (`.github/workflows/ci.yml`) runs the **quick gate** on every push/PR — validate (typecheck + build + pack dry-run) then a `tests` job running `npm run test:quick` with the opencode CLI (pinned in the workflow) and wrangler (share-plugin devDependency) on the runner. The full matrix (fanout, enroll shards, big, engine shards) stays a local-before-push obligation: the quick gate covers the critical lanes, the full wave is the pre-release ritual.
 
 Suite rules of the road (all learned from live failures):
 
+- **TUI live-host debugging**: `OPENSHARE_TUI_DEBUG=1` makes every dialog open/settle and every keymap command invocation (plus any throw, with stack) append to `%TEMP%/openshare-tui-debug.log`; unset, it costs one env read. Run opencode with it when a TUI dialog misbehaves live and read the log back.
 - Every spawn gets **all three** XDG homes redirected — config alone is not isolation on opencode ≥1.18 (global plugin merge, machine-wide session DB, instance-lock port bumps).
 - Ports: fast TCP probes gate every sweep; sweeps only run when a port is actually occupied; the matrix driver assigns disjoint port ranges per suite.
 - `opencode run` retries 5xx with its own 2+4+8+16+32s backoff — mock failures use non-retryable 4xx when testing the error path.
@@ -66,13 +66,27 @@ Suite rules of the road (all learned from live failures):
 
 ## Viewer v2 kit + visual verification
 
-`share-viewer` renders on the vendored **opencode v2 component kit** (`vendor/session-ui-v2`, `vendor/ui-v2`, `vendor/client-v2`, `vendor/util-v2`) plus a **vendored `solid-js`** (`vendor/solid`, aliased in vite — see below). Regenerate deterministically from the beta checkout with `npm run vendor` (= `vendor-v2.mjs` + `vendor-solid.mjs` + `bun install`; provenance in `vendor/V2-SOURCE.txt`). The `bun install` step is mandatory because bun copies `file:` dependencies, so the vendored tree in `node_modules/@opencode/*` goes stale otherwise and the build keeps using the old code (live-caught). The scripts re-apply every fork after copying and throw loudly when an upstream anchor drifts; keep forks surgical (insert call sites, never rewrite a whole upstream function - a full rewrite silently dropped upstream's `thoughtOnly` guard and trailing notices when the beta jumped from v2.0.0-607 to -1105). Dependency versions in the generated package.json are read from the beta's own package (`catalog:` resolved), so a kit bump brings its peers along.
+`share-viewer` renders on the vendored **opencode v2 component kit** - a pinned, patched copy of upstream own packages, regenerated deterministically by `npm run vendor`. **[`share-viewer/vendor/VENDOR.md`](share-viewer/vendor/VENDOR.md) is the canonical doc**: what the pin is, the update ritual (check -> bump -> fix -> verify -> compare against the legacy build), why solid-js is vendored, the ordering/guard/import constraints, and the full patch catalogue. The script downloads the pinned commit itself (no local checkout needed; `OPENSHARE_BETA_SRC` overrides), deletes its download cache on success, fails when root package pins disagree with the vendored catalog, and throws at the exact drifted anchor on upstream moves. The `bun install` in `npm run vendor` stays mandatory (bun copies `file:` deps; `scripts/link-vendor.mjs` junctions them so a shared dependency can never exist twice). Provenance per regeneration: `vendor/V2-SOURCE.txt`.
 
-Current session-ui forks (audit with `rg -n "fork|openshare" scripts/vendor-v2.mjs`): projection (per-assistant-message grouping, category `only` refinement, no top-level read/file groups with an explicit detail, todos renderable, agent-switch event rows), session-timeline-row (upstream spacing classes dropped in favor of `app.css` attribute-keyed spacing), tool-renderer (read/search rows keep their real renderer through `ToolDisplay`, todos not dropped, grouped rows expandable). Dropped on purpose in the 2026-10-24 hygiene round: the spacing-class *removal* (unlayered CSS wins the cascade anyway), the agent-registry module (the fold now stamps `state.input.agent` — plugin-stamped, viewer dumb), the reasoning prewarm (collapsed bodies unmount, so it prewarmed nothing), and the todos i18n patch (merged in `entry.tsx`).
+The per-fork catalogue lives in `vendor/VENDOR.md` (kept in step with the script).
+
+**Version-comparison build** (the `/legacy` + `/compare` prefixes): to A/B the
+current viewer against any older build on the same deployment,
+`cd share-viewer && node scripts/build-legacy.mjs --ref <tag|branch|sha>`
+builds that ref in a temp worktree and drops `dist/legacy.html` plus its
+hashed assets next to the current build; then deploy the worker
+(`cd share-worker && npm run deploy`). The worker serves that build verbatim
+under `/legacy/...` and `/compare/...` (e.g. `/compare/s/<id>`) while the
+plain paths keep the current one — the URL alone decides, no cookies. Remove
+it by rebuilding `dist` (no legacy.html) and redeploying. Without the file
+both prefixes 404. Single slot by design (one comparison at a time); the Bun
+server does not carry this route.
 
 **Why solid-js is vendored**: Solid's `cleanNode` walks `node.owned`/`node.cleanups` with live loops; a re-entrant disposal nulls the arrays mid-walk and the next iteration throws `null[i]`, killing the whole reactive flush (a half-updated page with a stuck status, live-caught; opencode itself patches the same defect in its own dependency). `vendor-solid.mjs` patches `cleanNode`/`dispose` to snapshot-loop — 6 lines — and writes TWO variants: `vendor/solid/solid.js` (build) and `vendor/solid/dev.js` (dev server: unminified, dev warnings, readable stack traces); `vite.config.ts` picks by command and pins the exact-match alias `/^solid-js$/` so the bundle uses the patched copy and `node_modules` stays pristine.
 
-**Viewer dev/probe workflow**: `npm run dev` + `?demo` on any `/s/<id>` path renders the built-in fixture share (`src/demo.ts`) — no worker, no auth, no live data needed. `vite.config.ts` excludes the vendored `@opencode/*` packages from esbuild's dep scanner (it cannot parse their `?worker&url` imports) while force-including `@pierre/diffs` and `lru_map` for CJS interop. For headless verification against the REAL production bundle, serve `dist/` from an in-process http server and inject the demo fixture as `window.__MIRROBOT_SNAPSHOT__` through an HTML wrapper (the local-mode contract) — no child processes, no vite, no stray windows. `PRODUCT.md`/`DESIGN.md` at the repo root carry the product design context (register: product).
+**Gallery**: `npm run preview:tools` (vite dev) opens `/?preview` with every tool in every state beside the real settings panel; hover affordances can be force-revealed. Message-level features (prompts, agent switch, reasoning, markdown, math, images, compaction/retry/error, grouping) render as whole-message docs through `src/gallery-timeline.tsx` — the production projection + row renderer without the virtualizer. It holds no share data and is dev-only (`import.meta.env.DEV`). A load benchmark is built into the page (corner panel + `window.__oshBench`, with mutation-burst/card-sync counters from `window.__oshOutStats`) — "settle" is the moment every tall card is measured and chevroned without interaction, so load regressions in the card-sync layer show up there. In dev the pierre worker can evaluate its module graph twice (vite serves the entry and a plain copy under different URLs); the theme-alias fork in `vendor/VENDOR.md` makes both copies resolve, so the `Theme "pierre-dark" has not been resolved` flood cannot recur. Two viewer behaviors are wired outside the component tree, at the entry: the output-card drag-to-resize and clipped fade (`src/output-resize.tsx`, delegated listeners writing a per-card `--osh-out-h`) and ctrl+click link copying in the timeline.
+
+**Viewer dev/probe workflow**: `npm run dev` + `?demo` on any `/s/<id>` path renders the built-in fixture share (`src/demo.ts`) — no worker, no auth, no live data needed. `vite.config.ts` excludes the vendored `@opencode/*` packages from esbuild's dep scanner (it cannot parse their `?worker&url` imports) while force-including `@pierre/diffs` and `lru_map` for CJS interop. For headless verification against the REAL production bundle, serve `dist/` from an in-process http server and inject the demo fixture as `window.__MIRROBOT_SNAPSHOT__` through an HTML wrapper (the local-mode contract) — no child processes, no vite, no stray windows.
 
 Two more hard rules learned live:
 
@@ -92,22 +106,40 @@ Visual verification rig (lives outside the repo; rebuild from this description w
 
 A diff review panel (per-session changed-files view) existed briefly in classic + all skins and was removed by owner decision. Why: the only reconstructable data is the **per-edit tool-part patches** (`metadata.files[].patch`), so any aggregation is last-write-wins per file — not a true session-cumulative diff. Producing a real cumulative diff requires shipping **full file contents** in the share, which was rejected on privacy grounds. If ever revisited as an optional, opt-in-per-share feature: the v2 host API `session.diff()` (typed, FileDiffInfo[]) is the intended source — v1.18's `client.session.diff` is a hardcoded stub returning `[]` unconditionally (see `upstream-reports/`), and its `session.diff` event only fires on revert/compaction, so v1 hosts can never feed it. The `session_diff` item type remains in the contract and is still folded into the share data — only the dedicated panel was removed.
 
+## Offline snapshots
+
+A snapshot is ONE HTML file: the built viewer (entry chunk, every chunk it can reach, CSS, fonts, provider sprite) plus the session frozen as a JSON island. `tools/snapshot-builder.mjs` is the single builder; the worker endpoint, the Bun server, the viewer's download button and both CLI tools call it with a different `readAsset`.
+
+- Chunks ship as base64 in the JSON island; a boot script turns them into Blob URLs and installs the import map before the entry loads. `data:` module URLs do not work here: `import.meta.url` inside one is the entire module source, so every URL derived from it carries the full multi-megabyte text.
+- Packing is minimal: grammars only for the languages the session uses, file icons only for the names its paths resolve to, KaTeX fonts only when the text contains math. The real worker bundles are excluded; `markdown.worker-main-*` stays because the offline shim imports it.
+- `file://` pages cannot start Workers, so pierre and the markdown parser run main-thread copies of their worker modules behind vendored shims (`worker-shim.ts`, `markdown.worker-main.ts`). Both load lazily, so http pages never fetch them.
+- The builder rewrites the island status to `snapshot`; the header shows that instead of the share's last live status.
+- `GET /s/:id/snapshot` requires `SNAPSHOT_ENDPOINT=1`: the build reads one asset per subrequest, past the free plan's 50-per-invocation cap.
+
+## Admin console (share-cli)
+
+The `osh` console is one package with three modules over one API client: `src/api.ts` (typed fetch wrapper, cookie jar for gated-share logins), `src/cli.tsx` (headless command surface - scripts/agents), `src/tui.tsx` (ink interactive screens). `src/config.ts` holds the named server profiles in `~/.config/openshare/cli.json`. Role behavior mirrors the API: root goes through `/api/admin/*`, user tokens self-service; a scoped token only ever sees itself and its own shares. Shares lists hydrate private `/meta` in bounded parallel (6 at a time, first 100 rows) and join user labels - `--no-meta` skips it for raw listings.
+
+Build gotchas: ink eagerly imports the optional `react-devtools-core` peer, so `build.mjs` aliases it to a stub (an `external:` entry would still crash ESM resolution at boot); bundled CJS deps (`signal-exit`) `require()` node builtins, so the banner prepends a `createRequire` shim. Bare `osh` in a pipe prints help instead of half-rendering (TTY check in `main.tsx`).
+
 ## Release workflow
 
-Lifted from the family (agent-variants/config-studio), adapted to the monorepo (the package lives in `share-plugin/`):
+Lifted from the family (agent-variants/config-studio), adapted to the monorepo (the package lives in `share-plugin/`). The whole kit is driven by one config file, `.github/scripts/release-kit.conf`, and one command surface: `bash .github/scripts/release-kit.sh <check|next|stage>` (`compute` is the CI entry).
 
-- Conventional commits drive semver (`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:`/`!` → major) — `.github/scripts/compute-version.sh`.
-- Channels: `master` → `latest`; `dev`/`alpha`/`beta`/`rc` branches → `0.x.y-<channel>.N` prereleases under the matching npm tag (`main` maps to `latest` too; `canary` is available via manual workflow dispatch, not a push trigger).
-- `share-plugin/.release.json` pins the next intended version (`npm run release:intent -- <version|patch|minor|major>`); CI refuses drift. Set **above** the latest stable tag, `"next"` is an exact pin: that version releases regardless of what the commits would compute (holding a fix round at 0.2.1 under a feat-heavy range). The pin is self-consuming — once that version ships, latest == next and auto versioning resumes. At or below latest it acts as a floor only (`max(intent, prerelease line, auto bump)`).
-- Publishing uses npm trusted publishing (GitHub OIDC) — no tokens stored. First publish was bootstrapped manually; everything after goes through the workflow.
-- Release notes: git-cliff (`.github/cliff.toml`) grouped by commit type.
-- `ci/openshare.js` is a **tracked build artifact** — rebuilds land in the same commit as their source changes.
-
-Gotchas already paid for:
-
-- `grep -q` exits on first match → SIGPIPE for the producer → **pipefail** flips the pipeline to failure on large inputs. Use `grep -E … > /dev/null`.
-- The repo path contains a space — spawned commands with `shell:true` must use relative or properly quoted paths.
-- `.gitattributes` forces LF for `*.sh`/`*.mjs`/`*.yml`/`*.toml` (the workflow scripts run on `ubuntu-latest`).
+- Versioning is CI-automatic. Pushes release; nothing runs locally for routine versions. After publishing, the workflow writes the released version back to the branch (`[skip ci] release: <version>` stamping VERSION + all manifests), so files, tags, and npm always agree; pull before your next push after a release.
+- Conventional commits drive semver (`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:`/`!` → major, then clamped to `MAX_BUMP`, default `minor` - an automatic release never opens a new x.0.0 line) - `.github/scripts/compute-version.sh`.
+- Channels: `STABLE_BRANCHES` (openshare: `master`) → `latest` with normal bumps; every other branch (`dev`/`alpha`/`beta`/`rc`) is a development channel stacking `<base>-<channel>.N` iterations per push under the matching npm tag. A dev branch freshly synced to a stable derives its base as `stable + MAX_BUMP` (or the VERSION pin); merging it back releases exactly that base, suffix dropped.
+- VERSION semantics: the file at the repo root carries the branch's **base** version (`0.3.0`, never `0.3.0-dev.7` - the prerelease suffix is an iteration of the base, not a base line; repos whose VERSION is the sole carrier record the full version there). Comparisons are base-vs-base against the branch's current line: strictly above = exact pin for the next release, equal or lower = inert record. The stamp keeps it current after every release. `release-kit.sh next <1.2.3|major|minor|patch>` writes it (branch-aware bump).
+- Manual levers: `release-kit.sh check` (what would the next push release - branch, channel, pin state, npm decision), `release-kit.sh next`, `release-kit.sh stage` (optional: create the release commit on your tip so the version ships inside your own push; the CI write-back then no-ops), and Release workflow dispatch inputs - `version_bump` (major honored as-is, not clamped), `target_version` (exact, one-shot), `release_notes` (replaces the generated commit list; header and footer stay), `dry_run` (computes and previews, publishes nothing).
+- `RELEASE_GATE=on` (default off) pauses versioned (`latest`) releases in the `release` GitHub environment for a human approval - the run shows the computed version and the composed notes before npm moves. One-time setup: create the environment under Settings → Environments and add reviewers. Dev-channel builds and dry runs never pause.
+- Publishing uses npm trusted publishing (GitHub OIDC) - no tokens stored. The job packs once and publishes the tarball itself, so the release asset is the exact archive npm serves. The publish exit code is the success signal: npm's read index lags the write by minutes, so nothing re-reads the registry to confirm (a re-run inside that window treats npm's "cannot publish over" rejection as success - the version is on npm).
+- Release artifacts: every release attaches `viewer-dist-<version>.zip` (the built viewer, for snapshot tooling without a local build - dist is never committed; hashed assets churn every rebuild), `osh-<version>.mjs` (the prebuilt admin console, one self-contained file for Node 20+), `openshare-ci-<version>.js` (the single-file CI plugin), and the plugin `.tgz` (only when that release published one).
+- Release notes: git-cliff (`.github/cliff.toml`) grouped by commit type, author attribution via the GitHub Compare API, merged-PR community section (`generate-release-notes.sh`). A Scope section names the parts that changed in the range and the npm publish decision.
+- Path filters: `RELEASE_PATHS` (kit config) must equal the workflow's `paths:` trigger - `node tools/kit-check.mjs` enforces the sync. Any functional change in the four parts or `tools/` justifies a release; docs-only pushes trigger nothing (the dispatch relevance check shares the list).
+- npm publish gating: only the plugin ships to npm, so a release caused by other parts tags the system version but skips the publish (`NPM_PATHS` + `NPM_GATE`; `force_npm` dispatch input overrides; the `npm-latest` tag marks the newest published commit; stamp-only manifest changes never count). npm version numbers gap when other parts released - every published version carries real plugin changes.
+- Runtime version detection reads shipped files, never git at runtime: the worker `/health` serves `version.json` written at deploy (`0.3.0 · 2026-10-31 · abc1234`, `unknown` without a manifest), the viewer embeds the same shape at build (footer shows the short version, info panel the full form), and share-server reads its own manifest at boot. `tools/write-version.mjs` is the one writer.
+- Prerelease cleanup: `cleanup-releases.yml` purges a branch's prerelease channel (releases + tags) on branch deletion or by dispatch (`keep_latest`, `dry_run`); protected branches come from the kit config; npm versions are immutable and untouched.
+- `ci/openshare.js` is a **tracked build artifact** - rebuilds land in the same commit as their source changes.
 
 ## Server policy internals
 

@@ -1,6 +1,6 @@
 {
   "name": "@mirrowel/opencode-openshare",
-  "version": "0.2.1",
+  "version": "0.3.0-dev.20",
   "type": "module",
   "description": "Open(code)Share — re:share: self-hosted session sharing for opencode. Server plugin (single file or package), optional TUI for interactive opt-in sharing.",
   "license": "MIT",
@@ -64,10 +64,9 @@
     "build:tui": "bun scripts/build-tui.mjs",
     "build:standalone": "bun scripts/build-standalone.mjs",
     "typecheck": "tsc --noEmit",
-    "ci": "npm run release:intent:check && npm run ci:package",
-    "ci:package": "npm run typecheck && npm run build && npm run pack:dry-run",
-    "release:intent": "node scripts/set-release-intent.mjs",
-    "release:intent:check": "node scripts/check-release-intent.mjs",
+    "ci": "npm run ci:package",
+    "ci:package": "npm run typecheck && npm run build && npm run test:tui-reactivity && npm run pack:dry-run",
+    "test:tui-reactivity": "bun --conditions=browser scripts/tui-reactivity-smoke.mjs",
     "pack:dry-run": "node scripts/pack-dry-run.mjs",
     "test:regression": "node scripts/regression-tests.mjs",
     "prepublishOnly": "npm run typecheck && npm run build",
@@ -87,10 +86,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "wrangler": "4.156.1"
   },
   "dependencies": {
-    "@opencode-ai/plugin": ">=1.14.0",
+    "@opencode-ai/plugin": ">=1.18.0",
     "@opentui/solid": "^0.4.1"
   },
   "peerDependencies": {

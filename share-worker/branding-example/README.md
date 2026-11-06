@@ -54,10 +54,13 @@ Crawler user-agents (Discordbot, TelegramBot, Slackbot, WhatsApp,
 Twitterbot, ...) never run the SPA, so the worker serves them
 `index.html` with `og:`/`twitter:` tags injected from the branding:
 `og:title` = `ogTitle` (or `name · Open(code)Share`), `og:description`
-= `description`, `og:image` = `ogImage` (absolute or root-relative URL). The title never
-carries a session title — a link preview must not leak what a share
-contains. Browsers get the plain SPA (the viewer also injects the same
-tags client-side as a fallback).
+= `description`, `og:image` = `ogImage` (absolute or root-relative URL).
+On share pages the image becomes the **rendered per-share card**
+(`og.png`, branded with your name and accent; five styles via the
+`OG_STYLE` var — samples in `example/og-samples/`). The title never
+carries a session title on gated shares — a link preview must not leak
+what a share contains. Browsers get the plain SPA (the viewer also
+injects the same tags client-side as a fallback).
 
 The portable Bun server supports the same fields via `BRAND_*` env vars
 and the same crawler rewrite.

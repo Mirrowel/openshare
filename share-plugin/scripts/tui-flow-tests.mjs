@@ -25,6 +25,7 @@ import {
   killWranglerSuites,
   startMockLLM,
   startWorker,
+  startBunServer,
   startServe,
   stopServe,
   CREATE_TOKEN,
@@ -178,7 +179,11 @@ let worker
 let llm
 try {
   llm = await startMockLLM()
-  worker = await startWorker(suiteDir)
+  // configSuffix forces this suite onto its OWN worker even under matrix
+  // reuse: F7/F8 call admin.purge(), which empties the WHOLE backend -
+  // running that on the shared worker wipes other suites' shares out
+  // from under them (the v2-mock in-wave flake)
+  worker = await startWorker(suiteDir, { configSuffix: "tui" })
   console.log("worker ready")
 
   const sandbox = join(suiteDir, "tui")
@@ -186,8 +191,8 @@ try {
   mkdirSync(projectDir, { recursive: true })
   // In-process flow calls (saveConfig default target = configHomePath)
   // must NEVER write the real settings home — redirect XDG for the whole
-  // suite process (live-caught: F4 once overwrote the owner's real
-  // openshare.config.json with sandbox values).
+  // suite process, or a flow writes the user's own openshare.config.json
+  // with sandbox values.
   const homeDir = join(sandbox, "xdghome")
   mkdirSync(join(homeDir, "opencode"), { recursive: true })
   process.env.XDG_CONFIG_HOME = homeDir
@@ -308,17 +313,136 @@ try {
       check("F13b: full pair saved", rec2?.opts?.authLogin === "alice" && rec2?.opts?.authPassword === "wonderland", JSON.stringify(rec2?.opts))
     }
 
+    // F16: the share dashboard — one screen for per-share settings with
+    // tier provenance. Rows: read auth, TTL, title, pause + link +
+    // destinations + danger; title writes BOTH stores (config shares{}
+    // authoritative + binding mirror) and PATCHes the live page; pause
+    // flips the page write-gate and unpause reopens it.
+    {
+      const h16 = mockHost(client)
+      // this block's own live share (consent), then the dashboard edits
+      h16.state.dialogAnswers.push(true, true)
+      const shared16 = await flows.shareWithConsent(h16.host, sid)
+      check("F16: own share for the dashboard", shared16.ok === true && !!shared16.url, shared16.message)
+      h16.state.menuAnswers.push("session:title", "session:paused", "__back", "action:exit")
+      h16.state.promptAnswers.push("Renamed Dashboard Title")
+      await settings.settingsDialog(h16.host, sid, "session")
+      const dash = h16.state.menus.findLast((m) => /This session/.test(m.title))
+      const rowValues = dash?.options.map((o) => o.value) ?? []
+      check(
+        "F16a: dashboard rows (settings + link + destinations + danger)",
+        ["session:auth", "session:ttl", "session:title", "session:paused"].every((v) => rowValues.includes(v)) && rowValues.includes("session:unshare") && rowValues.includes("session:copy"),
+        JSON.stringify(rowValues),
+      )
+      const rec16 = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F16b: title set wrote the binding mirror", rec16?.opts?.title === "Renamed Dashboard Title", JSON.stringify(rec16?.opts))
+      const homePath16 = join(homeDir, "opencode", "openshare.config.json")
+      const cfg16 = JSON.parse(readFileSync(homePath16, "utf8"))
+      check("F16c: title set wrote the config shares section (authoritative)", cfg16?.shares?.[sid]?.title === "Renamed Dashboard Title", JSON.stringify(cfg16?.shares?.[sid] ?? null))
+      const shareId16 = shared16.url.split("/").pop()
+      // the share inherits F13b's per-share gate (tier model end to end):
+      // log in as the viewer, then read through the gate
+      const login16 = await fetch(`${WORKER_URL}/api/share/${shareId16}/auth`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ login: "alice", password: "wonderland" }),
+      })
+      const cookie16 = (login16.headers.get("set-cookie") ?? "").split(";")[0]
+      const raw16 = await (await fetch(`${WORKER_URL}/api/share/${shareId16}/data`, { headers: { cookie: cookie16 } })).text()
+      const pg16 = JSON.parse(raw16)
+      check("F16d: gated share inherited F13b's per-share gate", login16.status === 200 && !raw16.includes("authRequired"), `${login16.status}`)
+      check("F16d: live page serves the custom title", pg16.title === "Renamed Dashboard Title", `raw=${raw16.slice(0, 140)}`)
+      const gate16 = await fetch(`${WORKER_URL}/api/share/${shareId16}/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: shared16.secret ?? rec16?.servers?.[WORKER_URL]?.secret, status: "live", data: [] }),
+      })
+      check("F16e: pause gated the page (sync 423)", gate16.status === 423, `${gate16.status}`)
+      const ungate16 = await fetch(`${WORKER_URL}/api/share/${shareId16}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: shared16.secret ?? rec16?.servers?.[WORKER_URL]?.secret, paused: false }),
+      })
+      const re16 = await fetch(`${WORKER_URL}/api/share/${shareId16}/sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: shared16.secret ?? rec16?.servers?.[WORKER_URL]?.secret, status: "live", data: [] }),
+      })
+      check("F16f: unpause reopens writes", ungate16.ok && re16.status === 200, `${ungate16.status}/${re16.status}`)
+      // restore: drop the title override both stores (later flows assert plain titles)
+      const cfgMod16 = await import(distUrl("config.js"))
+      cfgMod16.saveShareOverrides(sid, { title: undefined, paused: undefined })
+      const opts16 = { ...(rec16?.opts ?? {}) }
+      delete opts16.title
+      delete opts16.paused
+      await flows.setShareOpts(client, sid, opts16)
+    }
+
+    // F17: read-auth CLEAR must reach the server. A clear-only patch once
+    // returned before the REST PATCH (the dashboard said "cleared", the
+    // page stayed gated): setting a gate, then clearing it, must leave the
+    // page anonymously readable and the dashboard row gate-free.
+    {
+      const h17 = mockHost(client)
+      h17.state.dialogAnswers.push(true)
+      const shared17 = await flows.shareWithConsent(h17.host, sid)
+      check("F17: own share for the auth round-trip", shared17.ok === true && !!shared17.url, shared17.message)
+      const shareId17 = shared17.url.split("/").pop()
+      const secret17 = shared17.secret ?? null
+      // set: dashboard auth row, alice/wonderland
+      h17.state.menuAnswers.push("session:auth", "__back", "action:exit")
+      h17.state.promptAnswers.push("alice17", "wonderland17")
+      await settings.settingsDialog(h17.host, sid, "session")
+      const gated = await waitFor(async () => {
+        const r = await httpGet(`${WORKER_URL}/api/share/${shareId17}/data`)
+        return r.status === 401 ? true : undefined
+      }, "F17: gate applied after set")
+      check("F17: set gated the page", gated === true)
+      // reopen: the row shows the set override
+      const h17b = mockHost(client)
+      h17b.state.menuAnswers.push("__back", "action:exit")
+      await settings.settingsDialog(h17b.host, sid, "session")
+      const dash17 = h17b.state.menus.findLast((m) => /This session/.test(m.title))
+      const authRow17 = dash17?.options.find((o) => o.value === "session:auth")
+      check("F17a: row shows the set gate", /alice17/.test(authRow17?.description ?? ""), authRow17?.description ?? "")
+      // clear: empty login, empty password
+      const h17c = mockHost(client)
+      h17c.state.menuAnswers.push("session:auth", "__back", "action:exit")
+      h17c.state.promptAnswers.push("", "")
+      await settings.settingsDialog(h17c.host, sid, "session")
+      const rec17 = (await (await httpGet(`${serve.base}/session/${sid}`)).json())?.metadata?.openshare
+      check("F17b: clear dropped the binding mirror", rec17?.opts?.authLogin === undefined, JSON.stringify(rec17?.opts))
+      const home17 = join(homeDir, "opencode", "openshare.config.json")
+      const cfg17 = JSON.parse(readFileSync(home17, "utf8"))
+      check("F17c: clear dropped the config shares entry", !cfg17?.shares?.[sid]?.authLogin, JSON.stringify(cfg17?.shares?.[sid] ?? null))
+      const ungated = await waitFor(async () => {
+        const r = await httpGet(`${WORKER_URL}/api/share/${shareId17}/data`)
+        return r.status === 200 ? true : undefined
+      }, "F17d: server gate dropped after clear")
+      check("F17d: server gate dropped (anonymous read 200)", ungated === true)
+      // reopen: the row must NOT resolve a gate anymore
+      const h17d = mockHost(client)
+      h17d.state.menuAnswers.push("__back", "action:exit")
+      await settings.settingsDialog(h17d.host, sid, "session")
+      const dash17b = h17d.state.menus.findLast((m) => /This session/.test(m.title))
+      const authRow17b = dash17b?.options.find((o) => o.value === "session:auth")
+      check("F17e: row shows no gate after clear", /no gate/.test(authRow17b?.description ?? "") && !/alice17/.test(authRow17b?.description ?? ""), authRow17b?.description ?? "")
+      void secret17
+    }
+
     // F14: leave-as-is keeps control (D4). The snapshot path once dropped
     // id/secret - the page could never be deleted or re-shared from the
     // TUI again. Now the entry keeps both under an optedOut marker, a
     // fully opted-out session re-asks consent, and re-share re-attaches
     // the SAME page.
     {
+      // F17 cleared the inherited gate; set one explicitly so share #2 is
+      // gated on create (the gate applying at create is itself D1/D3
+      // coverage)
+      await flows.setShareOpts(client, sid, { authLogin: "alice", authPassword: "wonderland" })
       const reshared = await flows.shareWithConsent(host, sid)
       check("F14: re-share after unshare works", reshared.ok === true && !!reshared.url, reshared.message)
       const shareId2 = reshared.url.split("/").pop()
-      // the re-share inherits the session opts (F13b set alice/wonderland)
-      // - the gate applying on create is itself D1/D3 coverage
       await waitFor(async () => {
         const r = await httpGet(`${WORKER_URL}/api/share/${shareId2}/data`)
         if (r.status === 404) throw new Error("not there yet")
@@ -342,31 +466,32 @@ try {
     }
 
     // F4: config round-trip in a sandbox base dir ($comment preserved).
-    // env is set for the flows, so assert on a non-env key (ttlDays).
+    // env is set for the flows, so assert on a non-env key (ttlHours).
+    // The legacy days-shaped key converts x24 at load (Wave 3).
     const cfgDir = join(sandbox, "cfg")
     mkdirSync(cfgDir, { recursive: true })
     writeFileSync(join(cfgDir, "openshare.config.json"), JSON.stringify({ $comment: "keep me", ttlDays: 42 }, null, 2))
     const cfg = flows.currentConfig(cfgDir)
-    check("F4: currentConfig reads sandbox file", cfg.ttlDays === 42, `ttlDays=${cfg.ttlDays}`)
+    check("F4: currentConfig reads sandbox file (legacy days -> hours)", cfg.ttlHours === 42 * 24 && cfg.ttlDays === undefined, `ttlHours=${cfg.ttlHours} ttlDays=${cfg.ttlDays}`)
     const saved = flows.saveConfig({ ...cfg, workerUrl: "https://new.example", createToken: "tok" }, join(cfgDir, "openshare.config.json"), cfgDir)
     check("F4: saveConfig writes", !!saved?.path && existsSync(saved.path))
     const raw = JSON.parse(readFileSync(saved.path, "utf8"))
     check("F4: $comment preserved", raw.$comment === "keep me")
     check("F4: values written", raw.workerUrl === "https://new.example" && raw.createToken === "tok")
 
-    // F5: write-target rules (owner-directed): default is ALWAYS the
+    // F5: write-target rules: default is ALWAYS the
     // global settings home — never the first existing file in the read
     // chain (the adjacent template must not absorb TUI edits) — and an
     // explicit target is honored. XDG_CONFIG_HOME is suite-redirected
     // (see setup), so configHomePath() is the sandbox home.
     const expectedHome = join(homeDir, "opencode", "openshare.config.json")
-    const byDefault = flows.saveConfig({ ...cfg, ttlDays: 7 }, undefined, cfgDir)
+    const byDefault = flows.saveConfig({ ...cfg, ttlHours: 168 }, undefined, cfgDir)
     check("F5: default target is the global home", byDefault?.path === expectedHome, `got ${byDefault?.path}`)
-    check("F5: adjacent template NOT written", !readFileSync(join(cfgDir, "openshare.config.json"), "utf8").includes('"ttlDays": 7'))
+    check("F5: adjacent template NOT written", !readFileSync(join(cfgDir, "openshare.config.json"), "utf8").includes('"ttlHours": 168'))
     const explicitPath = join(cfgDir, "chosen.config.json")
     writeFileSync(explicitPath, "{}")
-    const byExplicit = flows.saveConfig({ ...cfg, ttlDays: 9 }, explicitPath, cfgDir)
-    check("F5: explicit target honored", byExplicit?.path === explicitPath && JSON.parse(readFileSync(explicitPath, "utf8")).ttlDays === 9)
+    const byExplicit = flows.saveConfig({ ...cfg, ttlHours: 216 }, explicitPath, cfgDir)
+    check("F5: explicit target honored", byExplicit?.path === explicitPath && JSON.parse(readFileSync(explicitPath, "utf8")).ttlHours === 216)
     const candidates = (await import(distUrl("config.js"))).writeCandidates(cfgDir)
     check("F5: writeCandidates lists global + existing adjacent only", candidates[0].path === expectedHome && candidates.some((c) => c.path === join(cfgDir, "openshare.config.json")) && !candidates.some((c) => c.path === explicitPath), candidates.map((c) => c.path).join(" | "))
 
@@ -411,9 +536,9 @@ try {
     check("F6: serverEntries lists it active", entries.some((s) => s.url === WORKER_URL && s.active))
     const rotated = await flows.rotateAtServer(WORKER_URL, savedTok)
     check("F6: rotate issues a new token", rotated.ok === true && rotated.token?.startsWith("osk_") && rotated.token !== savedTok, JSON.stringify(rotated))
-    // persist the rotated token like the real serverMenu rotate handler —
+    // persist the rotated token like the real serverMenu rotate handler;
     // otherwise the engine's credential stays the now-REVOKED token and
-    // every later create is refused (live-caught by F8)
+    // every later create is refused
     flows.saveServerEntry(WORKER_URL, { token: rotated.token })
     const oldMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${savedTok}` } })
     const newMe = await httpGet(`${WORKER_URL}/api/me`, { headers: { authorization: `Bearer ${rotated.token}` } })
@@ -461,6 +586,37 @@ try {
     const sharesAfterPurge = (await admin.shares()).data?.shares ?? []
     check("F7: purge leaves the server empty", purged.ok === true && sharesAfterPurge.length === 0, JSON.stringify(purged))
 
+    // F15: connect flow on a PUBLIC server asks ONCE (onboard or stay
+    // anonymous); anonymous saves the declined flag with no token
+    const PUB_PORT = 8961
+    const pubSrv = await startBunServer(suiteDir, { port: PUB_PORT, name: "tuiflow-pub", authMode: "public", vars: { AUTH_MODE: "public" } })
+    const PUB_URL = pubSrv.url
+    // menu -> "Stay anonymous"
+    const hostA = mockHost()
+    hostA.state.promptAnswers.push(PUB_URL)
+    hostA.state.menuAnswers.push("anon")
+    const connectedA = await settings.connectServerFlow(hostA.host)
+    check("F15: anonymous connect ok", connectedA.ok === true && /anonymously/.test(connectedA.message), connectedA.message)
+    const pubA = flows.serverEntries().find((sv) => sv.url === PUB_URL)
+    check("F15: anonymous entry saved (flag, active, no token)", pubA?.active === true && pubA?.entry?.anonymous === true && !pubA?.entry?.token, JSON.stringify(pubA?.entry ?? null))
+    // onboard on the same public server (codeless off): menu -> onboard ->
+    // codeless enroll refused -> code prompt -> enroll with the code
+    const codeA = await (await httpGet(`${PUB_URL}/api/admin/codes`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + CREATE_TOKEN },
+      body: JSON.stringify({ label: "pubcode", activations: 2 }),
+    })).json()
+    const hostB = mockHost()
+    hostB.state.promptAnswers.push(PUB_URL, codeA.code)
+    hostB.state.menuAnswers.push("onboard")
+    const connectedB = await settings.connectServerFlow(hostB.host)
+    check("F15b: onboard via code connects", connectedB.ok === true && /as "/.test(connectedB.message), connectedB.message)
+    const pubB = flows.serverEntries().find((sv) => sv.url === PUB_URL)
+    check("F15b: token saved, anonymous flag cleared", pubB?.entry?.token?.startsWith("osk_") && pubB?.entry?.anonymous !== true, JSON.stringify(pubB?.entry ?? null))
+    flows.saveServerEntry(PUB_URL, { active: undefined, token: undefined, anonymous: undefined, code: undefined })
+    try { pubSrv.kill() } catch {}
+    killPortOwners(PUB_PORT)
+
     // F8: gone detection — a binding whose page died server-side (purge /
     // TTL / delete) is auto-cleared when /share opens, with a
     // "Share is gone" modal; the probe is credential-free (/data 404 before
@@ -469,7 +625,11 @@ try {
     // binding the way the sweep does, then a consented re-share creates
     // the fresh page.
     await flows.clearShareFlag(client, sid)
-    // drop the inherited read-auth override so F8's plain reads work
+    // drop the inherited read-auth override so F8's plain reads work —
+    // BOTH stores: the config shares{} section is authoritative over the
+    // binding mirror, so clearing the mirror alone would re-resolve gated
+    const cfgMod = await import(distUrl("config.js"))
+    cfgMod.saveShareOverrides(sid, { authLogin: undefined, authPassword: undefined })
     await flows.setShareOpts(client, sid, { ttlDays: 21 })
     const reshard = await flows.shareWithConsent(host, sid)
     check("F8: re-share after purge creates a fresh page", reshard.ok === true && !!reshard.url, reshard.message)
@@ -498,10 +658,11 @@ try {
     state.menuAnswers.push("group:interface", "ui:size", "__back", "action:exit")
     await settings.settingsDialog(host)
     check("F9: size picker persisted both dims in kv", state.kv.get("openshare.ui-width") === "xlarge" && state.kv.get("openshare.ui-height-percent") === 66, JSON.stringify([...state.kv]))
-    const rootMenu = state.menus.findLast((m) => m.title === "OpenShare settings")
+    const rootMenu = state.menus.findLast((m) => /^OpenShare v.* · settings$/.test(m.title))
     check("F9: root is compact groups only", !!rootMenu && rootMenu.options.length <= 9 && !rootMenu.options.some((o) => o.value.startsWith("key:")), JSON.stringify(rootMenu?.options.map((o) => o.value)))
     check("F9: no separate connection group", !rootMenu?.options.some((o) => o.value === "group:connection"))
-    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => typeof o.help === "string" && o.help.length > 40).length === 6, JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
+    // no-session root: This session only appears with a session context
+    check("F9: group rows carry [i] help", rootMenu?.options.filter((o) => o.value.startsWith("group:")).length === 3 && rootMenu?.options.filter((o) => o.value.startsWith("group:")).every((o) => typeof o.help === "string" && o.help.length > 40), JSON.stringify(rootMenu?.options.map((o) => [o.value, !!o.help])))
     const interfaceMenu = state.menus.findLast((m) => m.title === "OpenShare — Interface")
     check("F9: interface group is the single size row", !!interfaceMenu && interfaceMenu.options.filter((o) => o.value === "ui:size").length === 1, JSON.stringify(interfaceMenu?.options.map((o) => o.value)))
 
@@ -527,7 +688,7 @@ try {
     const homeBefore = existsSync(expectedHome) ? JSON.parse(readFileSync(expectedHome, "utf8")) : {}
     delete homeBefore.shareMode
     writeFileSync(expectedHome, JSON.stringify(homeBefore, null, 2))
-    state.menuAnswers.push("group:sharing", "key:shareMode", "manual", "__back", "__back", "action:exit")
+    state.menuAnswers.push("group:config", "key:shareMode", "manual", "__back", "__back", "action:exit")
     await settings.settingsDialog(host)
     const modeCfg = JSON.parse(readFileSync(expectedHome, "utf8"))
     check("F11: share mode set via selection", modeCfg.shareMode === "manual", JSON.stringify(modeCfg.shareMode))
@@ -546,7 +707,7 @@ try {
   try {
     llm?.close()
   } catch {}
-  if (!process.env.OPENSHARE_TEST_WORKER_URL) killWranglerSuites() // matrix reuse: don't kill the shared worker
+  if (!worker?.reused) killWranglerSuites() // own worker (purge isolation): always sweep; reused: never
   killPortOwners(SERVE_PORT)
   killPortOwners(LLM_PORT)
 }
