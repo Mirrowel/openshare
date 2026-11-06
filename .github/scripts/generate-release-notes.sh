@@ -38,9 +38,15 @@ EOF
   # cliff fetches author metadata from the GitHub API, which intermittently
   # answers 403 (secondary rate limit) - a panic, exit 101. That killed
   # releases wholesale; wait and try again before giving up.
+  # The walk runs from the repo ROOT: this script executes with a package
+  # subdirectory as cwd (npm job working-directory), and cliff scopes its
+  # commit walk to the current directory - a range of commits touching
+  # only other parts rendered as "No notable changes."
+  local changes_out
+  changes_out="$PWD/changes.md"
   local attempt
   for attempt in 1 2 3; do
-    if git-cliff --config "$workspace/.github/cliff.toml" --github-repo "$repo" --output changes.md "$range"; then
+    if (cd "$workspace" && git-cliff --config "$workspace/.github/cliff.toml" --github-repo "$repo" --output "$changes_out" "$range"); then
       return
     fi
     [ "$attempt" = 3 ] && return 1
